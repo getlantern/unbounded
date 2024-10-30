@@ -308,12 +308,13 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 	srv := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
+		TLSConfig:    tlsConfig,
 	}
 
 	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
-		err := srv.Serve(ll)
+		err := srv.ServeTLS(ll, "", "")
 		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
 	}()
 
