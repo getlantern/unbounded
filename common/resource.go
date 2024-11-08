@@ -87,6 +87,20 @@ type SignalMsg struct {
 	Payload string
 }
 
+type ICECandidate struct {
+	statsID        string
+	Foundation     string             `json:"foundation"`
+	Priority       uint32             `json:"priority"`
+	Address        string             `json:"address"`
+	Protocol       webrtc.ICEProtocol `json:"protocol"`
+	Port           uint16             `json:"port"`
+	Typ            string             `json:"type"`
+	Component      uint16             `json:"component"`
+	RelatedAddress string             `json:"relatedAddress"`
+	RelatedPort    uint16             `json:"relatedPort"`
+	TCPType        string             `json:"tcpType"`
+}
+
 func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 	var err error
 	var msg SignalMsg
@@ -108,9 +122,38 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 			err := json.Unmarshal([]byte(msg.Payload), &answer)
 			return msg.ReplyTo, answer, err
 		case SignalMsgICE:
-			var candidates []webrtc.ICECandidate
+			var candidates []ICECandidate
+			var webRTCCandidates []webrtc.ICECandidate
 			err := json.Unmarshal([]byte(msg.Payload), &candidates)
-			return msg.ReplyTo, candidates, err
+			if err != nil {
+				return msg.ReplyTo, webRTCCandidates, err
+			}
+
+			for _, c := range candidates {
+				new := webrtc.ICECandidate{
+					Foundation:     c.Foundation,
+					Priority:       c.Priority,
+					Address:        c.Address,
+					Protocol:       c.Protocol,
+					Port:           c.Port,
+					Component:      c.Component,
+					RelatedAddress: c.RelatedAddress,
+					RelatedPort:    c.RelatedPort,
+					TCPType:        c.TCPType,
+				}
+
+				iceType, err := webrtc.NewICECandidateType(c.Typ)
+				if err != nil {
+					Debugf("Failed to get ICE candidate type%v", err)
+					continue
+				}
+
+				new.Typ = iceType
+
+				webRTCCandidates = append(webRTCCandidates, new)
+			}
+
+			return msg.ReplyTo, webRTCCandidates, err
 		}
 	}
 

@@ -6,6 +6,8 @@ package clientcore
 
 import (
 	"context"
+	"crypto/tls"
+	"net/http"
 	"sync"
 	"time"
 
@@ -40,8 +42,18 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			defer cancel()
 
 			// TODO: WSS
+			// Skip certificate verification. This should go away once we have a certificate from a trusted CA instead of our own self-signed one
+			httpClient := &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{
+						InsecureSkipVerify: true,
+					},
+				},
+			}
 
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			opts := &websocket.DialOptions{HTTPClient: httpClient}
+
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, opts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)
