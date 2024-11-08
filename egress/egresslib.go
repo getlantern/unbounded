@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	"nhooyr.io/websocket"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/quicwrapper"
+	"github.com/getlantern/quicwrapper/webt"
 	"github.com/getlantern/telemetry"
 )
 
@@ -109,6 +112,11 @@ type proxyListener struct {
 	tlsConfig    *tls.Config
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+
+	// The path for this proxy listener on the server, such as
+	// /ws for websockets or /wt for webtransport.
+	path string
+	name string
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -151,7 +159,7 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -164,6 +172,10 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			CompressionMode:    websocket.CompressionDisabled,
 		},
 	)
+	if err != nil {
+		common.Debugf("Error accepting WebSocket connection: %v", err)
+		return
+	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
@@ -179,10 +191,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer wspconn.Close()
-
-	if err != nil {
-		return
-	}
 
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
@@ -235,29 +243,60 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+	options := &webt.ListenOptions{
+		Addr:      addr,
+		TLSConfig: tlsConfig,
+		QuicConfig: &quicwrapper.Config{
+			MaxIncomingStreams: 2000,
+		},
+		Path: "wt",
+	}
+
+	return webt.ListenAddr(options)
+}
+
+func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
+	l := &proxyListener{
+		Listener:     &net.TCPListener{},
+		connections:  make(chan net.Conn, 2048),
+		tlsConfig:    tlsConfig,
+		addr:         ll.Addr(),
+		closeMetrics: closeFuncMetric,
+		path:         "/ws",
+		name:         "websocket",
+	}
 	m := otel.Meter("github.com/getlantern/broflake/egress")
-	var err error
-	nClientsCounter, err = m.Int64UpDownCounter("concurrent-websockets")
+
+	nClientsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%ss", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICConnectionsCounter, err = m.Int64UpDownCounter("concurrent-quic-connections")
+	nQUICConnectionsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-connections", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICStreamsCounter, err = m.Int64UpDownCounter("concurrent-quic-streams")
+	nQUICStreamsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-streams", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes")
+	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter(fmt.Sprintf("ingress-%s-bytes", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
@@ -278,39 +317,41 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 		return nil, err
 	}
 
-	var tlsConfig *tls.Config
+	/*
+		var tlsConfig *tls.Config
 
-	if certPEM != "" && keyPEM != "" {
-		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-		if err != nil {
-			return nil, fmt.Errorf("Unable to load cert/key from PEM for broflake: %v", err)
+		if certPEM != "" && keyPEM != "" {
+			cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+			if err != nil {
+				return nil, fmt.Errorf("unable to load cert/key from PEM for broflake: %v", err)
+			}
+
+			common.Debugf("Broflake using cert %v and key %v", certPEM, keyPEM)
+			tlsConfig = &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				NextProtos:   []string{"broflake"},
+			}
+		} else {
+			common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
+			tlsConfig = generateTLSConfig()
 		}
 
-		common.Debugf("Broflake using cert %v and key %v", certPEM, keyPEM)
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"broflake"},
+		// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
+		l := proxyListener{
+			Listener:     &net.TCPListener{},
+			connections:  make(chan net.Conn, 2048),
+			tlsConfig:    tlsConfig,
+			addr:         ll.Addr(),
+			closeMetrics: closeFuncMetric,
 		}
-	} else {
-		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
-		tlsConfig = generateTLSConfig()
-	}
-
-	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
-	l := proxyListener{
-		Listener:     &net.TCPListener{},
-		connections:  make(chan net.Conn, 2048),
-		tlsConfig:    tlsConfig,
-		addr:         ll.Addr(),
-		closeMetrics: closeFuncMetric,
-	}
+	*/
 
 	srv := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
+	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)
@@ -318,4 +359,42 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 	}()
 
 	return l, nil
+}
+
+func tlsConfig(cert, key string) (*tls.Config, error) {
+	if config, err := tlsConfigFromPEM(cert, key); err == nil {
+		return config, nil
+	} else {
+		common.Debugf("Unable to load tlsconfig from PEM...trying file paths: %v", err)
+		return tlsConfigFromFiles(cert, key)
+	}
+}
+
+func tlsConfigFromFiles(certFile, keyFile string) (*tls.Config, error) {
+	certPem, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load certfile %v: %w", certFile, err)
+	}
+	keyPem, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load keyfile %v: %w", keyFile, err)
+	}
+	return tlsConfigFromPEM(string(certPem), string(keyPem))
+}
+
+func tlsConfigFromPEM(certPEM, keyPEM string) (*tls.Config, error) {
+	if certPEM != "" && keyPEM != "" {
+		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("unable to load cert/key from PEM for broflake: %v", err)
+		}
+		return &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"broflake"},
+		}, nil
+	} else {
+		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
+		return generateTLSConfig(), nil
+	}
+
 }

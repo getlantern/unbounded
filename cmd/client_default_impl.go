@@ -57,7 +57,7 @@ func main() {
 		rtcOpt.DiscoverySrv = freddie
 	}
 
-	egOpt := clientcore.NewDefaultEgressOptions()
+	egOpt := clientcore.NewDefaultWebTransportEgressOptions()
 
 	if egress != "" {
 		egOpt.Addr = egress
