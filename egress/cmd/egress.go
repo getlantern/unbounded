@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -35,13 +34,13 @@ func main() {
 	// XXX: in the process of delivering the cert and key to egress.NewListener, we suboptimally
 	// cast back and forth between []string and []byte... it's just a byproduct of the API
 	if certFile != "" && keyFile != "" {
-		cert, err := ioutil.ReadFile(certFile)
+		cert, err := os.ReadFile(certFile)
 		if err != nil {
 			panic(err)
 		}
 		tlsCert = string(cert)
 
-		key, err := ioutil.ReadFile(keyFile)
+		key, err := os.ReadFile(keyFile)
 		if err != nil {
 			panic(err)
 		}
