@@ -1,6 +1,6 @@
 # diagrams
 
-Temporary file for updated diagrams from the README[./README.md] done natively in mermaid to allow version-controlled updates.
+Temporary file for updated diagrams from the [README](./README.md) done natively in mermaid to allow version-controlled updates.
 
 ```mermaid
 flowchart LR
