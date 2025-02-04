@@ -5,6 +5,11 @@ A leaderboard of connections made and people helped to drive donor engagement wi
 Connect to Supabase with their [REST API](https://supabase.com/docs/guides/api).
 
 
+## credentials
+Can be fetched from the Supabase [dashboard](https://supabase.com/dashboard/project/_/settings/api). Save to env as:
+- `SUPABASE_URL`
+- `SUPABASE_KEY`
+
 ## example request
 ```sh
 curl \
