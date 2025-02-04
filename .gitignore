@@ -6,6 +6,7 @@ cmd/dist/public/*.wasm
 # misc
 .DS_Store
 *.*.swp
+.vscode/
 
 # ide
 .idea/*
