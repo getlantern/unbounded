@@ -164,6 +164,10 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			CompressionMode:    websocket.CompressionDisabled,
 		},
 	)
+	if err != nil {
+		common.Debugf("Error accepting WebSocket connection: %v", err)
+		return
+	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
