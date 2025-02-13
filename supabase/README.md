@@ -9,7 +9,7 @@ Can be fetched from the Supabase [dashboard](https://supabase.com/dashboard/proj
 - `SUPABASE_URL`
 - `SUPABASE_KEY`
 
-A `SUPABASE_KEY` can be either:
+A `SUPABASE_KEY` can be (see [docs](https://supabase.com/docs/guides/api/api-keys)):
 - anon (public, available to all)
 - authenticated (logged in users)
 - admin (full backend permissions)

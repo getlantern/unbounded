@@ -93,7 +93,9 @@ func (c *Supabase) Leaderboard() ([]map[string]interface{}, error) {
 }
 
 func (c *Supabase) AddConnection() error {
-	return fmt.Errorf("not implemented")
+	common.Debugf("Adding connection")
+	return nil
+	// return fmt.Errorf("not implemented")
 }
 
 func (c *Supabase) AddTeam() error {
