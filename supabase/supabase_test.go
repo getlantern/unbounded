@@ -10,6 +10,7 @@ import (
 )
 
 func init() {
+	// testing should always log debug
 	opts := &slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	}
@@ -23,7 +24,7 @@ func TestCreds(t *testing.T) {
 	t.Logf("loaded supabase creds for url: %s", client.baseURL)
 }
 
-func TestEndpoints(t *testing.T) {
+func TestGetEndpoints(t *testing.T) {
 	client, err := new()
 	require.NoError(t, err)
 
@@ -41,5 +42,4 @@ func TestEndpoints(t *testing.T) {
 		require.Greater(t, len(result), 0)
 		t.Logf("leaderboard: %d results", len(result))
 	})
-
 }

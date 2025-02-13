@@ -61,8 +61,8 @@ func (c *supabaseCreds) request(method string, path string, queryParams ...map[s
 	if err != nil {
 		return nil, fmt.Errorf("make request: %w", err)
 	}
-	req.Header.Set(keyHeader, c.key)
-	req.Header.Set("Authorization", "Bearer "+c.key)
+	req.Header.Set(keyHeader, c.key)                 // TODO both necessary?
+	req.Header.Set("Authorization", "Bearer "+c.key) // TODO both?
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("do request: %w", err)
