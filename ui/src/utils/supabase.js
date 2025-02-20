@@ -32,3 +32,12 @@ async function fetchConnections() {
     else console.log(data)
   }
   insertConnection()
+
+  async function signInAnon() {
+    let { data, error } = await supabase.auth.signInAnonymously()
+    if (error) {
+      console.error('Error with anon sign in:', error)
+    } else {
+      console.log('signed in:', data)
+    }
+  }
