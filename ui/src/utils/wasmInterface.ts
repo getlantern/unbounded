@@ -237,6 +237,7 @@ export class WasmInterface {
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
 		}
+		// TODO: send to supabase/leaderboard here, alert("handleConnection: "+lifetimeConnectionsEmitter.state)
 	}
 
 	handleReady = () => {
