@@ -3,6 +3,7 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import { testRequest } from './supabase'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -233,6 +234,17 @@ export class WasmInterface {
 		}
 		this.connections = this.idxMapToArr(this.connectionMap)
 		// emit state
+		// alert("handleConnection: "+this.connections.length)
+		console.log("handleConnection: ", this.connections.length)
+		async function sendToSupabase() {
+			try {
+				await testRequest()
+				console.log('Supabase request successful')
+			} catch (error) {
+				console.error('Error sending to Supabase:', error)
+			}
+		}
+		sendToSupabase()
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
