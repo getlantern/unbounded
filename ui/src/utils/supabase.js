@@ -41,3 +41,27 @@ async function fetchConnections() {
       console.log('signed in:', data)
     }
   }
+
+    // inserts to the connections table using the record_connection function
+    async function insertAnonConnection(input_uuid, team_code) {
+        let { data, error } = await supabase
+        .rpc('record_anon_connection', {
+            "user_id_input": input_uuid,
+            "team_code_input": team_code,
+    
+        })
+        if (error) console.error(error)
+        else console.log(data)
+      }
+    
+    async function record_anon_user(team_code) {
+        data = await signInAnon()
+        UUID = data.user.id
+        console.log('UUID:', UUID)
+    
+        insertAnonConnection(UUID, team_code)
+    }
+    
+    //can call this to record a connection with a team code, which could be saved in the browser extension settings 
+    record_anon_user('join_pikas_team')
+    
