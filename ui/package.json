@@ -5,6 +5,7 @@
   "homepage": "https://embed.lantern.io",
   "description": "Use your browser to fight global internet censorship.",
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
