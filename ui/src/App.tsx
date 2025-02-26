@@ -4,6 +4,8 @@ import Layout from './layout'
 import Toast from './components/molecules/toast'
 import Banner from './components/organisms/banner'
 import Panel from './components/organisms/panel'
+import TeamPop from './components/molecules/teamform'
+import TeamButton from './components/molecules/teambutton'
 import usePageVisibility from './hooks/usePageVisibility'
 import {useEmitterState} from './hooks/useStateEmitter'
 import {sharingEmitter, WasmInterface} from './utils/wasmInterface'
@@ -105,6 +107,8 @@ const App = ({appId, embed}: Props) => {
           )}
         </Suspense>
       </Layout>
+      <TeamPop />
+      <TeamButton />
     </AppContextProvider>
   );
 }

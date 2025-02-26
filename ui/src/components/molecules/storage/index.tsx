@@ -136,6 +136,21 @@ const Storage = ({settings}: {settings: Settings}) => {
 		}, '*')
 	}, [sharing, iframe])
 
+	let browserTeamCode = localStorage.getItem("team_code")
+	if (browserTeamCode) {
+		console.log("Code: " + browserTeamCode );
+	} else {
+		console.log("No team code found in local storage, prompting for code");
+		let teamCode = prompt("Please enter team code:");
+		if (teamCode !== null) {
+			console.log("input: " + teamCode );
+			localStorage.setItem("team_code", teamCode);
+		} else {
+			console.log("User cancelled the prompt.");
+			localStorage.setItem("team_code", "no_team");
+		}
+	}
+
 	return (
 		<iframe
 			src={process.env.REACT_APP_STORAGE_URL}

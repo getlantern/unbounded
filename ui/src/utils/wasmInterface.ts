@@ -3,6 +3,49 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import {createClient} from '@supabase/supabase-js'
+
+const supabaseUrl =  process.env.REACT_APP_SUPABASE_LINK ?? ""
+const supabaseKey = process.env.REACT_APP_SUPABASE_PUBLIC_KEY ?? ""
+
+console.log("Supabase URL: " + supabaseUrl);
+
+const supabase = createClient(supabaseUrl, supabaseKey)
+
+async function signInAnon() {
+    let { data, error } = await supabase.auth.signInAnonymously()
+    if (error) {
+      console.error('Error with anon sign in:', error)
+    } else {
+      console.log('signed in')
+    }
+    return data
+  }
+
+  async function insertAnonConnection() {
+	let signInData = await signInAnon()
+	if (!signInData) {
+		console.error('No data returned from signInAnon')
+		return
+	}
+	if (!signInData.user) {
+		console.error('User data is null')
+		return
+	}
+	let UUID = signInData.user.id
+    console.log('UUID:', UUID)
+
+	let userTeamCode = localStorage.getItem("team_code")
+   
+    let { data, error } = await supabase
+    .rpc('record_anon_connection', {
+        "user_id_input": UUID,
+        "team_code_input": userTeamCode,
+    })
+
+    if (error) console.error(error)
+    else console.log(data)
+  }
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -115,7 +158,6 @@ export class WasmInterface {
 		this.go = go
 		this.target = Targets.WEB
 	}
-
 
 	initialize = async ({mock, target}: Config): Promise<WebAssemblyInstance | undefined> => {
 		// this dumb state is needed to prevent multiple calls to initialize from react hot reload dev server 🥵
@@ -238,6 +280,7 @@ export class WasmInterface {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
 		}
 		// TODO: send to supabase/leaderboard here, alert("handleConnection: "+lifetimeConnectionsEmitter.state)
+		insertAnonConnection()
 	}
 
 	handleReady = () => {
