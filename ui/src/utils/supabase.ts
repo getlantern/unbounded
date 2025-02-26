@@ -5,6 +5,7 @@ dotenv.config({ path: '.env' });
 
 const supabaseUrl: string = process.env.SUPABASE_URL || '';
 const supabaseKey: string = process.env.SUPABASE_KEY || '';
+const supabaseTestUUID: string = process.env.SUPABASE_TEST_UUID || '';
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error('Missing Supabase URL or Key in environment variables');
@@ -29,16 +30,30 @@ export async function fetchConnections(): Promise<any[] | null> {
   }
 }
 
-// inserts to the connections table using the record_connection function
-export async function addConnection(uuid: string): Promise<void | null> {
-  const { data, error } = await supabase
-    .rpc('record_connection', { user_id_input: uuid });
-  if (error) {
-    console.error(error);
-  } else {
-    console.log('Connection inserted successfully');
-    console.log('Data:', data);
-    return data;
-  }
+interface AddConnectionResult {
+  success: boolean;
+  data?: any[];
+  error?: string;
 }
 
+export async function addConnection(uuid: string): Promise<AddConnectionResult> {
+  try {
+    const { data, error } = await supabase
+      .rpc('record_connection', { user_id_input: uuid });
+
+    if (error) {
+      console.error("record_connection failed: ", error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('Connection inserted successfully: ', data);
+    return { success: true, data };
+  } catch (err) {
+    console.error('Unexpected error: ', err);
+    if (err instanceof Error) {
+      return { success: false, error: err.message };
+    } else {
+      return { success: false, error: 'An unknown error occurred' };
+    }
+  }
+}

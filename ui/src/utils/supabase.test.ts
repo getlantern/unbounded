@@ -42,9 +42,18 @@ describe('addConnection', () => {
         try {
             console.log('Starting addConnection...');
             const result = await addConnection(supabaseTestUUID);
-            if (!result) {
-                console.log('No result returned from addConnection');
-                throw new Error('No result returned from addConnection');
+            if (!result.success) {
+                throw new Error(`Failed to add connection: ${result.error}`);
+            } else {
+                console.log('Connection added successfully:', result.data);
+                // Verify the connection was added
+                const connections = await fetchConnections();
+                if (connections) {
+                    expect(connections.length).toBe(connectionsQty + 1);
+                    console.log('Connection count verified successfully');
+                } else {
+                    throw new Error('Failed to fetch connections after adding');
+                }
             }
         } catch (error) {
             console.error('Error during addConnection execution');
