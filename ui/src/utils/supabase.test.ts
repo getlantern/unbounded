@@ -1,21 +1,8 @@
-import { testRequest, fetchConnections, addConnection } from './supabase';
+import { signInAnon, fetchConnections, addConnection } from './supabase';
 
 const supabaseTestUUID: string = process.env.SUPABASE_TEST_UUID || '';
 
 let connectionsQty: number = 0;
-
-describe('testRequest', () => {
-    test('should complete successfully', async () => {
-        try {
-            console.log('Starting testRequest...');
-            await testRequest();
-            console.log('testRequest completed successfully');
-        } catch (error) {
-            console.error('Error during testRequest execution');
-            throw error; // Rethrow the error to fail the test
-        }
-    });
-});
 
 describe('fetchConnections', () => {
     test('should fetch connections successfully', async () => {
@@ -60,4 +47,21 @@ describe('addConnection', () => {
             throw error;
         }
     });
+});
+
+describe('sign in anon', () => {
+    test('should sign in anonymously', async () => {
+        try {
+            console.log('Starting signInAnon...');
+            const result = await signInAnon();
+            if (result.success) {
+                console.log('Anonymous sign-in successful:', result.data);
+            } else {
+                throw new Error(`Anonymous sign-in failed: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error during signInAnon execution');
+            throw error;
+        }
+    })
 });

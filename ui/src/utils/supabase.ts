@@ -57,3 +57,37 @@ export async function addConnection(uuid: string): Promise<AddConnectionResult> 
     }
   }
 }
+
+export async function signInAnon(): Promise<any> {
+  let { data, error } = await supabase.auth.signInAnonymously()
+  if (error) {
+    return { success: false, error: error.message }
+  } else {
+    return { success: true, data }
+  }
+}
+
+// // inserts to the connections table using the record_anon_connection function
+// export async function insertAnonConnection(input_uuid, team_code) {
+//     let { data, error } = await supabase
+//     .rpc('record_anon_connection', {
+//         "user_id_input": input_uuid,
+//         "team_code_input": team_code,
+//     })
+//     if (error) {
+//       console.log(error)
+//     }else{
+//       console.log(data)
+//    }
+// }
+
+// async function record_anon_user(team_code) {
+//     data = await signInAnon()
+//     UUID = data.user.id
+//     console.log('UUID:', UUID)
+
+//     insertAnonConnection(UUID, team_code)
+// }
+
+// record_anon_user('MY_TEAM_CODE')
+
