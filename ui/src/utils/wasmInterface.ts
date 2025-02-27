@@ -4,7 +4,7 @@ import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
 
-import {record_anon_user} from './supabase'
+import {insertAnonConnection, record_anon_user} from './supabase'
 
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
@@ -225,7 +225,7 @@ export class WasmInterface {
 		averageThroughputEmitter.update((averageThroughputEmitter.state + detail.bytesPerSec) / 2)
 	}
 
-	handleConnection = (e: { detail: Connection }) => {
+	handleConnection = async (e: { detail: Connection }) => {
 		const {detail: connection} = e
 		const {state, workerIdx} = connection
 		const existingState = this.connectionMap[workerIdx]?.state || -1
@@ -235,27 +235,21 @@ export class WasmInterface {
 		}
 		this.connections = this.idxMapToArr(this.connectionMap)
 
-		// emit state and record to supabase
-		async function handleAddConnection(uuid: string) {
-			const result = await addConnection(uuid);
-			if (result.success) {
-				console.log('Connection added successfully:', result.data);
-			} else {
-				console.error('Failed to add connection:', result.error);
-			}
-		}
-		// TODO -- get real, actual supabase uuid for user
-		let fakeUUID = '00000000-0000-0000-0000-000000000000'
-		handleAddConnection(fakeUUID);
-
+		// emit state
+		
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
+			// TODO -- get real, actual supabase uuid for user
+			let fakeUUID = '00000000-0000-0000-0000-000000000000'
+			let team_code = localStorage.getItem('team_code') ?? "no team code"
+			const result = await insertAnonConnection(fakeUUID, team_code);
+			if (result.success) {
+				console.log('Inserted anon connection successfully')
+			} else {
+				console.log('Error inserting anon connection: ', result)
+			}
 		}
-
-		let team_code = localStorage.getItem('team_code') ?? "no team code"
-		record_anon_user(team_code)
-
 	}
 
 	handleReady = () => {

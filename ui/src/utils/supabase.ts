@@ -4,8 +4,11 @@ const supabaseUrl: string = process.env.REACT_APP_SUPABASE_URL || '';
 const supabaseKey: string = process.env.REACT_APP_SUPABASE_PUBLIC_KEY || '';
 const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
 
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Missing Supabase URL or Key in environment variables');
+if (!supabaseUrl) {
+  throw new Error('REACT_APP_SUPABASE_URL not set');
+}
+if (!supabaseKey) {
+  throw new Error('REACT_APP_SUPABASE_PUBLIC_KEY');
 }
 
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey); // TODO: make this async for faster initial page load? 
