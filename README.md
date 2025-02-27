@@ -226,3 +226,12 @@ The copy and translations are bootstrapped with [Strapi](https://strapi.io/) as 
 The translations are queried at build time and the UI uses the `i18next` library to manage the translations and the `react-i18next` library to bind the translations to the UI components.
 
 To re-query the translations from the CMS, run `yarn translate`. This will fetch the latest translations from the CMS and update the `src/translations.json` file.
+
+
+### Leaderboard
+
+Leaderboard state is kept in supabase. Test with:
+Test supabase connections with:
+```
+cd ui && npx src/utils/supabase.test.ts
+```

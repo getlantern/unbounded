@@ -5,11 +5,11 @@
   "homepage": "https://embed.lantern.io",
   "description": "Use your browser to fight global internet censorship.",
   "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
     "@testing-library/jest-dom": "^5.16.5",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
     "@types/chrome": "^0.0.216",
-    "@types/jest": "^27.5.2",
     "@types/node": "^16.11.66",
     "@types/react": "^18.0.21",
     "@types/react-dom": "^18.0.6",
@@ -67,5 +67,10 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "@types/jest": "^29.5.14",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.6"
   }
 }

@@ -10,6 +10,7 @@ if (!supabaseUrl || !supabaseKey) {
 
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey); // TODO: make this async for faster initial page load? 
 
+
 // lists all rows in connections table
 export async function fetchConnections(): Promise<any[] | null> {
   const { data: connections, error } = await supabase
@@ -84,4 +85,6 @@ export async function record_anon_user(team_code: string): Promise<any> {
     } else {
       return { success: false, error: result.error }
     }
+
 }
+
