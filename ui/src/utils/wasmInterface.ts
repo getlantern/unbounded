@@ -3,6 +3,7 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import {record_anon_user} from './supabase'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -236,8 +237,9 @@ export class WasmInterface {
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
 		}
-		// TODO: send to supabase/leaderboard here, alert("handleConnection: "+lifetimeConnectionsEmitter.state)
-		insertAnonConnection()
+
+		let team_code = localStorage.getItem('team_code') ?? "no team code"
+		record_anon_user(team_code)
 	}
 
 	handleReady = () => {

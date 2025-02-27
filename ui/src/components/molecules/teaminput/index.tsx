@@ -9,13 +9,17 @@ function TeamInput() {
   };
 
   const storedValue = localStorage.getItem("team_code");
+  let placeHolder = "Enter team code here"
+  if (storedValue) {
+    placeHolder = storedValue
+  }
   return (
     <div>
       <input
         type="text"
         value={inputValue}
         onChange={handleInputChange}
-        placeholder="Paste team code here"
+        placeholder={placeHolder}
       />
       <p>Current Team: {storedValue}</p>
     </div>
