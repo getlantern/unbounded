@@ -1,4 +1,4 @@
-import { signInAnon, fetchConnections, addConnection } from './supabase';
+import { signInAnon, fetchConnections, addConnection, insertAnonConnection } from './supabase';
 
 const supabaseTestUUID: string = process.env.SUPABASE_TEST_UUID || '';
 
@@ -61,6 +61,42 @@ describe('sign in anon', () => {
             }
         } catch (error) {
             console.error('Error during signInAnon execution');
+            throw error;
+        }
+    })
+});
+
+describe('insertAnonConnection', () => {
+    test('should insert an anonymous connection', async () => {
+        try {
+            console.log('Starting insertAnonConnection...');
+            const result = await insertAnonConnection(supabaseTestUUID, 'team_code');
+            if (result.success) {
+                console.log('Anonymous connection inserted successfully:', result.data);
+                // TODO is is correct and sign of success that result.dat == null?
+            } else {
+                throw new Error(`Failed to insert anonymous connection: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error during insertAnonConnection execution');
+            throw error;
+        }
+    })
+});
+
+describe('recordAnonUser', () => {
+    test('should record an anonymous user', async () => {
+        try {
+            console.log('Starting recordAnonUser...');
+            const result = await insertAnonConnection(supabaseTestUUID, 'team_code');
+            if (result.success) {
+                console.log('Anonymous user recorded successfully:', result.data);
+                // TODO is is correct and sign of success that result.dat == null?
+            } else {
+                throw new Error(`Failed to record anonymous user: ${result.error}`);
+            }
+        } catch (error) {
+            console.error('Error during recordAnonUser execution');
             throw error;
         }
     })
