@@ -3,7 +3,7 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
-import { addConnection, testRequest } from './supabase'
+import { addConnection } from './supabase'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
