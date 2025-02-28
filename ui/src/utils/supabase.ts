@@ -1,17 +1,18 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import dotenv from 'dotenv';
 
-dotenv.config({ path: '.env' });
+const supabaseUrl: string = process.env.REACT_APP_SUPABASE_URL || '';
+const supabaseKey: string = process.env.REACT_APP_SUPABASE_PUBLIC_KEY || '';
+const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
 
-const supabaseUrl: string = process.env.SUPABASE_URL || '';
-const supabaseKey: string = process.env.SUPABASE_KEY || '';
-const supabaseTestUUID: string = process.env.SUPABASE_TEST_UUID || '';
-
-if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Missing Supabase URL or Key in environment variables');
+if (!supabaseUrl) {
+  throw new Error('REACT_APP_SUPABASE_URL not set');
+}
+if (!supabaseKey) {
+  throw new Error('REACT_APP_SUPABASE_PUBLIC_KEY');
 }
 
-const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey);
+const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey); // TODO: make this async for faster initial page load? 
+
 
 // lists all rows in connections table
 export async function fetchConnections(): Promise<any[] | null> {
@@ -87,4 +88,6 @@ export async function record_anon_user(team_code: string): Promise<any> {
     } else {
       return { success: false, error: result.error }
     }
+
 }
+
