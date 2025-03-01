@@ -1,24 +1,25 @@
-import { signInAnon, fetchConnections, addConnection, insertAnonConnection } from './supabase';
+import { signInAnon, connectionCount, addConnection, insertAnonConnection, leaderboard } from './supabase';
 
-const supabaseTestUUID: string = process.env.SUPABASE_TEST_UUID || '';
+require('dotenv').config({ path: '.env.development' });
 
-let connectionsQty: number = 0;
+const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
+if (!supabaseTestUUID) {
+    throw new Error('REACT_APP_SUPABASE_TEST_UUID')
+}
 
-describe('fetchConnections', () => {
+describe('connectionCount', () => {
     test('should fetch connections successfully', async () => {
         try {
-            console.log('Starting fetchConnections...');
-            const result = await fetchConnections();
-            console.log('Result of testRequest:', result);
-            if (result) {
-                connectionsQty = result.length;
-                console.log('Number of connections:', connectionsQty);
+            console.log('Starting connectionCount...');
+            const count = await connectionCount();
+            console.log('count:', count);
+            if (count === 0) {
+                throw new Error("failed to fetch connection count")
             } else {
-                console.log('No connections found');
+                console.log('connectionCount counted: ', count);
             }
-            console.log('fetchConnections completed successfully');
         } catch (error) {
-            console.error('Error during fetchConnections execution');
+            console.error('Error during connectionCount execution');
             throw error;
         }
     });
@@ -28,15 +29,20 @@ describe('addConnection', () => {
     test('should add a connection successfully', async () => {
         try {
             console.log('Starting addConnection...');
+            const startingCount = await connectionCount();
+            if (startingCount === 0) {
+                throw new Error('Failed to get starting count')
+            }
+            console.log('Starting count:', startingCount);
+
             const result = await addConnection(supabaseTestUUID);
             if (!result.success) {
                 throw new Error(`Failed to add connection: ${result.error}`);
             } else {
-                console.log('Connection added successfully:', result.data);
                 // Verify the connection was added
-                const connections = await fetchConnections();
-                if (connections) {
-                    expect(connections.length).toBe(connectionsQty + 1);
+                const currentCount = await connectionCount();
+                expect(currentCount).toBeGreaterThan(startingCount)
+                if (currentCount > startingCount ) {
                     console.log('Connection count verified successfully');
                 } else {
                     throw new Error('Failed to fetch connections after adding');
@@ -73,7 +79,7 @@ describe('insertAnonConnection', () => {
             const result = await insertAnonConnection(supabaseTestUUID, 'team_code');
             if (result.success) {
                 console.log('Anonymous connection inserted successfully:', result.data);
-                // TODO is is correct and sign of success that result.dat == null?
+                // TODO is this correct and sign of success that result.dat == null?
             } else {
                 throw new Error(`Failed to insert anonymous connection: ${result.error}`);
             }
@@ -84,20 +90,18 @@ describe('insertAnonConnection', () => {
     })
 });
 
-describe('recordAnonUser', () => {
-    test('should record an anonymous user', async () => {
+describe('leaderboard', () => {
+    test('should fetch the leaderboard', async () => {
         try {
-            console.log('Starting recordAnonUser...');
-            const result = await insertAnonConnection(supabaseTestUUID, 'team_code');
-            if (result.success) {
-                console.log('Anonymous user recorded successfully:', result.data);
-                // TODO is is correct and sign of success that result.dat == null?
-            } else {
-                throw new Error(`Failed to record anonymous user: ${result.error}`);
+            console.log('Starting to fetch leaderboard...')
+            const board = await leaderboard()
+            if (board === null) {
+                throw new Error('failed to fetch leaderboard')
             }
+            console.log('Leaderboard: ', board)
         } catch (error) {
-            console.error('Error during recordAnonUser execution');
             throw error;
         }
     })
 });
+
