@@ -2,7 +2,6 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const supabaseUrl: string = process.env.REACT_APP_SUPABASE_URL || '';
 const supabaseKey: string = process.env.REACT_APP_SUPABASE_PUBLIC_KEY || '';
-const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
 
 if (!supabaseUrl) {
   throw new Error('REACT_APP_SUPABASE_URL not set');
@@ -14,16 +13,28 @@ if (!supabaseKey) {
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey); // TODO: make this async for faster initial page load? 
 
 
-// lists all rows in connections table
-export async function fetchConnections(): Promise<any[] | null> {
-  const { data: connections, error } = await supabase
-    .from('connections')
-    .select('*');
+export async function leaderboard(): Promise<any[] | null> {
+  const { data, error } = await supabase
+  .rpc('leaderboard')
   if (error) {
     console.error('Error fetching connections:', error);
     return null;
   } else {
-    return connections;
+    return data;
+  }
+}
+
+
+// lists all rows in connections table
+export async function connectionCount(): Promise<number> {
+  const { data: connections, error } = await supabase
+    .from('connections')
+    .select('count')
+  if (error) {
+    console.error('Error fetching connections:', error);
+    return 0;
+  } else {
+    return connections[0].count;
   }
 }
 
