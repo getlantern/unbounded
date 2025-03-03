@@ -4,6 +4,10 @@ const supabaseUrl: string = process.env.REACT_APP_SUPABASE_URL || '';
 const supabaseKey: string = process.env.REACT_APP_SUPABASE_PUBLIC_KEY || '';
 const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
 
+// keys for local storage
+export const keyUUID = 'supabase_uuid'; 
+export const keyTeamCode= 'team_code'; 
+
 if (!supabaseUrl) {
   throw new Error('REACT_APP_SUPABASE_URL not set');
 }
@@ -12,7 +16,6 @@ if (!supabaseKey) {
 }
 
 const supabase: SupabaseClient = createClient(supabaseUrl, supabaseKey); // TODO: make this async for faster initial page load? 
-
 
 // lists all rows in connections table
 export async function fetchConnections(): Promise<any[] | null> {
@@ -27,22 +30,45 @@ export async function fetchConnections(): Promise<any[] | null> {
   }
 }
 
+// gets the stored uuid, or creates one with supabase and stores it
+async function getUUID(): Promise<string> {
+  const storedUUID = localStorage.getItem(keyUUID);
+  if (storedUUID) {
+    return storedUUID;
+  } else {
+    console.log('no supabase uuid found, generating one...')
+    let { data, error } = await supabase.auth.signInAnonymously()
+    if (error) {
+      console.error('Error generating UUID:', error);
+      return '';
+    } 
+    if (data && data.user && data.user.id){
+      let uuid = data.user.id;
+      console.log('generated supabase uuid:', uuid)
+      localStorage.setItem(keyUUID, uuid);
+      return uuid;
+    }else{
+      console.error('supabase AuthResponse data.user.id may have been null:', data);
+      return '';
+    }
+  }
+}
+
 interface AddConnectionResult {
   success: boolean;
   data?: any[];
   error?: string;
 }
 
-export async function addConnection(uuid: string): Promise<AddConnectionResult> {
+export async function addConnection(): Promise<AddConnectionResult> {
+  let uuid = await getUUID();
   try {
     const { data, error } = await supabase
       .rpc('record_connection', { user_id_input: uuid });
-
     if (error) {
       console.error("record_connection failed: ", error);
       return { success: false, error: error.message };
     }
-
     console.log('Connection inserted successfully: ', data);
     return { success: true, data };
   } catch (err) {
@@ -55,39 +81,21 @@ export async function addConnection(uuid: string): Promise<AddConnectionResult> 
   }
 }
 
-export async function signInAnon(): Promise<any> {
-  let { data, error } = await supabase.auth.signInAnonymously()
+export async function addUserToTeam(teamInviteCode: string): Promise<boolean> {
+  const uuid = await getUUID();
+  let { data, error } = await supabase
+  .rpc('add_user_to_team', {
+    team_invite_code: teamInviteCode, 
+    user_id_input: uuid,
+  })
   if (error) {
-    return { success: false, error: error.message }
-  } else {
-    return { success: true, data }
+    console.error('Error adding user to team:', error);
+    return false;
   }
-}
-
-// inserts to the connections table using the record_anon_connection function
-export async function insertAnonConnection(uuid: string, team_code: string): Promise<any> {
-    let { data, error } = await supabase
-    .rpc('record_anon_connection', {
-        "user_id_input": uuid,
-        "team_code_input": team_code,
-    })
-    if (error) {
-      return { success: false, error: error.message }
-    }else{
-      return { success: true, data }
-   }
-}
-
-export async function record_anon_user(team_code: string): Promise<any> {
-    var data = await signInAnon()
-    var UUID = data.user.id
-    console.log('UUID:', UUID)
-    var result = await insertAnonConnection(UUID, team_code)
-    if (result.success) {
-      return { success: true, data: result.data }
-    } else {
-      return { success: false, error: result.error }
-    }
-
-}
-
+  if (data) {
+    console.log('add_user_to_team response:', data);
+    return true;
+  }
+  console.error('Error adding user to team: No data returned');
+  return false;
+ }

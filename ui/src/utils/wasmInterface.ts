@@ -4,7 +4,7 @@ import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
 
-import {insertAnonConnection, record_anon_user} from './supabase'
+//import {insertAnonConnection, record_anon_user} from './supabase'
 
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
@@ -241,14 +241,15 @@ export class WasmInterface {
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
 			// TODO -- get real, actual supabase uuid for user
-			let fakeUUID = '00000000-0000-0000-0000-000000000000'
-			let team_code = localStorage.getItem('team_code') ?? "no team code"
-			const result = await insertAnonConnection(fakeUUID, team_code);
-			if (result.success) {
-				console.log('Inserted anon connection successfully')
-			} else {
-				console.log('Error inserting anon connection: ', result)
-			}
+			// let fakeUUID = '00000000-0000-0000-0000-000000000000'
+			// let team_code = localStorage.getItem('team_code') ?? "no team code"
+			// const result = await insertAnonConnection(fakeUUID, team_code);
+			// if (result.success) {
+			// 	console.log('Inserted anon connection successfully')
+			// } else {
+			// 	console.log('Error inserting anon connection: ', result)
+			// }
+			console.log("Simulated connection")
 		}
 	}
 
