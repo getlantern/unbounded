@@ -1,6 +1,5 @@
 import { signInAnon, connectionCount, addConnection, insertAnonConnection, leaderboard } from './supabase';
 
-require('dotenv').config({ path: '.env.development' });
 
 const supabaseTestUUID: string = process.env.REACT_APP_SUPABASE_TEST_UUID || '';
 if (!supabaseTestUUID) {
