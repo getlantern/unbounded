@@ -25,6 +25,7 @@ create_tmux_session() {
     tmux split-window -v
     tmux select-pane -t 1
     tmux split-window -v
+    tmux split-window -v
     tmux select-pane -t 0
 
     # Send commands to each pane
@@ -42,18 +43,20 @@ create_tmux_session() {
 }
 
 commands=(
-
     # start freddie for matchmaking
-    "cd freddie/cmd && PORT=9000 go run main.go"
+    "PORT=9000 go run ./freddie/cmd"
 
     # start egress
-    "cd egress/cmd && PORT=8000 go run egress.go"
+    "PORT=8000 go run ./egress/cmd"
     
     # start ui in hot reload
     "cd ui && yarn dev:web"
 
+    # start netstate
+    "go run ./netstate/d"
+
     # build and start up a number of censored peers
-    "cd cmd && ./build.sh desktop && FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"
+    "cd cmd && ./build.sh desktop && NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"
 
     # build and start native binary widget
     # "cd cmd && ./build.sh widget && cd dist/bin && FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"

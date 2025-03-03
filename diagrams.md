@@ -1,0 +1,1 @@
+https://github.com/getlantern/engineering/issues/1942
