@@ -50,16 +50,16 @@ commands=(
     "PORT=8000 go run ./egress/cmd"
     
     # start ui in hot reload
-    "cd ui && yarn dev:web"
+    # "cd ui && yarn dev:web"
+    # build and start native binary widget
+    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
 
     # start netstate
     "UNSAFE=1 go run ./netstate/d"
 
     # build and start up a number of censored peers
-    "cd cmd && ./build.sh desktop && NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"
+    "cd cmd && ./build.sh desktop && TAG=bob NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"
 
-    # build and start native binary widget
-    # "cd cmd && ./build.sh widget && cd dist/bin && FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
 
     # build browser widget
     # "cd cmd && ./build_web.sh"

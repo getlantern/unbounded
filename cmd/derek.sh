@@ -8,7 +8,7 @@ set -ue
 
 for (( i=1; i <=$1; i++ ))
 do
-  PORT=$((1080 + $i)) dist/bin/desktop &
+  TAG="$TAG-$i" PORT=$((1080 + $i)) dist/bin/desktop &
 done
 
 wait
