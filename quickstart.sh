@@ -55,7 +55,7 @@ commands=(
     "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
 
     # start netstate
-    "UNSAFE=1 go run ./netstate/d"
+    "cd netstate/d && UNSAFE=1 go run ."
 
     # build and start up a number of censored peers
     "cd cmd && ./build.sh desktop && TAG=bob NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"

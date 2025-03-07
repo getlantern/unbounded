@@ -26,5 +26,6 @@ ui/wp-plugin.zip
 ui/package-lock.json
 ui/package
 
-# netstated globe web client
+# netstated globe web client and build
 netstate/d/webclients/globe/node_modules
+netstate/d/webclients/globe/build
