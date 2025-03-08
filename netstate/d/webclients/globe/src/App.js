@@ -4,7 +4,7 @@ import Globe from 'react-globe.gl';
 import { useState, useEffect } from 'react';
 
 function App() {
-  const netstatedUrl = "https://netstated-d7bbec1ed55b.herokuapp.com/data";
+  const netstatedUrl = process.env.REACT_APP_NETSTATE_URL || "https://netstated-d7bbec1ed55b.herokuapp.com/data";
   const [peerData, setPeerData] = useState([]);
 
   useEffect(() => {

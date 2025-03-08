@@ -450,6 +450,10 @@ func main() {
 		http.HandleFunc("/neato", handleNeato)
 	}
 
+	if unsafe == 1 {
+		http.Handle("/globe/", http.StripPrefix("/globe/", http.FileServer(http.Dir("./webclients/globe/build"))))
+	}
+
 	http.HandleFunc("/data", handleData)
 	http.HandleFunc("/exec", handleExec)
 	common.Debugf("netstated listening on %v", srv.Addr)
