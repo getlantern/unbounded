@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/supabase"
 	"github.com/getlantern/telemetry"
 )
 
@@ -50,6 +51,9 @@ var nQUICConnectionsCounter metric.Int64UpDownCounter
 var nQUICStreamsCounter metric.Int64UpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
+// Supabase client for reporting leaderboard metrics
+var supaClient *supabase.Supabase
+
 // webSocketPacketConn wraps a websocket.Conn as a net.PacketConn
 type websocketPacketConn struct {
 	net.PacketConn
@@ -57,6 +61,7 @@ type websocketPacketConn struct {
 	addr      net.Addr
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
+	foo       string
 }
 
 func (q websocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -105,10 +110,12 @@ func (q websocketPacketConn) LocalAddr() net.Addr {
 
 type proxyListener struct {
 	net.Listener
-	connections  chan net.Conn
-	tlsConfig    *tls.Config
-	addr         net.Addr
-	closeMetrics func(ctx context.Context) error
+	connections      chan net.Conn
+	tlsConfig        *tls.Config
+	addr             net.Addr
+	closeMetrics     func(ctx context.Context) error
+	ReportConnection func(ctx context.Context) error // TODO make it make sense
+	ReportBytes      func(ctx context.Context) error // TODO make it real
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -205,12 +212,21 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		nQUICConnectionsCounter.Add(context.Background(), 1)
+		nQUICConnectionsCounter.Add(conn.Context(), 1)
 		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
+
+		userID := r.Header.Get(supabase.HeaderUserID)
+		teamID := r.Header.Get(supabase.HeaderTeamID)
+		go func() {
+			_, err := supaClient.AddConnection(userID, teamID)
+			if err != nil {
+				common.Debugf("Error updating leaderboard metrics: %v", err)
+			}
+		}()
 
 		go func() {
 			for {
-				stream, err := conn.AcceptStream(context.Background())
+				stream, err := conn.AcceptStream(conn.Context())
 
 				if err != nil {
 					// We interpret an error while accepting a stream to indicate an unrecoverable error with
@@ -223,13 +239,24 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				}
 
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-				nQUICStreamsCounter.Add(context.Background(), 1)
+				// TODO does this even work?
+				err = l.ReportConnection(conn.Context())
+				if err != nil {
+					common.Debugf("Error updating leaderboard metrics: %v", err)
+				}
+
+				nQUICStreamsCounter.Add(conn.Context(), 1)
 
 				l.connections <- common.QUICStreamNetConn{
 					Stream: stream,
 					OnClose: func() {
 						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
 						nQUICStreamsCounter.Add(context.Background(), -1)
+						// TODO (maybe) capture and report total transferred bytes
+						err := l.ReportBytes(conn.Context())
+						if err != nil {
+							common.Debugf("Error updating leaderboard metrics: %w", err)
+						}
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: tcpAddr,
@@ -240,9 +267,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+	var err error
+	supaClient, err = supabase.New()
+	if err != nil {
+		return nil, fmt.Errorf("init Supabase client: %v", err)
+	}
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
-	var err error
 	nClientsCounter, err = m.Int64UpDownCounter("concurrent-websockets")
 	if err != nil {
 		closeFuncMetric(ctx)

@@ -23,6 +23,7 @@ ui/extension/dist
 ui/extension/packages
 ui/extension/.env
 ui/wp-plugin.zip
+ui/public/widget.wasm
 
 # netstated globe web client and build
 netstate/d/webclients/globe/node_modules
