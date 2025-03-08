@@ -6,10 +6,10 @@ cmd/dist/public/*.wasm
 # misc
 .DS_Store
 *.*.swp
+.vscode/*
 
 # ide
 .idea/*
-.vscode/*
 
 # ui
 ui/node_modules
@@ -23,8 +23,6 @@ ui/extension/dist
 ui/extension/packages
 ui/extension/.env
 ui/wp-plugin.zip
-ui/package-lock.json
-ui/package
 
 # netstated globe web client
 netstate/d/webclients/globe/node_modules
