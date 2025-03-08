@@ -48,9 +48,12 @@ commands=(
 
     # start egress
     "PORT=8000 go run ./egress/cmd"
-    
+
+    # option A   
     # start ui in hot reload
     # "cd ui && yarn dev:web"
+
+    # option B
     # build and start native binary widget
     "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
 
