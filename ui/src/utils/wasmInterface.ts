@@ -4,9 +4,6 @@ import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
 
-import {insertAnonConnection, record_anon_user} from './supabase'
-
-
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
 export interface Chunk {
@@ -119,6 +116,7 @@ export class WasmInterface {
 		this.target = Targets.WEB
 	}
 
+
 	initialize = async ({mock, target}: Config): Promise<WebAssemblyInstance | undefined> => {
 		// this dumb state is needed to prevent multiple calls to initialize from react hot reload dev server 🥵
 		if (this.initializing || this.instance) { // already initialized or initializing
@@ -225,7 +223,7 @@ export class WasmInterface {
 		averageThroughputEmitter.update((averageThroughputEmitter.state + detail.bytesPerSec) / 2)
 	}
 
-	handleConnection = async (e: { detail: Connection }) => {
+	handleConnection = (e: { detail: Connection }) => {
 		const {detail: connection} = e
 		const {state, workerIdx} = connection
 		const existingState = this.connectionMap[workerIdx]?.state || -1
@@ -234,21 +232,10 @@ export class WasmInterface {
 			[workerIdx]: connection
 		}
 		this.connections = this.idxMapToArr(this.connectionMap)
-
 		// emit state
-		
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
-			// TODO -- get real, actual supabase uuid for user
-			let fakeUUID = '00000000-0000-0000-0000-000000000000'
-			let team_code = localStorage.getItem('team_code') ?? "no team code"
-			const result = await insertAnonConnection(fakeUUID, team_code);
-			if (result.success) {
-				console.log('Inserted anon connection successfully')
-			} else {
-				console.log('Error inserting anon connection: ', result)
-			}
 		}
 	}
 
