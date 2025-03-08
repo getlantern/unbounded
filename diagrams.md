@@ -6,11 +6,14 @@ Temporary file for updated diagrams from the [README](./README.md) done natively
 flowchart LR
   subgraph Unbounded
     direction LR
-    subgraph recipient
+    subgraph http-proxy
+      egress
+    end
+    subgraph blocked-peer
       direction LR
       client
     end
-    subgraph donor
+    subgraph unblocked-peer
       direction BT
       widget <==> egress
     end
