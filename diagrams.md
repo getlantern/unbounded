@@ -4,24 +4,26 @@ Temporary file for updated diagrams from the [README](./README.md) done natively
 
 ```mermaid
 flowchart LR
-  subgraph Unbounded
-    direction LR
+subgraph blocked-peer
+    client
+end
+subgraph unbounded.lantern.io
+    widget
+    leaderboard
+end
+subgraph matchmaking
+    freddie <--> widget
+end
+subgraph lantern-cloud
     subgraph http-proxy
-      egress
+        widget <==> |WebSocket| egress
     end
-    subgraph blocked-peer
-      direction LR
-      client
-    end
-    subgraph unblocked-peer
-      direction BT
-      widget <==> egress
-    end
-    subgraph matchmaking
-      freddie <--> widget
-    end
-  end
-  client <==> |proxy| widget
-  egress <==> internet
-  client <--> freddie
+    egress-->redis[(redis)]
+    redis-.->api
+    api<-->db[(database)]
+end
+client <==> |proxy| widget
+client <--> freddie
+api --> leaderboard
+internet((open internet)) <==> egress
 ```

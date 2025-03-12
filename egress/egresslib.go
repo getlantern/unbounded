@@ -22,7 +22,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getlantern/broflake/common"
-	"github.com/getlantern/broflake/supabase"
+	"github.com/getlantern/broflake/report"
 	"github.com/getlantern/telemetry"
 )
 
@@ -50,9 +50,6 @@ var nClientsCounter metric.Int64UpDownCounter
 var nQUICConnectionsCounter metric.Int64UpDownCounter
 var nQUICStreamsCounter metric.Int64UpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
-
-// Supabase client for reporting leaderboard metrics
-var supaClient *supabase.Supabase
 
 // webSocketPacketConn wraps a websocket.Conn as a net.PacketConn
 type websocketPacketConn struct {
@@ -215,12 +212,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		nQUICConnectionsCounter.Add(conn.Context(), 1)
 		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
 
-		userID := r.Header.Get(supabase.HeaderUserID)
-		teamID := r.Header.Get(supabase.HeaderTeamID)
+		userID := r.Header.Get(report.HeaderUserID)
+		teamID := r.Header.Get(report.HeaderTeamID)
 		go func() {
-			_, err := supaClient.AddConnection(userID, teamID)
+			connID := uuid.New()
+			err := report.Report(userID, teamID, connID.String())
 			if err != nil {
-				common.Debugf("Error updating leaderboard metrics: %v", err)
+				common.Debugf("report metrics: %v", err)
 			}
 		}()
 
@@ -268,10 +266,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	var err error
-	supaClient, err = supabase.New()
-	if err != nil {
-		return nil, fmt.Errorf("init Supabase client: %v", err)
-	}
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	nClientsCounter, err = m.Int64UpDownCounter("concurrent-websockets")
