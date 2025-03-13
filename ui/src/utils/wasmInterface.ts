@@ -3,6 +3,7 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import {report} from './reporting'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -233,9 +234,14 @@ export class WasmInterface {
 		}
 		this.connections = this.idxMapToArr(this.connectionMap)
 		// emit state
+		const result = report()
+		console.log('report result:', result)
+
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
+			// const result = report()
+			// console.log('report result:', result)
 		}
 	}
 

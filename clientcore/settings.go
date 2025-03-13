@@ -43,6 +43,7 @@ type EgressOptions struct {
 	Endpoint       string
 	ConnectTimeout time.Duration
 	ErrorBackoff   time.Duration
+	TeamMemberID   string // an optional team member ID recording donated connectivity
 }
 
 func NewDefaultEgressOptions() *EgressOptions {

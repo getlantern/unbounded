@@ -6,6 +6,7 @@ package clientcore
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -42,7 +43,16 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 
 			// TODO: WSS
 
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			var opts websocket.DialOptions
+			if options.TeamMemberID != "" {
+				headers := http.Header{}
+				headers.Add("X-Unbounded", options.TeamMemberID)
+				opts = websocket.DialOptions{
+					HTTPHeader: headers,
+				}
+			}
+
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, &opts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)
