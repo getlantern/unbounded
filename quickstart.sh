@@ -51,11 +51,11 @@ commands=(
 
     # option A   
     # start ui in hot reload
-    "cd ui && yarn dev:web"
+    # "cd ui && yarn dev:web"
 
     # option B
     # build and start native binary widget
-    # "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
+    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
 
     # start netstate
     "cd netstate/d && UNSAFE=1 go run ."

@@ -22,7 +22,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getlantern/broflake/common"
-	"github.com/getlantern/broflake/report"
 	"github.com/getlantern/telemetry"
 )
 
@@ -195,6 +194,10 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
+	// check for optional tracking identifier for donors who wish to be credited the facilitated connections
+	unboundedID := r.Header.Get("X-Unbounded")
+	common.Debugf("X-Unbounded: %v", unboundedID)
+
 	listener, err := quic.Listen(wspconn, l.tlsConfig, &common.QUICCfg)
 	if err != nil {
 		common.Debugf("Error creating QUIC listener: %v", err)
@@ -212,14 +215,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		nQUICConnectionsCounter.Add(conn.Context(), 1)
 		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
 
-		userID := r.Header.Get(report.HeaderUserID)
-		teamID := r.Header.Get(report.HeaderTeamID)
 		go func() {
-			connID := uuid.New()
-			err := report.Report(userID, teamID, connID.String())
-			if err != nil {
-				common.Debugf("report metrics: %v", err)
-			}
+			common.Debugf("[placeholder] POST new connection: %v", unboundedID)
 		}()
 
 		go func() {
