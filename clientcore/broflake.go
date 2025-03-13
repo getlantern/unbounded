@@ -117,6 +117,10 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		egOpt = NewDefaultEgressOptions()
 	}
 
+	// obtain the donor's team member ID if they are a donor seeking "credit" for their facilitated connections
+	// TODO this is a mock/placeholder, replace with real value
+	egOpt.TeamMemberID = fmt.Sprintf("MOCK-TEAM-ID-%v", time.Now().UTC().Format("2006-01-02T15:04:05"))
+
 	// The boot DAG:
 	// build cTable/pTable -> build the Broflake struct -> run ui.Init -> set up the bus and bind
 	// the upstream/downstream handlers -> build cRouter/pRouter -> start the bus, init the routers,

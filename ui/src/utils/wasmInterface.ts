@@ -232,6 +232,7 @@ export class WasmInterface {
 			[workerIdx]: connection
 		}
 		this.connections = this.idxMapToArr(this.connectionMap)
+
 		// emit state
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
