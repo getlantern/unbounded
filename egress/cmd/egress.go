@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/elazarl/goproxy"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
@@ -47,7 +48,12 @@ func main() {
 		tlsKey = string(key)
 	}
 
-	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
+	testRedis := redis.NewClient(&redis.Options{
+		Addr:     "localhost:6379",
+		Password: "",
+	})
+
+	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey, testRedis)
 	if err != nil {
 		panic(err)
 	}

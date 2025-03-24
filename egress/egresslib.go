@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -57,6 +58,7 @@ type websocketPacketConn struct {
 	addr      net.Addr
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
+	userID    string
 }
 
 func (q websocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -85,11 +87,13 @@ func (q websocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error
 	readDone <- struct{}{}
 	copy(p, b)
 	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
+	go recordBytes(reportIngressKey, q.userID, int64(len(b)))
 	return len(b), q.tcpAddr, err
 }
 
 func (q websocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	err = q.w.Write(context.Background(), websocket.MessageBinary, p)
+	go recordBytes(reportEgressKey, q.userID, int64(len(p)))
 	return len(p), err
 }
 
@@ -175,11 +179,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	userID := r.Header.Get("lantern-user-id") //TODO: which header to use for userID?
 	wspconn := websocketPacketConn{
 		w:         c,
 		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
 		keepalive: websocketKeepalive,
 		tcpAddr:   tcpAddr,
+		userID:    userID,
 	}
 
 	defer wspconn.Close()
@@ -200,7 +206,12 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			switch websocket.CloseStatus(err) {
+			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+				common.Debugf("%v QUIC listener closed normally", wspconn.addr)
+			default:
+				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			}
 			listener.Close()
 			break
 		}
@@ -239,7 +250,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string, reportingRedis *redis.Client) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
@@ -281,6 +292,9 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 		closeFuncMetric(ctx)
 		return nil, err
 	}
+
+	// set the redis client for saving bytes transferred to redis for the leaderboard
+	rc = reportingRedis
 
 	var tlsConfig *tls.Config
 
