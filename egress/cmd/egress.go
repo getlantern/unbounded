@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 
@@ -23,10 +22,12 @@ func main() {
 	certFile := os.Getenv("TLS_CERT")
 	keyFile := os.Getenv("TLS_KEY")
 
-	l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
-	if err != nil {
-		panic(err)
-	}
+	/*
+		l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
+		if err != nil {
+			panic(err)
+		}
+	*/
 
 	var tlsCert string
 	var tlsKey string
@@ -47,7 +48,8 @@ func main() {
 		tlsKey = string(key)
 	}
 
-	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
+	addr := fmt.Sprintf(":%v", port)
+	ll, err := egress.NewWebTransportListener(ctx, addr, tlsCert, tlsKey)
 	if err != nil {
 		panic(err)
 	}

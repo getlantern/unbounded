@@ -114,7 +114,11 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	}
 
 	if egOpt == nil {
-		egOpt = NewDefaultEgressOptions()
+		if bfOpt.WebTransport {
+			egOpt = NewDefaultWebTransportEgressOptions()
+		} else {
+			egOpt = NewDefaultWebSocketEgressOptions()
+		}
 	}
 
 	// The boot DAG:
@@ -146,10 +150,18 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		}
 		cTable = NewWorkerTable(cfsms)
 
-		// Widget peers consume connectivity from an egress server over WebSocket
+		// Widget peers consume connectivity from an egress server over WebSocket/WebTransport
 		var pfsms []WorkerFSM
-		for i := 0; i < bfOpt.PTableSize; i++ {
-			pfsms = append(pfsms, *NewEgressConsumerWebSocket(egOpt, &wgReady))
+		if bfOpt.WebTransport {
+			// Chrome widget peers consume connectivity from an egress server over WebTransport
+			for i := 0; i < bfOpt.PTableSize; i++ {
+				pfsms = append(pfsms, *NewEgressConsumerWebTransport(egOpt, &wgReady))
+			}
+		} else {
+			// Widget peers consume connectivity from an egress server over WebSocket
+			for i := 0; i < bfOpt.PTableSize; i++ {
+				pfsms = append(pfsms, *NewEgressConsumerWebSocket(egOpt, &wgReady))
+			}
 		}
 		pTable = NewWorkerTable(pfsms)
 	}
