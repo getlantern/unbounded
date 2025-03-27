@@ -78,12 +78,13 @@ declare global {
 		pTableSz: number,
 		busBufSz: number,
 		netstated: string,
-    discoverySrv: string,
-    discoverySrvEndpoint: string,
-    stunBatchSize: number,
-    tag: string,
-    egressAddr: string,
-    egressEndpoint: string
+		discoverySrv: string,
+		discoverySrvEndpoint: string,
+		stunBatchSize: number,
+		tag: string,
+		egressAddr: string,
+		egressEndpoint: string,
+		webTransport: boolean
 	): WasmClient
 }
 
@@ -161,7 +162,8 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				WASM_CLIENT_CONFIG.webTransport
 			)
 		}
 	}
