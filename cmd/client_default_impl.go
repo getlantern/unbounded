@@ -29,6 +29,10 @@ func main() {
 	if proxyPort == "" {
 		proxyPort = "1080"
 	}
+	webTransport, webTransportEnabled := os.Getenv("WEBTRANSPORT"), false
+	if webTransport == "1" {
+		webTransportEnabled = true
+	}
 
 	common.Debugf("Welcome to Broflake %v", common.Version)
 	common.Debugf("clientType: %v", clientType)
@@ -40,10 +44,12 @@ func main() {
 	common.Debugf("ca: %v", ca)
 	common.Debugf("serverName: %v", serverName)
 	common.Debugf("proxyPort: %v", proxyPort)
+	common.Debugf("webtransport: %v", webTransportEnabled)
 
 	bfOpt := clientcore.NewDefaultBroflakeOptions()
 	bfOpt.ClientType = clientType
 	bfOpt.Netstated = netstated
+	bfOpt.WebTransport = webTransportEnabled
 
 	if clientType == "widget" {
 		bfOpt.CTableSize = 5
@@ -57,8 +63,12 @@ func main() {
 		rtcOpt.DiscoverySrv = freddie
 	}
 
-	// TODO: websocket?
-	egOpt := clientcore.NewDefaultWebTransportEgressOptions()
+	var egOpt *clientcore.EgressOptions
+	if webTransportEnabled {
+		egOpt = clientcore.NewDefaultWebTransportEgressOptions()
+	} else {
+		egOpt = clientcore.NewDefaultWebSocketEgressOptions()
+	}
 
 	if egress != "" {
 		egOpt.Addr = egress
