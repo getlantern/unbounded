@@ -181,7 +181,7 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			// pre-establish N websocket connections
 
 			options.ConnectTimeout = 15 * time.Second
-			ctx, cancel := context.WithTimeout(context.Background(), options.ConnectTimeout)
+			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
 			// TODO: WSS
@@ -238,7 +238,7 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 				case msg := <-com.rx:
 					// Write the chunk to the websocket, detect and handle error
 					// TODO: is it safe to assume the message is a chunk type? Do we trust the router?
-					err := c.Write(context.Background(), websocket.MessageBinary, msg.Data.([]byte))
+					err := c.Write(ctx, websocket.MessageBinary, msg.Data.([]byte))
 					if err != nil {
 						c.Close(websocket.StatusNormalClosure, err.Error())
 						common.Debugf("Egress consumer WebSocket write error: %v", err)
