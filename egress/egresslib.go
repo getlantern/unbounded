@@ -18,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/webtransport-go"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -243,28 +244,117 @@ func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (l proxyListener) handleWebTransport(session *webtransport.Session) {
+	wtpconn := webt.NewPacketConn(session)
+	listener, err := quic.Listen(wtpconn, l.tlsConfig, &common.QUICCfg)
+	if err != nil {
+		common.Debugf("Error creating QUIC listener on webtransport datagram: %v", err)
+		return
+	}
+	common.Debugf("Starting a WebTransport session handler for %v", session.RemoteAddr())
+	for {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			common.Debugf("%v QUIC listener error (%v), closing!", session.RemoteAddr(), err)
+			listener.Close()
+			break
+		}
+
+		//nQUICConnectionsCounter.Add(context.Background(), 1) // TODO: add this back
+		common.Debugf("%v accepted a new QUIC connection!", session.RemoteAddr())
+
+		go func() {
+			for {
+				stream, err := conn.AcceptStream(context.Background())
+
+				if err != nil {
+					// We interpret an error while accepting a stream to indicate an unrecoverable error with
+					// the QUIC connection, and so we close the QUIC connection altogether
+					errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", session.RemoteAddr(), err)
+					common.Debugf("%v", errString)
+					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
+					//nQUICConnectionsCounter.Add(context.Background(), -1)
+					return
+				}
+
+				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
+				//nQUICStreamsCounter.Add(context.Background(), 1)
+
+				l.connections <- common.QUICStreamNetConn{
+					Stream: stream,
+					OnClose: func() {
+						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
+						//nQUICStreamsCounter.Add(context.Background(), -1)
+					},
+					AddrLocal:  l.addr,
+					AddrRemote: session.RemoteAddr(),
+				}
+			}
+		}()
+	}
+}
+
 func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
 	}
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		common.Debugf("Error resolving TCPAddr: %v", err)
+		return nil, fmt.Errorf("error resolving TCPAddr %w", err)
+	}
+
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebTransport connections
+	l := &proxyListener{
+		Listener:    &net.TCPListener{},
+		connections: make(chan net.Conn, 2048),
+		tlsConfig:   tlsConfig,
+		addr:        tcpAddr,
+		//closeMetrics: closeFuncMetric, //TODO: add this back
+		path: "/wt",
+		name: "webtransport",
+	}
+
 	options := &webt.ListenOptions{
 		Addr:      addr,
 		TLSConfig: tlsConfig,
 		QUICConfig: &quicwrapper.Config{
 			MaxIncomingStreams: 2000,
+			EnableDatagrams:    true,
 		},
-		Path: "wt",
+		Path:           "wt",
+		SessionHandler: l.handleWebTransport,
+	}
+	wl, err := webt.ListenAddr(options)
+	if err != nil {
+		return nil, err
 	}
 
-	return webt.ListenAddr(options)
+	srv := &http.Server{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	common.Debugf("Egress server listening for WebTransport connections on %v", wl.Addr())
+	go func() {
+		err := srv.Serve(wl)
+		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+	}()
+
+	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+	ll, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to listen on %v: %w", addr, err)
 	}
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
