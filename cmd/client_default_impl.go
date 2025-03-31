@@ -23,6 +23,8 @@ func main() {
 	egress := os.Getenv("EGRESS")
 	netstated := os.Getenv("NETSTATED")
 	tag := os.Getenv("TAG")
+	// the path to the crt file.
+	// In "desktop" it will be used to run local proxy, and in "widget" it will be used to connect to WebTransport (if enabled)
 	ca := os.Getenv("CA")
 	serverName := os.Getenv("SERVER_NAME")
 	proxyPort := os.Getenv("PORT")
@@ -65,7 +67,16 @@ func main() {
 
 	var egOpt *clientcore.EgressOptions
 	if webTransportEnabled {
-		egOpt = clientcore.NewDefaultWebTransportEgressOptions()
+		// load ca file if any
+		var caBytes []byte
+		if ca != "" {
+			pem, err := os.ReadFile(ca)
+			if err != nil {
+				log.Fatal(err)
+			}
+			caBytes = pem
+		}
+		egOpt = clientcore.NewDefaultWebTransportEgressOptions(caBytes)
 	} else {
 		egOpt = clientcore.NewDefaultWebSocketEgressOptions()
 	}

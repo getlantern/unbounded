@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"net"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/quicwrapper/webt"
-	"github.com/quic-go/webtransport-go"
 )
 
 func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM {
@@ -52,39 +52,40 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 				common.Debugf("Couldn't add root certificate: %v", options.CACert)
 			}
 
-			var d webtransport.Dialer = webtransport.Dialer{
-				TLSClientConfig: &tls.Config{
+			block, _ := pem.Decode(options.CACert)
+			if block == nil {
+				common.Debugf("Failed to parse PEM block containing the certificate")
+				<-time.After(options.ErrorBackoff)
+				return 0, []interface{}{}
+			}
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				common.Debugf("Couldn't parse CACert: %v", err)
+			}
+			d := webt.NewClient(&webt.ClientOptions{
+				Addr: options.Addr,
+				Path: options.Endpoint,
+				TLSConfig: &tls.Config{
 					RootCAs: rootCAs,
 				},
-			}
+				PinnedCert: cert,
+			})
 
 			url := options.Addr + options.Endpoint
 
-			// TODO: We ideally should create a single session and reuse it for all streams.
-			httpResponse, session, err := d.Dial(ctx, url, nil)
+			// Get a net.PacketConn from the WebTransport session (datagram mode)
+			pconn, err := d.PacketConn(ctx)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", url, err)
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
-			stream, err := session.OpenStream()
-			if err != nil {
-				common.Debugf("Couldn't open stream to egress server at %v: %v", url, err)
-				<-time.After(options.ErrorBackoff)
-				return 0, []interface{}{}
-			}
 
-			// We convert this to a net.Conn here because it's well understood interface but also
-			// allows us to encapsulate the relevant methods of both the session and the stream.
-			c := webt.NewConn(stream, session, httpResponse, func() {
-				common.Debugf("Egress consumer WebTransport connection closed")
-			})
-
-			return 1, []interface{}{&c}
+			return 1, []interface{}{pconn}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 1
-			c := *input[0].(*net.Conn)
+			pconn := input[0].(net.PacketConn)
 			common.Debugf("Egress consumer state 1, WebTransport connection established!")
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
@@ -96,12 +97,13 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 			readStatus := make(chan error)
 			go func(ctx context.Context) {
 				for {
-					buf := make([]byte, 1024)
-					bytesRead, err := c.Read(buf)
+					buf := make([]byte, 1280)
+					bytesRead, _, err := pconn.ReadFrom(buf)
 					if err != nil {
 						readStatus <- err
 						return
 					}
+					//common.Debugf("Egress consumer WebTransport received %v bytes", bytesRead)
 
 					// Wrap the chunk and send it on to the router
 					select {
@@ -121,29 +123,22 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 			for {
 				select {
 				case msg := <-com.rx:
-					// Write the chunk to the WebTransport, detect and handle error
-					// TODO: what if the bytes written is less than the chunk size? Do we need to loop?
-					if data, ok := msg.Data.([]byte); !ok {
+					data, ok := msg.Data.([]byte)
+					if !ok {
 						common.Debugf("Egress consumer WebTransport received non-byte chunk: %v", msg.Data)
-						c.Close()
-						return 0, []interface{}{}
-					} else if bytesWritten, err := c.Write(data); err != nil {
-						common.Debugf("Egress consumer WebTransport write error: %v", err)
-						c.Close()
-						return 0, []interface{}{}
-					} else if bytesWritten != len(data) {
-						// See https://pkg.go.dev/io#Writer for the contract of io.Writer.
-						// Theoretically we should never hit this code because any writer should return an error if
-						// it doesn't write the full chunk, but we check anyway just to be safe.
-						common.Debugf("Egress consumer WebTransport write error: wrote %v bytes, expected %v",
-							bytesWritten, len(data))
-						c.Close()
 						return 0, []interface{}{}
 					}
-					// At this point the chunk is written, so loop around and wait for the next chunk
+					_, err := pconn.WriteTo(data, &net.TCPAddr{}) // addr not used
+					if err != nil {
+						common.Debugf("Egress consumer WebTransport write error: %v", err)
+						return 0, []interface{}{}
+					}
+					//common.Debugf("Egress consumer WebTransport sent %v/%v bytes", bytesWritten, len(msg.Data.([]byte)))
+
+					// At this point the chunks are written, so loop around and wait for the next chunk
 				case err := <-readStatus:
 					common.Debugf("Egress consumer WebTransport read error: %v", err)
-					c.Close()
+					pconn.Close()
 					return 0, []interface{}{}
 
 					// Ordinarily it would be incorrect to put a worker into an infinite loop without including
