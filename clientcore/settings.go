@@ -46,6 +46,7 @@ type EgressOptions struct {
 	CACert         []byte
 }
 
+// default CA if not set
 const caCert = `-----BEGIN CERTIFICATE-----
 MIIDoDCCAogCCQCIDNrnudYmTzANBgkqhkiG9w0BAQsFADCBkTELMAkGA1UEBhMC
 VVMxEzARBgNVBAgMCkNhbGlmb3JuaWExFDASBgNVBAcMC0xvcyBBbmdlbGVzMQww
@@ -79,13 +80,16 @@ func NewDefaultWebSocketEgressOptions() *EgressOptions {
 	}
 }
 
-func NewDefaultWebTransportEgressOptions() *EgressOptions {
+func NewDefaultWebTransportEgressOptions(ca []byte) *EgressOptions {
+	if ca == nil {
+		ca = []byte(caCert)
+	}
 	return &EgressOptions{
 		Addr:           "https://localhost:8000",
 		Endpoint:       "/wt/",
 		ConnectTimeout: 5 * time.Second,
 		ErrorBackoff:   5 * time.Second,
-		CACert:         []byte(caCert),
+		CACert:         ca,
 	}
 }
 

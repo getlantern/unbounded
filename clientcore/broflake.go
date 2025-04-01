@@ -93,7 +93,7 @@ func (b *BroflakeEngine) debug() {
 
 func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOptions) (bfconn *BroflakeConn, ui *UIImpl, err error) {
 	if bfOpt.ClientType != "desktop" && bfOpt.ClientType != "widget" {
-		err = fmt.Errorf("Invalid clientType '%v\n'", bfOpt.ClientType)
+		err = fmt.Errorf("invalid clientType '%v\n'", bfOpt.ClientType)
 		common.Debugf(err.Error())
 		return bfconn, ui, err
 	}
@@ -115,7 +115,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 
 	if egOpt == nil {
 		if bfOpt.WebTransport {
-			egOpt = NewDefaultWebTransportEgressOptions()
+			egOpt = NewDefaultWebTransportEgressOptions(nil)
 		} else {
 			egOpt = NewDefaultWebSocketEgressOptions()
 		}

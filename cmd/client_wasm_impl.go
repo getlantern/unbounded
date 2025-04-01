@@ -52,7 +52,9 @@ func main() {
 
 			var egOpt *clientcore.EgressOptions
 			if bfOpt.WebTransport {
-				egOpt = clientcore.NewDefaultWebTransportEgressOptions()
+				// TODO: since webtransport in Go isn't supported in WASM yet, we just use the default CA
+				//  when webtransport is enabled we should load the CA from a file
+				egOpt = clientcore.NewDefaultWebTransportEgressOptions([]byte(nil))
 			} else {
 				egOpt = clientcore.NewDefaultWebSocketEgressOptions()
 			}
