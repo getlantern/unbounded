@@ -1,8 +1,6 @@
 module github.com/getlantern/broflake
 
-go 1.22
-
-toolchain go1.22.0
+go 1.24.2
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
@@ -17,8 +15,7 @@ require (
 	github.com/getlantern/telemetry v0.0.0-20230523155019-be7c1d8cd8cb
 	github.com/google/uuid v1.3.1
 	github.com/pion/webrtc/v3 v3.3.4
-	github.com/quic-go/quic-go v0.49.0
-	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66
+	github.com/quic-go/quic-go v0.50.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
 	go.opentelemetry.io/otel v1.16.0
 	go.opentelemetry.io/otel/metric v1.16.0
@@ -84,6 +81,7 @@ require (
 	github.com/prometheus/common v0.48.0 // indirect
 	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/quic-go/qpack v0.5.1 // indirect
+	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66 // indirect
 	github.com/stretchr/testify v1.10.0 // indirect
 	github.com/ulikunitz/xz v0.5.10 // indirect
 	github.com/wlynxg/anet v0.0.3 // indirect
