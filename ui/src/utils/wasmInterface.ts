@@ -78,13 +78,13 @@ declare global {
 		pTableSz: number,
 		busBufSz: number,
 		netstated: string,
+		webTransport: boolean,
 		discoverySrv: string,
 		discoverySrvEndpoint: string,
 		stunBatchSize: number,
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
-		webTransport: boolean
 	): WasmClient
 }
 
@@ -140,7 +140,7 @@ export class WasmInterface {
 			this.go.run(this.instance)
 			console.log('building new client')
 			this.buildNewClient()
-    }
+		}
 		this.initListeners()
 		this.handleReady()
 		this.initializing = false
@@ -157,13 +157,13 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.pTableSz,
 				WASM_CLIENT_CONFIG.busBufSz,
 				WASM_CLIENT_CONFIG.netstated,
+				WASM_CLIENT_CONFIG.webTransport,
 				WASM_CLIENT_CONFIG.discoverySrv,
 				WASM_CLIENT_CONFIG.discoverySrvEndpoint,
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint,
-				WASM_CLIENT_CONFIG.webTransport
+				WASM_CLIENT_CONFIG.egressEndpoint
 			)
 		}
 	}
