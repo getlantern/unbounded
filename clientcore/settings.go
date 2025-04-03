@@ -86,7 +86,7 @@ func NewDefaultWebTransportEgressOptions(ca []byte) *EgressOptions {
 	}
 	return &EgressOptions{
 		Addr:           "https://localhost:8000",
-		Endpoint:       "/wt/",
+		Endpoint:       "/wt",
 		ConnectTimeout: 5 * time.Second,
 		ErrorBackoff:   5 * time.Second,
 		CACert:         ca,
