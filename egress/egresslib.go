@@ -152,6 +152,7 @@ func generateTLSConfig() *tls.Config {
 }
 
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+	common.Debugf("Websocket connection from %v %v", r.Host, r.Header.Get("unbounded-user-id"))
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -200,9 +201,15 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			switch websocket.CloseStatus(err) {
+			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+				common.Debugf("%v closed normally", wspconn.addr)
+			default:
+				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			}
 			listener.Close()
 			break
+
 		}
 
 		nQUICConnectionsCounter.Add(context.Background(), 1)
@@ -302,7 +309,7 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
-		Listener:     &net.TCPListener{},
+		Listener:     ll,
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
 		addr:         ll.Addr(),
