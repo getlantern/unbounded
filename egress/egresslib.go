@@ -152,7 +152,7 @@ func generateTLSConfig() *tls.Config {
 }
 
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
-	common.Debugf("Websocket connection from %v %v", r.Host, r.Header.Get("unbounded-user-id"))
+	common.Debugf("Websocket connection from %v %v", r.Host, r.Header.Get(common.TeamIdHeader))
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
