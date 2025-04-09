@@ -47,9 +47,9 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			teamId := ""
 			h := http.Header{}
 			h.Set(common.TeamIdHeader, teamId)
-			opts := &websocket.DialOptions{HTTPHeader: h}
+			wsDialOpts := &websocket.DialOptions{HTTPHeader: h}
 
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, opts)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, wsDialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)
