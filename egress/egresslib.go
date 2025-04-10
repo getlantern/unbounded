@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -151,7 +152,20 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
+func extractTeamId(r *http.Request) string {
+	v := r.Header.Values("Sec-Websocket-Protocol")
+	for _, s := range v {
+		if strings.HasPrefix(s, common.TeamIdPrefix) {
+			return strings.TrimPrefix(s, common.TeamIdPrefix)
+		}
+	}
+	return ""
+}
+
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+	teamId := extractTeamId(r)
+	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
+
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -184,10 +198,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	defer wspconn.Close()
 
-	if err != nil {
-		return
-	}
-
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
@@ -200,9 +210,15 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			switch websocket.CloseStatus(err) {
+			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+				common.Debugf("%v closed normally", wspconn.addr)
+			default:
+				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			}
 			listener.Close()
 			break
+
 		}
 
 		nQUICConnectionsCounter.Add(context.Background(), 1)
@@ -302,7 +318,7 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
-		Listener:     &net.TCPListener{},
+		Listener:     ll,
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
 		addr:         ll.Addr(),

@@ -12,6 +12,8 @@ var Version = "v0.0.2"
 
 var VersionHeader = "X-BF-Version"
 
+var TeamIdPrefix = "unbounded-team:"
+
 var QUICCfg = quic.Config{
 	MaxIncomingStreams:    int64(2 << 16),
 	MaxIncomingUniStreams: int64(2 << 16),

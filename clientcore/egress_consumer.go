@@ -6,6 +6,7 @@ package clientcore
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -42,7 +43,15 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 
 			// TODO: WSS
 
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			// Send teamId through the websocket protocol header, since other headers aren't allowed.
+			// https://pkg.go.dev/github.com/coder/websocket:
+			// 'HTTPClient, HTTPHeader and CompressionMode in DialOptions are no-op'
+			teamId := "no_team" // TODO: get this team id from somewhere
+			wsDialOpts := &websocket.DialOptions{
+				Subprotocols: []string{fmt.Sprintf("%v%v", common.TeamIdPrefix, teamId)},
+			}
+
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, wsDialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)
