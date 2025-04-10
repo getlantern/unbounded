@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -151,8 +152,20 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
+func extractTeamId(r *http.Request) string {
+	v := r.Header.Values("Sec-Websocket-Protocol")
+	for _, s := range v {
+		if strings.HasPrefix(s, common.TeamIdPrefix) {
+			return strings.TrimPrefix(s, common.TeamIdPrefix)
+		}
+	}
+	return ""
+}
+
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
-	common.Debugf("Websocket connection from %v %v", r.Host, r.Header.Get(common.TeamIdHeader))
+	teamId := extractTeamId(r)
+	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
+
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -184,10 +197,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer wspconn.Close()
-
-	if err != nil {
-		return
-	}
 
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)

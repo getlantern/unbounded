@@ -12,7 +12,7 @@ var Version = "v0.0.2"
 
 var VersionHeader = "X-BF-Version"
 
-var TeamIdHeader = "X-Lantern-Unbounded-Team-Id"
+var TeamIdPrefix = "unbounded-team:"
 
 var QUICCfg = quic.Config{
 	MaxIncomingStreams:    int64(2 << 16),
