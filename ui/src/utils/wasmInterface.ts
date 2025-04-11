@@ -85,12 +85,84 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
-	): WasmClient
+	): WasmClient;
 }
 
 interface Config {
 	mock: boolean
 	target: Targets
+}
+
+
+// a WebTransport bridge used by Go to send and receive datagrams since Go compiled to WASM can't access webtransport
+export class WebTransportBridge {
+	wt!: WebTransport
+	datagramReader!: ReadableStreamDefaultReader<Uint8Array>
+	datagramWriter!: WritableStreamDefaultWriter<Uint8Array>
+	connected: boolean = false
+	id: number = -1
+	receiveFunction!: (datagram: Uint8Array) => void
+
+	constructor(id: number) {
+		this.id = id;
+
+		// bind 2 functions to global window for Go to call
+		(window as any)["initWebTransportJS" + id] = this.connect.bind(this);
+		(window as any)["sendWebTransportDatagramJS" + id] = this.send.bind(this);
+	}
+
+	// this function will be called by Go through "initWebTransportJS" + id"
+	async connect(url: string): Promise<boolean> {
+		if (this.connected) {
+			return true;
+		}
+		this.wt = new WebTransport(url);
+		await this.wt.ready;
+		this.datagramReader = this.wt.datagrams.readable.getReader();
+		this.datagramWriter = this.wt.datagrams.writable.getWriter();
+
+		// get the receive callback defined in Go
+		if ((window as any)["receiveWebTransportDatagramGo" + this.id]) {
+			this.receiveFunction = (window as any)["receiveWebTransportDatagramGo" + this.id];
+		} else {
+			console.error("[JS WT:%d]: could not find receiveWebTransportDatagramGo function", this.id);
+			return false;
+		}
+		this.connected = true;
+
+		// run the loop
+		this.readLoop();
+		return true;
+	}
+
+	// readLoop reads incoming datagrams and forward the data to Go by calling this.receiveFunction
+	async readLoop() {
+		while (true) {
+			try {
+				const { value, done } = await this.datagramReader.read();
+				if (done || !value) continue;
+				this.receiveFunction(value); // Pass the received datagram to the function in Go
+			} catch (error) {
+				console.error("[JS WT:%d]: error reading datagram:%s", this.id, error);
+				this.connected = false;
+				break;
+			}
+		  }
+	}
+
+	// this function will be called by Go through "sendWebTransportDatagramJS" + id"
+	async send(data: Uint8Array): Promise<void>{
+		return this.datagramWriter.write(data);
+	}
+
+	// this will be called in WasmInterface.stop()
+	disconnect() {
+		if (!this.connected) {
+			return;
+		}
+		this.wt.close();
+		this.connected = false;
+	}
 }
 
 export class WasmInterface {
@@ -107,6 +179,8 @@ export class WasmInterface {
 	initializing: boolean
 	target: Targets
 
+	wtInstances!: Array<WebTransportBridge>
+
 	constructor() {
 		this.ready = false
 		this.initializing = false
@@ -115,14 +189,21 @@ export class WasmInterface {
 		this.connections = []
 		this.go = go
 		this.target = Targets.WEB
-	}
 
+		//this.wt_initalized = false
+	}
 
 	initialize = async ({mock, target}: Config): Promise<WebAssemblyInstance | undefined> => {
 		// this dumb state is needed to prevent multiple calls to initialize from react hot reload dev server 🥵
 		if (this.initializing || this.instance) { // already initialized or initializing
 			console.warn('Wasm client has already been initialized or is initializing, aborting init.')
 		  return
+		}
+
+		// check if we need webtransport and initialize it
+		if (WASM_CLIENT_CONFIG.webTransport) {
+			console.log('JS: initializing %d webtransport instances', WASM_CLIENT_CONFIG.cTableSz);
+			this.wtInstances = Array.from({length: WASM_CLIENT_CONFIG.cTableSz}, (_, i) => new WebTransportBridge(i))
 		}
 
 		this.initializing = true
@@ -200,6 +281,12 @@ export class WasmInterface {
 			readyEmitter.update(this.ready)
 			this.wasmClient.stop()
 			sharingEmitter.update(false)
+
+			// disconnect the webtransport instances
+			if (WASM_CLIENT_CONFIG.webTransport) {
+				console.log('JS: disconnecting %d webtransport instances', WASM_CLIENT_CONFIG.cTableSz);
+				this.wtInstances.forEach(wt => wt.disconnect());
+			}
 		}
 	}
 
