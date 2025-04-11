@@ -4,6 +4,8 @@ go 1.24.2
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
+replace github.com/getlantern/quicwrapper => ../quicwrapper
+
 require (
 	github.com/coder/websocket v1.8.12
 	github.com/elazarl/goproxy v1.7.2
