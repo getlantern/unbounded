@@ -3,9 +3,9 @@ package main
 import (
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/elazarl/goproxy"
@@ -33,7 +33,7 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) 
 	insecureSkipVerify := false
 
 	if ca != "" {
-		pem, err := ioutil.ReadFile(ca)
+		pem, err := os.ReadFile(ca)
 		if err != nil {
 			log.Fatal(err)
 		}

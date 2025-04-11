@@ -22,6 +22,7 @@ func main() {
 	//    BroflakeOptions.PTableSize,
 	//    BroflakeOptions.BusBufferSz,
 	//    BroflakeOptions.Netstated,
+	//    BroflakeOptions.WebTransport,
 	//    WebRTCOptions.DiscoverySrv
 	//    WebRTCOptions.Endpoint,
 	//    WebRTCOptions.STUNBatchSize,
@@ -35,22 +36,30 @@ func main() {
 		"newBroflake",
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
 			bfOpt := clientcore.BroflakeOptions{
-				ClientType:  args[0].String(),
-				CTableSize:  args[1].Int(),
-				PTableSize:  args[2].Int(),
-				BusBufferSz: args[3].Int(),
-				Netstated:   args[4].String(),
+				ClientType:   args[0].String(),
+				CTableSize:   args[1].Int(),
+				PTableSize:   args[2].Int(),
+				BusBufferSz:  args[3].Int(),
+				Netstated:    args[4].String(),
+				WebTransport: args[5].Bool(),
 			}
 
 			rtcOpt := clientcore.NewDefaultWebRTCOptions()
-			rtcOpt.DiscoverySrv = args[5].String()
-			rtcOpt.Endpoint = args[6].String()
-			rtcOpt.STUNBatchSize = uint32(args[7].Int())
-			rtcOpt.Tag = args[8].String()
+			rtcOpt.DiscoverySrv = args[6].String()
+			rtcOpt.Endpoint = args[7].String()
+			rtcOpt.STUNBatchSize = uint32(args[8].Int())
+			rtcOpt.Tag = args[9].String()
 
-			egOpt := clientcore.NewDefaultEgressOptions()
-			egOpt.Addr = args[9].String()
-			egOpt.Endpoint = args[10].String()
+			var egOpt *clientcore.EgressOptions
+			if bfOpt.WebTransport {
+				// TODO: since webtransport in Go isn't supported in WASM yet, we just use the default CA
+				//  when webtransport is enabled we should load the CA from a file
+				egOpt = clientcore.NewDefaultWebTransportEgressOptions([]byte(nil))
+			} else {
+				egOpt = clientcore.NewDefaultWebSocketEgressOptions()
+			}
+			egOpt.Addr = args[10].String()
+			egOpt.Endpoint = args[11].String()
 
 			_, ui, err := clientcore.NewBroflake(&bfOpt, rtcOpt, egOpt)
 			if err != nil {

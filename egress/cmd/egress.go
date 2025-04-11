@@ -23,9 +23,9 @@ func main() {
 	certFile := os.Getenv("TLS_CERT")
 	keyFile := os.Getenv("TLS_KEY")
 
-	l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
-	if err != nil {
-		panic(err)
+	webTransport, webTransportEnabled := os.Getenv("WEBTRANSPORT"), false
+	if webTransport == "1" {
+		webTransportEnabled = true
 	}
 
 	var tlsCert string
@@ -47,7 +47,14 @@ func main() {
 		tlsKey = string(key)
 	}
 
-	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
+	addr := fmt.Sprintf(":%v", port)
+	var ll net.Listener
+	var err error
+	if webTransportEnabled {
+		ll, err = egress.NewWebTransportListener(ctx, addr, tlsCert, tlsKey)
+	} else {
+		ll, err = egress.NewWebSocketListener(ctx, addr, tlsCert, tlsKey)
+	}
 	if err != nil {
 		panic(err)
 	}

@@ -105,6 +105,10 @@ export const POPUP = 'popup'
 
 export const AUTO_UPDATE_URL = 'https://embed.lantern.io/asset-manifest.json'
 
+const supportsWebTransport = () => {
+	return typeof window !== "undefined" && "WebTransport" in window;
+}
+
 // XXX nelson 7/6/2023: We've found that widget concurrency (cTableSz and pTableSz) should be 
 // <= the browser's limit on concurrent HTTP requests, which is ~6. That's because each widget
 // worker creates HTTP requests, and we can't trust the browser to properly handle excess requests.
@@ -119,7 +123,8 @@ export const WASM_CLIENT_CONFIG = {
 	stunBatchSize: 2,
 	tag: '',
 	egressAddr: process.env.REACT_APP_EGRESS_ADDR!,
-	egressEndpoint: process.env.REACT_APP_EGRESS_ENDPOINT!
+	egressEndpoint: process.env.REACT_APP_EGRESS_ENDPOINT!,
+	webTransport: false // TODO: webtransport isn't supported in WASM yet, so disable for now. Should call supportsWebTransport() when WT in WASM is ready.
 }
 
 // @todo rm stubbing out store urls until extension is ready
