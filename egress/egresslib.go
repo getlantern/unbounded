@@ -7,11 +7,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -107,11 +110,14 @@ func (q websocketPacketConn) LocalAddr() net.Addr {
 }
 
 type proxyListener struct {
-	net.Listener
+	net.Listener // the websocket or webtransport listener
 	connections  chan net.Conn
 	tlsConfig    *tls.Config
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+
+	mutex  sync.Mutex
+	closed bool
 
 	// The path for this proxy listener on the server, such as
 	// /ws for websockets or /wt for webtransport.
@@ -119,20 +125,34 @@ type proxyListener struct {
 	name string
 }
 
-func (l proxyListener) Accept() (net.Conn, error) {
-	conn := <-l.connections
+func (l *proxyListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.connections
+	if !ok {
+		return nil, io.EOF
+	}
 	return conn, nil
 }
 
-func (l proxyListener) Addr() net.Addr {
+func (l *proxyListener) Addr() net.Addr {
 	return l.addr
 }
 
-func (l proxyListener) Close() error {
+func (l *proxyListener) Close() error {
+	l.mutex.Lock()
+	if l.closed {
+		l.mutex.Unlock()
+		return nil
+	}
+	l.closed = true
+	close(l.connections)
+	l.mutex.Unlock()
+
 	err := l.Listener.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	l.closeMetrics(ctx)
+	if l.closeMetrics != nil {
+		l.closeMetrics(ctx)
+	}
 	return err
 }
 
@@ -159,7 +179,7 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
-func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -419,10 +439,27 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	common.Debugf("Egress server listening for WebTransport connections on %v", wl.Addr())
 	go func() {
-		err := srv.Serve(wl)
-		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+		common.Debugf("Egress server listening for WebTransport connections on %v", wl.Addr())
+
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- srv.Serve(wl)
+		}()
+
+		select {
+		case <-ctx.Done():
+			common.Debugf("Egress server context cancelled. Shutting down WebTransport server...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				common.Debugf("Error shutting down WebTransport server: %v", err)
+			}
+		case err := <-errChan:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				common.Debugf("Egress server failed to serve WebTransport: %v", err)
+			}
+		}
 	}()
 
 	return l, nil
@@ -495,10 +532,27 @@ func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (ne
 	}
 
 	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
-	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
-		err := srv.Serve(ll)
-		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+		common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
+
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- srv.Serve(ll)
+		}()
+
+		select {
+		case <-ctx.Done():
+			common.Debugf("Egress server context cancelled. Shutting down WebSocket server...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil {
+				common.Debugf("Error shutting down WebSocket server: %v", err)
+			}
+		case err := <-errChan:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				common.Debugf("Egress server failed to serve WebSocket: %v", err)
+			}
+		}
 	}()
 
 	return l, nil
