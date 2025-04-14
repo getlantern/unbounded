@@ -4,10 +4,10 @@ package clientcore
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"sync"
-	"sync/atomic"
 	"syscall/js"
 	"time"
 
@@ -15,30 +15,82 @@ import (
 	"github.com/getlantern/quicwrapper/webt"
 )
 
-var wtCounter int32
+const (
+	jsWTCallBackObjectName = "WebTransportCallbacks" // the JS object name in global namespace "window" that holds the WebTransport callbacks
+	jsConnectMethodName    = "connect"               // the JS method name in global namespace "window.WebTransportCallbacks" for connect
+	jsSendMethodName       = "send"                  // the JS method name in global namespace "window.WebTransportCallbacks" for send
+	jsReceiveeMethodName   = "receive"               // the JS method name in global namespace "window.WebTransportCallbacks" for receive
+	jsDisconnectMethodName = "disconnect"            // the JS method name in global namespace "window.WebTransportCallbacks" for disconnect
+)
+
+// wtInstanceManager tracks which WebTransport instances are currently in use
+type wtInstanceManager struct {
+	mutex     sync.Mutex
+	instances map[int]struct{}
+}
+
+// newWTInstanceManager creates a new instance of WTInstanceManager
+func newWTInstanceManager() *wtInstanceManager {
+	return &wtInstanceManager{
+		instances: make(map[int]struct{}),
+	}
+}
+
+// Acquire returns the next available WebTransport instance ID
+func (manager *wtInstanceManager) Acquire() int {
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+
+	// always start from the lowest ID because in JS there are exactly the same number of web transport instances created as the number of egress consumers
+	for i := 0; ; i++ {
+		if _, exists := manager.instances[i]; !exists {
+			manager.instances[i] = struct{}{}
+			return i
+		}
+	}
+}
+
+// Release deletes the specified instance ID from the manager
+func (manager *wtInstanceManager) Release(id int) {
+	manager.mutex.Lock()
+	defer manager.mutex.Unlock()
+	delete(manager.instances, id)
+}
+
+var wtManager = newWTInstanceManager()
 
 type JSWebTransportConn struct {
+	id      int
 	send    js.Value
 	chunker *webt.DatagramChunker
 }
 
 func newJSWebTransportConn(id int) *JSWebTransportConn {
 	conn := &JSWebTransportConn{
-		send:    js.Global().Get("sendWebTransportDatagramJS" + strconv.Itoa(id)),
+		id:      id,
+		send:    js.Global().Get(jsWTCallBackObjectName).Get(jsSendMethodName).Get(strconv.Itoa(id)),
 		chunker: webt.NewDatagramChunker(),
 	}
 
 	// setup the receive callback for JS
-	js.Global().Set("receiveWebTransportDatagramGo"+strconv.Itoa(id), js.FuncOf(func(this js.Value, args []js.Value) any {
-		if len(args) == 0 {
+	js.Global().Get(jsWTCallBackObjectName).Get(jsReceiveeMethodName).
+		Set(strconv.Itoa(id), js.FuncOf(func(this js.Value, args []js.Value) any {
+			if len(args) == 0 {
+				return nil
+			}
+			buf := make([]byte, args[0].Get("length").Int())
+			//common.Debugf("[Go WT:%v]: receive datagram of %v", id, len(buf))
+			js.CopyBytesToGo(buf, args[0])
+			conn.chunker.Receive(buf)
 			return nil
-		}
-		buf := make([]byte, args[0].Get("length").Int())
-		//common.Debugf("[Go WT:%v]: receive datagram of %v", id, len(buf))
-		js.CopyBytesToGo(buf, args[0])
-		conn.chunker.Receive(buf)
-		return nil
-	}))
+		}))
+
+	// setup the disconnect callback for JS
+	js.Global().Get(jsWTCallBackObjectName).Get(jsDisconnectMethodName).
+		Set(strconv.Itoa(id), js.FuncOf(func(this js.Value, args []js.Value) any {
+			conn.Close()
+			return nil
+		}))
 
 	return conn
 }
@@ -60,17 +112,35 @@ func (c *JSWebTransportConn) WriteTo(p []byte, addr net.Addr) (n int, err error)
 		js.CopyBytesToJS(arr, chunk)
 		promise := c.send.Invoke(arr)
 
-		done := make(chan struct{})
+		done := make(chan error)
 		promise.Call("then", js.FuncOf(func(this js.Value, args []js.Value) any {
-			close(done)
+			done <- nil
+			return nil
+		})).Call("catch", js.FuncOf(func(this js.Value, args []js.Value) any {
+			jsErr := args[0]
+			// try to get the .message field if it's an Error object
+			msg := jsErr.Get("message")
+			if msg.Truthy() {
+				common.Debugf("WebTransport %d send error: %s", c.id, msg.String())
+				done <- errors.New(msg.String())
+			} else {
+				// fallback to JSON.stringify
+				jsonStr := js.Global().Get("JSON").Call("stringify", jsErr)
+				common.Debugf("WebTransport %d send error: %s", c.id, jsonStr.String())
+				done <- errors.New(jsonStr.String())
+			}
 			return nil
 		}))
-		<-done
+		err = <-done
+		if err != nil {
+			return 0, err
+		}
 	}
 	return len(p), nil
 }
 
 func (c *JSWebTransportConn) Close() error {
+	common.Debugf("Closing WebTransport connection %d", c.id)
 	c.chunker.Close()
 	return nil
 }
@@ -85,8 +155,7 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 0
 			// (no input data)
-			wtId := atomic.LoadInt32(&wtCounter)
-			atomic.AddInt32(&wtCounter, 1)
+			wtId := wtManager.Acquire()
 			common.Debugf("Egress consumer state 0, opening WebTransport connection %v in JS...", wtId)
 
 			// We're resetting this slot, so send a nil path assertion IPC message
@@ -110,34 +179,37 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 			url := options.Addr + options.Endpoint
 
 			// create a briding connection
-			pconn := newJSWebTransportConn(int(wtId))
+			pconn := newJSWebTransportConn(wtId)
 
 			// call into the JS to initialize the WebTransport
-			initWT := js.Global().Get("initWebTransportJS" + strconv.Itoa(int(wtId)))
-			if initWT.Type() != js.TypeFunction {
-				common.Debugf("initWebTransportJS%d is not a function!", wtId)
+			connectFunc := js.Global().Get(jsWTCallBackObjectName).Get(jsConnectMethodName).Get(strconv.Itoa(wtId))
+			if connectFunc.Type() != js.TypeFunction {
+				common.Debugf("Cannot find connect callback for WebTransport %d, %v", wtId, connectFunc)
+				wtManager.Release(wtId)
+				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
 
-			promise := initWT.Invoke(js.ValueOf(url))
+			promise := connectFunc.Invoke(js.ValueOf(url))
 			resultCh := make(chan bool)
 			then := js.FuncOf(func(this js.Value, args []js.Value) any {
-				common.Debugf("WebTransport %d initialized successfully", wtId)
-				resultCh <- true
+				if len(args) > 0 && args[0].Type() == js.TypeBoolean {
+					resultCh <- args[0].Bool()
+				} else {
+					resultCh <- false // fallback if something went wrong
+				}
 				return nil
 			})
-			catch := js.FuncOf(func(this js.Value, args []js.Value) any {
-				common.Debugf("WebTransport %d init error:%v", wtId, args[0].String())
-				resultCh <- false
-				return nil
-			})
-			promise.Call("then", then).Call("catch", catch)
+			promise.Call("then", then)
 
 			// wait for completion in JS
 			if <-resultCh {
+				common.Debugf("WebTransport %d is connected successfully", wtId)
 				<-time.After(1 * time.Second) // TODO: find out why this wait is needed or the FSM enters an infinite loop that calls this state
-				return 1, []interface{}{pconn}
+				return 1, []interface{}{pconn, wtId}
 			} else {
+				common.Debugf("WebTransport %d failed to connect", wtId)
+				wtManager.Release(wtId)
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
@@ -145,7 +217,11 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 1
 			pconn := input[0].(net.PacketConn)
-			common.Debugf("Egress consumer state 1, WebTransport connection established from JS!")
+			wtId := input[1].(int)
+			common.Debugf("Egress consumer state 1, WebTransport connection %d established from JS!", wtId)
+			defer func() {
+				wtManager.Release(wtId)
+			}()
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -184,20 +260,19 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 				case msg := <-com.rx:
 					data, ok := msg.Data.([]byte)
 					if !ok {
-						common.Debugf("Egress consumer WebTransport received non-byte chunk: %v", msg.Data)
+						common.Debugf("Egress consumer WebTransport %d received non-byte chunk: %v", wtId, msg.Data)
 						return 0, []interface{}{}
 					}
 					_, err := pconn.WriteTo(data, nil)
 					if err != nil {
-						common.Debugf("Egress consumer WebTransport write error: %v", err)
+						common.Debugf("Egress consumer WebTransport %d write error: %v", wtId, err)
 						return 0, []interface{}{}
 					}
-					//common.Debugf("Egress consumer WebTransport sent %v/%v bytes", bytesWritten, len(msg.Data.([]byte)))
+					//common.Debugf("Egress consumer WebTransport %d sent %v/%v bytes", wtId, bytesWritten, len(data))
 
 					// At this point the chunks are written, so loop around and wait for the next chunk
 				case err := <-readStatus:
-					common.Debugf("Egress consumer WebTransport read error: %v", err)
-					pconn.Close()
+					common.Debugf("Egress consumer WebTransport %d read error: %v", wtId, err)
 					return 0, []interface{}{}
 
 					// Ordinarily it would be incorrect to put a worker into an infinite loop without including
