@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,8 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/quicwrapper"
+	"github.com/getlantern/quicwrapper/webt"
 	"github.com/getlantern/telemetry"
 )
 
@@ -34,13 +37,13 @@ const (
 )
 
 // Multi-writer values used for logging and otel metrics
-// nClients is the number of open WebSocket connections
+// nClients is the number of open WebSocket/WebTransport connections
 var nClients uint64
 
 // nQUICStreams is the number of open QUIC streams (not to be confused with QUIC connections)
 var nQUICStreams uint64
 
-// nIngressBytes is the number of bytes received over all WebSocket connections since the last otel measurement callback
+// nIngressBytes is the number of bytes received over all WebSocket/WebTransport connections since the last otel measurement callback
 var nIngressBytes uint64
 
 // Otel instruments
@@ -110,6 +113,11 @@ type proxyListener struct {
 	tlsConfig    *tls.Config
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+
+	// The path for this proxy listener on the server, such as
+	// /ws for websockets or /wt for webtransport.
+	path string
+	name string
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -162,7 +170,7 @@ func extractTeamId(r *http.Request) string {
 	return ""
 }
 
-func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	teamId := extractTeamId(r)
 	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
 
@@ -255,29 +263,158 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+// webtransportPacketConn wraps a net.PacketConn and provides statistics
+type webtransportPacketConn struct {
+	net.PacketConn
+}
+
+func (wtpconn webtransportPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := wtpconn.PacketConn.ReadFrom(p)
+	atomic.AddUint64(&nIngressBytes, uint64(n))
+	return n, addr, err
+}
+
+func (wtpconn webtransportPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	return wtpconn.PacketConn.WriteTo(p, addr)
+}
+
+func (wtpconn webtransportPacketConn) Close() error {
+	defer common.Debugf("Closed a WebTransport connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0)))
+	defer nClientsCounter.Add(context.Background(), -1)
+	return wtpconn.PacketConn.Close()
+}
+
+func (wtpconn webtransportPacketConn) LocalAddr() net.Addr {
+	return wtpconn.PacketConn.LocalAddr()
+}
+
+func (wtpconn webtransportPacketConn) SetDeadline(t time.Time) error {
+	return wtpconn.PacketConn.SetDeadline(t)
+}
+
+func (wtpconn webtransportPacketConn) SetReadDeadline(t time.Time) error {
+	return wtpconn.PacketConn.SetReadDeadline(t)
+}
+
+func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
+	return wtpconn.PacketConn.SetWriteDeadline(t)
+}
+
+func (l proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
+	addr := common.DebugAddr(fmt.Sprintf("WebTransport connection %v", uuid.NewString()))
+	wtpconn := webtransportPacketConn{pconn}
+	defer wtpconn.Close()
+
+	common.Debugf("Accepted a new WebTransport connection! (%v total)", atomic.AddUint64(&nClients, 1))
+	nClientsCounter.Add(context.Background(), 1)
+
+	listener, err := quic.Listen(wtpconn, l.tlsConfig, &common.QUICCfg)
+	if err != nil {
+		common.Debugf("Error creating QUIC listener on webtransport datagram: %v", err)
+		return
+	}
+	for {
+		conn, err := listener.Accept(context.Background())
+		if err != nil {
+			common.Debugf("%v QUIC listener error (%v), closing!", addr, err)
+			listener.Close()
+			break
+		}
+
+		nQUICConnectionsCounter.Add(context.Background(), 1)
+		common.Debugf("%v accepted a new QUIC connection!", addr)
+
+		go func() {
+			for {
+				stream, err := conn.AcceptStream(context.Background())
+				if err != nil {
+					// We interpret an error while accepting a stream to indicate an unrecoverable error with
+					// the QUIC connection, and so we close the QUIC connection altogether
+					errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", addr, err)
+					common.Debugf("%v", errString)
+					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
+					nQUICConnectionsCounter.Add(context.Background(), -1)
+					return
+				}
+
+				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
+				nQUICStreamsCounter.Add(context.Background(), 1)
+
+				l.connections <- common.QUICStreamNetConn{
+					Stream: stream,
+					OnClose: func() {
+						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
+						nQUICStreamsCounter.Add(context.Background(), -1)
+					},
+					AddrLocal:  l.addr,
+					AddrRemote: remoteAddr,
+				}
+			}
+		}()
+	}
+}
+
+func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		common.Debugf("Error resolving TCPAddr: %v", err)
+		return nil, fmt.Errorf("error resolving TCPAddr %w", err)
+	}
+
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebTransport connections
+	l := &proxyListener{
+		connections:  make(chan net.Conn, 2048),
+		tlsConfig:    tlsConfig,
+		addr:         tcpAddr,
+		closeMetrics: closeFuncMetric,
+		path:         "/wt",
+		name:         "webtransport",
+	}
+
+	options := &webt.ListenOptions{
+		Addr:      addr,
+		TLSConfig: tlsConfig,
+		QUICConfig: &quicwrapper.Config{
+			MaxIncomingStreams: 2000,
+			EnableDatagrams:    true,
+		},
+		Path:            "/wt",
+		DatagramHandler: l.handleWebTransport,
+	}
+	wl, err := webt.ListenAddr(options)
+	if err != nil {
+		return nil, err
+	}
+	// set the webtransport listener to our wrapped listener so it can be closed properly
+	l.Listener = wl
+
 	m := otel.Meter("github.com/getlantern/broflake/egress")
-	var err error
-	nClientsCounter, err = m.Int64UpDownCounter("concurrent-websockets")
+
+	nClientsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%ss", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICConnectionsCounter, err = m.Int64UpDownCounter("concurrent-quic-connections")
+	nQUICConnectionsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-connections", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICStreamsCounter, err = m.Int64UpDownCounter("concurrent-quic-streams")
+	nQUICStreamsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-streams", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes")
+	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter(fmt.Sprintf("ingress-%s-bytes", l.name))
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
@@ -298,31 +435,78 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 		return nil, err
 	}
 
-	var tlsConfig *tls.Config
-
-	if certPEM != "" && keyPEM != "" {
-		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-		if err != nil {
-			return nil, fmt.Errorf("Unable to load cert/key from PEM for broflake: %v", err)
-		}
-
-		common.Debugf("Broflake using cert %v and key %v", certPEM, keyPEM)
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"broflake"},
-		}
-	} else {
-		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
-		tlsConfig = generateTLSConfig()
+	srv := &http.Server{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
 	}
+	common.Debugf("Egress server listening for WebTransport connections on %v", wl.Addr())
+	go func() {
+		err := srv.Serve(wl)
+		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+	}()
 
+	return l, nil
+}
+
+func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+	ll, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to listen on %v: %w", addr, err)
+	}
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
-	l := proxyListener{
+	l := &proxyListener{
 		Listener:     ll,
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
 		addr:         ll.Addr(),
 		closeMetrics: closeFuncMetric,
+		path:         "/ws",
+		name:         "websocket",
+	}
+	m := otel.Meter("github.com/getlantern/broflake/egress")
+
+	nClientsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%ss", l.name))
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
+	nQUICConnectionsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-connections", l.name))
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
+	nQUICStreamsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-streams", l.name))
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
+	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter(fmt.Sprintf("ingress-%s-bytes", l.name))
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
+	_, err = m.RegisterCallback(
+		func(ctx context.Context, o metric.Observer) error {
+			b := atomic.LoadUint64(&nIngressBytes)
+			o.ObserveInt64(nIngressBytesCounter, int64(b))
+			common.Debugf("Ingress bytes: %v", b)
+			atomic.StoreUint64(&nIngressBytes, uint64(0))
+			return nil
+		},
+		nIngressBytesCounter,
+	)
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
 	}
 
 	srv := &http.Server{
@@ -330,7 +514,7 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 		WriteTimeout: 30 * time.Second,
 	}
 
-	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
+	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)
@@ -338,4 +522,42 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 	}()
 
 	return l, nil
+}
+
+func tlsConfig(cert, key string) (*tls.Config, error) {
+	if config, err := tlsConfigFromPEM(cert, key); err == nil {
+		return config, nil
+	} else {
+		common.Debugf("Unable to load tlsconfig from PEM...trying file paths: %v", err)
+		return tlsConfigFromFiles(cert, key)
+	}
+}
+
+func tlsConfigFromFiles(certFile, keyFile string) (*tls.Config, error) {
+	certPem, err := os.ReadFile(certFile)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load certfile %v: %w", certFile, err)
+	}
+	keyPem, err := os.ReadFile(keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load keyfile %v: %w", keyFile, err)
+	}
+	return tlsConfigFromPEM(string(certPem), string(keyPem))
+}
+
+func tlsConfigFromPEM(certPEM, keyPEM string) (*tls.Config, error) {
+	if certPEM != "" && keyPEM != "" {
+		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
+		if err != nil {
+			return nil, fmt.Errorf("unable to load cert/key from PEM for broflake: %v", err)
+		}
+		return &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			NextProtos:   []string{"broflake"},
+		}, nil
+	} else {
+		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
+		return generateTLSConfig(), nil
+	}
+
 }

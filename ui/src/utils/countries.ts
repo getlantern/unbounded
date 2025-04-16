@@ -910,7 +910,7 @@ export const countries = {
         "emojiFlag": "🇮🇩"
     },
     "IR": {
-        "name": "Iran, Islamic Republic of",
+        "name": "Iran", // Iran, Islamic Republic of
         "alpha2code": "IR",
         "alpha3code": "IRN",
         "numericCode": 364,
