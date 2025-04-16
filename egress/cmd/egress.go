@@ -2,10 +2,16 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/elazarl/goproxy"
 
@@ -14,7 +20,10 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	// cancels on SIGINT or SIGTERM
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8000"
@@ -36,13 +45,13 @@ func main() {
 	if certFile != "" && keyFile != "" {
 		cert, err := os.ReadFile(certFile)
 		if err != nil {
-			panic(err)
+			log.Fatalf("Failed to read certfile %v: %v", certFile, err)
 		}
 		tlsCert = string(cert)
 
 		key, err := os.ReadFile(keyFile)
 		if err != nil {
-			panic(err)
+			log.Fatalf("Failed to read keyfile %v: %v", keyFile, err)
 		}
 		tlsKey = string(key)
 	}
@@ -56,7 +65,7 @@ func main() {
 		ll, err = egress.NewWebSocketListener(ctx, addr, tlsCert, tlsKey)
 	}
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to start websocket/webtransport listener: %v", err)
 	}
 	defer ll.Close()
 
@@ -84,8 +93,29 @@ func main() {
 		},
 	)
 
-	err = http.Serve(ll, proxy)
-	if err != nil {
-		panic(err)
+	server := &http.Server{Handler: proxy}
+	serverErr := make(chan error, 1)
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		serverErr <- server.Serve(ll)
+	}()
+
+	select {
+	case <-ctx.Done():
+		common.Debug("Shutting down...")
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(ctx); err != nil {
+			common.Debugf("Error shutting down server: %v", err)
+		}
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("Failed to start HTTP proxy: %v", err)
+		}
+		ll.Close()
 	}
+	wg.Wait()
 }
