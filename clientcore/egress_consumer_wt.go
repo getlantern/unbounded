@@ -93,7 +93,7 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 			readStatus := make(chan error)
 			go func(ctx context.Context) {
 				for {
-					buf := make([]byte, 1280)
+					buf := make([]byte, 2048)
 					bytesRead, _, err := pconn.ReadFrom(buf)
 					if err != nil {
 						readStatus <- err
