@@ -448,16 +448,13 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
 	}
-	ll, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to listen on %v: %w", addr, err)
-	}
+
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
 		Listener:     ll,

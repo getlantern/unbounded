@@ -53,7 +53,11 @@ func main() {
 	if webTransportEnabled {
 		ll, err = egress.NewWebTransportListener(ctx, addr, tlsCert, tlsKey)
 	} else {
-		ll, err = egress.NewWebSocketListener(ctx, addr, tlsCert, tlsKey)
+		baseListen, err := net.Listen("tcp", addr)
+		if err != nil {
+			panic(err)
+		}
+		ll, err = egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
 	}
 	if err != nil {
 		panic(err)
