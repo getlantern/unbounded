@@ -300,7 +300,7 @@ func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
 	return wtpconn.PacketConn.SetWriteDeadline(t)
 }
 
-func (l proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
+func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
 	addr := common.DebugAddr(fmt.Sprintf("WebTransport connection %v", uuid.NewString()))
 	wtpconn := webtransportPacketConn{pconn}
 	defer wtpconn.Close()
