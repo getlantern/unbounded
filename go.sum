@@ -114,8 +114,8 @@ github.com/getlantern/ops v0.0.0-20200403153110-8476b16edcd6/go.mod h1:D5ao98qkA
 github.com/getlantern/ops v0.0.0-20220713155959-1315d978fff7/go.mod h1:D5ao98qkA6pxftxoqzibIBBrLSUli+kYnJqrgBf9cIA=
 github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf h1:q8nsH0Lx9fP8HY6T9rA1zogvOzO9JtbUI5BXkh7wxxI=
 github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf/go.mod h1:R7HfJVLsnSeqaDWkiUlU+ANBjac4oYmXGrrps8vW7CM=
-github.com/getlantern/quicwrapper v0.0.0-20250411041809-c9ee84ad419e h1:PVisk2PK5YSo2IUuiQm7thTRGEtegqarLqQSOIyl9EQ=
-github.com/getlantern/quicwrapper v0.0.0-20250411041809-c9ee84ad419e/go.mod h1:8JUff02h2OIo2TSuJDJmTVphoh3MzeE7V5gbjPa+r0w=
+github.com/getlantern/quicwrapper v0.0.0-20250417060014-acb01527c4c2 h1:4TMpZ++GTJtfBGx38IE8JRezp461s0CcWwPOGMyIfTU=
+github.com/getlantern/quicwrapper v0.0.0-20250417060014-acb01527c4c2/go.mod h1:8JUff02h2OIo2TSuJDJmTVphoh3MzeE7V5gbjPa+r0w=
 github.com/getlantern/telemetry v0.0.0-20230523155019-be7c1d8cd8cb h1:6XZ3Q4oD6A1Tjq6QLgzzQrdQ8FvulzW16HhNQOSECAM=
 github.com/getlantern/telemetry v0.0.0-20230523155019-be7c1d8cd8cb/go.mod h1:nGOdDc0aD/LRTaY2SGKQ7nsYcWFXrhgkrhIhJuYN614=
 github.com/ghodss/yaml v1.0.0/go.mod h1:4dBDuWmgqj2HViK6kFavaiC9ZROes6MMH2rRYeMEF04=
