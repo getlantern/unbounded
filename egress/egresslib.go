@@ -56,6 +56,55 @@ var nQUICConnectionsCounter metric.Int64UpDownCounter
 var nQUICStreamsCounter metric.Int64UpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
+// for initializing Otel instruments
+var otelOnce sync.Once
+
+func otelInit(ctx context.Context) error {
+	var err error
+	otelOnce.Do(func() {
+		m := otel.Meter("github.com/getlantern/broflake/egress")
+		closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+
+		nClientsCounter, err = m.Int64UpDownCounter("concurrent-connections")
+		if err != nil {
+			closeFuncMetric(ctx)
+			return
+		}
+		nQUICConnectionsCounter, err = m.Int64UpDownCounter("concurrent-quic-connections")
+		if err != nil {
+			closeFuncMetric(ctx)
+			return
+		}
+		nQUICStreamsCounter, err = m.Int64UpDownCounter("concurrent-quic-streams")
+		if err != nil {
+			closeFuncMetric(ctx)
+			return
+		}
+
+		nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes")
+		if err != nil {
+			closeFuncMetric(ctx)
+			return
+		}
+
+		_, err = m.RegisterCallback(
+			func(ctx context.Context, o metric.Observer) error {
+				b := atomic.LoadUint64(&nIngressBytes)
+				o.ObserveInt64(nIngressBytesCounter, int64(b))
+				common.Debugf("Ingress bytes: %v", b)
+				atomic.StoreUint64(&nIngressBytes, uint64(0))
+				return nil
+			},
+			nIngressBytesCounter,
+		)
+		if err != nil {
+			closeFuncMetric(ctx)
+			return
+		}
+	})
+	return err
+}
+
 // webSocketPacketConn wraps a websocket.Conn as a net.PacketConn
 type websocketPacketConn struct {
 	net.PacketConn
@@ -355,6 +404,9 @@ func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.
 }
 
 func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+	if err := otelInit(ctx); err != nil {
+		return nil, err
+	}
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
@@ -394,47 +446,6 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	// set the webtransport listener to our wrapped listener so it can be closed properly
 	l.Listener = wl
 
-	m := otel.Meter("github.com/getlantern/broflake/egress")
-
-	nClientsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%ss", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICConnectionsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-connections", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICStreamsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-streams", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter(fmt.Sprintf("ingress-%s-bytes", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	_, err = m.RegisterCallback(
-		func(ctx context.Context, o metric.Observer) error {
-			b := atomic.LoadUint64(&nIngressBytes)
-			o.ObserveInt64(nIngressBytesCounter, int64(b))
-			common.Debugf("Ingress bytes: %v", b)
-			atomic.StoreUint64(&nIngressBytes, uint64(0))
-			return nil
-		},
-		nIngressBytesCounter,
-	)
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
 	srv := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -452,7 +463,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 			common.Debugf("Egress server context cancelled. Shutting down WebTransport server...")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := srv.Shutdown(shutdownCtx); err != nil {
+			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
 				common.Debugf("Error shutting down WebTransport server: %v", err)
 			}
 		case err := <-errChan:
@@ -466,6 +477,9 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 }
 
 func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+	if err := otelInit(ctx); err != nil {
+		return nil, err
+	}
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
@@ -475,6 +489,7 @@ func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (ne
 	if err != nil {
 		return nil, fmt.Errorf("unable to listen on %v: %w", addr, err)
 	}
+
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
 		Listener:     ll,
@@ -485,52 +500,11 @@ func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (ne
 		path:         "/ws",
 		name:         "websocket",
 	}
-	m := otel.Meter("github.com/getlantern/broflake/egress")
-
-	nClientsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%ss", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICConnectionsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-connections", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICStreamsCounter, err = m.Int64UpDownCounter(fmt.Sprintf("concurrent-%s-quic-streams", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter(fmt.Sprintf("ingress-%s-bytes", l.name))
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	_, err = m.RegisterCallback(
-		func(ctx context.Context, o metric.Observer) error {
-			b := atomic.LoadUint64(&nIngressBytes)
-			o.ObserveInt64(nIngressBytesCounter, int64(b))
-			common.Debugf("Ingress bytes: %v", b)
-			atomic.StoreUint64(&nIngressBytes, uint64(0))
-			return nil
-		},
-		nIngressBytesCounter,
-	)
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
 
 	srv := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-
 	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
 	go func() {
 		common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
@@ -545,7 +519,7 @@ func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (ne
 			common.Debugf("Egress server context cancelled. Shutting down WebSocket server...")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := srv.Shutdown(shutdownCtx); err != nil {
+			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
 				common.Debugf("Error shutting down WebSocket server: %v", err)
 			}
 		case err := <-errChan:
