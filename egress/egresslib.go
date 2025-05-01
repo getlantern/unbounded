@@ -19,7 +19,6 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
@@ -107,7 +106,7 @@ func (q websocketPacketConn) LocalAddr() net.Addr {
 	return q.addr
 }
 
-type proxyListener struct {
+type ProxyListener struct {
 	net.Listener
 	connections  chan net.Conn
 	tlsConfig    *tls.Config
@@ -120,16 +119,16 @@ type proxyListener struct {
 	name string
 }
 
-func (l proxyListener) Accept() (net.Conn, error) {
+func (l ProxyListener) Accept() (net.Conn, error) {
 	conn := <-l.connections
 	return conn, nil
 }
 
-func (l proxyListener) Addr() net.Addr {
+func (l ProxyListener) Addr() net.Addr {
 	return l.addr
 }
 
-func (l proxyListener) Close() error {
+func (l ProxyListener) Close() error {
 	err := l.Listener.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -170,7 +169,7 @@ func extractTeamId(r *http.Request) string {
 	return ""
 }
 
-func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+func (l ProxyListener) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	teamId := extractTeamId(r)
 	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
 
@@ -245,7 +244,6 @@ func (l proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					nQUICConnectionsCounter.Add(context.Background(), -1)
 					return
 				}
-
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
 				nQUICStreamsCounter.Add(context.Background(), 1)
 
@@ -300,7 +298,7 @@ func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
 	return wtpconn.PacketConn.SetWriteDeadline(t)
 }
 
-func (l proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
+func (l ProxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
 	addr := common.DebugAddr(fmt.Sprintf("WebTransport connection %v", uuid.NewString()))
 	wtpconn := webtransportPacketConn{pconn}
 	defer wtpconn.Close()
@@ -368,7 +366,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebTransport connections
-	l := &proxyListener{
+	l := &ProxyListener{
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
 		addr:         tcpAddr,
@@ -448,7 +446,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (*ProxyListener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
@@ -456,7 +454,7 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
-	l := &proxyListener{
+	l := &ProxyListener{
 		Listener:     ll,
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
@@ -505,19 +503,6 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 		closeFuncMetric(ctx)
 		return nil, err
 	}
-
-	srv := &http.Server{
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-	}
-
-	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
-	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
-	go func() {
-		err := srv.Serve(ll)
-		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
-	}()
-
 	return l, nil
 }
 

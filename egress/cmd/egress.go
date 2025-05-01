@@ -6,9 +6,9 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/elazarl/goproxy"
-
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 )
@@ -57,11 +57,22 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		ll, err = egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
+		ws, err := egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
+
+		srv := &http.Server{
+			ReadTimeout:  30 * time.Second,
+			WriteTimeout: 30 * time.Second,
+		}
+
+		http.Handle("/ws", http.HandlerFunc(ws.HandleWebSocket))
+		common.Debugf("Egress server listening for WebSocket connections on %v", baseListen.Addr())
+		go func() {
+			err := srv.Serve(baseListen)
+			panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+		}()
+		ll = ws
 	}
-	if err != nil {
-		panic(err)
-	}
+
 	defer ll.Close()
 
 	// Instantiate our local HTTP CONNECT proxy
@@ -81,14 +92,8 @@ func main() {
 		},
 	)
 
-	proxy.OnResponse().DoFunc(
-		func(r *http.Response, ctx *goproxy.ProxyCtx) *http.Response {
-			// TODO: log something interesting?
-			return r
-		},
-	)
-
 	err = http.Serve(ll, proxy)
+
 	if err != nil {
 		panic(err)
 	}
