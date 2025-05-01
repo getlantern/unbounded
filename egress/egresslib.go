@@ -107,7 +107,6 @@ func otelInit(ctx context.Context) error {
 
 // webSocketPacketConn wraps a websocket.Conn as a net.PacketConn
 type websocketPacketConn struct {
-	net.PacketConn
 	w         *websocket.Conn
 	addr      net.Addr
 	keepalive time.Duration
@@ -156,6 +155,18 @@ func (q websocketPacketConn) Close() error {
 
 func (q websocketPacketConn) LocalAddr() net.Addr {
 	return q.addr
+}
+
+func (q websocketPacketConn) SetDeadline(t time.Time) error {
+	return nil
+}
+
+func (q websocketPacketConn) SetReadDeadline(t time.Time) error {
+	return nil
+}
+
+func (q websocketPacketConn) SetWriteDeadline(t time.Time) error {
+	return nil
 }
 
 type proxyListener struct {
