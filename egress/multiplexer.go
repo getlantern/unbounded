@@ -13,12 +13,10 @@ import (
 type MultiplexedPacketConn struct {
 	mu           sync.RWMutex
 	tunnels      map[string]net.PacketConn
-	closeCh      map[string]chan struct{} // the channel used to signal closure of a tunnel
-	addrToTunnel map[string]string        // client addresses (WebTransport or WebSocket remote address) to tunnel IDs
+	closeCh      map[string]chan struct{} // signal tunnel closure
+	addrToTunnel map[string]string        // maps client addresses (WebTransport or WebSocket remote address) -> tunnel ID
 
-	// channel for incoming packets from all tunnels
-	packetCh chan packetInfo
-
+	packetCh  chan packetInfo // channel for incoming packets from all tunnels
 	localAddr net.Addr
 }
 
@@ -33,7 +31,7 @@ func NewMultiplexedPacketConn(localAddr net.Addr) *MultiplexedPacketConn {
 		tunnels:      make(map[string]net.PacketConn),
 		closeCh:      make(map[string]chan struct{}),
 		addrToTunnel: make(map[string]string),
-		packetCh:     make(chan packetInfo),
+		packetCh:     make(chan packetInfo, 1024), // buffered to avoid blocking the incoming traffic
 		localAddr:    localAddr,
 	}
 }
@@ -44,58 +42,48 @@ func (m *MultiplexedPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err er
 	if !ok {
 		return 0, nil, io.EOF
 	}
-
-	n = copy(p, packet.data)
-	return n, packet.addr, nil
+	return copy(p, packet.data), packet.addr, nil
 }
 
 func (m *MultiplexedPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	m.mu.RLock()
 	tunnelID, ok := m.addrToTunnel[addr.String()]
+	tunnel := m.tunnels[tunnelID]
 	m.mu.RUnlock()
 
-	if !ok {
-		// Route to all tunnels if we don't know which one to use
-		// (e.g., during connection establishment)
-		return m.writeToAllTunnels(p, addr)
+	if ok && tunnel != nil {
+		return tunnel.WriteTo(p, addr)
 	}
-
-	m.mu.RLock()
-	tunnel, ok := m.tunnels[tunnelID]
-	m.mu.RUnlock()
-
-	if !ok {
-		// Tunnel disappeared, try all tunnels
-		return m.writeToAllTunnels(p, addr)
-	}
-
-	return tunnel.WriteTo(p, addr)
+	// route to all tunnels if we don't know which one to use, or during connection establishment
+	return m.writeToAllTunnels(p, addr)
 }
 
 func (m *MultiplexedPacketConn) writeToAllTunnels(p []byte, addr net.Addr) (n int, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var allErr error
+	var combinedErr error
 	for _, tunnel := range m.tunnels {
 		n, err = tunnel.WriteTo(p, addr)
 		if err != nil {
-			// append err to allErr
-			allErr = errors.Join(allErr, err)
+			combinedErr = errors.Join(combinedErr, err)
 		}
 	}
-
-	return n, allErr
+	return n, combinedErr
 }
 
+// AddTunnel adds a new tunnel to the multiplexer
 func (m *MultiplexedPacketConn) AddTunnel(id string, conn net.PacketConn) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if _, exists := m.tunnels[id]; exists {
+		return m.closeCh[id]
+	}
+
 	c := make(chan struct{})
 	m.tunnels[id] = conn
 	m.closeCh[id] = c
-
-	// Start a goroutine to read from this tunnel
-	go m.readFromTunnel(id, conn)
+	// start reading from this tunnel
+	go m.readFromTunnel(id, conn, c)
 	return c
 }
 
@@ -103,37 +91,46 @@ func (m *MultiplexedPacketConn) AddTunnel(id string, conn net.PacketConn) chan s
 func (m *MultiplexedPacketConn) RemoveTunnel(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.tunnels, id)
 	if c, ok := m.closeCh[id]; ok {
 		close(c)
 		delete(m.closeCh, id)
 	}
+	delete(m.tunnels, id)
 }
 
-func (m *MultiplexedPacketConn) readFromTunnel(id string, conn net.PacketConn) {
+func (m *MultiplexedPacketConn) readFromTunnel(id string, conn net.PacketConn, stopCh chan struct{}) {
 	buf := make([]byte, 65535)
 	for {
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		n, addr, err := conn.ReadFrom(buf)
 		if err != nil {
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				select {
+				case <-stopCh:
+					return
+				default:
+					continue
+				}
+			}
 			common.Debugf("Error reading from tunnel %v: %v", id, err)
 			m.RemoveTunnel(id)
 			return
 		}
 
-		packet := packetInfo{
-			data:     make([]byte, n),
-			addr:     addr,
-			tunnelID: id,
-		}
-		copy(packet.data, buf[:n])
+		copyBuf := make([]byte, n)
+		copy(copyBuf, buf[:n])
 
-		// Remember which tunnel this client is using
+		// remember which tunnel this client is using
 		m.mu.Lock()
 		m.addrToTunnel[addr.String()] = id
 		m.mu.Unlock()
 
-		// Send packet to multiplexer
-		m.packetCh <- packet
+		// send packet to multiplexer
+		select {
+		case m.packetCh <- packetInfo{data: copyBuf, addr: addr, tunnelID: id}:
+		default:
+			common.Debugf("Dropping packet from %s: channel full", id)
+		}
 	}
 }
 
