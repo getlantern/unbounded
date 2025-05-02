@@ -173,7 +173,7 @@ type proxyListener struct {
 	wsListener net.Listener // the websocket listener
 	wtListener net.Listener // the webtransport listener
 
-	multiplexedPacketConn *MultiplexedPacketConn
+	multiplexedPacketConn *multiplexedPacketConn
 
 	connections  chan net.Conn
 	tlsConfig    *tls.Config
@@ -400,7 +400,7 @@ func NewListener(ctx context.Context, wsAddr, wtAddr, certPEM, keyPEM string) (n
 	l := &proxyListener{
 		wsListener:            wsl,
 		connections:           make(chan net.Conn, 2048),
-		multiplexedPacketConn: NewMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
+		multiplexedPacketConn: newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
 		tlsConfig:             tlsConfig,
 		addr:                  wsl.Addr(), // TODO: not using webtransport address
 		closeMetrics:          closeFuncMetric,

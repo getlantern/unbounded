@@ -10,24 +10,26 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
-type MultiplexedPacketConn struct {
+// multiplexedPacketConn multiplexes packets from multiple tunnels (WebTransport and WebSocket as net.PacketConn)
+type multiplexedPacketConn struct {
 	mu           sync.RWMutex
 	tunnels      map[string]net.PacketConn
 	closeCh      map[string]chan struct{} // signal tunnel closure
 	addrToTunnel map[string]string        // maps client addresses (WebTransport or WebSocket remote address) -> tunnel ID
 
 	packetCh  chan packetInfo // channel for incoming packets from all tunnels
-	localAddr net.Addr
+	localAddr net.Addr        // local address
 }
 
+// packetInfo contains packet data, remote address, and tunnel ID
 type packetInfo struct {
 	data     []byte
 	addr     net.Addr
 	tunnelID string
 }
 
-func NewMultiplexedPacketConn(localAddr net.Addr) *MultiplexedPacketConn {
-	return &MultiplexedPacketConn{
+func newMultiplexedPacketConn(localAddr net.Addr) *multiplexedPacketConn {
+	return &multiplexedPacketConn{
 		tunnels:      make(map[string]net.PacketConn),
 		closeCh:      make(map[string]chan struct{}),
 		addrToTunnel: make(map[string]string),
@@ -36,7 +38,7 @@ func NewMultiplexedPacketConn(localAddr net.Addr) *MultiplexedPacketConn {
 	}
 }
 
-func (m *MultiplexedPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (m *multiplexedPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	// block until a packet arrives from any tunnel
 	packet, ok := <-m.packetCh
 	if !ok {
@@ -45,7 +47,7 @@ func (m *MultiplexedPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err er
 	return copy(p, packet.data), packet.addr, nil
 }
 
-func (m *MultiplexedPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+func (m *multiplexedPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	m.mu.RLock()
 	tunnelID, ok := m.addrToTunnel[addr.String()]
 	tunnel := m.tunnels[tunnelID]
@@ -58,10 +60,11 @@ func (m *MultiplexedPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err err
 	return m.writeToAllTunnels(p, addr)
 }
 
-func (m *MultiplexedPacketConn) writeToAllTunnels(p []byte, addr net.Addr) (n int, err error) {
+func (m *multiplexedPacketConn) writeToAllTunnels(p []byte, addr net.Addr) (n int, err error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var combinedErr error
+	// maybe this can be parallelized
 	for _, tunnel := range m.tunnels {
 		n, err = tunnel.WriteTo(p, addr)
 		if err != nil {
@@ -72,7 +75,7 @@ func (m *MultiplexedPacketConn) writeToAllTunnels(p []byte, addr net.Addr) (n in
 }
 
 // AddTunnel adds a new tunnel to the multiplexer
-func (m *MultiplexedPacketConn) AddTunnel(id string, conn net.PacketConn) chan struct{} {
+func (m *multiplexedPacketConn) AddTunnel(id string, conn net.PacketConn) chan struct{} {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.tunnels[id]; exists {
@@ -88,7 +91,7 @@ func (m *MultiplexedPacketConn) AddTunnel(id string, conn net.PacketConn) chan s
 }
 
 // RemoveTunnel closes the tunnel by signaling the close channel, and remove it from the map
-func (m *MultiplexedPacketConn) RemoveTunnel(id string) {
+func (m *multiplexedPacketConn) RemoveTunnel(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if c, ok := m.closeCh[id]; ok {
@@ -98,7 +101,7 @@ func (m *MultiplexedPacketConn) RemoveTunnel(id string) {
 	delete(m.tunnels, id)
 }
 
-func (m *MultiplexedPacketConn) readFromTunnel(id string, conn net.PacketConn, stopCh chan struct{}) {
+func (m *multiplexedPacketConn) readFromTunnel(id string, conn net.PacketConn, stopCh chan struct{}) {
 	buf := make([]byte, 65535)
 	for {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
@@ -134,7 +137,7 @@ func (m *MultiplexedPacketConn) readFromTunnel(id string, conn net.PacketConn, s
 	}
 }
 
-func (m *MultiplexedPacketConn) Close() error {
+func (m *multiplexedPacketConn) Close() error {
 	close(m.packetCh)
 
 	m.mu.Lock()
@@ -146,11 +149,11 @@ func (m *MultiplexedPacketConn) Close() error {
 	return nil
 }
 
-func (m *MultiplexedPacketConn) LocalAddr() net.Addr {
+func (m *multiplexedPacketConn) LocalAddr() net.Addr {
 	return m.localAddr
 }
 
-func (m *MultiplexedPacketConn) SetDeadline(t time.Time) error {
+func (m *multiplexedPacketConn) SetDeadline(t time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -160,7 +163,7 @@ func (m *MultiplexedPacketConn) SetDeadline(t time.Time) error {
 	return nil
 }
 
-func (m *MultiplexedPacketConn) SetReadDeadline(t time.Time) error {
+func (m *multiplexedPacketConn) SetReadDeadline(t time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -170,7 +173,7 @@ func (m *MultiplexedPacketConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
-func (m *MultiplexedPacketConn) SetWriteDeadline(t time.Time) error {
+func (m *multiplexedPacketConn) SetWriteDeadline(t time.Time) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
