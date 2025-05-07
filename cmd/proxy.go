@@ -59,7 +59,6 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) 
 		func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			common.Debug("HTTP proxy just saw a request:")
 			common.Debug(r)
-			r.Header.Set("X-newheader", "newvalue")
 			return r, nil
 		},
 	)
