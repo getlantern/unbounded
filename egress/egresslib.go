@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/quic-go/quic-go"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 
@@ -255,6 +256,7 @@ func (l ProxyListener) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: tcpAddr,
+					TeamId:     teamId,
 				}
 			}
 		}()
@@ -446,7 +448,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (*ProxyListener, error) {
+func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
@@ -503,6 +505,19 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 		closeFuncMetric(ctx)
 		return nil, err
 	}
+
+	srv := &http.Server{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+
+	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.HandleWebSocket), "/ws"))
+	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
+	go func() {
+		err := srv.Serve(ll)
+		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+	}()
+
 	return l, nil
 }
 
@@ -541,5 +556,4 @@ func tlsConfigFromPEM(certPEM, keyPEM string) (*tls.Config, error) {
 		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
 		return generateTLSConfig(), nil
 	}
-
 }

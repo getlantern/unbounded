@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/elazarl/goproxy"
 	"github.com/getlantern/broflake/common"
@@ -57,20 +56,7 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		ws, err := egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
-
-		srv := &http.Server{
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-		}
-
-		http.Handle("/ws", http.HandlerFunc(ws.HandleWebSocket))
-		common.Debugf("Egress server listening for WebSocket connections on %v", baseListen.Addr())
-		go func() {
-			err := srv.Serve(baseListen)
-			panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
-		}()
-		ll = ws
+		ll, err = egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
 	}
 
 	defer ll.Close()

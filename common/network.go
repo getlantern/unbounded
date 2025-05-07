@@ -40,6 +40,7 @@ type QUICStreamNetConn struct {
 	OnClose    func()
 	AddrLocal  net.Addr
 	AddrRemote net.Addr
+	TeamId     string
 }
 
 func (c QUICStreamNetConn) LocalAddr() net.Addr {

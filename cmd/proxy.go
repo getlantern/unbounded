@@ -55,7 +55,6 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) 
 	go ql.DialAndMaintainQUICConnection()
 	proxy.Tr = clientcore.CreateHTTPTransport(ql)
 
-	proxy.KeepHeader = true
 	proxy.OnRequest().DoFunc(
 		func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
 			common.Debug("HTTP proxy just saw a request:")
