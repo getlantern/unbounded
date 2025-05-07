@@ -297,7 +297,7 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 
 		}
 
-		//nQUICConnectionsCounter.Add(context.Background(), 1)
+		nQUICConnectionsCounter.Add(context.Background(), 1)
 		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
 
 		go func() {
@@ -314,13 +314,13 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 					return
 				}
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-				//	nQUICStreamsCounter.Add(context.Background(), 1)
+				nQUICStreamsCounter.Add(context.Background(), 1)
 
 				l.connections <- common.QUICStreamNetConn{
 					Stream: stream,
 					OnClose: func() {
 						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
-						//nQUICStreamsCounter.Add(context.Background(), -1)
+						nQUICStreamsCounter.Add(context.Background(), -1)
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: tcpAddr,
