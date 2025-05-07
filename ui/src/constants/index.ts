@@ -124,7 +124,7 @@ export const WASM_CLIENT_CONFIG = {
 	tag: '',
 	egressAddr: process.env.REACT_APP_EGRESS_ADDR!,
 	egressEndpoint: process.env.REACT_APP_EGRESS_ENDPOINT!,
-	webTransport: false // TODO: webtransport isn't supported in WASM yet, so disable for now. Should call supportsWebTransport() when WT in WASM is ready.
+	webTransport: supportsWebTransport()
 }
 
 // @todo rm stubbing out store urls until extension is ready

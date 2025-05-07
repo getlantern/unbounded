@@ -1,6 +1,4 @@
-// egress_consumer.go implements egress consumer behavior over WebSockets, including connection
-// establishment, connection error detection, and reset. See:
-// https://docs.google.com/spreadsheets/d/1qM1gwPRtTKTFfZZ0e51R7AdS6qkPlKMuJX3D3vmpG_U/edit#gid=654426763
+//go:build !wasm
 
 package clientcore
 
@@ -13,8 +11,6 @@ import (
 	"net"
 	"sync"
 	"time"
-
-	"github.com/coder/websocket"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/quicwrapper/webt"
@@ -98,7 +94,7 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 			readStatus := make(chan error)
 			go func(ctx context.Context) {
 				for {
-					buf := make([]byte, 1280)
+					buf := make([]byte, 2048)
 					bytesRead, _, err := pconn.ReadFrom(buf)
 					if err != nil {
 						readStatus <- err
@@ -129,7 +125,7 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 						common.Debugf("Egress consumer WebTransport received non-byte chunk: %v", msg.Data)
 						return 0, []interface{}{}
 					}
-					_, err := pconn.WriteTo(data, &net.TCPAddr{}) // addr not used
+					_, err := pconn.WriteTo(data, nil)
 					if err != nil {
 						common.Debugf("Egress consumer WebTransport write error: %v", err)
 						return 0, []interface{}{}
@@ -153,6 +149,7 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 		}),
 	})
 }
+<<<<<<< HEAD:clientcore/egress_consumer.go
 
 func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM {
 	return NewWorkerFSM(wg, []FSMstate{
@@ -264,3 +261,5 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 		}),
 	})
 }
+=======
+>>>>>>> main:clientcore/egress_consumer_wt.go
