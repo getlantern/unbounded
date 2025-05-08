@@ -92,7 +92,7 @@ func (b *BroflakeEngine) debug() {
 }
 
 func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOptions) (bfconn *BroflakeConn, ui *UIImpl, err error) {
-	if bfOpt.ClientType != "desktop" && bfOpt.ClientType != "widget" {
+	if bfOpt.ClientType != "desktop" && bfOpt.ClientType != "widget" && bfOpt.ClientType != "singbox-inbound" {
 		err = fmt.Errorf("invalid clientType '%v\n'", bfOpt.ClientType)
 		common.Debugf(err.Error())
 		return bfconn, ui, err
@@ -164,6 +164,18 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 			}
 		}
 		pTable = NewWorkerTable(pfsms)
+	case "singbox-inbound": // only used in radiance/sing-box-extensions as an inbound protocol
+		// singbox-inbound peers share connectivity over WebRTC
+		var cfsms []WorkerFSM
+		for i := 0; i < bfOpt.CTableSize; i++ {
+			cfsms = append(cfsms, *NewProducerWebRTC(rtcOpt, &wgReady))
+		}
+		cTable = NewWorkerTable(cfsms)
+
+		// singbox-inbound peers consume connectivity from bfconn
+		var consumerUserStream *WorkerFSM
+		bfconn, consumerUserStream = NewConsumerUserStream(&wgReady)
+		pTable = NewWorkerTable([]WorkerFSM{*consumerUserStream})
 	}
 
 	// Step 2: Build Broflake
@@ -186,6 +198,10 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		pRouter = NewProducerSerialRouter(bus.Upstream, pTable, cTable.Size())
 	case "widget":
 		cRouter = NewConsumerRouter(bus.Downstream, cTable)
+		pRouter = NewProducerPoolRouter(bus.Upstream, pTable)
+	case "singbox-inbound":
+		cRouter = NewConsumerRouter(bus.Downstream, cTable)
+		// TODO: use of NewProducerSerialRouter() won't work. Find out why
 		pRouter = NewProducerPoolRouter(bus.Upstream, pTable)
 	}
 
