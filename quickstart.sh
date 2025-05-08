@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 
 SESSION_NAME="unbounded-sandbox"
-# FREDDIE_DEFAULT=9000
-# PORT_EGRESS_DEFAULT=8000
 
-declare peers
-default_peers=2
-if [ -z "$1" ]; then
-    echo "No quantity of peers specified. Assuming default: $default_peers"
-    peers=$default_peers
-else
-    peers=$1
+FREDDIE_DEFAULT=http://localhost:9000
+EGRESS_DEFAULT=http://localhost:8000
+NETSTATE_DEFAULT=http://localhost:8080/exec
+
+PROXYPORT_DEFAULT=1080
+
+usage () {
+    echo "Usage: $0 run_type [peers]"
+    echo "  options:"
+    echo "    run_type: local | ui | derek | egress" 
+    echo "    peers: number of peers (only for derek), default is 2"
+    echo "    example:"
+    echo "      $0 local"
+    echo "      $0 ui"
+    echo "      $0 derek 5"
+exit 1
+}
+
+if [ $# -ne 1 ]; then
+   usage;
 fi
 
 create_tmux_session() {
@@ -42,32 +53,103 @@ create_tmux_session() {
     tmux attach-session -t "$session_name"
 }
 
-commands=(
+declare peers
+default_peers=2 
+if [ "$1" == "derek" ]; then
+    if [ -z "$2" ]; then
+        echo "no number of peers specified, using default $default_peers"
+        peers=$default_peers
+    else 
+       peers=$2
+        echo "Using $peers peers"
+    fi
+fi
+
+# different sequences of commands for different 
+# 'derek' option starts a specified number of censored peers
+derek_commands=(
     # start freddie for matchmaking
     "PORT=9000 go run ./freddie/cmd"
 
     # start egress
     "PORT=8000 go run ./egress/cmd"
 
-    # option A   
-    # start ui in hot reload
-    # "cd ui && yarn dev:web"
+    # build and start up a number of censored peers
+    "cd cmd && ./build.sh desktop && TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT ./derek.sh $peers"
 
-    # option B
-    # build and start native binary widget
-    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./widget"
+    # build and start native binary widget # build and start native binary widget
+    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT ./widget"
 
     # start netstate
     "cd netstate/d && UNSAFE=1 go run ."
-
-    # build and start up a number of censored peers
-    "cd cmd && ./build.sh desktop && TAG=bob NETSTATED=http://localhost:8080/exec FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./derek.sh $peers"
-
-
-    # build browser widget
-    # "cd cmd && ./build_web.sh"
 )
 
-create_tmux_session "$SESSION_NAME" "${commands[@]}"
+# Starts all the pieces of unbounded locally, which can be used by 
+# setting firefoxy to use '127.0.0.1:1080' for http and https 
+local_commands=(
+    # start freddie for matchmaking
+    "PORT=9000 go run ./freddie/cmd"
+
+    # start egress
+    "PORT=8000 go run ./egress/cmd"
+
+    # Start desktop proxy for outgoing connections
+    "cd cmd && ./build.sh desktop && cd dist/bin && TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT PORT=$PROXYPORT_DEFAULT ./desktop"
+
+    # build and start native binary widget
+    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT ./widget"
+
+    # start netstate
+    "cd netstate/d && UNSAFE=1 go run ."
+)
+
+# Starts the UI
+ui_commands=(
+    # start freddie for matchmaking
+    "PORT=9000 go run ./freddie/cmd"
+
+    # start egress
+    "PORT=8000 go run ./egress/cmd"
+
+    # Build web widget and start ui
+    "cd cmd && ./build_web.sh && cd ../ui && yarn && cp .env.development.example .env.development && yarn dev:web"
+
+    # start netstate
+    "cd netstate/d && UNSAFE=1 go run ."
+)
+
+#start everything except egress, useful for testing egress server without restarting the other components
+# to use run an egress server separately at localhost:8000 
+custom_egress_commands=(
+    # start freddie for matchmaking
+    "PORT=9000 go run ./freddie/cmd"
+
+    # Start desktop proxy for outgoing connections: set firefox to use '127.0.0.1:PROXYPORT_DEFAULT' for http and https
+    "cd cmd && ./build.sh desktop && cd dist/bin && TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT PORT=$PROXYPORT_DEFAULT ./desktop"
+
+    # build and start native binary widget
+    "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT ./widget"
+
+    # start netstate
+    "cd netstate/d && UNSAFE=1 go run ."
+)
 
 
+if [ "$1" == "derek" ]; then
+    echo "Using 'derek' option"
+    commands=("${derek_commands[@]}")
+elif [ "$1" == "local" ]; then
+    echo "Using local option"
+    commands=("${local_commands[@]}")
+elif [ "$1" == "ui" ]; then
+    echo "Using ui option"
+    commands=("${ui_commands[@]}")
+elif [ "$1" == "egress" ]; then
+    echo "Using custom egress option"
+    commands=("${custom_egress_commands[@]}")
+else
+    echo "Unknown option $1";
+    usage;
+fi
+
+create_tmux_session "$SESSION_NAME" "${commands[@]}";

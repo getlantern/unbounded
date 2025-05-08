@@ -61,7 +61,12 @@ func main() {
 
 	// listen websocket on PORT
 	addr := fmt.Sprintf(":%v", port)
-	lws, err := egress.NewWebSocketListener(ctx, addr, tlsCert, tlsKey)
+
+	baseListen, err := net.Listen("tcp", addr)
+	if err != nil {
+		panic(err)
+	}
+	lws, err := egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
 	if err != nil {
 		log.Fatalf("Failed to start websocket listener: %v", err)
 	}
