@@ -327,9 +327,10 @@ func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.
 	<-close
 }
 
-func (l *proxyListener) listenQUIC(tlsConfig *tls.Config, quicConfig *quic.Config) {
+// listenQUIC starts a QUIC listener on the given PacketConn
+func (l *proxyListener) listenQUIC(pc net.PacketConn, tlsConfig *tls.Config, quicConfig *quic.Config) {
 	tr := &quic.Transport{
-		Conn:              l.multiplexedPacketConn,
+		Conn:              pc,
 		StatelessResetKey: &quic.StatelessResetKey{}, // enable stateless reset
 	}
 	listener, err := tr.Listen(tlsConfig, quicConfig)
@@ -351,7 +352,6 @@ func (l *proxyListener) listenQUIC(tlsConfig *tls.Config, quicConfig *quic.Confi
 
 		go func() {
 			for {
-				common.Debugf("=====> QUIC server local address:%v, remote address: %v", conn.LocalAddr(), conn.RemoteAddr())
 				stream, err := conn.AcceptStream(context.Background())
 				if err != nil {
 					// We interpret an error while accepting a stream to indicate an unrecoverable error with
@@ -378,6 +378,27 @@ func (l *proxyListener) listenQUIC(tlsConfig *tls.Config, quicConfig *quic.Confi
 			}
 		}()
 	}
+}
+
+// NewListenerFromPacketConn starts a QUIC listener on the given PacketConn
+func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string) (net.Listener, error) {
+	if err := otelInit(ctx); err != nil {
+		return nil, err
+	}
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+
+	l := &proxyListener{
+		connections: make(chan net.Conn, 2048),
+		tlsConfig:   tlsConfig,
+	}
+
+	// start QUIC listener
+	go l.listenQUIC(pc, l.tlsConfig, &common.QUICCfg)
+
+	return l, nil
 }
 
 func NewListener(ctx context.Context, wsAddr, wtAddr, certPEM, keyPEM string) (net.Listener, error) {
@@ -482,7 +503,7 @@ func NewListener(ctx context.Context, wsAddr, wtAddr, certPEM, keyPEM string) (n
 	}()
 
 	// start QUIC listener
-	go l.listenQUIC(l.tlsConfig, &common.QUICCfg)
+	go l.listenQUIC(l.multiplexedPacketConn, l.tlsConfig, &common.QUICCfg)
 
 	return l, nil
 }
