@@ -104,3 +104,30 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 
 	return &bfconn, worker
 }
+
+func NewConsumerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
+	worker := NewWorkerFSM(wg, []FSMstate{
+		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
+			// State 0
+			// (no input data)
+			common.Debugf("User stream consumer state 0...")
+
+			// Send a path assertion IPC message representing the connectivity now provided by this slot
+			allowAll := []common.Endpoint{{Host: "*", Distance: 1}}
+			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}
+
+			select {}
+		}),
+	})
+
+	bfconn := BroflakeConn{
+		PacketConn:         &net.UDPConn{},
+		writeChan:          worker.com.tx,
+		readChan:           worker.com.rx,
+		addr:               common.DebugAddr(uuid.NewString()),
+		readDeadline:       time.Time{},
+		updateReadDeadline: make(chan time.Time, 512),
+	}
+
+	return &bfconn, worker
+}
