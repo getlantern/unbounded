@@ -7,12 +7,12 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-// Must be a valid semver
-var Version = "v0.0.2"
-
-var VersionHeader = "X-BF-Version"
-
-var TeamIdPrefix = "unbounded-team:"
+var (
+	// Must be a valid semver
+	Version       = "v0.0.2"
+	VersionHeader = "X-BF-Version"
+	TeamIdPrefix  = "unbounded-team:"
+)
 
 var QUICCfg = quic.Config{
 	MaxIncomingStreams:    int64(2 << 16),
@@ -40,7 +40,7 @@ type QUICStreamNetConn struct {
 	OnClose    func()
 	AddrLocal  net.Addr
 	AddrRemote net.Addr
-	TeamId     string
+	TeamId     string // optional, used by http-proxy-lantern
 }
 
 func (c QUICStreamNetConn) LocalAddr() net.Addr {

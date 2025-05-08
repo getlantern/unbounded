@@ -275,7 +275,7 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 	defer wspconn.Close()
 
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
-	//nClientsCounter.Add(context.Background(), 1)
+	nClientsCounter.Add(context.Background(), 1)
 
 	listener, err := quic.Listen(wspconn, l.tlsConfig, &common.QUICCfg)
 	if err != nil {
