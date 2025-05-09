@@ -91,7 +91,6 @@ func otelInit(ctx context.Context) error {
 			func(ctx context.Context, o metric.Observer) error {
 				b := atomic.LoadUint64(&nIngressBytes)
 				o.ObserveInt64(nIngressBytesCounter, int64(b))
-				common.Debugf("Ingress bytes: %v", b)
 				atomic.StoreUint64(&nIngressBytes, uint64(0))
 				return nil
 			},
@@ -180,8 +179,7 @@ type proxyListener struct {
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
 
-	mutex  sync.Mutex
-	closed bool
+	closeOnce sync.Once
 }
 
 func (l *proxyListener) Accept() (net.Conn, error) {
@@ -197,14 +195,9 @@ func (l *proxyListener) Addr() net.Addr {
 }
 
 func (l *proxyListener) Close() error {
-	l.mutex.Lock()
-	if l.closed {
-		l.mutex.Unlock()
-		return nil
-	}
-	l.closed = true
-	close(l.connections)
-	l.mutex.Unlock()
+	l.closeOnce.Do(func() {
+		close(l.connections)
+	})
 
 	// close both websocket and webtransport listeners
 	err1 := l.wsListener.Close()
@@ -351,6 +344,7 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, tlsConfig *tls.Config, qui
 		common.Debugf("QUIC accepted a new connection (remote addr: %v)", conn.RemoteAddr())
 
 		go func() {
+			defer nQUICConnectionsCounter.Add(context.Background(), -1)
 			for {
 				stream, err := conn.AcceptStream(context.Background())
 				if err != nil {
@@ -359,14 +353,13 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, tlsConfig *tls.Config, qui
 					errString := fmt.Sprintf("QUIC stream error (%v), closing QUIC connection!", err)
 					common.Debugf("%v", errString)
 					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
-					nQUICConnectionsCounter.Add(context.Background(), -1)
 					return
 				}
 
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
 				nQUICStreamsCounter.Add(context.Background(), 1)
 
-				l.connections <- common.QUICStreamNetConn{
+				l.connections <- &common.QUICStreamNetConn{
 					Stream: stream,
 					OnClose: func() {
 						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
