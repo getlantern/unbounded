@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -228,7 +229,19 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
+func extractTeamId(r *http.Request) string {
+	v := r.Header.Values("Sec-Websocket-Protocol")
+	for _, s := range v {
+		if strings.HasPrefix(s, common.TeamIdPrefix) {
+			return strings.TrimPrefix(s, common.TeamIdPrefix)
+		}
+	}
+	return ""
+}
+
 func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	teamId := extractTeamId(r)
+	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -273,9 +286,15 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			switch websocket.CloseStatus(err) {
+			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+				common.Debugf("%v closed normally", wspconn.addr)
+			default:
+				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			}
 			listener.Close()
 			break
+
 		}
 
 		nQUICConnectionsCounter.Add(context.Background(), 1)
@@ -294,7 +313,6 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 					nQUICConnectionsCounter.Add(context.Background(), -1)
 					return
 				}
-
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
 				nQUICStreamsCounter.Add(context.Background(), 1)
 
@@ -306,6 +324,7 @@ func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) 
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: tcpAddr,
+					TeamId:     teamId,
 				}
 			}
 		}()
@@ -476,7 +495,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -484,10 +503,6 @@ func NewWebSocketListener(ctx context.Context, addr, certPEM, keyPEM string) (ne
 	tlsConfig, err := tlsConfig(certPEM, keyPEM)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
-	}
-	ll, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to listen on %v: %w", addr, err)
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
@@ -567,5 +582,4 @@ func tlsConfigFromPEM(certPEM, keyPEM string) (*tls.Config, error) {
 		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
 		return generateTLSConfig(), nil
 	}
-
 }
