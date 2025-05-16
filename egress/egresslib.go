@@ -92,7 +92,6 @@ func otelInit(ctx context.Context) error {
 			func(ctx context.Context, o metric.Observer) error {
 				b := atomic.LoadUint64(&nIngressBytes)
 				o.ObserveInt64(nIngressBytesCounter, int64(b))
-				common.Debugf("Ingress bytes: %v", b)
 				atomic.StoreUint64(&nIngressBytes, uint64(0))
 				return nil
 			},
@@ -158,189 +157,9 @@ func (q websocketPacketConn) LocalAddr() net.Addr {
 	return q.addr
 }
 
-func (q websocketPacketConn) SetDeadline(t time.Time) error {
-	return nil
-}
-
-func (q websocketPacketConn) SetReadDeadline(t time.Time) error {
-	return nil
-}
-
-func (q websocketPacketConn) SetWriteDeadline(t time.Time) error {
-	return nil
-}
-
-type proxyListener struct {
-	net.Listener // the websocket or webtransport listener
-	connections  chan net.Conn
-	tlsConfig    *tls.Config
-	addr         net.Addr
-	closeMetrics func(ctx context.Context) error
-
-	mutex  sync.Mutex
-	closed bool
-
-	// The path for this proxy listener on the server, such as
-	// /ws for websockets or /wt for webtransport.
-	path string
-	name string
-}
-
-func (l *proxyListener) Accept() (net.Conn, error) {
-	conn, ok := <-l.connections
-	if !ok {
-		return nil, io.EOF
-	}
-	return conn, nil
-}
-
-func (l *proxyListener) Addr() net.Addr {
-	return l.addr
-}
-
-func (l *proxyListener) Close() error {
-	l.mutex.Lock()
-	if l.closed {
-		l.mutex.Unlock()
-		return nil
-	}
-	l.closed = true
-	close(l.connections)
-	l.mutex.Unlock()
-
-	err := l.Listener.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if l.closeMetrics != nil {
-		l.closeMetrics(ctx)
-	}
-	return err
-}
-
-func generateTLSConfig() *tls.Config {
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		panic(err)
-	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		panic(err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		panic(err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"broflake"},
-	}
-}
-
-func extractTeamId(r *http.Request) string {
-	v := r.Header.Values("Sec-Websocket-Protocol")
-	for _, s := range v {
-		if strings.HasPrefix(s, common.TeamIdPrefix) {
-			return strings.TrimPrefix(s, common.TeamIdPrefix)
-		}
-	}
-	return ""
-}
-
-func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	teamId := extractTeamId(r)
-	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
-	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
-	// patterns as strings using AcceptOptions.OriginPattern
-	// TODO: disabling compression is a workaround for a WebKit bug:
-	// https://github.com/getlantern/broflake/issues/45
-	c, err := websocket.Accept(
-		w,
-		r,
-		&websocket.AcceptOptions{
-			InsecureSkipVerify: true,
-			CompressionMode:    websocket.CompressionDisabled,
-		},
-	)
-	if err != nil {
-		common.Debugf("Error accepting WebSocket connection: %v", err)
-		return
-	}
-
-	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
-	if err != nil {
-		common.Debugf("Error resolving TCPAddr: %v", err)
-		return
-	}
-
-	wspconn := websocketPacketConn{
-		w:         c,
-		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive: websocketKeepalive,
-		tcpAddr:   tcpAddr,
-	}
-
-	defer wspconn.Close()
-
-	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
-	nClientsCounter.Add(context.Background(), 1)
-
-	listener, err := quic.Listen(wspconn, l.tlsConfig, &common.QUICCfg)
-	if err != nil {
-		common.Debugf("Error creating QUIC listener: %v", err)
-		return
-	}
-
-	for {
-		conn, err := listener.Accept(context.Background())
-		if err != nil {
-			switch websocket.CloseStatus(err) {
-			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
-				common.Debugf("%v closed normally", wspconn.addr)
-			default:
-				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
-			}
-			listener.Close()
-			break
-
-		}
-
-		nQUICConnectionsCounter.Add(context.Background(), 1)
-		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
-
-		go func() {
-			for {
-				stream, err := conn.AcceptStream(context.Background())
-
-				if err != nil {
-					// We interpret an error while accepting a stream to indicate an unrecoverable error with
-					// the QUIC connection, and so we close the QUIC connection altogether
-					errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", wspconn.addr, err)
-					common.Debugf("%v", errString)
-					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
-					nQUICConnectionsCounter.Add(context.Background(), -1)
-					return
-				}
-				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-				nQUICStreamsCounter.Add(context.Background(), 1)
-
-				l.connections <- common.QUICStreamNetConn{
-					Stream: stream,
-					OnClose: func() {
-						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
-						nQUICStreamsCounter.Add(context.Background(), -1)
-					},
-					AddrLocal:  l.addr,
-					AddrRemote: tcpAddr,
-					TeamId:     teamId,
-				}
-			}
-		}()
-	}
-}
+func (q websocketPacketConn) SetDeadline(t time.Time) error      { return nil }
+func (q websocketPacketConn) SetReadDeadline(t time.Time) error  { return nil }
+func (q websocketPacketConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // webtransportPacketConn wraps a net.PacketConn and provides statistics
 type webtransportPacketConn struct {
@@ -379,40 +198,148 @@ func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
 	return wtpconn.PacketConn.SetWriteDeadline(t)
 }
 
-func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
-	addr := common.DebugAddr(fmt.Sprintf("WebTransport connection %v", uuid.NewString()))
-	wtpconn := webtransportPacketConn{pconn}
-	defer wtpconn.Close()
+// proxyListener implements net.Listener and listens for QUIC connections
+type proxyListener struct {
+	listeners []net.Listener // the listeners associated with it
 
-	common.Debugf("Accepted a new WebTransport connection! (%v total)", atomic.AddUint64(&nClients, 1))
-	nClientsCounter.Add(context.Background(), 1)
+	mpconn *multiplexedPacketConn // the multiplexed PacketConn which will be used as the QUIC transport
 
-	listener, err := quic.Listen(wtpconn, l.tlsConfig, &common.QUICCfg)
+	connections  chan net.Conn
+	tlsConfig    *tls.Config
+	addr         net.Addr
+	closeMetrics func(ctx context.Context) error
+
+	closeOnce sync.Once
+}
+
+func (l *proxyListener) Accept() (net.Conn, error) {
+	conn, ok := <-l.connections
+	if !ok {
+		return nil, io.EOF
+	}
+	return conn, nil
+}
+
+func (l *proxyListener) Addr() net.Addr {
+	return l.addr
+}
+
+func (l *proxyListener) Close() error {
+	var err error
+	l.closeOnce.Do(func() {
+		close(l.connections)
+
+		// close listeners
+		for _, listener := range l.listeners {
+			err = errors.Join(err, listener.Close())
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if l.closeMetrics != nil {
+			l.closeMetrics(ctx)
+		}
+	})
+	return err
+}
+
+func extractTeamId(r *http.Request) string {
+	v := r.Header.Values("Sec-Websocket-Protocol")
+	for _, s := range v {
+		if strings.HasPrefix(s, common.TeamIdPrefix) {
+			return strings.TrimPrefix(s, common.TeamIdPrefix)
+		}
+	}
+	return ""
+}
+
+// handleWebSocket is a http.HandlerFunc that acepts websocket connections, wraps to a net.PacketConn, and add the connection to the multiplex PacketConn
+func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	teamId := extractTeamId(r)
+	// TODO: note that the teamId is not sent anywhere yet. We should also add this to the webtransport path too.
+	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
+	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
+	// patterns as strings using AcceptOptions.OriginPattern
+	// TODO: disabling compression is a workaround for a WebKit bug:
+	// https://github.com/getlantern/broflake/issues/45
+	c, err := websocket.Accept(
+		w,
+		r,
+		&websocket.AcceptOptions{
+			InsecureSkipVerify: true,
+			CompressionMode:    websocket.CompressionDisabled,
+		},
+	)
 	if err != nil {
-		common.Debugf("Error creating QUIC listener on webtransport datagram: %v", err)
+		common.Debugf("Error accepting WebSocket connection: %v", err)
 		return
 	}
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
+	if err != nil {
+		common.Debugf("Error resolving TCPAddr: %v", err)
+		return
+	}
+	id := uuid.NewString()
+	wspconn := websocketPacketConn{
+		w:         c,
+		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", id)),
+		keepalive: websocketKeepalive,
+		tcpAddr:   tcpAddr,
+	}
+	close := l.mpconn.AddTunnel(id, wspconn)
+	common.Debugf("Accepted a new WebSocket connection %v! (%v total)", id, atomic.AddUint64(&nClients, 1))
+	nClientsCounter.Add(context.Background(), 1)
+
+	// wait for the current tunnel to close, which will only happen if wspconn is closed
+	<-close
+}
+
+// handleWebTransport is a datagram handler that adds the PacketConn to the multiplex PacketConn
+func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.Addr) {
+	id := uuid.NewString()
+	wtpconn := webtransportPacketConn{pconn}
+	close := l.mpconn.AddTunnel(id, wtpconn)
+	common.Debugf("Accepted a new WebTransport connection %v! (%v total)", id, atomic.AddUint64(&nClients, 1))
+	nClientsCounter.Add(context.Background(), 1)
+
+	// wait for the current tunnel to close, which will only happen if wtpconn is closed
+	<-close
+}
+
+// listenQUIC starts a QUIC listener on the given PacketConn, and for each accepted quic.Stream wraps it to a net.Conn and send it over the connections channel
+func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
+	tr := &quic.Transport{
+		Conn:              pc,
+		StatelessResetKey: &quic.StatelessResetKey{}, // enable stateless reset
+	}
+	listener, err := tr.Listen(l.tlsConfig, quicConfig)
+	if err != nil {
+		common.Debugf("Unable to start QUIC listener: %v", err)
+		return
+	}
+
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", addr, err)
+			common.Debugf("QUIC listener error (%v), closing!", err)
 			listener.Close()
 			break
 		}
 
 		nQUICConnectionsCounter.Add(context.Background(), 1)
-		common.Debugf("%v accepted a new QUIC connection!", addr)
+		common.Debugf("QUIC accepted a new connection (remote addr: %v)", conn.RemoteAddr())
 
 		go func() {
+			defer nQUICConnectionsCounter.Add(context.Background(), -1)
 			for {
 				stream, err := conn.AcceptStream(context.Background())
 				if err != nil {
 					// We interpret an error while accepting a stream to indicate an unrecoverable error with
 					// the QUIC connection, and so we close the QUIC connection altogether
-					errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", addr, err)
+					errString := fmt.Sprintf("QUIC stream error (%v), closing QUIC connection!", err)
 					common.Debugf("%v", errString)
 					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
-					nQUICConnectionsCounter.Add(context.Background(), -1)
 					return
 				}
 
@@ -426,13 +353,93 @@ func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.
 						nQUICStreamsCounter.Add(context.Background(), -1)
 					},
 					AddrLocal:  l.addr,
-					AddrRemote: remoteAddr,
+					AddrRemote: conn.RemoteAddr(),
 				}
 			}
 		}()
 	}
 }
 
+// NewListenerFromPacketConn starts a QUIC listener on the given PacketConn and returns the QUIC listener
+func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string) (net.Listener, error) {
+	if err := otelInit(ctx); err != nil {
+		return nil, err
+	}
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+
+	l := &proxyListener{
+		connections: make(chan net.Conn, 2048),
+		tlsConfig:   tlsConfig,
+	}
+
+	// start QUIC listener
+	go l.listenQUIC(pc, &common.QUICCfg)
+
+	return l, nil
+}
+
+// NewWebSocketListener starts a WebSocket listener on path "/ws" from the baseListener, and then starts a QUIC listener on top of
+// all accepted websocket connections, returning the QUIC listener
+func NewWebSocketListener(ctx context.Context, baseListener net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+	if err := otelInit(ctx); err != nil {
+		return nil, err
+	}
+	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+	tlsConfig, err := tlsConfig(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
+	}
+
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
+	l := &proxyListener{
+		listeners:    []net.Listener{baseListener},
+		connections:  make(chan net.Conn, 2048),
+		mpconn:       newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
+		tlsConfig:    tlsConfig,
+		addr:         baseListener.Addr(),
+		closeMetrics: closeFuncMetric,
+	}
+
+	// start WebSocket server
+	srv := &http.Server{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), "/ws"))
+	go func() {
+		common.Debugf("Egress server listening for WebSocket connections on %v", baseListener.Addr())
+
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- srv.Serve(baseListener)
+		}()
+
+		select {
+		case <-ctx.Done():
+			common.Debugf("Egress server context cancelled. Shutting down WebSocket server...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
+				common.Debugf("Error shutting down WebSocket server: %v", err)
+			}
+		case err := <-errChan:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				common.Debugf("Egress server failed to serve WebSocket: %v", err)
+			}
+		}
+	}()
+
+	// start QUIC listener
+	go l.listenQUIC(l.mpconn, &common.QUICCfg)
+
+	return l, nil
+}
+
+// NewWebTransportListener starts a WebTransport listener on the given address at path "/wt", and then starts a QUIC listener on top of
+// all accepted WebTransport datagram connections, returning the QUIC listener
 func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
@@ -449,14 +456,13 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 		return nil, fmt.Errorf("error resolving TCPAddr %w", err)
 	}
 
-	// We use this wrapped listener to enable our local HTTP proxy to listen for WebTransport connections
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
 		connections:  make(chan net.Conn, 2048),
+		mpconn:       newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
 		tlsConfig:    tlsConfig,
 		addr:         tcpAddr,
 		closeMetrics: closeFuncMetric,
-		path:         "/wt",
-		name:         "webtransport",
 	}
 
 	options := &webt.ListenOptions{
@@ -469,23 +475,25 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 		Path:            "/wt",
 		DatagramHandler: l.handleWebTransport,
 	}
-	wl, err := webt.ListenAddr(options)
+
+	// WebTransport listener
+	wtl, err := webt.ListenAddr(options)
 	if err != nil {
 		return nil, err
 	}
-	// set the webtransport listener to our wrapped listener so it can be closed properly
-	l.Listener = wl
+	l.listeners = []net.Listener{wtl}
 
+	// start WebTransport server
 	srv := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 	go func() {
-		common.Debugf("Egress server listening for WebTransport connections on %v", wl.Addr())
+		common.Debugf("Egress server listening for WebTransport connections on %v", wtl.Addr())
 
 		errChan := make(chan error, 1)
 		go func() {
-			errChan <- srv.Serve(wl)
+			errChan <- srv.Serve(wtl)
 		}()
 
 		select {
@@ -503,10 +511,15 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 		}
 	}()
 
+	// start QUIC listener
+	go l.listenQUIC(l.mpconn, &common.QUICCfg)
+
 	return l, nil
 }
 
-func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+// NewWebSocketWebTransportListener starts both a WebSocket listener on wsAddr at path "/ws", and a WebTransport listener on wtAddr at path "/wt",
+// and then starts a QUIC listener on top of all accepts WebSocket connections and WebTransport datagram connections, returning the QUIC listener
+func NewWebSocketWebTransportListener(ctx context.Context, wsAddr, wtAddr, certPEM, keyPEM string) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -516,28 +529,53 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
 	}
 
-	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
-	l := &proxyListener{
-		Listener:     ll,
-		connections:  make(chan net.Conn, 2048),
-		tlsConfig:    tlsConfig,
-		addr:         ll.Addr(),
-		closeMetrics: closeFuncMetric,
-		path:         "/ws",
-		name:         "websocket",
+	// WebSocket listener
+	lc := net.ListenConfig{}
+	wsl, err := lc.Listen(ctx, "tcp", wsAddr)
+	if err != nil {
+		return nil, fmt.Errorf("unable to listen on %v: %w", wsAddr, err)
 	}
 
-	srv := &http.Server{
+	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
+	l := &proxyListener{
+		listeners:    []net.Listener{wsl},
+		connections:  make(chan net.Conn, 2048),
+		mpconn:       newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
+		tlsConfig:    tlsConfig,
+		addr:         wsl.Addr(), // we ignore webtransport address here and just use the websocket address
+		closeMetrics: closeFuncMetric,
+	}
+
+	options := &webt.ListenOptions{
+		Addr:      wtAddr,
+		TLSConfig: tlsConfig,
+		QUICConfig: &quicwrapper.Config{
+			MaxIncomingStreams: 2000,
+			EnableDatagrams:    true,
+		},
+		Path:            "/wt",
+		DatagramHandler: l.handleWebTransport,
+	}
+
+	// WebTransport listener
+	wtl, err := webt.ListenAddr(options)
+	if err != nil {
+		return nil, err
+	}
+	l.listeners = append(l.listeners, wtl)
+
+	// start WebSocket server
+	srvWS := &http.Server{
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	http.Handle(l.path, otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), l.path))
+	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), "/ws"))
 	go func() {
-		common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
+		common.Debugf("Egress server listening for WebSocket connections on %v", wsl.Addr())
 
 		errChan := make(chan error, 1)
 		go func() {
-			errChan <- srv.Serve(ll)
+			errChan <- srvWS.Serve(wsl)
 		}()
 
 		select {
@@ -545,7 +583,7 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 			common.Debugf("Egress server context cancelled. Shutting down WebSocket server...")
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			if err := srv.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
+			if err := srvWS.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
 				common.Debugf("Error shutting down WebSocket server: %v", err)
 			}
 		case err := <-errChan:
@@ -554,6 +592,37 @@ func NewWebSocketListener(ctx context.Context, ll net.Listener, certPEM, keyPEM 
 			}
 		}
 	}()
+
+	// start WebTransport server
+	srvWT := &http.Server{
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+	}
+	go func() {
+		common.Debugf("Egress server listening for WebTransport connections on %v", wtl.Addr())
+
+		errChan := make(chan error, 1)
+		go func() {
+			errChan <- srvWT.Serve(wtl)
+		}()
+
+		select {
+		case <-ctx.Done():
+			common.Debugf("Egress server context cancelled. Shutting down WebTransport server...")
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := srvWT.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
+				common.Debugf("Error shutting down WebTransport server: %v", err)
+			}
+		case err := <-errChan:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				common.Debugf("Egress server failed to serve WebTransport: %v", err)
+			}
+		}
+	}()
+
+	// start QUIC listener
+	go l.listenQUIC(l.mpconn, &common.QUICCfg)
 
 	return l, nil
 }
@@ -592,5 +661,28 @@ func tlsConfigFromPEM(certPEM, keyPEM string) (*tls.Config, error) {
 	} else {
 		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
 		return generateTLSConfig(), nil
+	}
+}
+
+func generateTLSConfig() *tls.Config {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		panic(err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		panic(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		panic(err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"broflake"},
 	}
 }
