@@ -346,7 +346,7 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
 				nQUICStreamsCounter.Add(context.Background(), 1)
 
-				l.connections <- common.QUICStreamNetConn{
+				l.connections <- &common.QUICStreamNetConn{
 					Stream: stream,
 					OnClose: func() {
 						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
