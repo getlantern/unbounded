@@ -8,6 +8,9 @@ NETSTATE_DEFAULT=http://localhost:8080/exec
 
 PROXYPORT_DEFAULT=1080
 
+# command to generate a self-signed localhost certificate for webtransports
+# openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt -subj '/CN=localhost' -addext "subjectAltName = DNS:localhost"
+
 usage () {
     echo "Usage: $0 run_type [peers]"
     echo "  options:"
@@ -118,7 +121,7 @@ ui_commands=(
     "cd netstate/d && UNSAFE=1 go run ."
 )
 
-#start everything except egress, useful for testing egress server without restarting the other components
+# start everything except egress, useful for testing egress server without restarting the other components
 # to use run an egress server separately at localhost:8000 
 custom_egress_commands=(
     # start freddie for matchmaking
@@ -129,6 +132,23 @@ custom_egress_commands=(
 
     # build and start native binary widget
     "cd cmd && ./build.sh widget && cd dist/bin && TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=$EGRESS_DEFAULT ./widget"
+
+    # start netstate
+    "cd netstate/d && UNSAFE=1 go run ."
+)
+
+# Start everything for webtransports
+wt_commands=(
+    # start freddie for matchmaking
+    "PORT=9000 go run ./freddie/cmd"
+
+    "TLS_CERT=localhost.crt TLS_KEY=localhost.key PORT=8000 go run ./egress/cmd/egress.go 2>&1 | tee -a egress.txt"
+
+    # Start desktop proxy for outgoing connections: set firefox to use '127.0.0.1:PROXYPORT_DEFAULT' for http and https
+    "cd cmd && ./build.sh desktop && cd dist/bin && CA=../../../localhost.crt SERVER_NAME=localhost TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=https://localhost:8001 PORT=$PROXYPORT_DEFAULT WEBTRANSPORT=1 ./desktop"
+
+    # build and start native binary widget
+    "cd cmd && ./build.sh widget && cd dist/bin && CA=../../../localhost.crt TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT EGRESS=https://localhost:8001 WEBTRANSPORT=1 ./widget"
 
     # start netstate
     "cd netstate/d && UNSAFE=1 go run ."
@@ -147,6 +167,11 @@ elif [ "$1" == "ui" ]; then
 elif [ "$1" == "egress" ]; then
     echo "Using custom egress option"
     commands=("${custom_egress_commands[@]}")
+elif [ "$1" == "wt" ]; then
+    #create a self-signed certificate for localhost
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt -subj '/CN=localhost' -addext 'subjectAltName = DNS:localhost'
+    echo "Using webtransports option"
+    commands=("${wt_commands[@]}")
 else
     echo "Unknown option $1";
     usage;
