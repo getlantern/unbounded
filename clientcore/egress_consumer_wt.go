@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -76,6 +77,10 @@ func NewEgressConsumerWebTransport(options *EgressOptions, wg *sync.WaitGroup) *
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
+
+			teamId := "12345"
+			teamInfo := []byte(fmt.Sprintf("teamId:%v_end_id", teamId))
+			pconn.WriteTo(teamInfo, nil) // send some info as the first few bytes
 
 			return 1, []interface{}{pconn}
 		}),

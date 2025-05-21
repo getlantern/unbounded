@@ -373,6 +373,13 @@ func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.
 	wtpconn := webtransportPacketConn{pconn}
 	defer wtpconn.Close()
 
+	//read only the first few bytes then continue as normal
+	p := make([]byte, common.InfoPrefixSize)
+	wtpconn.ReadFrom(p)
+	teamId := string(p[7:12]) //TODO: not hardcode this
+	teamMsg := fmt.Sprintf("teamId: %v", teamId)
+	common.Debug(teamMsg)
+
 	common.Debugf("Accepted a new WebTransport connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
@@ -416,6 +423,7 @@ func (l *proxyListener) handleWebTransport(pconn net.PacketConn, remoteAddr net.
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: remoteAddr,
+					TeamId:     teamId,
 				}
 			}
 		}()
@@ -439,6 +447,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebTransport connections
+	tlsConfig.InsecureSkipVerify = true
 	l := &proxyListener{
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
