@@ -61,7 +61,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
 
 			// Construct the RTCPeerConnection
-			peerConnection, err := webrtc.NewPeerConnection(config)
+			peerConnection, err := createPeerConnection(options.UDPConn, config)
 			if err != nil {
 				common.Debugf("Error creating RTCPeerConnection: %v", err)
 				return 0, []interface{}{}
