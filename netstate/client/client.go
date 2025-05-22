@@ -40,13 +40,16 @@ func DecodeArgsOpConsumerState(args []string) [][]string {
 	return decoded
 }
 
-func Exec(netstated string, inst *Instruction) error {
+func Exec(httpClient *http.Client, netstated string, inst *Instruction) error {
 	serialized, err := json.Marshal(inst)
 	if err != nil {
 		return err
 	}
 
-	res, err := http.Post(netstated, "application/json; charset=UTF-8", bytes.NewBuffer(serialized))
+	if httpClient == nil {
+		httpClient = &http.Client{}
+	}
+	res, err := httpClient.Post(netstated, "application/json; charset=UTF-8", bytes.NewBuffer(serialized))
 	if err != nil {
 		return err
 	}

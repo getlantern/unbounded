@@ -3,6 +3,7 @@ package clientcore
 
 import (
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -99,7 +100,7 @@ func DownstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	}
 }
 
-func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+func UpstreamUIHandler(ui UIImpl, netstated, tag string, httpClient *http.Client) func(msg IPCMsg) {
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
 		case ConsumerInfoIPC:
@@ -128,6 +129,7 @@ func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 
 				// Send it to netstated!
 				err := netstatecl.Exec(
+					httpClient,
 					netstated,
 					inst,
 				)
