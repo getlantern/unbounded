@@ -69,7 +69,7 @@ type QUICLayer struct {
 
 // DialAndMaintainQUICConnection attempts to create and maintain an e2e QUIC connection by dialing
 // the other end, detecting if that connection breaks, and redialing. Forever.
-func (c *QUICLayer) DialAndMaintainQUICConnection() {
+func (c *QUICLayer) DialAndMaintainQUICConnection(connChan chan quic.Connection) {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	// State 1 of 2: Keep dialing until we acquire a connection
@@ -109,6 +109,10 @@ func (c *QUICLayer) DialAndMaintainQUICConnection() {
 			c.eventualConn.set(conn)
 			c.mx.Unlock()
 			common.Debug("QUIC connection established, ready to proxy!")
+			// announce the QUIC connection over the channel
+			if connChan != nil {
+				connChan <- conn
+			}
 
 			// State 2 of 2: Connection established, block until we detect a half open or a ctx cancel
 			_, err := conn.AcceptStream(c.ctx)
