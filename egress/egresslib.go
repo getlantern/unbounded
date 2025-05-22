@@ -210,6 +210,9 @@ type proxyListener struct {
 	closeMetrics func(ctx context.Context) error
 
 	closeOnce sync.Once
+
+	// this handler can be set that handles incoming packets
+	datagramHandler func(qconn quic.Connection)
 }
 
 func (l *proxyListener) Accept() (net.Conn, error) {
@@ -357,11 +360,16 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 				}
 			}
 		}()
+
+		// call datagram handling callback if any
+		if l.datagramHandler != nil {
+			go l.datagramHandler(conn)
+		}
 	}
 }
 
 // NewListenerFromPacketConn starts a QUIC listener on the given PacketConn and returns the QUIC listener
-func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string) (net.Listener, error) {
+func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string, datagramHandler func(qconn quic.Connection)) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -371,8 +379,10 @@ func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, 
 	}
 
 	l := &proxyListener{
-		connections: make(chan net.Conn, 2048),
-		tlsConfig:   tlsConfig,
+		connections:     make(chan net.Conn, 2048),
+		tlsConfig:       tlsConfig,
+		addr:            pc.LocalAddr(),
+		datagramHandler: datagramHandler,
 	}
 
 	// start QUIC listener
