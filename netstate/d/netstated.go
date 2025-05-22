@@ -110,6 +110,18 @@ func (g *multigraph) degree(v vertexLabel) int {
 	return len(g.data[v].edges)
 }
 
+func (g *multigraph) updateVertexEdge(label vertexLabel, edges []edge) {
+	g.Lock()
+	defer g.Unlock()
+	vv, ok := g.data[label]
+	if !ok {
+		common.Debugf("updateVertexEdge: label %v not found", label)
+		return
+	}
+	vv.edges = edges
+	g.data[label] = vv
+}
+
 // prune deletes expired vertices from this multigraph based on the delta between ttl and the current time
 // TODO: this is an unoptimized solution, requiring two passes through the data structure
 func (g *multigraph) prune(ttl time.Duration) {
@@ -352,10 +364,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 			world.addVertex(remoteLabel, lat, lon, clientTypeCensored)
 			newEdges = append(newEdges, edge{label: remoteLabel, id: workerIdx})
 		}
-
-		vv := world.data[localLabel]
-		vv.edges = newEdges
-		world.data[localLabel] = vv
+		world.updateVertexEdge(localLabel, newEdges)
 	}
 
 	w.WriteHeader(http.StatusOK)
