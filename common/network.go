@@ -20,6 +20,7 @@ var QUICCfg = quic.Config{
 	MaxIncomingUniStreams: int64(2 << 16),
 	MaxIdleTimeout:        16 * time.Second,
 	KeepAlivePeriod:       8 * time.Second,
+	EnableDatagrams:       true,
 }
 
 type DebugAddr string
