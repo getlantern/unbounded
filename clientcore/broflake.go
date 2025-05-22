@@ -3,6 +3,7 @@ package clientcore
 
 import (
 	"fmt"
+	"net/http"
 	"runtime"
 	"sync"
 	"time"
@@ -12,17 +13,18 @@ import (
 )
 
 type BroflakeEngine struct {
-	cTable            *WorkerTable
-	pTable            *WorkerTable
-	ui                UI
-	wg                *sync.WaitGroup
-	netstated         string
-	tag               string
-	netstateHeartbeat time.Duration
-	netstateStop      chan struct{}
+	cTable             *WorkerTable
+	pTable             *WorkerTable
+	ui                 UI
+	wg                 *sync.WaitGroup
+	netstated          string
+	tag                string
+	netstateHeartbeat  time.Duration
+	netstateStop       chan struct{}
+	netstateHttpClient *http.Client
 }
 
-func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
+func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string, httpClient *http.Client) *BroflakeEngine {
 	return &BroflakeEngine{
 		cTable,
 		pTable,
@@ -32,6 +34,7 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 		tag,
 		1 * time.Minute,
 		make(chan struct{}, 0),
+		httpClient,
 	}
 }
 
@@ -47,6 +50,7 @@ func (b *BroflakeEngine) start() {
 			for {
 				common.Debug("Netstate HEARTBEAT")
 				err := netstatecl.Exec(
+					b.netstateHttpClient,
 					b.netstated,
 					&netstatecl.Instruction{
 						Op:   netstatecl.OpConsumerState,
@@ -179,7 +183,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	}
 
 	// Step 2: Build Broflake
-	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag)
+	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag, bfOpt.NetstateHttpClient)
 
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
@@ -187,7 +191,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// Step 4: Set up the bus, bind upstream and downstream UI handlers
 	var bus = NewIpcObserver(
 		bfOpt.BusBufferSz,
-		UpstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag),
+		UpstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag, bfOpt.NetstateHttpClient),
 		DownstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag),
 	)
 
