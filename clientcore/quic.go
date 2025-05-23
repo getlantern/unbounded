@@ -99,6 +99,9 @@ func (c *QUICLayer) DialAndMaintainQUICConnection() {
 		}()
 
 		select {
+		case <-c.ctx.Done():
+			common.Debugf("Cancelling QUIC dialer!")
+			return
 		case err := <-connErr:
 			common.Debugf("QUIC dial failed (%v), retrying...", err)
 		case conn := <-connEstablished:
