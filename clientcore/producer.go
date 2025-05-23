@@ -30,6 +30,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// (no input data)
 			common.Debugf("Producer state 0, constructing RTCPeerConnection...")
 
+			select {
+			case <-ctx.Done():
+				return 0, []interface{}{}
+			default:
+			}
+
 			// Populate the STUN cache if necessary
 			if scache.size() == 0 {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
@@ -121,6 +127,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionClosed := input[3].(chan struct{})
 			common.Debugf("Producer state 1...")
 
+			select {
+			case <-ctx.Done():
+				return 0, []interface{}{}
+			default:
+			}
+
 			// Do we have a non-nil path assertion, indicating that we have upstream connectivity to share?
 			// We find out by sending an ConnectivityCheckIPC message, which asks the process responsible
 			// for path assertions to send a message reflecting the current state of our path assertion.
@@ -186,7 +198,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HttpClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal genesis message to %v: %v", options.DiscoverySrv+options.Endpoint, err)
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			defer res.Body.Close()
@@ -196,7 +212,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Handle bad protocol version
 			if res.StatusCode == 418 {
 				common.Debugf("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -276,9 +296,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			case <-time.After(options.ICEFailTimeout):
 				common.Debugf("Timeout, aborting ICE gathering!")
 				scache.drop()
-
-				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			case <-ctx.Done():
+				scache.drop()
+				peerConnection.Close()
 				return 0, []interface{}{}
 			}
 
@@ -322,7 +344,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HttpClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal answer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err)
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+				case <-time.After(options.ErrorBackoff):
+				}
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -332,7 +357,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			switch res.StatusCode {
 			case 418:
 				common.Debugf("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+				case <-time.After(options.ErrorBackoff):
+				}
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -449,6 +477,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			case <-ctx.Done():
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
 			}
 
 			// XXX: This loop represents an alternate strategy for detecting NAT traversal success or
@@ -497,6 +528,13 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			remoteAddr := input[4].(net.IP)
 			offer := input[5].(common.OfferMsg)
 			common.Debugf("Producer state 5...")
+
+			select {
+			case <-ctx.Done():
+				peerConnection.Close()
+				return 0, []interface{}{}
+			default:
+			}
 
 			// Announce the new connectivity situation for this slot
 			com.tx <- IPCMsg{

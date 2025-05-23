@@ -112,7 +112,9 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 			// (no input data)
 			common.Debugf("User stream producer state 0...")
 			// TODO: check for a non-nil path assertion to alert the UI that we're ready to proxy?
-			select {}
+
+			<-ctx.Done()
+			return 0, nil
 		}),
 	})
 
@@ -140,7 +142,8 @@ func NewConsumerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 			allowAll := []common.Endpoint{{Host: "*", Distance: 1}}
 			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}
 
-			select {}
+			<-ctx.Done()
+			return 0, nil
 		}),
 	})
 
