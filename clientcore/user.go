@@ -8,6 +8,8 @@ package clientcore
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -21,16 +23,19 @@ type BroflakeConn struct {
 	net.PacketConn
 	writeChan          chan IPCMsg
 	readChan           chan IPCMsg
-	addr               common.DebugAddr
+	localAddr          common.DebugAddr
+	remoteAddr         common.DebugAddr
 	readDeadline       time.Time
 	updateReadDeadline chan time.Time
+
+	closeOnce sync.Once
 }
 
-func (c BroflakeConn) LocalAddr() net.Addr {
-	return c.addr
+func (c *BroflakeConn) LocalAddr() net.Addr {
+	return c.localAddr
 }
 
-func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (c *BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	for {
 		var ctx context.Context
 
@@ -38,18 +43,27 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		if c.readDeadline.IsZero() {
 			ctx, _ = context.WithCancel(context.Background())
 		} else {
-			ctx, _ = context.WithDeadline(context.Background(), c.readDeadline)
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithDeadline(context.Background(), c.readDeadline)
+			defer cancel()
 		}
 
 		select {
-		case msg := <-c.readChan:
+		case msg, ok := <-c.readChan:
+			if !ok {
+				return 0, c.remoteAddr, io.EOF
+			}
+
 			// The read completed, let's return some bytes!
-			payload := msg.Data.([]byte)
+			payload, ok := msg.Data.([]byte)
+			if !ok {
+				return 0, c.remoteAddr, fmt.Errorf("wrong type of IPC message: %T", msg.Data)
+			}
 			copy(p, payload)
-			return len(payload), common.DebugAddr("DEBUG NELSON WUZ HERE"), nil
+			return len(payload), c.remoteAddr, nil
 		case <-ctx.Done():
 			// We're past our deadline, so let's return failure!
-			return 0, common.DebugAddr("DEBUG NELSON WUZ HERE"), ctx.Err()
+			return 0, c.remoteAddr, ctx.Err()
 		case d := <-c.updateReadDeadline:
 			// Someone updated the read deadline, so let's iterate to respect the new deadline
 			c.readDeadline = d
@@ -57,7 +71,7 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	}
 }
 
-func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+func (c *BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	// TODO: This copy seems necessary to avoid a data race
 	b := make([]byte, len(p))
 	copy(b, p)
@@ -67,6 +81,7 @@ func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		// Do nothing, message sent
 	default:
 		// Drop the chunk if we can't keep up with the data rate
+		return 0, fmt.Errorf("dropped chunk")
 	}
 
 	return len(b), nil
@@ -77,8 +92,16 @@ func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 // But when we bumped to quic-go 0.40, it emerged that the dialer wouldn't work unless we added
 // support for read deadlines. Since there's still no evidence that the dialer cares about write
 // deadlines, we haven't added support for those yet.
-func (c BroflakeConn) SetReadDeadline(t time.Time) error {
+func (c *BroflakeConn) SetReadDeadline(t time.Time) error {
 	c.updateReadDeadline <- t
+	return nil
+}
+
+func (c *BroflakeConn) Close() error {
+	c.closeOnce.Do(func() {
+		close(c.writeChan)
+		close(c.readChan)
+	})
 	return nil
 }
 
@@ -97,7 +120,8 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 		PacketConn:         &net.UDPConn{},
 		writeChan:          worker.com.tx,
 		readChan:           worker.com.rx,
-		addr:               common.DebugAddr(uuid.NewString()),
+		localAddr:          common.DebugAddr(uuid.NewString()),
+		remoteAddr:         common.DebugAddr(uuid.NewString()),
 		readDeadline:       time.Time{},
 		updateReadDeadline: make(chan time.Time, 512),
 	}
@@ -124,7 +148,8 @@ func NewConsumerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 		PacketConn:         &net.UDPConn{},
 		writeChan:          worker.com.tx,
 		readChan:           worker.com.rx,
-		addr:               common.DebugAddr(uuid.NewString()),
+		localAddr:          common.DebugAddr(uuid.NewString()),
+		remoteAddr:         common.DebugAddr(uuid.NewString()),
 		readDeadline:       time.Time{},
 		updateReadDeadline: make(chan time.Time, 512),
 	}
