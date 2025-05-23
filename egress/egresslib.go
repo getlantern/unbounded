@@ -200,7 +200,8 @@ func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
 
 // proxyListener implements net.Listener and listens for QUIC connections
 type proxyListener struct {
-	listeners []net.Listener // the listeners associated with it
+	listeners    []net.Listener // the listeners associated with it
+	quicListener *quic.Listener
 
 	mpconn *multiplexedPacketConn // the multiplexed PacketConn which will be used as the QUIC transport
 
@@ -235,6 +236,10 @@ func (l *proxyListener) Close() error {
 		// close listeners
 		for _, listener := range l.listeners {
 			err = errors.Join(err, listener.Close())
+		}
+		// close quic listener
+		if l.quicListener != nil {
+			err = errors.Join(err, l.quicListener.Close())
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -321,6 +326,7 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 		common.Debugf("Unable to start QUIC listener: %v", err)
 		return
 	}
+	l.quicListener = listener
 
 	for {
 		conn, err := listener.Accept(context.Background())
