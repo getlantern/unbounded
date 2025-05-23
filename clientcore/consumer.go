@@ -32,6 +32,12 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// (no input data)
 			common.Debugf("Consumer state 0, constructing RTCPeerConnection...")
 
+			select {
+			case <-ctx.Done():
+				return 0, []interface{}{}
+			default:
+			}
+
 			// We're resetting this slot, so send a nil path assertion IPC message
 			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
 
@@ -153,7 +159,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HttpClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't subscribe to genesis stream at %v: %v", options.DiscoverySrv+options.Endpoint, err)
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			defer res.Body.Close()
@@ -161,7 +171,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Handle bad protocol version
 			if res.StatusCode == http.StatusTeapot {
 				common.Debugf("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -205,7 +219,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					rt, _, err := common.DecodeSignalMsg(rawMsg)
 					if err != nil {
 						common.Debugf("Error decoding signal message: %v (msg: %v)", err, string(rawMsg))
-						<-time.After(options.ErrorBackoff)
+						select {
+						case <-ctx.Done():
+							return 0, []interface{}{}
+						case <-time.After(options.ErrorBackoff):
+						}
 						// Take the error in stride, continue listening to our existing HTTP request stream
 						continue
 					}
@@ -219,6 +237,8 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					break listenLoop
 				case <-patienceExpired:
 					break listenLoop
+				case <-ctx.Done():
+					return 0, []interface{}{}
 				}
 			}
 
@@ -302,7 +322,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HttpClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal offer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err)
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			defer res.Body.Close()
@@ -310,7 +334,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			switch res.StatusCode {
 			case http.StatusTeapot:
 				common.Debugf("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+					return 0, []interface{}{}
+				case <-time.After(options.ErrorBackoff):
+				}
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusNotFound:
 				// We didn't win the connection
@@ -408,6 +436,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			case <-ctx.Done():
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
 			}
 
 			return 3, []interface{}{peerConnection, replyTo, candidates, connectionEstablished, connectionChange, connectionClosed}
@@ -461,7 +492,10 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HttpClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal ICE candidates to %v: %v", options.DiscoverySrv+options.Endpoint, err)
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+				case <-time.After(options.ErrorBackoff):
+				}
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -471,7 +505,10 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			switch res.StatusCode {
 			case http.StatusTeapot:
 				common.Debugf("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				select {
+				case <-ctx.Done():
+				case <-time.After(options.ErrorBackoff):
+				}
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -516,6 +553,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				common.Debugf("NAT failure, aborting!")
 				go otel.CollectAndSendNATBehaviorTelemetry(STUNSrvs, "nat_failure")
 				// Borked!
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			case <-ctx.Done():
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
