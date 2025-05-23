@@ -75,9 +75,11 @@ func (b *BroflakeEngine) start() {
 	}
 }
 
-func (b *BroflakeEngine) stop() {
+func (b *BroflakeEngine) stop() <-chan struct{} {
 	b.cTable.Stop()
 	b.pTable.Stop()
+
+	stopped := make(chan struct{})
 
 	go func() {
 		b.wg.Wait()
@@ -88,7 +90,15 @@ func (b *BroflakeEngine) stop() {
 
 		common.Debug("■ Broflake stopped.")
 		b.ui.OnReady()
+
+		close(stopped)
 	}()
+
+	return stopped
+}
+
+func (b *BroflakeEngine) Close() <-chan struct{} {
+	return b.stop()
 }
 
 func (b *BroflakeEngine) debug() {
