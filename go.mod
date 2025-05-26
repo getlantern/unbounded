@@ -12,7 +12,8 @@ require (
 	github.com/getlantern/quicwrapper v0.0.0-20250424140649-4c18cb0fbdf0
 	github.com/getlantern/telemetry v0.0.0-20250514105802-f2218bdfc011
 	github.com/google/uuid v1.6.0
-	github.com/pion/webrtc/v3 v3.3.4
+	github.com/pion/ice/v2 v2.3.37
+	github.com/pion/webrtc/v3 v3.3.5
 	github.com/quic-go/quic-go v0.51.0
 	github.com/stretchr/testify v1.10.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
@@ -58,7 +59,6 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.12 // indirect
 	github.com/pion/datachannel v1.5.8 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
-	github.com/pion/ice/v2 v2.3.36 // indirect
 	github.com/pion/interceptor v0.1.29 // indirect
 	github.com/pion/logging v0.2.2 // indirect
 	github.com/pion/mdns v0.0.12 // indirect
@@ -73,7 +73,7 @@ require (
 	github.com/pion/transport/v2 v2.2.10 // indirect
 	github.com/pion/turn v1.3.7 // indirect
 	github.com/pion/turn/v2 v2.1.6 // indirect
-	github.com/pkg/errors v0.8.1 // indirect
+	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/prometheus/client_golang v1.19.1 // indirect
 	github.com/prometheus/client_model v0.5.0 // indirect
