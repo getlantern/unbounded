@@ -12,7 +12,7 @@ require (
 	github.com/getlantern/quicwrapper v0.0.0-20250606185317-bfdf6ce90356
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
-	github.com/pion/webrtc/v3 v3.3.4
+	github.com/pion/webrtc/v3 v3.3.5
 	github.com/quic-go/quic-go v0.52.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
 	go.opentelemetry.io/otel v1.36.0
