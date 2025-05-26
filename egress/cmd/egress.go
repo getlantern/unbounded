@@ -59,26 +59,14 @@ func main() {
 	// for running the websocket and webtransport listeners
 	g, ctx := errgroup.WithContext(ctx)
 
-	// listen websocket on PORT
-	addr := fmt.Sprintf(":%v", port)
-
-	baseListen, err := net.Listen("tcp", addr)
-	if err != nil {
-		panic(err)
-	}
-	lws, err := egress.NewWebSocketListener(ctx, baseListen, tlsCert, tlsKey)
+	// listen websocket on PORT, and webtransport on PORT+1
+	wsAddr := fmt.Sprintf(":%v", port)
+	wtAddr := fmt.Sprintf(":%v", port+1)
+	l, err := egress.NewWebSocketWebTransportListener(ctx, wsAddr, wtAddr, tlsCert, tlsKey)
 	if err != nil {
 		log.Fatalf("Failed to start websocket listener: %v", err)
 	}
-	defer lws.Close()
-
-	// listen webtransport on the next port
-	addr = fmt.Sprintf(":%v", port+1)
-	lwt, err := egress.NewWebTransportListener(ctx, addr, tlsCert, tlsKey)
-	if err != nil {
-		log.Fatalf("Failed to start webtransport listener: %v", err)
-	}
-	defer lwt.Close()
+	defer l.Close()
 
 	// Instantiate our local HTTP CONNECT proxy
 	proxy := goproxy.NewProxyHttpServer()
@@ -104,20 +92,11 @@ func main() {
 		},
 	)
 
-	// start a server to serve websocket
-	serverWS := &http.Server{Handler: proxy}
+	// start a server to serve
+	server := &http.Server{Handler: proxy}
 	g.Go(func() error {
-		if err := serverWS.Serve(lws); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("WebSocket server error: %w", err)
-		}
-		return nil
-	})
-
-	// start a server to serve webtransport
-	serverWT := &http.Server{Handler: proxy}
-	g.Go(func() error {
-		if err := serverWT.Serve(lwt); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("WebTransport server error: %w", err)
+		if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
+			return fmt.Errorf("Egress server error: %w", err)
 		}
 		return nil
 	})
@@ -129,11 +108,8 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 
-		if err := serverWS.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
-			common.Debugf("Error shutting down WebSocket server: %v", err)
-		}
-		if err := serverWT.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
-			common.Debugf("Error shutting down WebTransport server: %v", err)
+		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
+			common.Debugf("Error shutting down Egress server: %v", err)
 		}
 		return nil
 	})

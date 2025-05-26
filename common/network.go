@@ -2,6 +2,7 @@ package common
 
 import (
 	"net"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -41,20 +42,24 @@ type QUICStreamNetConn struct {
 	AddrLocal  net.Addr
 	AddrRemote net.Addr
 	TeamId     string // optional, used by http-proxy-lantern
+
+	closeOnce sync.Once
 }
 
-func (c QUICStreamNetConn) LocalAddr() net.Addr {
+func (c *QUICStreamNetConn) LocalAddr() net.Addr {
 	return c.AddrLocal
 }
 
-func (c QUICStreamNetConn) RemoteAddr() net.Addr {
+func (c *QUICStreamNetConn) RemoteAddr() net.Addr {
 	return c.AddrRemote
 }
 
-func (c QUICStreamNetConn) Close() error {
-	if c.OnClose != nil {
-		c.OnClose()
-	}
+func (c *QUICStreamNetConn) Close() error {
+	c.closeOnce.Do(func() {
+		if c.OnClose != nil {
+			c.OnClose()
+		}
+	})
 	return c.Stream.Close()
 }
 
