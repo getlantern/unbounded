@@ -9,11 +9,11 @@ require (
 	github.com/elazarl/goproxy v1.7.2
 	github.com/enobufs/go-nats v0.0.1
 	github.com/getlantern/geo v0.0.0-20240108161311-50692a1b69a9
-	github.com/getlantern/quicwrapper v0.0.0-20250606185317-bfdf6ce90356
+	github.com/getlantern/quicwrapper v0.0.0-20250610202231-252f48357c93
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
 	github.com/pion/webrtc/v3 v3.3.4
-	github.com/quic-go/quic-go v0.52.0
+	github.com/quic-go/quic-go v0.50.1
 	github.com/stretchr/testify v1.10.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
 	go.opentelemetry.io/otel v1.36.0
@@ -96,6 +96,7 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.19.1 // indirect
 	golang.org/x/crypto v0.33.0 // indirect
+	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/net v0.35.0 // indirect
 	golang.org/x/sys v0.30.0 // indirect
 	golang.org/x/text v0.22.0 // indirect
