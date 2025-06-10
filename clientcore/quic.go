@@ -145,7 +145,7 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return common.QUICStreamNetConn{Stream: stream}, nil
+	return &common.QUICStreamNetConn{Stream: stream}, nil
 }
 
 // QUICLayer is a ReliableStreamLayer
