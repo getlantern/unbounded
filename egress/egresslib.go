@@ -243,21 +243,8 @@ func (l *proxyListener) Close() error {
 	return err
 }
 
-func extractTeamId(r *http.Request) string {
-	v := r.Header.Values("Sec-Websocket-Protocol")
-	for _, s := range v {
-		if strings.HasPrefix(s, common.TeamIdPrefix) {
-			return strings.TrimPrefix(s, common.TeamIdPrefix)
-		}
-	}
-	return ""
-}
-
 // handleWebSocket is a http.HandlerFunc that acepts websocket connections, wraps to a net.PacketConn, and add the connection to the multiplex PacketConn
 func (l *proxyListener) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	teamId := extractTeamId(r)
-	// TODO: note that the teamId is not sent anywhere yet. We should also add this to the webtransport path too.
-	common.Debugf("Websocket connection from %v team: %v", r.Host, teamId)
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
@@ -327,6 +314,22 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 			break
 		}
 
+		var teamId string
+		if !quicConfig.EnableDatagrams {
+			common.Debugf("QUIC datagrams disabled, no team ID will be recorded")
+		} else {
+			teamIdBytes, err := conn.ReceiveDatagram(context.Background()) //TODO: is this blocking?
+			if err != nil {
+				common.Debugf("QUIC accepted connection without team ID datagram")
+			}
+			if !strings.HasPrefix(string(teamIdBytes), common.TeamIdPrefix) {
+				common.Debug("QUIC datagram was not teamID")
+			} else {
+				teamId = strings.TrimPrefix(string(teamIdBytes), common.TeamIdPrefix)
+			}
+			common.Debug(fmt.Sprintf("teamId: %v", teamId))
+		}
+
 		nQUICConnectionsCounter.Add(context.Background(), 1)
 		common.Debugf("QUIC accepted a new connection (remote addr: %v)", conn.RemoteAddr())
 
@@ -354,6 +357,7 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: conn.RemoteAddr(),
+					TeamId:     teamId,
 				}
 			}
 		}()

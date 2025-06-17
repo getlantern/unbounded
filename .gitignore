@@ -27,3 +27,6 @@ ui/wp-plugin.zip
 # netstated globe web client and build
 netstate/d/webclients/globe/node_modules
 netstate/d/webclients/globe/build
+
+localhost.crt
+localhost.key
