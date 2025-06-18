@@ -153,7 +153,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			defer res.Body.Close()
 
 			// Handle bad protocol version
-			if res.StatusCode == 418 {
+			if res.StatusCode == http.StatusTeapot {
 				common.Debugf("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -302,13 +302,20 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			defer res.Body.Close()
 
 			switch res.StatusCode {
-			case 418:
+			case http.StatusTeapot:
 				common.Debugf("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			case 404:
+			case http.StatusNotFound:
 				// We didn't win the connection
 				common.Debugf("Too late for genesis message %v!", replyTo)
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			case http.StatusOK:
+				// All good
+			default:
+				// other error
+				common.Debugf("Unexpected http status code: %v", res.Status)
+				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -456,24 +463,25 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			defer res.Body.Close()
 
 			switch res.StatusCode {
-			case 418:
+			case http.StatusTeapot:
 				common.Debugf("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
-			case 404:
+			case http.StatusNotFound:
 				common.Debugf("Signaling partner hung up, aborting!")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
-			case 200:
+			case http.StatusOK:
 				// Signaling is complete, so we can short circuit instead of awaiting the response body
 				return 4, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// This code path should never be reachable
 			// Borked!
+			common.Debugf("Received unexpected status code: %v", res.StatusCode)
 			peerConnection.Close() // TODO: there's an err we should handle here
 			return 0, []interface{}{}
 		}),
