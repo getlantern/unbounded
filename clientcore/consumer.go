@@ -314,7 +314,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// All good
 			default:
 				// other error
-				common.Debugf("Unexpected http status code: %v", res.Status)
+				common.Debugf("Unexpected http status code: %v", res.StatusCode)
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
@@ -477,13 +477,12 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			case http.StatusOK:
 				// Signaling is complete, so we can short circuit instead of awaiting the response body
 				return 4, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			default:
+				// Borked!
+				common.Debugf("Received unexpected status code: %v", res.StatusCode)
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
 			}
-
-			// This code path should never be reachable
-			// Borked!
-			common.Debugf("Received unexpected status code: %v", res.StatusCode)
-			peerConnection.Close() // TODO: there's an err we should handle here
-			return 0, []interface{}{}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 4
