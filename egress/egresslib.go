@@ -315,19 +315,23 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 		}
 
 		var teamId string
+		connTeamId := make(chan string)
 		if !quicConfig.EnableDatagrams {
 			common.Debugf("QUIC datagrams disabled, no team ID will be recorded")
 		} else {
-			teamIdBytes, err := conn.ReceiveDatagram(context.Background()) //TODO: is this blocking?
-			if err != nil {
-				common.Debugf("QUIC accepted connection without team ID datagram")
-			}
-			if !strings.HasPrefix(string(teamIdBytes), common.TeamIdPrefix) {
-				common.Debug("QUIC datagram was not teamID")
-			} else {
-				teamId = strings.TrimPrefix(string(teamIdBytes), common.TeamIdPrefix)
-			}
-			common.Debug(fmt.Sprintf("teamId: %v", teamId))
+			go func() {
+				teamIdBytes, err := conn.ReceiveDatagram(context.Background())
+				if err != nil {
+					common.Debugf("QUIC accepted connection without team ID datagram")
+				} else {
+					if !strings.HasPrefix(string(teamIdBytes), common.TeamIdPrefix) {
+						common.Debug("QUIC datagram was not a teamID")
+						connTeamId <- "none"
+					} else {
+						connTeamId <- strings.TrimPrefix(string(teamIdBytes), common.TeamIdPrefix)
+					}
+				}
+			}()
 		}
 
 		nQUICConnectionsCounter.Add(context.Background(), 1)
@@ -348,6 +352,17 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 
 				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
 				nQUICStreamsCounter.Add(context.Background(), 1)
+
+				// check if the datagram read has finished if no ID for this conn has been saved,
+				// it may be missing for first few streams started with `conn`
+				if teamId == "" {
+					select {
+					case id := <-connTeamId:
+						teamId = id
+					default:
+						// do nothing
+					}
+				}
 
 				l.connections <- &common.QUICStreamNetConn{
 					Stream: stream,
