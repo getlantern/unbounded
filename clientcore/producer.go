@@ -194,7 +194,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Freddie never returns 404s for genesis messages, so we're not catching that case here
 
 			// Handle bad protocol version
-			if res.StatusCode == 418 {
+			if res.StatusCode == http.StatusTeapot {
 				common.Debugf("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
