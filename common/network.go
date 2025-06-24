@@ -56,12 +56,16 @@ func (c *QUICStreamNetConn) RemoteAddr() net.Addr {
 }
 
 func (c *QUICStreamNetConn) Close() error {
+	var err error
 	c.closeOnce.Do(func() {
 		if c.OnClose != nil {
 			c.OnClose()
 		}
+		c.Stream.CancelRead(quic.StreamErrorCode(0))
+		c.Stream.CancelWrite(quic.StreamErrorCode(0))
+		err = c.Stream.Close()
 	})
-	return c.Stream.Close()
+	return err
 }
 
 func IsPublicAddr(addr net.IP) bool {
