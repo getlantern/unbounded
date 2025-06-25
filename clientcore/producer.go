@@ -528,6 +528,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
 						common.Debugf("Connection failure, resetting!")
 						break proxyloop
+					} else if s == webrtc.PeerConnectionStateClosed {
+						common.Debugf("Connection closed, resetting!")
+						break proxyloop
 					}
 				// Handle connection failure for Firefox
 				case _ = <-connectionClosed:
