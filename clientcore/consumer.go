@@ -20,7 +20,7 @@ import (
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/otel"
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 )
 
 func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
@@ -58,6 +58,12 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					},
 				},
 			}
+
+			// // Example custom DTLS settings
+			// settingEngine := &webrtc.SettingEngine{}
+			// settingEngine.SetDTLSEllipticCurves(elliptic.P256, elliptic.P384, elliptic.X25519)
+			// webrtcAPI := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
+			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
 
 			// Construct the RTCPeerConnection
 			peerConnection, err := webrtc.NewPeerConnection(config)
