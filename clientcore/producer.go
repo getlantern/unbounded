@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -53,6 +53,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					},
 				},
 			}
+
+			// // Example custom DTLS settings
+			// settingEngine := &webrtc.SettingEngine{}
+			// settingEngine.SetDTLSEllipticCurves(elliptic.P256, elliptic.P384, elliptic.X25519)
+			// webrtcAPI := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
+			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
 
 			// Construct the RTCPeerConnection
 			peerConnection, err := webrtc.NewPeerConnection(config)
@@ -521,6 +527,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				case s := <-connectionChange:
 					if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
 						common.Debugf("Connection failure, resetting!")
+						break proxyloop
+					} else if s == webrtc.PeerConnectionStateClosed {
+						common.Debugf("Connection closed, resetting!")
 						break proxyloop
 					}
 				// Handle connection failure for Firefox
