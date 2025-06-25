@@ -20,7 +20,6 @@ import (
 )
 
 type BroflakeConn struct {
-	net.PacketConn
 	writeChan          chan IPCMsg
 	readChan           chan IPCMsg
 	localAddr          common.DebugAddr
@@ -97,6 +96,9 @@ func (c *BroflakeConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+func (c *BroflakeConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *BroflakeConn) SetDeadline(t time.Time) error      { return c.SetReadDeadline(t) }
+
 func (c *BroflakeConn) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.writeChan)
@@ -119,7 +121,6 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	})
 
 	bfconn := BroflakeConn{
-		PacketConn:         &net.UDPConn{},
 		writeChan:          worker.com.tx,
 		readChan:           worker.com.rx,
 		localAddr:          common.DebugAddr(uuid.NewString()),
@@ -148,7 +149,6 @@ func NewConsumerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	})
 
 	bfconn := BroflakeConn{
-		PacketConn:         &net.UDPConn{},
 		writeChan:          worker.com.tx,
 		readChan:           worker.com.rx,
 		localAddr:          common.DebugAddr(uuid.NewString()),
