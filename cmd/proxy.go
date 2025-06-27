@@ -52,7 +52,7 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) 
 		return
 	}
 
-	go ql.DialAndMaintainQUICConnection()
+	go ql.DialAndMaintainQUICConnection(nil)
 	proxy.Tr = clientcore.CreateHTTPTransport(ql)
 
 	proxy.OnRequest().DoFunc(

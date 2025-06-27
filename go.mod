@@ -12,6 +12,7 @@ require (
 	github.com/getlantern/quicwrapper v0.0.0-20250610202231-252f48357c93
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
+	github.com/pion/ice/v4 v4.0.10
 	github.com/pion/webrtc/v4 v4.1.2
 	github.com/quic-go/quic-go v0.50.1
 	github.com/stretchr/testify v1.10.0
@@ -59,7 +60,6 @@ require (
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/dtls/v3 v3.0.6 // indirect
-	github.com/pion/ice/v4 v4.0.10 // indirect
 	github.com/pion/interceptor v0.1.40 // indirect
 	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/mdns/v2 v2.0.7 // indirect

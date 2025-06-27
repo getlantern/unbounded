@@ -200,7 +200,8 @@ func (wtpconn webtransportPacketConn) SetWriteDeadline(t time.Time) error {
 
 // proxyListener implements net.Listener and listens for QUIC connections
 type proxyListener struct {
-	listeners []net.Listener // the listeners associated with it
+	listeners    []net.Listener // the listeners associated with it
+	quicListener *quic.Listener
 
 	mpconn *multiplexedPacketConn // the multiplexed PacketConn which will be used as the QUIC transport
 
@@ -210,6 +211,9 @@ type proxyListener struct {
 	closeMetrics func(ctx context.Context) error
 
 	closeOnce sync.Once
+
+	// this handler can be set that handles incoming packets
+	datagramHandler func(qconn quic.Connection)
 }
 
 func (l *proxyListener) Accept() (net.Conn, error) {
@@ -232,6 +236,10 @@ func (l *proxyListener) Close() error {
 		// close listeners
 		for _, listener := range l.listeners {
 			err = errors.Join(err, listener.Close())
+		}
+		// close quic listener
+		if l.quicListener != nil {
+			err = errors.Join(err, l.quicListener.Close())
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -305,6 +313,7 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 		common.Debugf("Unable to start QUIC listener: %v", err)
 		return
 	}
+	l.quicListener = listener
 
 	for {
 		conn, err := listener.Accept(context.Background())
@@ -366,11 +375,16 @@ func (l *proxyListener) listenQUIC(pc net.PacketConn, quicConfig *quic.Config) {
 				}
 			}
 		}()
+
+		// call datagram handling callback if any
+		if l.datagramHandler != nil {
+			go l.datagramHandler(conn)
+		}
 	}
 }
 
 // NewListenerFromPacketConn starts a QUIC listener on the given PacketConn and returns the QUIC listener
-func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string) (net.Listener, error) {
+func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, keyPEM string, datagramHandler func(qconn quic.Connection)) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -380,8 +394,10 @@ func NewListenerFromPacketConn(ctx context.Context, pc net.PacketConn, certPEM, 
 	}
 
 	l := &proxyListener{
-		connections: make(chan net.Conn, 2048),
-		tlsConfig:   tlsConfig,
+		connections:     make(chan net.Conn, 2048),
+		tlsConfig:       tlsConfig,
+		addr:            pc.LocalAddr(),
+		datagramHandler: datagramHandler,
 	}
 
 	// start QUIC listener
