@@ -33,7 +33,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		STUNBatchSize:  5,
 		Tag:            "",
 		HTTPClient:     &http.Client{},
-		Patience:       50 * time.Millisecond,
+		Patience:       500 * time.Millisecond,
 		ErrorBackoff:   5 * time.Second,
 	}
 }
