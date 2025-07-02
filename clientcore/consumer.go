@@ -150,7 +150,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			req.Header.Add(common.VersionHeader, common.Version)
 
-			res, err := options.HttpClient.Do(req)
+			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't subscribe to genesis stream at %v: %v", options.DiscoverySrv+options.Endpoint, err)
 				<-time.After(options.ErrorBackoff)
@@ -299,7 +299,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
 
-			res, err := options.HttpClient.Do(req)
+			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal offer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err)
 				<-time.After(options.ErrorBackoff)
@@ -314,7 +314,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusNotFound:
 				// We didn't win the connection
-				common.Debugf("Too late for genesis message %v!", replyTo)
+				common.Debugf("Too late for genesis message %v! Got %v", replyTo, res.Status)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusOK:
 				// All good
@@ -458,7 +458,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
 
-			res, err := options.HttpClient.Do(req)
+			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal ICE candidates to %v: %v", options.DiscoverySrv+options.Endpoint, err)
 				<-time.After(options.ErrorBackoff)
