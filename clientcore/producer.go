@@ -249,6 +249,21 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
 
+			// XXX: in our present signaling handshake, the *consumer's* ICE candidates are sent "a la carte"
+			// as a list in the final segment of the handshake. But here on the producer side, our ICE
+			// candidates are attached to our answer SDP and signaled all at once. Thus, the only reason
+			// we create this slice of candidates is to evaluate whether STUN worked, which happens below.
+			// Believe it or not, this post facto examination of ICE candidates is the idiomatic way to
+			// determine whether any of your STUN type ICE agents worked...
+			localCandidates := []webrtc.ICECandidate{}
+			peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
+				// Interestingly, the null candidate is a nil pointer so we cause a nil ptr dereference
+				// if we try to append it to the list... so let's just not include it?
+				if c != nil {
+					localCandidates = append(localCandidates, *c)
+				}
+			})
+
 			// Assign the offer to our connection
 			err := peerConnection.SetRemoteDescription(offer.SDP)
 			if err != nil {
@@ -276,20 +291,29 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			}
 
-			select {
-			case <-gatherComplete:
-				common.Debug("ICE gathering complete!")
-			case <-time.After(options.ICEFailTimeout):
-				common.Debugf("Timeout, aborting ICE gathering!")
+			<-gatherComplete
+			common.Debug("ICE gathering complete!")
+			common.Debugf("Local candidates: %v", localCandidates)
+
+			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
+			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
+			// We don't want to bother signaling those, so here's our escape hatch.
+			var hasNonHostCandidate bool
+			for _, c := range localCandidates {
+				if c.Typ != webrtc.ICECandidateTypeHost {
+					hasNonHostCandidate = true
+				}
+			}
+
+			if !hasNonHostCandidate {
+				common.Debugf("ICE failed to gather any non-host candidates, aborting!")
 				scache.drop()
+				common.Debugf("Dropped the current STUN cohort")
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
-
-			// TODO: To maintain role agnosticism, we must assume that a producer can be censored, and
-			// so we must implement the same check for non-host type ICE candidates that consumers do
 
 			// Our answer SDP with ICE candidates attached
 			finalAnswer := peerConnection.LocalDescription()
@@ -344,6 +368,13 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case 404:
 				common.Debugf("Signaling partner hung up, aborting!")
+
+				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
+				// interpret that signal to mean that our current STUN cohort is too slow, and we should
+				// take our chances with a new cohort.
+				scache.drop()
+				common.Debugf("Dropped the current STUN cohort")
+
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -368,7 +399,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			// Looks like we got some kind of response. Should be a slice of ICE candidates in a SignalMsg
-			replyTo, candidates, err := common.DecodeSignalMsg(iceBytes)
+			replyTo, remoteCandidates, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
 				common.Debugf("Error decoding signal message: %v (msg: %v)", err, string(iceBytes))
 				// Borked!
@@ -377,12 +408,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			var remoteAddr net.IP
-			var hasNonHostCandidate bool
+			var remoteHasNonHostCandidate bool
 
 			// TODO: here we assume valid candidates, but we need to handle the invalid case too
-			for _, c := range candidates.([]webrtc.ICECandidate) {
+			for _, c := range remoteCandidates.([]webrtc.ICECandidate) {
 				if c.Typ != webrtc.ICECandidateTypeHost {
-					hasNonHostCandidate = true
+					remoteHasNonHostCandidate = true
 				}
 
 				// XXX: webrtc.AddICECandidate accepts ICECandidateInit types, which are apparently
@@ -407,7 +438,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
 			// us ICE candidates unless they contained at least one non-host type candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
-			if !hasNonHostCandidate {
+			if !remoteHasNonHostCandidate {
 				common.Debugf("Signaling partner sent only host type ICE candidates, aborting!")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -464,28 +495,28 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// value, it's very inefficient. In practice, if NAT traversal is destined to succeed, it will
 			// succeed within ~5s, but ICE often requires ~20s to conclude that a connection has failed.
 			/**
-			      for {
-			        s := <-connectionChange
+			  for {
+			    s := <-connectionChange
 
-			        if s == webrtc.PeerConnectionStateConnected {
-			          common.Debugf("A WebRTC connection has been established!")
-			          d := <-connectionEstablished
+			    if s == webrtc.PeerConnectionStateConnected {
+			      common.Debugf("A WebRTC connection has been established!")
+			      d := <-connectionEstablished
 
-			          return 5, []interface{}{
-			            peerConnection,
-			            d,
-			            connectionChange,
-			            connectionClosed,
-			            remoteAddr,
-			            offer,
-			          }
-			        } else if s == webrtc.PeerConnectionStateFailed {
-			          common.Debugf("NAT traversal failed, aborting!")
-			          // Borked!
-							  peerConnection.Close() // TODO: there's an err we should handle here
-							  return 0, []interface{}{}
-			        }
+			      return 5, []interface{}{
+			        peerConnection,
+			        d,
+			        connectionChange,
+			        connectionClosed,
+			        remoteAddr,
+			        offer,
 			      }
+			    } else if s == webrtc.PeerConnectionStateFailed {
+			      common.Debugf("NAT traversal failed, aborting!")
+			      // Borked!
+			      peerConnection.Close() // TODO: there's an err we should handle here
+			      return 0, []interface{}{}
+			    }
+			  }
 			*/
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
