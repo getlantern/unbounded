@@ -378,32 +378,24 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			}
 
-			select {
-			case <-gatherComplete:
-				common.Debug("ICE gathering complete!")
-				common.Debugf("Local candidates: %v", candidates)
+			<-gatherComplete
+			common.Debug("ICE gathering complete!")
+			common.Debugf("Local candidates: %v", candidates)
 
-				// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
-				// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
-				// We don't want to bother signaling those, so here's our escape hatch.
-				var hasNonHostCandidate bool
-				for _, c := range candidates {
-					if c.Typ != webrtc.ICECandidateTypeHost {
-						hasNonHostCandidate = true
-					}
+			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
+			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
+			// We don't want to bother signaling those, so here's our escape hatch.
+			var hasNonHostCandidate bool
+			for _, c := range candidates {
+				if c.Typ != webrtc.ICECandidateTypeHost {
+					hasNonHostCandidate = true
 				}
+			}
 
-				if !hasNonHostCandidate {
-					common.Debugf("Failed to gather any non-host ICE candidates, aborting!")
-					scache.drop()
-
-					// Borked!
-					peerConnection.Close() // TODO: there's an err we should handle here
-					return 0, []interface{}{}
-				}
-			case <-time.After(options.ICEFailTimeout):
-				common.Debug("Timeout, aborting ICE gathering!")
+			if !hasNonHostCandidate {
+				common.Debugf("ICE failed to gather any non-host candidates, aborting!")
 				scache.drop()
+				common.Debugf("Dropped the current STUN cohort (reason: ICE failed)")
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -477,6 +469,20 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case http.StatusNotFound:
 				common.Debugf("Signaling partner hung up, aborting!")
+
+				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
+				// interpret that signal to mean that our current STUN cohort is too slow, and we should
+				// take our chances with a new cohort. It's a pretty weak signal, considering that our
+				// signaling partner may have hung up for many other reasons. And "too slow" is a bit of
+				// an ambiguous idea, because every censored peer's STUN cohort is *expected* to contain
+				// one or more unreachable STUN server at all times, which means that a censored peer's ICE
+				// gathering duration is *expected* to be the worst case every time. So if our network is
+				// functioning coherently, nobody should be hanging up so hastily while their signaling partner
+				// is performing the ICE gathering step. Thus, dropping the cohort here is basically just
+				// voodoo, but it's probably harmless voodoo.
+				scache.drop()
+				common.Debugf("Dropped the current STUN cohort (reason: signaling partner hung up)")
+
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}

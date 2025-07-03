@@ -13,7 +13,6 @@ type WebRTCOptions struct {
 	Endpoint       string
 	GenesisAddr    string
 	NATFailTimeout time.Duration
-	ICEFailTimeout time.Duration
 	STUNBatch      func(size uint32) (batch []string, err error)
 	STUNBatchSize  uint32
 	Tag            string
@@ -28,7 +27,6 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		Endpoint:       "/v1/signal",
 		GenesisAddr:    "genesis",
 		NATFailTimeout: 5 * time.Second,
-		ICEFailTimeout: 5 * time.Second,
 		STUNBatch:      DefaultSTUNBatchFunc,
 		STUNBatchSize:  5,
 		Tag:            "",
