@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"time"
 )
@@ -17,7 +18,8 @@ type WebRTCOptions struct {
 	STUNBatch      func(size uint32) (batch []string, err error)
 	STUNBatchSize  uint32
 	Tag            string
-	HttpClient     *http.Client
+	HttpClient     *http.Client   // for communicating with signal server
+	UDPConn        net.PacketConn // for WebRTC communication
 	Patience       time.Duration
 	ErrorBackoff   time.Duration
 }
@@ -94,21 +96,23 @@ func NewDefaultWebTransportEgressOptions(ca []byte) *EgressOptions {
 }
 
 type BroflakeOptions struct {
-	ClientType   string
-	CTableSize   int
-	PTableSize   int
-	BusBufferSz  int
-	Netstated    string
-	WebTransport bool
+	ClientType         string
+	CTableSize         int
+	PTableSize         int
+	BusBufferSz        int
+	Netstated          string
+	WebTransport       bool
+	NetstateHttpClient *http.Client // for making http requests to netstated
 }
 
 func NewDefaultBroflakeOptions() *BroflakeOptions {
 	return &BroflakeOptions{
-		ClientType:  "desktop",
-		CTableSize:  5,
-		PTableSize:  5,
-		BusBufferSz: 4096,
-		Netstated:   "",
+		ClientType:         "desktop",
+		CTableSize:         5,
+		PTableSize:         5,
+		BusBufferSz:        4096,
+		Netstated:          "",
+		NetstateHttpClient: &http.Client{},
 	}
 }
 
