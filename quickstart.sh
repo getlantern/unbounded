@@ -129,17 +129,16 @@ custom_egress_commands=(
 
 # Start everything for webtransports
 wt_commands=(
-     # start netstate
+    # start netstate
     "$netstate_start"
 
     # start freddie for matchmaking
     "$freddie_start"
 
-    #start egress server pointed to keys created below
+    #start egress server pointed to keys created below, runs websocket on PORT, and webtransport on PORT+1
     "TLS_CERT=localhost.crt TLS_KEY=localhost.key PORT=8000 go run ./egress/cmd/egress.go"
-
-    # Start desktop proxy with webtransports enabled, and pointed to the correct certs
-    "WEBTRANSPORT=1 CA=localhost.crt SERVER_NAME=localhost EGRESS=https://localhost:8001 TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT PORT=$PROXYPORT_DEFAULT ./cmd/dist/bin/desktop"
+ 
+    "$desktop_start"
 
     # build and start native binary widget with webtransports enabled
     "WEBTRANSPORT=1 CA=localhost.crt EGRESS=https://localhost:8001 TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT ./cmd/dist/bin/widget"
