@@ -22,10 +22,24 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
+// About these TTL values: Freddie models each segment of the signaling handshake as a request and
+// a response. When Bob POSTs a signaling message to Freddie, Freddie delivers it to Alice, and then
+// Freddie waits for Alice to POST a response. Here, "TTL" is the length of time Freddie will wait
+// for Alice to send her response. In the past, Freddie was aggressively agnostic about the contents
+// of each signaling message, but these days we find it helpful to break that agonisticism a bit, and
+// for Freddie to tweak the TTL on a per-message basis to accommodate steps in the signaling
+// handshake which require more or less time. For example, ICE gathering can take quite a long time,
+// particularly under censored conditions, and so segments of the signaling handshake which await
+// remote ICE candidates should accordingly wait a bit longer for a response.
+
+// consumerTTL = how long to hold open HTTP requests for the genesis message stream?
+// remoteICEGatheringTTL = TTL for segments awaiting remote ICE gathering
+// defaultMsgTTL = TTL for all other segments
+
 const (
-	consumerTTL = 20
-	msgTTL      = 5
-	bufferSz    = 1000
+	consumerTTL           = 20
+	defaultMsgTTL         = 5
+	remoteICEGatheringTTL = 15
 )
 
 var (
@@ -33,6 +47,13 @@ var (
 	signalTable   = userTable{Data: make(map[string]chan string)}
 )
 
+// A userTable keeps state for requests and responses. A request handler calls Add() to create a
+// channel for a responder to respond over. Since we cannot guarantee a that a responder will arrive,
+// request handlers should eventually call Delete() to clean up that channel state. Send() implements
+// exactly-once semantics by deleting the channel from the userTable after sending over it. Thus,
+// we create a race between the request handler and response handler to idempotently delete the
+// response channel state: if a responder arrives and sends a response over the channel, they will
+// delete it, and if the responder fails to arrive, the request handler will delete it upon timeout.
 type userTable struct {
 	Data map[string]chan string
 	sync.RWMutex
@@ -41,7 +62,7 @@ type userTable struct {
 func (t *userTable) Add(userID string) chan string {
 	t.Lock()
 	defer t.Unlock()
-	t.Data[userID] = make(chan string, bufferSz)
+	t.Data[userID] = make(chan string, 1)
 	return t.Data[userID]
 }
 
@@ -57,6 +78,7 @@ func (t *userTable) Send(userID string, msg string) bool {
 	userChan, ok := t.Data[userID]
 	if ok {
 		userChan <- msg
+		delete(t.Data, userID)
 	}
 	return ok
 }
@@ -167,14 +189,28 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 }
 
 func (f *Freddie) ListenAndServe() error {
-	common.Debugf("Freddie (%v) listening on %v", common.Version, f.srv.Addr)
+	common.Debugf(
+		"Freddie (%v) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
+		common.Version,
+		f.srv.Addr,
+		consumerTTL,
+		remoteICEGatheringTTL,
+		defaultMsgTTL,
+	)
 	return f.srv.ListenAndServe()
 }
 
 func (f *Freddie) ListenAndServeTLS(certFile, keyFile string) error {
 	f.srv.TLSConfig = f.TLSConfig
 
-	common.Debugf("Freddie (%v/tls) listening on %v", common.Version, f.srv.Addr)
+	common.Debugf(
+		"Freddie (%v/tls) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
+		common.Version,
+		f.srv.Addr,
+		consumerTTL,
+		remoteICEGatheringTTL,
+		defaultMsgTTL,
+	)
 	return f.srv.ListenAndServeTLS(certFile, keyFile)
 }
 
@@ -230,7 +266,6 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	span.SetAttributes(attribute.String("consumer.id", consumerID))
 
 	consumerChan := consumerTable.Add(consumerID)
-	defer func() { close(consumerChan) }()
 	defer consumerTable.Delete(consumerID)
 
 	// TODO: Matchmaking would happen here. (Just be selective about which consumers you broadcast
@@ -262,7 +297,6 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	span.SetAttributes(attribute.String("request.id", reqID))
 
 	reqChan := signalTable.Add(reqID)
-	defer func() { close(reqChan) }()
 	defer signalTable.Delete(reqID)
 
 	r.ParseForm()
@@ -315,20 +349,33 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	w.WriteHeader(http.StatusOK)
 	span.SetStatus(codes.Ok, "")
 
-	// XXX: If the sender has just sent a SignalMsgICE, there are no more steps in the signaling
-	// handshake, so we'll close the request immediately. Being aware of message contents here is
-	// very un-Freddie-like! We previously implemented this short circuit behavior on the client side,
-	// but it required a Flush() here to push the status header to the client. The Flush() confuses
-	// the browser and breaks Golang context contracts in wasm build targets, so we live with this hack.
-	if common.SignalMsgType(msgType) == common.SignalMsgICE {
+	// XXX: below, Freddie becomes interested in the content of the signaling message so as to
+	// implement optimizations, mostly related to synchronization and timing. This makes everything
+	// less maintainable, so we dream of a world where Freddie can become agnostic again. That world
+	// becomes real when we can move this logic to the client FSMs...
+	var optimizedTTL time.Duration
+	switch common.SignalMsgType(msgType) {
+	case common.SignalMsgOffer:
+		// Upon successfully delivering an offer, we wait for the remote peer to complete ICE gathering
+		optimizedTTL = remoteICEGatheringTTL * time.Second
+	case common.SignalMsgAnswer:
+		// Upon successfully delivering an answer, we wait for the remote peer to complete ICE gathering
+		optimizedTTL = remoteICEGatheringTTL * time.Second
+	case common.SignalMsgICE:
+		// There are no more steps in the signaling handshake, so just close the request immediately.
+		// We previously implemented this short circuit behavior on the client side, but it required a
+		// Flush() here to push the status header to the client. The Flush() confuses the browser and
+		// breaks Golang context contracts in Wasm build targets, so we live with this for now.
 		w.Write(nil)
 		return
+	default:
+		optimizedTTL = defaultMsgTTL * time.Second
 	}
 
 	select {
 	case res := <-reqChan:
 		w.Write([]byte(fmt.Sprintf("%v\n", res)))
-	case <-time.After(msgTTL * time.Second):
+	case <-time.After(optimizedTTL):
 		span.AddEvent("timeout waiting for response")
 		w.Write(nil)
 	}
