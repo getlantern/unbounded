@@ -40,7 +40,6 @@ const (
 	consumerTTL           = 20
 	defaultMsgTTL         = 5
 	remoteICEGatheringTTL = 15
-	bufferSz              = 1000
 )
 
 var (
@@ -48,6 +47,13 @@ var (
 	signalTable   = userTable{Data: make(map[string]chan string)}
 )
 
+// A userTable keeps state for requests and responses. A request handler calls Add() to create a
+// channel for a responder to respond over. Since we cannot guarantee a that a responder will arrive,
+// request handlers should eventually call Delete() to clean up that channel state. Send() implements
+// exactly-once semantics by deleting the channel from the userTable after sending over it. Thus,
+// we create a race between the request handler and response handler to idempotently delete the
+// response channel state: if a responder arrives and sends a response over the channel, they will
+// delete it, and if the responder fails to arrive, the request handler will delete it upon timeout.
 type userTable struct {
 	Data map[string]chan string
 	sync.RWMutex
@@ -56,7 +62,7 @@ type userTable struct {
 func (t *userTable) Add(userID string) chan string {
 	t.Lock()
 	defer t.Unlock()
-	t.Data[userID] = make(chan string, bufferSz)
+	t.Data[userID] = make(chan string, 1)
 	return t.Data[userID]
 }
 
@@ -72,6 +78,7 @@ func (t *userTable) Send(userID string, msg string) bool {
 	userChan, ok := t.Data[userID]
 	if ok {
 		userChan <- msg
+		delete(t.Data, userID)
 	}
 	return ok
 }
@@ -259,7 +266,6 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	span.SetAttributes(attribute.String("consumer.id", consumerID))
 
 	consumerChan := consumerTable.Add(consumerID)
-	defer func() { close(consumerChan) }()
 	defer consumerTable.Delete(consumerID)
 
 	// TODO: Matchmaking would happen here. (Just be selective about which consumers you broadcast
@@ -291,7 +297,6 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	span.SetAttributes(attribute.String("request.id", reqID))
 
 	reqChan := signalTable.Add(reqID)
-	defer func() { close(reqChan) }()
 	defer signalTable.Delete(reqID)
 
 	r.ParseForm()
