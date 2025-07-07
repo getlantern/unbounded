@@ -360,13 +360,13 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			defer res.Body.Close()
 
 			switch res.StatusCode {
-			case 418:
+			case http.StatusTeapot:
 				common.Debugf("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
-			case 404:
+			case http.StatusNotFound:
 				common.Debugf("Signaling partner hung up, aborting!")
 
 				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
@@ -385,6 +385,14 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			case http.StatusOK:
+				// Our signaling message was delivered, proceed
+			default:
+				// Unexpected bad stuff
+				common.Debugf("Unexpected http status code: %v", res.StatusCode)
+				<-time.After(options.ErrorBackoff)
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
 			}
 
 			// The HTTP request is complete
@@ -399,6 +407,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// TODO: Freddie sends back a 0-length body when our signaling partner doesn't reply.
 			// Is that the smartest way to handle this case systemwide?
 			if len(iceBytes) == 0 {
+				// NB: to receive a 200 OK with a 0-length body indicates that our signaling partner was
+				// alive to receive our answer SDP, but subsequently either A) died before they were able
+				// to complete ICE gathering and send a list of candidates, or B) took so long to perform
+				// ICE gathering that Freddie's TTL for this step expired.
 				common.Debugf("No ICE candidates from signaling partner!")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here

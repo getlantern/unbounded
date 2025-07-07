@@ -317,9 +317,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				common.Debugf("Too late for genesis message %v! Got %v", replyTo, res.Status)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusOK:
-				// All good
+				// We won the connection, proceed
 			default:
-				// other error
+				// Unexpected bad stuff
 				common.Debugf("Unexpected http status code: %v", res.StatusCode)
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -335,6 +335,10 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// TODO: Freddie sends back a 0-length body when nobody replied to our message. Is that the
 			// smartest way to handle this case systemwide?
 			if len(answerBytes) == 0 {
+				// NB: to receive a 200 OK with a 0-length body here indicates that our signaling partner
+				// was alive to receive our offer and accepted it, but subsequently either A) died before
+				// they were able to perform ICE gathering and send back an answer, or B) took so long to
+				// perform ICE gathering that Freddie's TTL for this step expired.
 				common.Debugf("No response for our offer SDP!")
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
