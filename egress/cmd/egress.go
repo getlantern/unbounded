@@ -20,6 +20,24 @@ import (
 	"github.com/getlantern/broflake/egress"
 )
 
+type customListener struct {
+	// This is a placeholder for any custom listener configuration if needed in the future.
+	l net.Listener
+}
+
+func (cl *customListener) Accept() (net.Conn, error) {
+	common.Debug("CUSTOM listener accepting connection...")
+	time.Sleep(100 * time.Millisecond) // Simulate some delay if needed
+	return cl.l.Accept()
+}
+func (cl *customListener) Close() error {
+	return cl.l.Close()
+}
+
+func (cl *customListener) Addr() net.Addr {
+	return cl.l.Addr()
+}
+
 func main() {
 	portStr := os.Getenv("PORT")
 	if portStr == "" {
@@ -61,8 +79,13 @@ func main() {
 
 	// listen websocket on PORT, and webtransport on PORT+1
 	wsAddr := fmt.Sprintf(":%v", port)
-	wtAddr := fmt.Sprintf(":%v", port+1)
-	l, err := egress.NewWebSocketWebTransportListener(ctx, wsAddr, wtAddr, tlsCert, tlsKey)
+	ll, err := net.Listen("tcp", wsAddr)
+	if err != nil {
+		log.Fatalf("Failed to listen on %v: %v", wsAddr, err)
+	}
+	lll := &customListener{l: ll}
+
+	l, err := egress.NewWebSocketWebTransportListener(ctx, lll, tlsCert, tlsKey)
 	if err != nil {
 		log.Fatalf("Failed to start websocket listener: %v", err)
 	}

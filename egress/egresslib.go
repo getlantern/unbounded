@@ -447,9 +447,9 @@ func NewWebSocketListener(ctx context.Context, baseListener net.Listener, certPE
 	return l, nil
 }
 
-// NewWebTransportListener starts a WebTransport listener on the given address at path "/wt", and then starts a QUIC listener on top of
+// NewWebTransportListener starts a WebTransport listener on the given address from baseListener at path "/wt", and then starts a QUIC listener on top of
 // all accepted WebTransport datagram connections, returning the QUIC listener
-func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) (net.Listener, error) {
+func NewWebTransportListener(ctx context.Context, baseListener net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -459,23 +459,17 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
 	}
 
-	tcpAddr, err := net.ResolveTCPAddr("tcp", addr)
-	if err != nil {
-		common.Debugf("Error resolving TCPAddr: %v", err)
-		return nil, fmt.Errorf("error resolving TCPAddr %w", err)
-	}
-
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
 		connections:  make(chan net.Conn, 2048),
 		mpconn:       newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
 		tlsConfig:    tlsConfig,
-		addr:         tcpAddr,
+		addr:         baseListener.Addr(),
 		closeMetrics: closeFuncMetric,
 	}
 
 	options := &webt.ListenOptions{
-		Addr:      addr,
+		Addr:      baseListener.Addr().String(),
 		TLSConfig: tlsConfig,
 		QUICConfig: &quicwrapper.Config{
 			MaxIncomingStreams: 2000,
@@ -490,7 +484,7 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 	if err != nil {
 		return nil, err
 	}
-	l.listeners = []net.Listener{wtl}
+	l.listeners = []net.Listener{wtl, baseListener}
 
 	// start WebTransport server
 	srv := &http.Server{
@@ -528,7 +522,8 @@ func NewWebTransportListener(ctx context.Context, addr, certPEM, keyPEM string) 
 
 // NewWebSocketWebTransportListener starts both a WebSocket listener on wsAddr at path "/ws", and a WebTransport listener on wtAddr at path "/wt",
 // and then starts a QUIC listener on top of all accepts WebSocket connections and WebTransport datagram connections, returning the QUIC listener
-func NewWebSocketWebTransportListener(ctx context.Context, wsAddr, wtAddr, certPEM, keyPEM string) (net.Listener, error) {
+// Convinience function to serve both WebSocket and WebTransport on the same baseListener (e.g. a TCP listener).
+func NewWebSocketWebTransportListener(ctx context.Context, baseListener net.Listener, certPEM, keyPEM string) (net.Listener, error) {
 	if err := otelInit(ctx); err != nil {
 		return nil, err
 	}
@@ -538,25 +533,25 @@ func NewWebSocketWebTransportListener(ctx context.Context, wsAddr, wtAddr, certP
 		return nil, fmt.Errorf("unable to load tlsconfig %w", err)
 	}
 
-	// WebSocket listener
-	lc := net.ListenConfig{}
-	wsl, err := lc.Listen(ctx, "tcp", wsAddr)
-	if err != nil {
-		return nil, fmt.Errorf("unable to listen on %v: %w", wsAddr, err)
-	}
-
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := &proxyListener{
-		listeners:    []net.Listener{wsl},
+		listeners:    []net.Listener{baseListener},
 		connections:  make(chan net.Conn, 2048),
 		mpconn:       newMultiplexedPacketConn(common.DebugAddr("1.1.1.1:1111")), //TODO: the local address
 		tlsConfig:    tlsConfig,
-		addr:         wsl.Addr(), // we ignore webtransport address here and just use the websocket address
+		addr:         baseListener.Addr(), // we ignore webtransport address here and just use the websocket address
 		closeMetrics: closeFuncMetric,
 	}
 
+	// Serve webtransport on baseListner+1
+	addr, ok := baseListener.Addr().(*net.TCPAddr)
+	if !ok {
+		return nil, fmt.Errorf("baseListener is not a TCP listener: %v", baseListener.Addr())
+	}
+	addr.Port++
+
 	options := &webt.ListenOptions{
-		Addr:      wtAddr,
+		Addr:      addr.String(),
 		TLSConfig: tlsConfig,
 		QUICConfig: &quicwrapper.Config{
 			MaxIncomingStreams: 2000,
@@ -580,11 +575,11 @@ func NewWebSocketWebTransportListener(ctx context.Context, wsAddr, wtAddr, certP
 	}
 	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebSocket), "/ws"))
 	go func() {
-		common.Debugf("Egress server listening for WebSocket connections on %v", wsl.Addr())
+		common.Debugf("Egress server listening for WebSocket connections on %v", l.Addr())
 
 		errChan := make(chan error, 1)
 		go func() {
-			errChan <- srvWS.Serve(wsl)
+			errChan <- srvWS.Serve(baseListener)
 		}()
 
 		select {
