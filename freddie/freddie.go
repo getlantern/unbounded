@@ -43,26 +43,24 @@ const (
 )
 
 var (
-	consumerTable = userTable{Data: make(map[string]chan string)}
-	signalTable   = userTable{Data: make(map[string]chan string)}
+	consumerTable = userTable{Data: make(map[string]chan string), BufferSz: 0}
+	signalTable   = userTable{Data: make(map[string]chan string), BufferSz: 1}
 )
 
-// A userTable keeps state for requests and responses. A request handler calls Add() to create a
-// channel for a responder to respond over. Since we cannot guarantee a that a responder will arrive,
-// request handlers should eventually call Delete() to clean up that channel state. Send() implements
-// exactly-once semantics by deleting the channel from the userTable after sending over it. Thus,
-// we create a race between the request handler and response handler to idempotently delete the
-// response channel state: if a responder arrives and sends a response over the channel, they will
-// delete it, and if the responder fails to arrive, the request handler will delete it upon timeout.
+// A userTable keeps state for requests and responses. Each channel in the map represents a request
+// that's awaiting a response.
 type userTable struct {
-	Data map[string]chan string
+	Data     map[string]chan string
+	BufferSz int
 	sync.RWMutex
 }
 
+// Add a channel for a responder to respond over. Since we cannot guarantee that a responder will
+// arrive, request handlers should eventually call Delete() to clean up that channel state.
 func (t *userTable) Add(userID string) chan string {
 	t.Lock()
 	defer t.Unlock()
-	t.Data[userID] = make(chan string, 1)
+	t.Data[userID] = make(chan string, t.BufferSz)
 	return t.Data[userID]
 }
 
@@ -72,7 +70,12 @@ func (t *userTable) Delete(userID string) {
 	delete(t.Data, userID)
 }
 
-func (t *userTable) Send(userID string, msg string) bool {
+// Send a message with *exactly once* semantics by deleting the response channel from the table after
+// sending over it. NB the implementation pattern is to create a race between the request handler
+// and the response handler to idempotently delete the response channel state: if a responder arrives
+// and uses SendOnce() to send a response over the chnanel, they will delete it, and if the responder
+// fails to arrive, the request hanndler will delete it upon timeout.
+func (t *userTable) SendOnce(userID string, msg string) bool {
 	t.Lock()
 	defer t.Unlock()
 	userChan, ok := t.Data[userID]
@@ -83,11 +86,19 @@ func (t *userTable) Send(userID string, msg string) bool {
 	return ok
 }
 
-func (t *userTable) SendAll(msg string) {
-	t.Lock()
-	defer t.Unlock()
+// Send a message to every user in the table with *unreliable* delivery semantics. Broadcast can
+// behave in subtly different ways depending on the userTable's BufferSz, but you probably want to
+// use it with a BufferSz of 0.
+func (t *userTable) Broadcast(msg string) {
+	t.RLock()
+	defer t.RUnlock()
 	for _, userChan := range t.Data {
-		userChan <- msg
+		select {
+		case userChan <- msg:
+			// Message delivered, do nothing
+		default:
+			// Message not delivered, do nothing
+		}
 	}
 }
 
@@ -331,11 +342,11 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 
 	if sendTo == "genesis" {
 		// It's a genesis message, so let's broadcast it to all consumers
-		consumerTable.SendAll(string(msg))
+		consumerTable.Broadcast(string(msg))
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
-		ok := signalTable.Send(sendTo, string(msg))
+		ok := signalTable.SendOnce(sendTo, string(msg))
 		if !ok {
 			span.SetStatus(codes.Error, "recipient not found")
 			w.WriteHeader(http.StatusNotFound)
