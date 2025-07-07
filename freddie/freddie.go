@@ -190,9 +190,9 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(fmt.Sprintf("freddie (%v)\n", common.Version)))
-		w.Write([]byte(fmt.Sprintf("current GET requests: %d\n", f.currentGets.Load())))
-		w.Write([]byte(fmt.Sprintf("current POST requests: %d\n", f.currentPosts.Load())))
+		fmt.Fprintf(w, "freddie (%v)\n", common.Version)
+		fmt.Fprintf(w, "current GET requests: %d\n", f.currentGets.Load())
+		fmt.Fprintf(w, "current POST requests: %d\n", f.currentPosts.Load())
 	})
 	mux.HandleFunc("/v1/signal", f.handleSignal)
 
@@ -233,7 +233,7 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 	ctx, span := f.tracer.Start(r.Context(), "handleSignal")
 	defer span.End()
 
-	enableCors(&w)
+	enableCors(w)
 
 	// Handle preflight requests
 	if r.Method == http.MethodOptions {
@@ -288,7 +288,7 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	for {
 		select {
 		case msg := <-consumerChan:
-			w.Write([]byte(fmt.Sprintf("%v\n", msg)))
+			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
 		case <-timeoutChan:
 			return
@@ -310,7 +310,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	reqChan := signalTable.Add(reqID)
 	defer signalTable.Delete(reqID)
 
-	r.ParseForm()
+	if err := r.ParseForm(); err != nil {
+		span.SetStatus(codes.Error, "failed to parse form")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400\n"))
+		return
+	}
 	sendTo := r.Form.Get("send-to")
 	data := r.Form.Get("data")
 	msgType, err := strconv.ParseInt(r.Form.Get("type"), 10, 32)
@@ -385,7 +390,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 
 	select {
 	case res := <-reqChan:
-		w.Write([]byte(fmt.Sprintf("%v\n", res)))
+		fmt.Fprintf(w, "%v\n", res)
 	case <-time.After(optimizedTTL):
 		span.AddEvent("timeout waiting for response")
 		w.Write(nil)
@@ -393,16 +398,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 }
 
 // TODO: delete me and replace with a real CORS strategy!
-func enableCors(w *http.ResponseWriter) {
-	(*w).Header().Set("Access-Control-Allow-Origin", "*")
+func enableCors(w http.ResponseWriter) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 }
 
 // Validate the Broflake protocol version header. If the header isn't present, we consider you
 // invalid. Protocol version is currently the major version of Broflake's reference implementation
 func isValidProtocolVersion(r *http.Request) bool {
-	if semver.Major(r.Header.Get(common.VersionHeader)) != semver.Major(common.Version) {
-		return false
-	}
-
-	return true
+	return semver.Major(r.Header.Get(common.VersionHeader)) == semver.Major(common.Version)
 }

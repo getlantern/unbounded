@@ -189,7 +189,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
 
-			res, err := options.HttpClient.Do(req)
+			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal genesis message to %v: %v", options.DiscoverySrv+options.Endpoint, err)
 				<-time.After(options.ErrorBackoff)
@@ -349,7 +349,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
 
-			res, err := options.HttpClient.Do(req)
+			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				common.Debugf("Couldn't signal answer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err)
 				<-time.After(options.ErrorBackoff)

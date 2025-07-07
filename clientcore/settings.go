@@ -16,7 +16,7 @@ type WebRTCOptions struct {
 	STUNBatch      func(size uint32) (batch []string, err error)
 	STUNBatchSize  uint32
 	Tag            string
-	HttpClient     *http.Client
+	HTTPClient     *http.Client
 	Patience       time.Duration
 	ErrorBackoff   time.Duration
 }
@@ -30,7 +30,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		STUNBatch:      DefaultSTUNBatchFunc,
 		STUNBatchSize:  5,
 		Tag:            "",
-		HttpClient:     &http.Client{},
+		HTTPClient:     &http.Client{},
 		Patience:       500 * time.Millisecond,
 		ErrorBackoff:   5 * time.Second,
 	}
@@ -116,6 +116,7 @@ func DefaultSTUNBatchFunc(size uint32) (batch []string, err error) {
 	if err != nil {
 		return batch, err
 	}
+	defer res.Body.Close()
 
 	candidates := []string{}
 	scanner := bufio.NewScanner(res.Body)
@@ -126,8 +127,6 @@ func DefaultSTUNBatchFunc(size uint32) (batch []string, err error) {
 	if err := scanner.Err(); err != nil {
 		return batch, err
 	}
-
-	rand.Seed(time.Now().Unix())
 
 	for i := 0; i < int(size) && len(candidates) > 0; i++ {
 		idx := rand.Intn(len(candidates))
