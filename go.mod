@@ -1,6 +1,8 @@
 module github.com/getlantern/broflake
 
-go 1.24.2
+go 1.23.6
+
+toolchain go1.23.6
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
@@ -9,7 +11,7 @@ require (
 	github.com/elazarl/goproxy v1.7.2
 	github.com/enobufs/go-nats v0.0.1
 	github.com/getlantern/geo v0.0.0-20240108161311-50692a1b69a9
-	github.com/getlantern/quicwrapper v0.0.0-20250610202231-252f48357c93
+	github.com/getlantern/quicwrapper v0.0.0-20250708190430-efdb145a577e
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
 	github.com/pion/webrtc/v4 v4.1.2
