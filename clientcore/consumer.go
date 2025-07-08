@@ -559,6 +559,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 		proxyloop:
 			for {
 				select {
+				// XXX: there's likely a race or dead code here, see: https://github.com/getlantern/engineering/issues/2320
 				// Handle connection failure
 				case s := <-connectionChange:
 					if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
