@@ -2,36 +2,31 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
-	"os/signal"
-	"strconv"
-	"syscall"
-	"time"
 
 	"github.com/elazarl/goproxy"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 )
 
 func main() {
-	portStr := os.Getenv("PORT")
-	if portStr == "" {
-		portStr = "8000"
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		log.Fatalf("Invalid port %v: %v", portStr, err)
+	ctx := context.Background()
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8000"
 	}
 
 	certFile := os.Getenv("TLS_CERT")
 	keyFile := os.Getenv("TLS_KEY")
+
+	l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
+	if err != nil {
+		panic(err)
+	}
 
 	var tlsCert string
 	var tlsKey string
@@ -41,32 +36,22 @@ func main() {
 	if certFile != "" && keyFile != "" {
 		cert, err := os.ReadFile(certFile)
 		if err != nil {
-			log.Fatalf("Failed to read certfile %v: %v", certFile, err)
+			panic(err)
 		}
 		tlsCert = string(cert)
 
 		key, err := os.ReadFile(keyFile)
 		if err != nil {
-			log.Fatalf("Failed to read keyfile %v: %v", keyFile, err)
+			panic(err)
 		}
 		tlsKey = string(key)
 	}
 
-	// cancels on SIGINT or SIGTERM
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	// for running the websocket and webtransport listeners
-	g, ctx := errgroup.WithContext(ctx)
-
-	// listen websocket on PORT, and webtransport on PORT+1
-	wsAddr := fmt.Sprintf(":%v", port)
-	wtAddr := fmt.Sprintf(":%v", port+1)
-	l, err := egress.NewWebSocketWebTransportListener(ctx, wsAddr, wtAddr, tlsCert, tlsKey)
+	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
 	if err != nil {
-		log.Fatalf("Failed to start websocket listener: %v", err)
+		panic(err)
 	}
-	defer l.Close()
+	defer ll.Close()
 
 	// Instantiate our local HTTP CONNECT proxy
 	proxy := goproxy.NewProxyHttpServer()
@@ -92,30 +77,8 @@ func main() {
 		},
 	)
 
-	// start a server to serve
-	server := &http.Server{Handler: proxy}
-	g.Go(func() error {
-		if err := server.Serve(l); err != nil && err != http.ErrServerClosed {
-			return fmt.Errorf("Egress server error: %w", err)
-		}
-		return nil
-	})
-
-	// handle graceful shutdown
-	g.Go(func() error {
-		<-ctx.Done()
-		common.Debug("Shutting down...")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, net.ErrClosed) {
-			common.Debugf("Error shutting down Egress server: %v", err)
-		}
-		return nil
-	})
-
-	if err := g.Wait(); err != nil {
-		log.Fatalf("Egress server exited with error: %v", err)
+	err = http.Serve(ll, proxy)
+	if err != nil {
+		panic(err)
 	}
-	common.Debug("Egress server exited.")
 }
