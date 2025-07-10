@@ -159,10 +159,12 @@ elif [ "$1" == "egress" ]; then
     echo "Using custom egress option"
     commands=("${custom_egress_commands[@]}")
 elif [ "$1" == "wt" ]; then
-    #create a self-signed certificate for localhost
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt -subj '/CN=localhost' -addext 'subjectAltName = DNS:localhost'
-    echo "Using webtransports option"
-    commands=("${wt_commands[@]}")
+    echo "webtransports not supported"
+    usage;
+    # #create a self-signed certificate for localhost
+    # openssl req -x509 -newkey rsa:2048 -nodes -keyout localhost.key -out localhost.crt -subj '/CN=localhost' -addext 'subjectAltName = DNS:localhost'
+    # echo "Using webtransports option"
+    # commands=("${wt_commands[@]}")
 else
     echo "Unknown option $1";
     usage;
