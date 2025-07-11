@@ -139,8 +139,8 @@ wt_commands=(
     "TLS_CERT=localhost.crt TLS_KEY=localhost.key PORT=8000 go run ./egress/cmd/egress.go"
 
     # Start desktop proxy with webtransports enabled, and pointed to the correct certs
-    "WEBTRANSPORT=1 CA=localhost.crt SERVER_NAME=localhost EGRESS=https://localhost:8001 TAG=bob NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT PORT=$PROXYPORT_DEFAULT ./cmd/dist/bin/desktop"
-
+    "$desktop_start"
+    
     # build and start native binary widget with webtransports enabled
     "WEBTRANSPORT=1 CA=localhost.crt EGRESS=https://localhost:8001 TAG=alice NETSTATED=$NETSTATE_DEFAULT FREDDIE=$FREDDIE_DEFAULT ./cmd/dist/bin/widget"
 )
