@@ -6,6 +6,7 @@ package clientcore
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -39,8 +40,20 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
+			teamId := "team_not_set"
+			// TODO: get the teamId or userId from somewhere.
+			// This will most likely be a lantern userId, if the user is signed in
+
+			// This is a way to pass metadata from widget -> egress,
+			// the websocket package doesn't support sending other headers, so it is passed
+			// through the "Sec-WebSocket-Protocol" header with a prefix, so it can be read later in the egress server
+			// and then attached to the QUIC stream that is created there
+			wsDialOpts := &websocket.DialOptions{
+				Subprotocols: []string{fmt.Sprintf("%v%v", common.TeamIdPrefix, teamId)},
+			}
+
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, wsDialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)

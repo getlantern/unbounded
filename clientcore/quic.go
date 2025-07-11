@@ -95,10 +95,6 @@ func (c *QUICLayer) DialAndMaintainQUICConnection() {
 				return
 			}
 
-			teamId := "teamid-not-set"
-			teamDatagram := []byte(common.TeamIdPrefix + teamId)
-			conn.SendDatagram(teamDatagram)
-
 			connEstablished <- conn
 		}()
 

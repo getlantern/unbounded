@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -151,11 +152,28 @@ func generateTLSConfig() *tls.Config {
 	}
 }
 
+func extractTeamId(r *http.Request) string {
+	v := r.Header.Values("Sec-Websocket-Protocol")
+	for _, s := range v {
+		if strings.HasPrefix(s, common.TeamIdPrefix) {
+			return strings.TrimPrefix(s, common.TeamIdPrefix)
+		}
+	}
+	return ""
+}
+
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
 	// https://github.com/getlantern/broflake/issues/45
+
+	teamId := extractTeamId(r)
+	if teamId == "" {
+		teamId = "no_team_recieved"
+	}
+	common.Debugf("WebSocket connection request from %v with teamId %v", r.RemoteAddr, teamId)
+
 	c, err := websocket.Accept(
 		w,
 		r,
@@ -184,10 +202,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	defer wspconn.Close()
 
-	if err != nil {
-		return
-	}
-
 	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
@@ -200,7 +214,12 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		conn, err := listener.Accept(context.Background())
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			switch websocket.CloseStatus(err) {
+			case websocket.StatusNormalClosure, websocket.StatusGoingAway:
+				common.Debugf("%v closed normally", wspconn.addr)
+			default:
+				common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
+			}
 			listener.Close()
 			break
 		}
@@ -233,6 +252,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 					},
 					AddrLocal:  l.addr,
 					AddrRemote: tcpAddr,
+					TeamId:     teamId,
 				}
 			}
 		}()
