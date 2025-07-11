@@ -302,7 +302,7 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
-		Listener:     &net.TCPListener{},
+		Listener:     ll,
 		connections:  make(chan net.Conn, 2048),
 		tlsConfig:    tlsConfig,
 		addr:         ll.Addr(),
