@@ -19,8 +19,8 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 
 			// We're resetting this slot. The ($, 1) path assertion indicates that all hosts can be reached,
 			// one hop away, *upon request*. This is distinct from (*, 1), which means that all hosts can
-			// be reached, one hop away, but with the understanding that the network resources is already
-			// connected. Functionally, they do exactly the same thing -- they signal to workers in the
+			// be reached, one hop away, but with the understanding that the network resource is *already
+			// connected*. Functionally, they do exactly the same thing -- they signal to workers in the
 			// downstream table that resources are available, and that they should begin offering connectivity
 			// opportunities. The differing syntax is just to help humans grok the system behavior.
 			allUponReq := common.Endpoint{Host: "$", Distance: 1}
