@@ -335,10 +335,9 @@ func (ppr *producerPoolRouter) busHook(r *baseRouter, msg IPCMsg) {
 	case ConnectivityCheckIPC:
 		ppr.toBus(IPCMsg{IpcType: PathAssertionIPC, Data: ppr.globalPathAssertion(), Wid: msg.Wid})
 	case ChunkIPC:
-		// TODO: is this necessary?
-		if ppr.globalPathAssertion().Nil() {
-			return
-		}
+		_, route := ppr.route(msg.Wid)
+		ppr.toWorker(msg, route)
+	case ConsumerInfoIPC:
 		_, route := ppr.route(msg.Wid)
 		ppr.toWorker(msg, route)
 	}
@@ -360,6 +359,81 @@ func (ppr *producerPoolRouter) workerHook(r *baseRouter, msg IPCMsg, workerIdx w
 		_, route := ppr.backRoute(workerIdx)
 		msg.Wid = route
 		ppr.toBus(msg)
+	}
+}
+
+// A producerJITRouter is like a producerPoolRouter, except it's designed to manage producer tables
+// which connect "just in time," upon request, as opposed to pre-connecting. Like the producerPoolRouter,
+// it routes each consumer through its own producer in a 1:1 mapping. The producerJITRouter notably
+// handles path assertions differently than the producerPoolRouter: with the producerJITRouter, the
+// intersection of path assertions is meaningless (since this router does not support muxing consumers
+// over producers, but rather assigns them 1:1) and so path assertions are announced per producer.
+// Using a producerJITRouter to manage a producer table with N slots in a client which has M consumer
+// slots (where N != M) will result in undefined behavior.
+type producerJITRouter struct {
+	upstreamRouter
+	producerPA map[workerID]common.PathAssertion
+	sync.RWMutex
+}
+
+func NewProducerJITRouter(bus *ipcChan, table *WorkerTable) *producerJITRouter {
+	pjr := producerJITRouter{
+		upstreamRouter: upstreamRouter{
+			baseRouter: baseRouter{
+				bus:   bus,
+				table: table,
+			},
+		},
+		producerPA: make(map[workerID]common.PathAssertion),
+	}
+
+	pjr.upstreamRouter.baseRouter.busHook = pjr.busHook
+	pjr.upstreamRouter.baseRouter.workerHook = pjr.workerHook
+
+	return &pjr
+}
+
+func (r *producerJITRouter) onPathAssertion(pa common.PathAssertion, workerIdx workerID) {
+	r.Lock()
+	defer r.Unlock()
+	r.producerPA[workerIdx] = pa
+}
+
+func (r *producerJITRouter) route(wid workerID) (bool, workerID) {
+	return true, wid
+}
+
+// For producerJITRouter, the route function is the identity function, so it works backwards
+func (r *producerJITRouter) backRoute(wid workerID) (bool, workerID) {
+	return r.route(wid)
+}
+
+func (pjr *producerJITRouter) busHook(r *baseRouter, msg IPCMsg) {
+	switch msg.IpcType {
+	case ConnectivityCheckIPC:
+		pjr.RLock()
+		pjr.toBus(IPCMsg{IpcType: PathAssertionIPC, Data: pjr.producerPA[msg.Wid], Wid: msg.Wid})
+		pjr.RUnlock()
+	case ChunkIPC:
+		_, route := pjr.route(msg.Wid)
+		pjr.toWorker(msg, route)
+	case ConsumerInfoIPC:
+		_, route := pjr.route(msg.Wid)
+		pjr.toWorker(msg, route)
+	}
+}
+
+func (pjr *producerJITRouter) workerHook(r *baseRouter, msg IPCMsg, workerIdx workerID) {
+	switch msg.IpcType {
+	case PathAssertionIPC:
+		pjr.onPathAssertion(msg.Data.(common.PathAssertion), workerIdx)
+		pjr.toBus(IPCMsg{IpcType: PathAssertionIPC, Data: msg.Data.(common.PathAssertion), Wid: workerIdx})
+	case ChunkIPC:
+		// Backrouting! TODO: the asymmetry in how upstream and downstream routers determine and
+		// assign and interpret the wid is a source of much confusion and must be fixed
+		_, route := pjr.backRoute(workerIdx)
+		msg.Wid = route
+		pjr.toBus(msg)
 	}
 }
 
