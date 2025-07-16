@@ -48,8 +48,6 @@ func (pa PathAssertion) Nil() bool {
 // the required IP geolocation during the discovery and matchmaking process. ConsumerInfo might one
 // day evolve to become the consumer-side constraints object which is discussed in the RFCs, at
 // which point it might make sense to collapse PathAssertion and ConsumerInfo into a single concept.
-// ConsumerInfo (and its client-specific accomplice, ConsumerInfoIPC) were motivated solely to
-// provide UI status information, and it's irksome that they exist for this reason alone.
 type ConsumerInfo struct {
 	Addr      net.IP
 	Tag       string
