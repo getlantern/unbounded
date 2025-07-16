@@ -160,7 +160,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		} else {
 			// Widget peers consume connectivity from an egress server over WebSocket
 			for i := 0; i < bfOpt.PTableSize; i++ {
-				pfsms = append(pfsms, *NewEgressConsumerWebSocket(egOpt, &wgReady))
+				pfsms = append(pfsms, *NewJITEgressConsumer(egOpt, &wgReady))
 			}
 		}
 		pTable = NewWorkerTable(pfsms)
@@ -186,7 +186,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		pRouter = NewProducerSerialRouter(bus.Upstream, pTable, cTable.Size())
 	case "widget":
 		cRouter = NewConsumerRouter(bus.Downstream, cTable)
-		pRouter = NewProducerPoolRouter(bus.Upstream, pTable)
+		pRouter = NewProducerJITRouter(bus.Upstream, pTable)
 	}
 
 	// Step 6: Start the bus, init the routers, fire our UI events to announce that we're ready
