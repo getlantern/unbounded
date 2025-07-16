@@ -105,7 +105,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 						}
 					case ConsumerInfoIPC:
 						if msg.Data.(common.ConsumerInfo).Nil() {
-							c.Close(websocket.StatusNormalClosure, "peer disconnected")
+							c.Close(websocket.StatusNormalClosure, "downstream peer disconnected")
 							common.Debug("JIT egress consumer downstream peer disconnected")
 							return 0, []interface{}{}
 						}
