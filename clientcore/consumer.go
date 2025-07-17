@@ -424,7 +424,12 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionClosed := input[5].(chan struct{})
 			common.Debugf("Consumer state 3...")
 
-			candidatesJSON, err := json.Marshal(candidates)
+			iceMsg := common.ICEMsg{
+				Candidates:        candidates,
+				ConsumerSessionID: options.ConsumerSessionID,
+			}
+
+			iceMsgJSON, err := json.Marshal(iceMsg)
 			if err != nil {
 				common.Debugf("Error marshaling JSON: %v", err)
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -433,7 +438,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Signal our ICE candidates
 			form := url.Values{
-				"data":    {string(candidatesJSON)},
+				"data":    {string(iceMsgJSON)},
 				"send-to": {replyTo},
 				"type":    {strconv.Itoa(int(common.SignalMsgICE))},
 			}
