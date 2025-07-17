@@ -156,6 +156,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
 	// https://github.com/getlantern/broflake/issues/45
+
+	consumerSessionID := r.Header.Get(common.ConsumerSessionIDHeader)
+	if consumerSessionID == "" {
+		common.Debugf("Refused WebSocket connection, missing consumer session ID")
+		return
+	}
+
 	c, err := websocket.Accept(
 		w,
 		r,
@@ -188,7 +195,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	common.Debugf("Accepted a new WebSocket connection! (%v total)", atomic.AddUint64(&nClients, 1))
+	common.Debugf("Accepted a new WebSocket connection! [CSID: %v] (%v total)", consumerSessionID, atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
 	listener, err := quic.Listen(wspconn, l.tlsConfig, &common.QUICCfg)

@@ -9,9 +9,10 @@ import (
 
 var (
 	// Must be a valid semver
-	Version       = "v0.0.2"
-	VersionHeader = "X-BF-Version"
-	TeamIdPrefix  = "unbounded-team:"
+	Version                 = "v0.0.2"
+	VersionHeader           = "X-BF-Version"
+	ConsumerSessionIDHeader = "X-BF-ConsumerSessionID"
+	TeamIdPrefix            = "unbounded-team:"
 )
 
 var QUICCfg = quic.Config{

@@ -2,11 +2,11 @@ package clientcore
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
-
 	"github.com/getlantern/broflake/common"
 )
 
@@ -31,6 +31,8 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 
 			// Now we wait for a ConsumerInfo IPC message from the corresponding downstream worker indicating
 			// that we've got a consumer connected for this connection slot.
+			var consumerInfoMsg common.ConsumerInfo
+
 		waitforconsumerloop:
 			for {
 				select {
@@ -39,6 +41,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 						// Before doing anything else, send a nil path assertion to indicate no connectivity
 						// opportunity for this slot, since it's been claimed
 						com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+						consumerInfoMsg = msg.Data.(common.ConsumerInfo)
 						break waitforconsumerloop
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
@@ -52,9 +55,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 
 			// TODO: extract the SessionID from the ConsumerInfoIPC message above and add it as a header
 			// to the WebSocket HTTP request
+			hdr := http.Header{}
+			hdr.Set(common.ConsumerSessionIDHeader, consumerInfoMsg.SessionID)
+
+			dialOpts := &websocket.DialOptions{
+				HTTPHeader: hdr,
+			}
 
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)
