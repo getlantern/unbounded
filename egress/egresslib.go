@@ -2,13 +2,8 @@ package egress
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
-	"math/big"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -128,29 +123,6 @@ func (l proxyListener) Close() error {
 	return err
 }
 
-func generateTLSConfig() *tls.Config {
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		panic(err)
-	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		panic(err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		panic(err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"broflake"},
-	}
-}
-
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
@@ -191,62 +163,54 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	defer wspconn.Close()
 
-	if err != nil {
-		return
-	}
-
 	common.Debugf("Accepted a new WebSocket connection! [CSID: %v] (%v total)", consumerSessionID, atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
-	listener, err := quic.Listen(wspconn, l.tlsConfig, &common.QUICCfg)
+	transport := &quic.Transport{Conn: wspconn}
+	conn, err := transport.Dial(
+		context.Background(),
+		common.DebugAddr("NELSON WUZ HERE"),
+		l.tlsConfig,
+		&common.QUICCfg,
+	)
+
 	if err != nil {
-		common.Debugf("Error creating QUIC listener: %v", err)
+		common.Debugf("QUIC dial failed (%v), closing!", err)
 		return
 	}
 
+	nQUICConnectionsCounter.Add(context.Background(), 1)
+	common.Debugf("%v dialed a new QUIC connection!", wspconn.addr)
+
 	for {
-		conn, err := listener.Accept(context.Background())
+		stream, err := conn.AcceptStream(context.Background())
+
 		if err != nil {
-			common.Debugf("%v QUIC listener error (%v), closing!", wspconn.addr, err)
-			listener.Close()
-			break
+			// We interpret an error while accepting a stream to indicate an unrecoverable error with
+			// the QUIC connection, and so we close the QUIC connection altogether
+			errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", wspconn.addr, err)
+			common.Debugf("%v", errString)
+			conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
+			nQUICConnectionsCounter.Add(context.Background(), -1)
+			return
 		}
 
-		nQUICConnectionsCounter.Add(context.Background(), 1)
-		common.Debugf("%v accepted a new QUIC connection!", wspconn.addr)
+		common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
+		nQUICStreamsCounter.Add(context.Background(), 1)
 
-		go func() {
-			for {
-				stream, err := conn.AcceptStream(context.Background())
-
-				if err != nil {
-					// We interpret an error while accepting a stream to indicate an unrecoverable error with
-					// the QUIC connection, and so we close the QUIC connection altogether
-					errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", wspconn.addr, err)
-					common.Debugf("%v", errString)
-					conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
-					nQUICConnectionsCounter.Add(context.Background(), -1)
-					return
-				}
-
-				common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-				nQUICStreamsCounter.Add(context.Background(), 1)
-
-				l.connections <- common.QUICStreamNetConn{
-					Stream: stream,
-					OnClose: func() {
-						defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
-						nQUICStreamsCounter.Add(context.Background(), -1)
-					},
-					AddrLocal:  l.addr,
-					AddrRemote: tcpAddr,
-				}
-			}
-		}()
+		l.connections <- common.QUICStreamNetConn{
+			Stream: stream,
+			OnClose: func() {
+				defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
+				nQUICStreamsCounter.Add(context.Background(), -1)
+			},
+			AddrLocal:  l.addr,
+			AddrRemote: tcpAddr,
+		}
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (net.Listener, error) {
+func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
@@ -289,22 +253,15 @@ func NewListener(ctx context.Context, ll net.Listener, certPEM, keyPEM string) (
 		return nil, err
 	}
 
-	var tlsConfig *tls.Config
+	// TODO nelson 07/24/2025: actually configure TLS
 
-	if certPEM != "" && keyPEM != "" {
-		cert, err := tls.X509KeyPair([]byte(certPEM), []byte(keyPEM))
-		if err != nil {
-			return nil, fmt.Errorf("Unable to load cert/key from PEM for broflake: %v", err)
-		}
+	common.Debug("*** !!! WARNING WARNING WARNING WARNING WARNING WARNING !!! ***")
+	common.Debug("*** !!! INSECURE TLS CONFIG                             !!! ***")
+	common.Debug("*** !!! THIS SHOULD NOT HAVE BEEN MERGED                !!! ***")
 
-		common.Debugf("Broflake using cert %v and key %v", certPEM, keyPEM)
-		tlsConfig = &tls.Config{
-			Certificates: []tls.Certificate{cert},
-			NextProtos:   []string{"broflake"},
-		}
-	} else {
-		common.Debugf("!!! WARNING !!! No certfile and/or keyfile specified, generating an insecure TLSConfig!")
-		tlsConfig = generateTLSConfig()
+	tlsConfig := &tls.Config{
+		NextProtos:         []string{"broflake"},
+		InsecureSkipVerify: true,
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections

@@ -1,11 +1,8 @@
 package main
 
 import (
-	"crypto/x509"
 	"fmt"
-	"log"
 	"net/http"
-	"os"
 	"time"
 
 	"github.com/elazarl/goproxy"
@@ -18,7 +15,7 @@ const (
 	ip = "127.0.0.1"
 )
 
-func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) {
+func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	// TODO: this is just to prevent a race with client boot processes, it's not worth getting too
 	// fancy with an event-driven solution because the local proxy is all mocked functionality anyway
 	<-time.After(2 * time.Second)
@@ -27,32 +24,13 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn, ca, sn string) 
 	// This tells goproxy to wrap the dial function in a chained CONNECT request
 	proxy.ConnectDial = proxy.NewConnectDialToProxy("http://i.do.nothing")
 
-	// If a certfile has been specified in 'ca', we'll specify that certfile as a root CA and
-	// properly verify the cert chain. If not, we'll use insecure TLS!
-	certPool := x509.NewCertPool()
-	insecureSkipVerify := false
-
-	if ca != "" {
-		pem, err := os.ReadFile(ca)
-		if err != nil {
-			log.Fatal(err)
-		}
-		certPool.AppendCertsFromPEM(pem)
-	} else {
-		insecureSkipVerify = true
-		common.Debugf("!!! WARNING !!! No root CA cert specified, using insecure TLS!")
-	}
-
-	ql, err := clientcore.NewQUICLayer(
-		bfconn,
-		&clientcore.QUICLayerOptions{ServerName: sn, InsecureSkipVerify: insecureSkipVerify, CA: certPool},
-	)
+	ql, err := clientcore.NewQUICLayer(bfconn)
 	if err != nil {
 		common.Debugf("Cannot start local HTTP proxy: failed to create QUIC layer: %v", err)
 		return
 	}
 
-	go ql.DialAndMaintainQUICConnection()
+	go ql.ListenAndMaintainQUICConnection()
 	proxy.Tr = clientcore.CreateHTTPTransport(ql)
 
 	proxy.OnRequest().DoFunc(

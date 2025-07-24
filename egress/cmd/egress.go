@@ -20,34 +20,12 @@ func main() {
 		port = "8000"
 	}
 
-	certFile := os.Getenv("TLS_CERT")
-	keyFile := os.Getenv("TLS_KEY")
-
 	l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
 	if err != nil {
 		panic(err)
 	}
 
-	var tlsCert string
-	var tlsKey string
-
-	// XXX: in the process of delivering the cert and key to egress.NewListener, we suboptimally
-	// cast back and forth between []string and []byte... it's just a byproduct of the API
-	if certFile != "" && keyFile != "" {
-		cert, err := os.ReadFile(certFile)
-		if err != nil {
-			panic(err)
-		}
-		tlsCert = string(cert)
-
-		key, err := os.ReadFile(keyFile)
-		if err != nil {
-			panic(err)
-		}
-		tlsKey = string(key)
-	}
-
-	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
+	ll, err := egress.NewListener(ctx, l)
 	if err != nil {
 		panic(err)
 	}
