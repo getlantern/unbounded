@@ -2,13 +2,16 @@ package clientcore
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
 	"sync"
-	"time"
 
 	"github.com/quic-go/quic-go"
 
@@ -33,24 +36,12 @@ func CreateHTTPTransport(c ReliableStreamLayer) *http.Transport {
 	}
 }
 
-type QUICLayerOptions struct {
-	ServerName         string
-	InsecureSkipVerify bool
-	CA                 *x509.CertPool
-}
-
-func NewQUICLayer(bfconn *BroflakeConn, qopt *QUICLayerOptions) (*QUICLayer, error) {
+func NewQUICLayer(bfconn *BroflakeConn) (*QUICLayer, error) {
 	q := &QUICLayer{
-		bfconn: bfconn,
-		t:      &quic.Transport{Conn: bfconn},
-		tlsConfig: &tls.Config{
-			ServerName:         qopt.ServerName,
-			InsecureSkipVerify: qopt.InsecureSkipVerify,
-			NextProtos:         []string{"broflake"},
-			RootCAs:            qopt.CA,
-		},
+		bfconn:       bfconn,
+		t:            &quic.Transport{Conn: bfconn},
+		tlsConfig:    generateTLSConfig(), // TODO nelson 07/24/2025: actually configure TLS
 		eventualConn: newEventualConn(),
-		dialTimeout:  8 * time.Second,
 	}
 
 	return q, nil
@@ -64,55 +55,56 @@ type QUICLayer struct {
 	mx           sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
-	dialTimeout  time.Duration
 }
 
-// DialAndMaintainQUICConnection attempts to create and maintain an e2e QUIC connection by dialing
-// the other end, detecting if that connection breaks, and redialing. Forever.
-func (c *QUICLayer) DialAndMaintainQUICConnection() {
+func generateTLSConfig() *tls.Config {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		panic(err)
+	}
+	template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		panic(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		panic(err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"broflake"},
+	}
+}
+
+func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
-	// State 1 of 2: Keep dialing until we acquire a connection
 	for {
-		select {
-		case <-c.ctx.Done():
-			common.Debugf("Cancelling QUIC dialer!")
-			return
-		default:
-			// Do nothing
+		listener, err := quic.Listen(c.bfconn, c.tlsConfig, &common.QUICCfg)
+		if err != nil {
+			common.Debugf("Error creating QUIC listener: %v\n", err)
+			continue
 		}
 
-		ctxDial, cancelDial := context.WithTimeout(context.Background(), c.dialTimeout)
-		connEstablished := make(chan quic.Connection)
-		connErr := make(chan error)
-
-		go func() {
-			defer cancelDial()
-			conn, err := c.t.Dial(ctxDial, common.DebugAddr("NELSON WUZ HERE"), c.tlsConfig, &common.QUICCfg)
-
+		for {
+			conn, err := listener.Accept(c.ctx)
 			if err != nil {
-				connErr <- err
-				return
+				common.Debugf("QUIC listener error (%v), closing!\n", err)
+				listener.Close()
+				break
 			}
 
-			teamId := "teamid-not-set"
-			teamDatagram := []byte(common.TeamIdPrefix + teamId)
-			conn.SendDatagram(teamDatagram)
-
-			connEstablished <- conn
-		}()
-
-		select {
-		case err := <-connErr:
-			common.Debugf("QUIC dial failed (%v), retrying...", err)
-		case conn := <-connEstablished:
 			c.mx.Lock()
 			c.eventualConn.set(conn)
 			c.mx.Unlock()
 			common.Debug("QUIC connection established, ready to proxy!")
 
-			// State 2 of 2: Connection established, block until we detect a half open or a ctx cancel
-			_, err := conn.AcceptStream(c.ctx)
+			// Connection established, block until we detect a half open or a ctx cancel
+			_, err = conn.AcceptStream(c.ctx)
 			if err != nil {
 				common.Debugf("QUIC connection error (%v), closing!", err)
 				conn.CloseWithError(42069, "")

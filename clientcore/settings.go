@@ -6,33 +6,37 @@ import (
 	"math/rand"
 	"net/http"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type WebRTCOptions struct {
-	DiscoverySrv   string
-	Endpoint       string
-	GenesisAddr    string
-	NATFailTimeout time.Duration
-	STUNBatch      func(size uint32) (batch []string, err error)
-	STUNBatchSize  uint32
-	Tag            string
-	HTTPClient     *http.Client
-	Patience       time.Duration
-	ErrorBackoff   time.Duration
+	DiscoverySrv      string
+	Endpoint          string
+	GenesisAddr       string
+	NATFailTimeout    time.Duration
+	STUNBatch         func(size uint32) (batch []string, err error)
+	STUNBatchSize     uint32
+	Tag               string
+	HTTPClient        *http.Client
+	Patience          time.Duration
+	ErrorBackoff      time.Duration
+	ConsumerSessionID string
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
 	return &WebRTCOptions{
-		DiscoverySrv:   "http://localhost:9000",
-		Endpoint:       "/v1/signal",
-		GenesisAddr:    "genesis",
-		NATFailTimeout: 5 * time.Second,
-		STUNBatch:      DefaultSTUNBatchFunc,
-		STUNBatchSize:  5,
-		Tag:            "",
-		HTTPClient:     &http.Client{},
-		Patience:       500 * time.Millisecond,
-		ErrorBackoff:   5 * time.Second,
+		DiscoverySrv:      "http://localhost:9000",
+		Endpoint:          "/v1/signal",
+		GenesisAddr:       "genesis",
+		NATFailTimeout:    5 * time.Second,
+		STUNBatch:         DefaultSTUNBatchFunc,
+		STUNBatchSize:     5,
+		Tag:               "",
+		HTTPClient:        &http.Client{},
+		Patience:          500 * time.Millisecond,
+		ErrorBackoff:      5 * time.Second,
+		ConsumerSessionID: uuid.NewString(),
 	}
 }
 
