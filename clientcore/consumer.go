@@ -576,7 +576,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 				// Handle connection failure for Firefox
 				case _ = <-connectionClosed:
-					common.Debugf("Firefox connection failure, resetting!")
+					common.Debugf("Connection closed, resetting!")
 					break proxyloop
 					// Handle messages from the router
 				case msg := <-com.rx:

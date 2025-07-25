@@ -135,10 +135,13 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			for {
 				select {
-				// Handle inbound IPC messages, wait for a non-nil path assertion
+				// Handle inbound IPC messages, wait for a non-nil *and not JIT unavailable* path assertion
+				// TODO nelson 07/25/2025: the JIT unavailable flag was added to synchronize with the
+				// JIT egress consumer, but it's wacky and should be cleaned up here:
+				// https://github.com/getlantern/engineering/issues/2402
 				case msg := <-com.rx:
-					if msg.IpcType == PathAssertionIPC && !msg.Data.(common.PathAssertion).Nil() {
-						pa := msg.Data.(common.PathAssertion)
+					pa := msg.Data.(common.PathAssertion)
+					if msg.IpcType == PathAssertionIPC && !pa.Nil() && !pa.JITUnavailable {
 						return 2, []interface{}{peerConnection, pa, connectionEstablished, connectionChange, connectionClosed}
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
@@ -599,7 +602,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 				// Handle connection failure for Firefox
 				case _ = <-connectionClosed:
-					common.Debugf("Firefox connection failure, resetting!")
+					common.Debugf("Connection closed, resetting!")
 					break proxyloop
 				// Handle messages from the router
 				case msg := <-com.rx:
@@ -607,6 +610,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					case ChunkIPC:
 						if err := d.Send(msg.Data.([]byte)); err != nil {
 							common.Debugf("Error sending to datachannel, resetting!")
+							break proxyloop
+						}
+					case PathAssertionIPC:
+						pa := msg.Data.(common.PathAssertion)
+						if pa.Nil() {
+							// Here's how we detect when the upstream worker has reset, which means we should
+							// disconnect the corresponding consumer: we receive a nil path assertion. TODO
+							// nelson 07/25/2025: clean this up here: https://github.com/getlantern/engineering/issues/2402
+							common.Debugf("Upstream worker reset, disconnecting downstream peer!")
 							break proxyloop
 						}
 					}

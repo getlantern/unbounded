@@ -32,9 +32,13 @@ func (t SignalMsgType) String() string {
 	}
 }
 
+// TODO nelson 07/25/2025: JITUnavailable was added as an escape hatch to implement synchronization
+// with the JIT egress consumer, as a way to disambiguate a nil path assertion. It's wacky and should
+// be cleaned up here: https://github.com/getlantern/engineering/issues/2402
 type PathAssertion struct {
-	Allow []Endpoint
-	Deny  []Endpoint
+	Allow          []Endpoint
+	Deny           []Endpoint
+	JITUnavailable bool
 }
 
 func (pa PathAssertion) Nil() bool {
