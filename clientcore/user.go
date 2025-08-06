@@ -8,6 +8,7 @@ package clientcore
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"sync"
 	"time"
@@ -18,7 +19,6 @@ import (
 )
 
 type BroflakeConn struct {
-	net.PacketConn
 	writeChan          chan IPCMsg
 	readChan           chan IPCMsg
 	addr               common.DebugAddr
@@ -45,11 +45,21 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		case msg := <-c.readChan:
 			// The read completed, let's return some bytes!
 			payload := msg.Data.([]byte)
-			copy(p, payload)
-			return len(payload), common.DebugAddr("DEBUG NELSON WUZ HERE"), nil
+
+			var unboundedPacket common.UnboundedPacket
+
+			err := json.Unmarshal(payload, &unboundedPacket)
+			if err != nil {
+				// TODO: don't panic
+				panic(err)
+			}
+
+			copy(p, unboundedPacket.Payload)
+			return len(unboundedPacket.Payload), common.DebugAddr(unboundedPacket.SourceAddr), nil
 		case <-ctx.Done():
 			// We're past our deadline, so let's return failure!
-			return 0, common.DebugAddr("DEBUG NELSON WUZ HERE"), ctx.Err()
+			// TODO: you can't return NELSON WUZ HERE here
+			return 0, common.DebugAddr("NELSON WUZ HERE"), ctx.Err()
 		case d := <-c.updateReadDeadline:
 			// Someone updated the read deadline, so let's iterate to respect the new deadline
 			c.readDeadline = d
@@ -72,6 +82,10 @@ func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	return len(b), nil
 }
 
+func (c BroflakeConn) Close() error {
+	return nil
+}
+
 // XXX: A note about deadlines: as of quic-go 0.34, the QUIC dialer didn't seem to care about read
 // or write deadlines, and it was happy to use a net.PacketConn which didn't properly implement them.
 // But when we bumped to quic-go 0.40, it emerged that the dialer wouldn't work unless we added
@@ -82,6 +96,13 @@ func (c BroflakeConn) SetReadDeadline(t time.Time) error {
 	return nil
 }
 
+func (c BroflakeConn) SetWriteDeadline(t time.Time) error {
+	return nil
+}
+
+func (c BroflakeConn) SetDeadline(t time.Time) error {
+	return nil
+}
 func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	worker := NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -94,7 +115,6 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	})
 
 	bfconn := BroflakeConn{
-		PacketConn:         &net.UDPConn{},
 		writeChan:          worker.com.tx,
 		readChan:           worker.com.rx,
 		addr:               common.DebugAddr(uuid.NewString()),

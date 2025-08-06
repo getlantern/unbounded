@@ -140,9 +140,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// JIT egress consumer, but it's wacky and should be cleaned up here:
 				// https://github.com/getlantern/engineering/issues/2402
 				case msg := <-com.rx:
-					pa := msg.Data.(common.PathAssertion)
-					if msg.IpcType == PathAssertionIPC && !pa.Nil() && !pa.JITUnavailable {
-						return 2, []interface{}{peerConnection, pa, connectionEstablished, connectionChange, connectionClosed}
+					if msg.IpcType == PathAssertionIPC && !msg.Data.(common.PathAssertion).Nil() &&
+						!msg.Data.(common.PathAssertion).JITUnavailable {
+						return 2, []interface{}{peerConnection, msg.Data.(common.PathAssertion), connectionEstablished, connectionChange, connectionClosed}
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():

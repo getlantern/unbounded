@@ -18,8 +18,8 @@ var (
 var QUICCfg = quic.Config{
 	MaxIncomingStreams:    int64(2 << 16),
 	MaxIncomingUniStreams: int64(2 << 16),
-	MaxIdleTimeout:        16 * time.Second,
-	KeepAlivePeriod:       8 * time.Second,
+	MaxIdleTimeout:        30 * time.Second,
+	KeepAlivePeriod:       15 * time.Second,
 	EnableDatagrams:       true,
 }
 
@@ -63,4 +63,9 @@ func (c QUICStreamNetConn) Close() error {
 
 func IsPublicAddr(addr net.IP) bool {
 	return !addr.IsPrivate() && !addr.IsUnspecified() && !addr.IsLoopback()
+}
+
+type UnboundedPacket struct {
+	SourceAddr string
+	Payload    []byte
 }

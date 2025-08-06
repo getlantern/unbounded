@@ -3,9 +3,11 @@ package egress
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -45,16 +47,126 @@ var nQUICConnectionsCounter metric.Int64UpDownCounter
 var nQUICStreamsCounter metric.Int64UpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
-// webSocketPacketConn wraps a websocket.Conn as a net.PacketConn
-type websocketPacketConn struct {
-	net.PacketConn
+type connectionRecord struct {
+	mx           sync.Mutex
+	connection   *quic.Connection
+	lastMigrated time.Time
+}
+
+type connectionManager struct {
+	mx              sync.Mutex
+	connections     map[string]*connectionRecord
+	tlsConfig       *tls.Config
+	migrationWindow time.Duration
+	probeTimeout    time.Duration
+}
+
+func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.Time) {
+	manager.mx.Lock()
+
+	record, ok := manager.connections[csid]
+
+	if !ok {
+		manager.mx.Unlock()
+		return
+	}
+
+	record.mx.Lock()
+
+	if !record.lastMigrated.After(t) {
+		(*record.connection).CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
+		nQUICConnectionsCounter.Add(context.Background(), -1)
+		delete(manager.connections, csid)
+		common.Debugf("QUIC connection for %v expired, closed, and deleted", csid)
+	}
+
+	record.mx.Unlock()
+	manager.mx.Unlock()
+}
+
+func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessWebSocketPacketConn) (*quic.Connection, error) {
+	manager.mx.Lock()
+
+	transport := &quic.Transport{Conn: pconn}
+	record, ok := manager.connections[csid]
+
+	// Atomic creation path
+	if !ok {
+		common.Debugf("No existing QUIC connection for %v [CSID: %v], dialing...", pconn.addr, csid)
+		newConn, err := transport.Dial(
+			context.Background(),
+			common.DebugAddr("NELSON WUZ HERE"),
+			manager.tlsConfig,
+			&common.QUICCfg,
+		)
+
+		if err != nil {
+			manager.mx.Unlock()
+			return nil, err
+		}
+
+		nQUICConnectionsCounter.Add(context.Background(), 1)
+		common.Debugf("%v dialed a new QUIC connection!", pconn.addr)
+		manager.connections[csid] = &connectionRecord{connection: &newConn, lastMigrated: time.Now()}
+		manager.mx.Unlock()
+		return &newConn, nil
+	}
+
+	// Atomic migration path
+	common.Debugf("Trying to migrate QUIC connection for %v [CSID %v]", pconn.addr, csid)
+	t1 := time.Now()
+	record.mx.Lock()
+	manager.mx.Unlock()
+	defer record.mx.Unlock()
+
+	path, err := (*record.connection).AddPath(transport)
+	if err != nil {
+		return nil, fmt.Errorf("AddPath error: %v", err)
+	}
+
+	// TODO: use a meaningful and parameterized context here
+	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
+	defer cancel()
+	err = path.Probe(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("path probe error: %v", err)
+	}
+
+	err = path.Switch()
+	if err != nil {
+		return nil, fmt.Errorf("path switch error: %v", err)
+	}
+
+	//err = path.Close()
+	//if err != nil {
+	//  return nil, fmt.Errorf("path close error: %v", err)
+	//}
+
+	t2 := time.Now()
+	common.Debugf("Migrated a QUIC connection to %v! (took %vs)", pconn.addr, t2.Sub(t1).Seconds())
+	record.lastMigrated = time.Now()
+	return record.connection, nil
+}
+
+// errorlessWebSocketPacketConn adapts a websocket.Conn for use as a net.PacketConn, and it performs
+// one additional trick: if its underlying websocket.Conn is closed such that reads and writes
+// return errors, it will intercept and hide those errors from the caller. The purpose of this
+// functionality is to enable QUIC connection migration from WebSocket A to B, when B is not yet
+// known at the moment that A disconnects. Put another way: if you establish a QUIC connection over
+// an errorlessWebSocketPacketConn, the underlying WebSocket can disconnect and go away, but your
+// QUIC connection will not close, because its transport sneakily hides the read and write errors.
+// This gives you an opportunity to migrate your QUIC connection to a new errorlessWebSocketPacketConn
+// at some point in the future. Intercepted *read* errors are sent over the readError channel.
+// Currently, intercepted *write* errors are simply discarded.
+type errorlessWebSocketPacketConn struct {
 	w         *websocket.Conn
 	addr      net.Addr
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
+	readError chan error
 }
 
-func (q websocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	// TODO: The channel and goroutine we fire off here are used to implement serverside keepalive.
 	// For as long as we're reading from this WebSocket, if we haven't received any readable data for
 	// a while, we send a ping. Keepalive is only desirable to prevent lots of disconnections
@@ -77,31 +189,73 @@ func (q websocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error
 	}()
 
 	_, b, err := q.w.Read(context.Background())
+
+	// Intercept and hide errors from the caller
+	// TODO: be more specific about which error(s) to hide?
+	if err != nil {
+		select {
+		case q.readError <- err:
+		default:
+		}
+
+		err = nil
+	}
+
 	readDone <- struct{}{}
 	copy(p, b)
 	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
 	return len(b), q.tcpAddr, err
 }
 
-func (q websocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	err = q.w.Write(context.Background(), websocket.MessageBinary, p)
+func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	// TODO: we set q.addr to a very long string, either make it shorter or just send a hash?
+	// also TODO: this should be a more compact wire format, e.g. protobufs
+	unboundedPacket := common.UnboundedPacket{
+		SourceAddr: q.addr.String(),
+		Payload:    p,
+	}
+
+	b, err := json.Marshal(unboundedPacket)
+	if err != nil {
+		// TODO: don't panic
+		panic(err)
+	}
+
+	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
+
+	// Intercept and hide errors from the caller
+	// TODO: be more specific about which error(s) to hide?
+	err = nil
+
 	return len(p), err
 }
 
-func (q websocketPacketConn) Close() error {
+func (q errorlessWebSocketPacketConn) Close() error {
 	defer common.Debugf("Closed a WebSocket connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0)))
 	defer nClientsCounter.Add(context.Background(), -1)
 	return q.w.Close(websocket.StatusNormalClosure, "")
 }
 
-func (q websocketPacketConn) LocalAddr() net.Addr {
+func (q errorlessWebSocketPacketConn) LocalAddr() net.Addr {
 	return q.addr
+}
+
+func (q errorlessWebSocketPacketConn) SetDeadline(t time.Time) error {
+	panic("ayyy set deadline")
+}
+
+func (q errorlessWebSocketPacketConn) SetReadDeadline(t time.Time) error {
+	panic("ayyy set read deadline")
+}
+
+func (q errorlessWebSocketPacketConn) SetWriteDeadline(t time.Time) error {
+	panic("ayyy set write deadline")
 }
 
 type proxyListener struct {
 	net.Listener
+	*connectionManager
 	connections  chan net.Conn
-	tlsConfig    *tls.Config
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
 }
@@ -154,11 +308,12 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wspconn := websocketPacketConn{
+	wspconn := errorlessWebSocketPacketConn{
 		w:         c,
 		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
 		keepalive: websocketKeepalive,
 		tcpAddr:   tcpAddr,
+		readError: make(chan error),
 	}
 
 	defer wspconn.Close()
@@ -166,48 +321,49 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	common.Debugf("Accepted a new WebSocket connection! [CSID: %v] (%v total)", consumerSessionID, atomic.AddUint64(&nClients, 1))
 	nClientsCounter.Add(context.Background(), 1)
 
-	transport := &quic.Transport{Conn: wspconn}
-	conn, err := transport.Dial(
-		context.Background(),
-		common.DebugAddr("NELSON WUZ HERE"),
-		l.tlsConfig,
-		&common.QUICCfg,
-	)
-
+	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
-		common.Debugf("QUIC dial failed (%v), closing!", err)
+		common.Debugf("createOrMigrate error: %v, closing!", err)
 		return
 	}
 
-	nQUICConnectionsCounter.Add(context.Background(), 1)
-	common.Debugf("%v dialed a new QUIC connection!", wspconn.addr)
+	wsContext, wsCancel := context.WithCancel(context.Background())
 
-	for {
-		stream, err := conn.AcceptStream(context.Background())
+	go func() {
+		for {
+			stream, err := (*conn).AcceptStream(wsContext)
 
-		if err != nil {
-			// We interpret an error while accepting a stream to indicate an unrecoverable error with
-			// the QUIC connection, and so we close the QUIC connection altogether
-			errString := fmt.Sprintf("%v stream error (%v), closing QUIC connection!", wspconn.addr, err)
-			common.Debugf("%v", errString)
-			conn.CloseWithError(quic.ApplicationErrorCode(42069), errString)
-			nQUICConnectionsCounter.Add(context.Background(), -1)
-			return
+			if err != nil {
+				common.Debugf("QUIC AcceptStream error for %v, terminating handler (%v)", wspconn.addr, err)
+				return
+			}
+
+			common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
+			nQUICStreamsCounter.Add(context.Background(), 1)
+
+			l.connections <- common.QUICStreamNetConn{
+				Stream: stream,
+				OnClose: func() {
+					defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
+					nQUICStreamsCounter.Add(context.Background(), -1)
+				},
+				AddrLocal:  l.addr,
+				AddrRemote: tcpAddr,
+			}
 		}
+	}()
 
-		common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-		nQUICStreamsCounter.Add(context.Background(), 1)
+	<-wspconn.readError
+	common.Debugf(
+		"%v read error, waiting %vs for migration...",
+		wspconn.addr,
+		l.connectionManager.migrationWindow.Seconds(),
+	)
 
-		l.connections <- common.QUICStreamNetConn{
-			Stream: stream,
-			OnClose: func() {
-				defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
-				nQUICStreamsCounter.Add(context.Background(), -1)
-			},
-			AddrLocal:  l.addr,
-			AddrRemote: tcpAddr,
-		}
-	}
+	t1 := time.Now()
+	<-time.After(l.connectionManager.migrationWindow)
+	l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, t1)
+	wsCancel()
 }
 
 func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
@@ -264,13 +420,20 @@ func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
 		InsecureSkipVerify: true,
 	}
 
+	cm := &connectionManager{
+		connections:     make(map[string]*connectionRecord),
+		tlsConfig:       tlsConfig,
+		migrationWindow: 30 * time.Second,
+		probeTimeout:    15 * time.Second,
+	}
+
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
-		Listener:     ll,
-		connections:  make(chan net.Conn, 2048),
-		tlsConfig:    tlsConfig,
-		addr:         ll.Addr(),
-		closeMetrics: closeFuncMetric,
+		Listener:          ll,
+		connectionManager: cm,
+		connections:       make(chan net.Conn, 2048),
+		addr:              ll.Addr(),
+		closeMetrics:      closeFuncMetric,
 	}
 
 	srv := &http.Server{
