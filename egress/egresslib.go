@@ -327,6 +327,20 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Here we enter the steady state for the WebSocket tunnel and continue until there's some reason
+	// to tear the tunnel down. An explainer about teardown: teardown begins when we intercept a read
+	// error on the errorlessWebSocketPacketConn, which indicates that the underlying websocket.Conn
+	// is no longer connected. (See commentary around errorlessWebSocketPacketConn for more context
+	// around error interception). When we intercept a read error on the errorlessWebSocketPacketConn,
+	// we wait for a bounded duration of time (the "migration window"), and then we delete the QUIC
+	// connection state from the connection manager if it has not been migrated within that window.
+	// The deletion operation will cause AcceptStream (below) to return an error, which returns from
+	// and cleans up the stream handling goroutine. If the QUIC connection DID migrate within the
+	// migration window, we keep its state intact, and we forcibly kill the stream handling goroutine
+	// for *this WebSocket* by cancelling wsContext. In both cases, we then return from this function,
+	// which cleans up the WebSocket resource. In operation, you will observe WebSockets "dangle" for
+	// a duration of time equal to migrationWindow, and the total number of WebSocket connections
+	// logged by the server will eventually converge to the correct value when the server has quiesced.
 	wsContext, wsCancel := context.WithCancel(context.Background())
 
 	go func() {
