@@ -53,6 +53,15 @@ type connectionRecord struct {
 	lastMigrated time.Time
 }
 
+// migrationWindow: when migrating from WebSocket A to B, how long should we wait after WebSocket
+// A goes away for WebSocket B to appear, before giving up and deleting the QUIC connection state?
+// Setting this value larger than your quic.Config's MaxIdleTimeout will break things, because that
+// will create scenarios where we attempt to migrate a QUIC connection that has timed out and closed.
+
+// probeTimeout: during migration, how long should we wait for a probe response before giving up?
+// This should be set to a larger value than migrationWindow. This ensures that upon migration
+// failure, QUIC connection state is deleted from the connection manager before a second attempt
+// is made.
 type connectionManager struct {
 	mx              sync.Mutex
 	connections     map[string]*connectionRecord
@@ -441,7 +450,7 @@ func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
 		connections:     make(map[string]*connectionRecord),
 		tlsConfig:       tlsConfig,
 		migrationWindow: 30 * time.Second,
-		probeTimeout:    15 * time.Second,
+		probeTimeout:    35 * time.Second,
 	}
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
