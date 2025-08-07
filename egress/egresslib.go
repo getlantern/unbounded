@@ -189,6 +189,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}()
 
 	_, b, err := q.w.Read(context.Background())
+	readDone <- struct{}{}
 
 	// Intercept and hide errors from the caller
 	// TODO: be more specific about which error(s) to hide?
@@ -198,10 +199,12 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		default:
 		}
 
-		err = nil
+		// If our underlying WebSocket is disconnected, let's just block forever, simulating no data
+		// received on the socket. TODO: in a world where we need to implement SetDeadline / SetReadDeadline,
+		// we will need to respect those here...
+		select {}
 	}
 
-	readDone <- struct{}{}
 	copy(p, b)
 	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
 	return len(b), q.tcpAddr, err
@@ -241,15 +244,15 @@ func (q errorlessWebSocketPacketConn) LocalAddr() net.Addr {
 }
 
 func (q errorlessWebSocketPacketConn) SetDeadline(t time.Time) error {
-	panic("ayyy set deadline")
+	panic("you've discovered the unimplemented SetDeadline")
 }
 
 func (q errorlessWebSocketPacketConn) SetReadDeadline(t time.Time) error {
-	panic("ayyy set read deadline")
+	panic("you've discovered the unimplemented SetReadDeadline")
 }
 
 func (q errorlessWebSocketPacketConn) SetWriteDeadline(t time.Time) error {
-	panic("ayyy set write deadline")
+	panic("you've discovered the unimplemented SetWriteDeadline")
 }
 
 type proxyListener struct {
