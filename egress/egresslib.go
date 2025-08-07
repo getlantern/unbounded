@@ -51,6 +51,7 @@ type connectionRecord struct {
 	mx           sync.Mutex
 	connection   *quic.Connection
 	lastMigrated time.Time
+	lastPath     *quic.Path
 }
 
 // migrationWindow: when migrating from WebSocket A to B, how long should we wait after WebSocket
@@ -146,14 +147,22 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 		return nil, fmt.Errorf("path switch error: %v", err)
 	}
 
-	//err = path.Close()
-	//if err != nil {
-	//  return nil, fmt.Errorf("path close error: %v", err)
-	//}
-
 	t2 := time.Now()
 	common.Debugf("Migrated a QUIC connection to %v! (took %vs)", pconn.addr, t2.Sub(t1).Seconds())
 	record.lastMigrated = time.Now()
+
+	if record.lastPath != nil {
+		err = (*record.lastPath).Close()
+
+		// If we encounter an error closing the last path, we still proceed with a successful migration
+		if err != nil {
+			common.Debugf("Error closing last path for %v: %v", pconn.addr, err)
+		} else {
+			common.Debugf("Closed old path for %v", pconn.addr)
+		}
+	}
+
+	record.lastPath = path
 	return record.connection, nil
 }
 
