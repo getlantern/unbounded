@@ -137,8 +137,14 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		cTable = NewWorkerTable([]WorkerFSM{*producerUserStream})
 
 		// Desktop peers consume connectivity over WebRTC
+		// XXX: we're temporarily forcing all desktop peers to a producer table size of 1, overriding
+		// the configuration parameters. In practice, this means that all censored peers will only
+		// maintain one concurrent upstream connection -- they will no longer preconnect some additional
+		// uncensored peer proxies. This change is required to reduce complexity at the egress server
+		// inflicted by cardinality relationships as we implement connection migration. See:
+		// https://github.com/getlantern/unbounded/pull/301
 		var pfsms []WorkerFSM
-		for i := 0; i < bfOpt.PTableSize; i++ {
+		for i := 0; i < 1; i++ { // i < bfOpt.PTableSize
 			pfsms = append(pfsms, *NewConsumerWebRTC(rtcOpt, &wgReady))
 		}
 		pTable = NewWorkerTable(pfsms)
