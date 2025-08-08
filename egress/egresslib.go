@@ -87,7 +87,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 		(*record.connection).CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		nQUICConnectionsCounter.Add(context.Background(), -1)
 		delete(manager.connections, csid)
-		common.Debugf("QUIC connection for %v expired, closed, and deleted", csid)
+		common.Debugf("QUIC connection for CSID %v expired, closed, and deleted", csid)
 	}
 
 	record.mx.Unlock()
@@ -134,7 +134,6 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 		return nil, fmt.Errorf("AddPath error: %v", err)
 	}
 
-	// TODO: use a meaningful and parameterized context here
 	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
 	defer cancel()
 	err = path.Probe(ctx)
@@ -363,6 +362,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// a duration of time equal to migrationWindow, and the total number of WebSocket connections
 	// logged by the server will eventually converge to the correct value when the server has quiesced.
 	wsContext, wsCancel := context.WithCancel(context.Background())
+	QUICLayerError := make(chan struct{}, 1)
 
 	go func() {
 		for {
@@ -370,6 +370,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 			if err != nil {
 				common.Debugf("QUIC AcceptStream error for %v, terminating handler (%v)", wspconn.addr, err)
+				QUICLayerError <- struct{}{}
+				close(QUICLayerError)
 				return
 			}
 
@@ -388,17 +390,29 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	<-wspconn.readError
-	common.Debugf(
-		"%v read error, waiting %vs for migration...",
-		wspconn.addr,
-		l.connectionManager.migrationWindow.Seconds(),
-	)
+	select {
+	case <-wspconn.readError:
+		// Normal *outside-in* tunnel collapse: on the first read error intercepted at the WebSocket
+		// layer, we initiate the migration procedure, delete the inner QUIC layer connection state if
+		// necessary, then return from handleWebsocket.
+		common.Debugf(
+			"%v read error, waiting %vs for migration...",
+			wspconn.addr,
+			l.connectionManager.migrationWindow.Seconds(),
+		)
 
-	t1 := time.Now()
-	<-time.After(l.connectionManager.migrationWindow)
-	l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, t1)
-	wsCancel()
+		t1 := time.Now()
+		<-time.After(l.connectionManager.migrationWindow)
+		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, t1)
+		wsCancel()
+	case <-QUICLayerError:
+		// Unexpected *inside-out* tunnel collapse: we should only enter this path if there's a bug. If
+		// we're here, it means there was an AcceptStream error on a QUIC connection that we didn't
+		// initiate as part of our orderly outside-in tunnel collapse. This can happen, for example,
+		// if the QUIC connection times out due to inactivity. To resynchronize, we delete the QUIC
+		// connection state and return from handleWebsocket, closing the tunnel completely.
+		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, time.Now().Add(24*time.Hour))
+	}
 }
 
 func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
