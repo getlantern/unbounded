@@ -18,7 +18,7 @@ var (
 var QUICCfg = quic.Config{
 	MaxIncomingStreams:    int64(2 << 16),
 	MaxIncomingUniStreams: int64(2 << 16),
-	MaxIdleTimeout:        30 * time.Second,
+	MaxIdleTimeout:        60 * time.Second,
 	KeepAlivePeriod:       15 * time.Second,
 	EnableDatagrams:       true,
 }
