@@ -236,8 +236,13 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 
 	b, err := json.Marshal(unboundedPacket)
 	if err != nil {
-		// TODO: don't panic
-		panic(err)
+		// XXX: it's not clear what the desired behavior is here. Sure, this is an "errorless" PacketConn,
+		// but we really only intended to hide errors related to *transport failure* from the caller...
+		// *not* serialization errors like this. The right thing is probably to be more specific about
+		// which errors to hide, per the comment below. But since we haven't implemented that yet, we'll
+		// just hide this error too! I hope you're reading the logs...
+		common.Debugf("WriteTo JSON marshaling error (hidden from caller): %v", err)
+		return len(p), nil
 	}
 
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)

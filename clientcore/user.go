@@ -50,8 +50,11 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 
 			err := json.Unmarshal(payload, &unboundedPacket)
 			if err != nil {
-				// TODO: don't panic
-				panic(err)
+				// XXX: it's unclear what the desired behavior is here. Before the introduction of
+				// UnboundedPacket, there was no precedent for returning an error after successfully reading
+				// from the channel. Returning an error here may break things catastrophically, but if
+				// we couldn't unmarshal the packet, we do have a catastrophic situation on our hands...
+				return 0, nil, err
 			}
 
 			copy(p, unboundedPacket.Payload)
