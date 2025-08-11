@@ -61,8 +61,7 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			return len(unboundedPacket.Payload), common.DebugAddr(unboundedPacket.SourceAddr), nil
 		case <-ctx.Done():
 			// We're past our deadline, so let's return failure!
-			// TODO: you can't return NELSON WUZ HERE here
-			return 0, common.DebugAddr("NELSON WUZ HERE"), ctx.Err()
+			return 0, nil, ctx.Err()
 		case d := <-c.updateReadDeadline:
 			// Someone updated the read deadline, so let's iterate to respect the new deadline
 			c.readDeadline = d
