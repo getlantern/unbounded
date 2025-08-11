@@ -228,8 +228,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 }
 
 func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	// TODO: we set q.addr to a very long string, either make it shorter or just send a hash?
-	// also TODO: this should be a more compact wire format, e.g. protobufs
+	// TODO https://github.com/getlantern/engineering/issues/2437
 	unboundedPacket := common.UnboundedPacket{
 		SourceAddr: q.addr.String(),
 		Payload:    p,
