@@ -2,12 +2,7 @@ package clientcore
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
-	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,11 +31,11 @@ func CreateHTTPTransport(c ReliableStreamLayer) *http.Transport {
 	}
 }
 
-func NewQUICLayer(bfconn *BroflakeConn) (*QUICLayer, error) {
+func NewQUICLayer(bfconn *BroflakeConn, tlsConfig *tls.Config) (*QUICLayer, error) {
 	q := &QUICLayer{
 		bfconn:       bfconn,
 		t:            &quic.Transport{Conn: bfconn},
-		tlsConfig:    generateTLSConfig(), // TODO nelson 07/24/2025: actually configure TLS
+		tlsConfig:    tlsConfig,
 		eventualConn: newEventualConn(),
 	}
 
@@ -55,29 +50,6 @@ type QUICLayer struct {
 	mx           sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
-}
-
-func generateTLSConfig() *tls.Config {
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		panic(err)
-	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		panic(err)
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		panic(err)
-	}
-	return &tls.Config{
-		Certificates: []tls.Certificate{tlsCert},
-		NextProtos:   []string{"broflake"},
-	}
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {

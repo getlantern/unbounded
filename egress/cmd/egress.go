@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,7 +26,22 @@ func main() {
 		panic(err)
 	}
 
-	ll, err := egress.NewListener(ctx, l)
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@                                                       @")
+	common.Debugf("@ This standalone egress server does not use secure TLS @")
+	common.Debugf("@ at the QUIC layer!                                    @")
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
+
+	// And here's why it doesn't use secure TLS at the QUIC layer
+	tlsConfig := &tls.Config{
+		NextProtos:         []string{"broflake"},
+		InsecureSkipVerify: true,
+	}
+
+	ll, err := egress.NewListener(ctx, l, tlsConfig)
 	if err != nil {
 		panic(err)
 	}

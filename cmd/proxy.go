@@ -1,7 +1,13 @@
 package main
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"time"
 
@@ -15,6 +21,30 @@ const (
 	ip = "127.0.0.1"
 )
 
+func generateSelfSignedTLSConfig() *tls.Config {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		panic(err)
+	}
+
+	template := x509.Certificate{SerialNumber: big.NewInt(1)}
+	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		panic(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		panic(err)
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{tlsCert},
+		NextProtos:   []string{"broflake"},
+	}
+}
+
 func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	// TODO: this is just to prevent a race with client boot processes, it's not worth getting too
 	// fancy with an event-driven solution because the local proxy is all mocked functionality anyway
@@ -24,7 +54,19 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	// This tells goproxy to wrap the dial function in a chained CONNECT request
 	proxy.ConnectDial = proxy.NewConnectDialToProxy("http://i.do.nothing")
 
-	ql, err := clientcore.NewQUICLayer(bfconn)
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@                                                       @")
+	common.Debugf("@ This peer uses an ephemeral self-signed TLS           @")
+	common.Debugf("@ certificate at the QUIC layer!                        @")
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
+
+	// And here's the ephemeral self-signed TLS certificate at the QUIC layer
+	tlsConfig := generateSelfSignedTLSConfig()
+
+	ql, err := clientcore.NewQUICLayer(bfconn, tlsConfig)
 	if err != nil {
 		common.Debugf("Cannot start local HTTP proxy: failed to create QUIC layer: %v", err)
 		return

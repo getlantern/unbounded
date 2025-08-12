@@ -419,7 +419,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
+func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
@@ -460,17 +460,6 @@ func NewListener(ctx context.Context, ll net.Listener) (net.Listener, error) {
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
-	}
-
-	// TODO nelson 07/24/2025: actually configure TLS
-
-	common.Debug("*** !!! WARNING WARNING WARNING WARNING WARNING WARNING !!! ***")
-	common.Debug("*** !!! INSECURE TLS CONFIG                             !!! ***")
-	common.Debug("*** !!! THIS SHOULD NOT HAVE BEEN MERGED                !!! ***")
-
-	tlsConfig := &tls.Config{
-		NextProtos:         []string{"broflake"},
-		InsecureSkipVerify: true,
 	}
 
 	cm := &connectionManager{
