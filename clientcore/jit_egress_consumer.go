@@ -2,11 +2,11 @@ package clientcore
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
-
 	"github.com/getlantern/broflake/common"
 )
 
@@ -17,7 +17,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// (no input data)
 			common.Debugf("JIT egress consumer state 0, waiting for downstream connection...")
 
-			// We're resetting this slot. The ($, 1) path assertion indicates that all hosts can be reached,
+			// We're resetting this slot, so send a nil path assertion
+			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+
+			// The ($, 1) path assertion indicates that all hosts can be reached,
 			// one hop away, *upon request*. This is distinct from (*, 1), which means that all hosts can
 			// be reached, one hop away, but with the understanding that the network resource is *already
 			// connected*. Functionally, they do exactly the same thing -- they signal to workers in the
@@ -31,14 +34,24 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 
 			// Now we wait for a ConsumerInfo IPC message from the corresponding downstream worker indicating
 			// that we've got a consumer connected for this connection slot.
+			var consumerInfoMsg common.ConsumerInfo
+
 		waitforconsumerloop:
 			for {
 				select {
 				case msg := <-com.rx:
 					if msg.IpcType == ConsumerInfoIPC && !msg.Data.(common.ConsumerInfo).Nil() {
-						// Before doing anything else, send a nil path assertion to indicate no connectivity
-						// opportunity for this slot, since it's been claimed
-						com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+						// Before doing anything else, send a "JIT unavailable" path assertion to indicate no
+						// connectivity opportunity for this slot, since it's been claimed. TODO nelson 07/25/2025:
+						// the JIT unavailable flag was invented to work alongside the ($, 1) path
+						// assertion, as a means to signal to downstream workers that there's no connectivity
+						// opportunity while also disambiguating from a nil path assertion. It's wacky and
+						// should be cleaned up here: https://github.com/getlantern/engineering/issues/2402
+						com.tx <- IPCMsg{
+							IpcType: PathAssertionIPC,
+							Data:    common.PathAssertion{Allow: []common.Endpoint{allUponReq}, JITUnavailable: true},
+						}
+						consumerInfoMsg = msg.Data.(common.ConsumerInfo)
 						break waitforconsumerloop
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
@@ -52,9 +65,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 
 			// TODO: extract the SessionID from the ConsumerInfoIPC message above and add it as a header
 			// to the WebSocket HTTP request
+			hdr := http.Header{}
+			hdr.Set(common.ConsumerSessionIDHeader, consumerInfoMsg.SessionID)
+
+			dialOpts := &websocket.DialOptions{
+				HTTPHeader: hdr,
+			}
 
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)

@@ -135,11 +135,14 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			for {
 				select {
-				// Handle inbound IPC messages, wait for a non-nil path assertion
+				// Handle inbound IPC messages, wait for a non-nil *and not JIT unavailable* path assertion
+				// TODO nelson 07/25/2025: the JIT unavailable flag was added to synchronize with the
+				// JIT egress consumer, but it's wacky and should be cleaned up here:
+				// https://github.com/getlantern/engineering/issues/2402
 				case msg := <-com.rx:
-					if msg.IpcType == PathAssertionIPC && !msg.Data.(common.PathAssertion).Nil() {
-						pa := msg.Data.(common.PathAssertion)
-						return 2, []interface{}{peerConnection, pa, connectionEstablished, connectionChange, connectionClosed}
+					if msg.IpcType == PathAssertionIPC && !msg.Data.(common.PathAssertion).Nil() &&
+						!msg.Data.(common.PathAssertion).JITUnavailable {
+						return 2, []interface{}{peerConnection, msg.Data.(common.PathAssertion), connectionEstablished, connectionChange, connectionClosed}
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():
@@ -417,11 +420,17 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			}
 
-			// Looks like we got some kind of response. Should be a slice of ICE candidates in a SignalMsg
-			replyTo, remoteCandidates, err := common.DecodeSignalMsg(iceBytes)
+			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
+			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
 				common.Debugf("Error decoding signal message: %v (msg: %v)", err, string(iceBytes))
 				// Borked!
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
+			if iceMsg.(common.ICEMsg).ConsumerSessionID == "" {
+				common.Debugf("Missing session ID from signaling partner, aborting!")
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -430,7 +439,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			var remoteHasNonHostCandidate bool
 
 			// TODO: here we assume valid candidates, but we need to handle the invalid case too
-			for _, c := range remoteCandidates.([]webrtc.ICECandidate) {
+			for _, c := range iceMsg.(common.ICEMsg).Candidates {
 				if c.Typ != webrtc.ICECandidateTypeHost {
 					remoteHasNonHostCandidate = true
 				}
@@ -471,6 +480,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				connectionClosed,
 				remoteAddr,
 				offer,
+				iceMsg.(common.ICEMsg).ConsumerSessionID,
 			}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -481,12 +491,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// input[3]: chan struct{}
 			// input[4]: net.IP
 			// input[5]: common.OfferMsg
+			// input[6]: string
 			peerConnection := input[0].(*webrtc.PeerConnection)
 			connectionEstablished := input[1].(chan *webrtc.DataChannel)
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
 			remoteAddr := input[4].(net.IP)
 			offer := input[5].(common.OfferMsg)
+			consumerSessionID := input[6].(string)
+
 			common.Debugf("Producer state 4, signaling complete!")
 
 			select {
@@ -499,6 +512,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					connectionClosed,
 					remoteAddr,
 					offer,
+					consumerSessionID,
 				}
 			case <-time.After(options.NATFailTimeout):
 				common.Debugf("NAT traversal timeout, aborting!")
@@ -546,18 +560,21 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// input[3]: chan struct{}
 			// input[4]: net.IP
 			// input[5]: common.OfferMsg
+			// input[6]: string
 			peerConnection := input[0].(*webrtc.PeerConnection)
 			d := input[1].(*webrtc.DataChannel)
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
 			remoteAddr := input[4].(net.IP)
 			offer := input[5].(common.OfferMsg)
+			consumerSessionID := input[6].(string)
+
 			common.Debugf("Producer state 5...")
 
 			// Announce the new connectivity situation for this slot
 			com.tx <- IPCMsg{
 				IpcType: ConsumerInfoIPC,
-				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag},
+				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID},
 			}
 
 			// Inbound from datachannel:
@@ -585,7 +602,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 				// Handle connection failure for Firefox
 				case _ = <-connectionClosed:
-					common.Debugf("Firefox connection failure, resetting!")
+					common.Debugf("Connection closed, resetting!")
 					break proxyloop
 				// Handle messages from the router
 				case msg := <-com.rx:
@@ -593,6 +610,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					case ChunkIPC:
 						if err := d.Send(msg.Data.([]byte)); err != nil {
 							common.Debugf("Error sending to datachannel, resetting!")
+							break proxyloop
+						}
+					case PathAssertionIPC:
+						pa := msg.Data.(common.PathAssertion)
+						if pa.Nil() {
+							// Here's how we detect when the upstream worker has reset, which means we should
+							// disconnect the corresponding consumer: we receive a nil path assertion. TODO
+							// nelson 07/25/2025: clean this up here: https://github.com/getlantern/engineering/issues/2402
+							common.Debugf("Upstream worker reset, disconnecting downstream peer!")
 							break proxyloop
 						}
 					}

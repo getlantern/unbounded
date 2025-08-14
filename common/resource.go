@@ -2,7 +2,7 @@ package common
 
 import (
 	"encoding/json"
-	"errors"
+	// "errors"
 	"net"
 
 	"github.com/pion/webrtc/v4"
@@ -32,9 +32,13 @@ func (t SignalMsgType) String() string {
 	}
 }
 
+// TODO nelson 07/25/2025: JITUnavailable was added as an escape hatch to implement synchronization
+// with the JIT egress consumer, as a way to disambiguate a nil path assertion. It's wacky and should
+// be cleaned up here: https://github.com/getlantern/engineering/issues/2402
 type PathAssertion struct {
-	Allow []Endpoint
-	Deny  []Endpoint
+	Allow          []Endpoint
+	Deny           []Endpoint
+	JITUnavailable bool
 }
 
 func (pa PathAssertion) Nil() bool {
@@ -77,28 +81,36 @@ type OfferMsg struct {
 	Tag string
 }
 
+// NB: in the last segment of our signaling handshake, the consumer sends the producer an ICEMsg,
+// which encapsulates the consumer's gathered ICE candidates "a la carte" and the consumer's SessionID.
+type ICEMsg struct {
+	Candidates        []webrtc.ICECandidate
+	ConsumerSessionID string
+}
+
 // A little confusing: SignalMsg is actually the parent msg which encapsulates an underlying msg,
 // which could be a GenesisMsg, an OfferMsg, a webrtc.SessionDescription (which is currently sent
-// unencapsulated as a SignalMsgAnswer), or a slice of webrtc.ICECandidate (which is currently sent
-// unencapsulated as a SignalMsgICE)
+// unencapsulated as a SignalMsgAnswer), or an ICEMsg, which is sent as a SignalMsgICE.
 type SignalMsg struct {
 	ReplyTo string
 	Type    SignalMsgType
 	Payload string
 }
 
+// TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?
+/*
 type ICECandidate struct {
-	statsID        string
-	Foundation     string             `json:"foundation"`
-	Priority       uint32             `json:"priority"`
-	Address        string             `json:"address"`
-	Protocol       webrtc.ICEProtocol `json:"protocol"`
-	Port           uint16             `json:"port"`
-	Typ            int                `json:"type"`
-	Component      uint16             `json:"component"`
-	RelatedAddress string             `json:"relatedAddress"`
-	RelatedPort    uint16             `json:"relatedPort"`
-	TCPType        string             `json:"tcpType"`
+  statsID        string
+  Foundation     string             `json:"foundation"`
+  Priority       uint32             `json:"priority"`
+  Address        string             `json:"address"`
+  Protocol       webrtc.ICEProtocol `json:"protocol"`
+  Port           uint16             `json:"port"`
+  Typ            int                `json:"type"`
+  Component      uint16             `json:"component"`
+  RelatedAddress string             `json:"relatedAddress"`
+  RelatedPort    uint16             `json:"relatedPort"`
+  TCPType        string             `json:"tcpType"`
 }
 
 // we did an upgrade of pion/webrtc from 3.2.6 to 3.3.4, however marshaling and unmarshaling goes hand in hand
@@ -106,32 +118,33 @@ type ICECandidate struct {
 // encoding.TextMarshaler and encoding.TextUnmarshaler interfaces on ICECandidateType. This method will be a fallback to help unmarshal
 // older messages sent by older clients
 func fallBackIceCandidatesDecoder(raw []byte) ([]webrtc.ICECandidate, error) {
-	var candidates []ICECandidate
-	var webRTCCandidates []webrtc.ICECandidate
-	err := json.Unmarshal(raw, &candidates)
-	if err != nil {
-		return webRTCCandidates, err
-	}
+  var candidates []ICECandidate
+  var webRTCCandidates []webrtc.ICECandidate
+  err := json.Unmarshal(raw, &candidates)
+  if err != nil {
+    return webRTCCandidates, err
+  }
 
-	for _, c := range candidates {
-		new := webrtc.ICECandidate{
-			Foundation:     c.Foundation,
-			Priority:       c.Priority,
-			Address:        c.Address,
-			Protocol:       c.Protocol,
-			Typ:            webrtc.ICECandidateType(c.Typ),
-			Port:           c.Port,
-			Component:      c.Component,
-			RelatedAddress: c.RelatedAddress,
-			RelatedPort:    c.RelatedPort,
-			TCPType:        c.TCPType,
-		}
+  for _, c := range candidates {
+    new := webrtc.ICECandidate{
+      Foundation:     c.Foundation,
+      Priority:       c.Priority,
+      Address:        c.Address,
+      Protocol:       c.Protocol,
+      Typ:            webrtc.ICECandidateType(c.Typ),
+      Port:           c.Port,
+      Component:      c.Component,
+      RelatedAddress: c.RelatedAddress,
+      RelatedPort:    c.RelatedPort,
+      TCPType:        c.TCPType,
+    }
 
-		webRTCCandidates = append(webRTCCandidates, new)
-	}
+    webRTCCandidates = append(webRTCCandidates, new)
+  }
 
-	return webRTCCandidates, nil
+  return webRTCCandidates, nil
 }
+*/
 
 func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 	var err error
@@ -154,14 +167,9 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 			err := json.Unmarshal([]byte(msg.Payload), &answer)
 			return msg.ReplyTo, answer, err
 		case SignalMsgICE:
-			var candidates []webrtc.ICECandidate
-			var unMarshalTypeErr *json.UnmarshalTypeError
-			err := json.Unmarshal([]byte(msg.Payload), &candidates)
-			if errors.As(err, &unMarshalTypeErr) {
-				candidates, err = fallBackIceCandidatesDecoder([]byte(msg.Payload))
-				return msg.ReplyTo, candidates, err
-			}
-			return msg.ReplyTo, candidates, err
+			var iceMsg ICEMsg
+			err := json.Unmarshal([]byte(msg.Payload), &iceMsg)
+			return msg.ReplyTo, iceMsg, err
 		}
 	}
 

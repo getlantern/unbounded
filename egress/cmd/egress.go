@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"net/http"
@@ -20,34 +21,27 @@ func main() {
 		port = "8000"
 	}
 
-	certFile := os.Getenv("TLS_CERT")
-	keyFile := os.Getenv("TLS_KEY")
-
 	l, err := net.Listen("tcp", fmt.Sprintf(":%v", port))
 	if err != nil {
 		panic(err)
 	}
 
-	var tlsCert string
-	var tlsKey string
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@ DANGER                                                @")
+	common.Debugf("@                                                       @")
+	common.Debugf("@ This standalone egress server does not use secure TLS @")
+	common.Debugf("@ at the QUIC layer!                                    @")
+	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 
-	// XXX: in the process of delivering the cert and key to egress.NewListener, we suboptimally
-	// cast back and forth between []string and []byte... it's just a byproduct of the API
-	if certFile != "" && keyFile != "" {
-		cert, err := os.ReadFile(certFile)
-		if err != nil {
-			panic(err)
-		}
-		tlsCert = string(cert)
-
-		key, err := os.ReadFile(keyFile)
-		if err != nil {
-			panic(err)
-		}
-		tlsKey = string(key)
+	// And here's why it doesn't use secure TLS at the QUIC layer
+	tlsConfig := &tls.Config{
+		NextProtos:         []string{"broflake"},
+		InsecureSkipVerify: true,
 	}
 
-	ll, err := egress.NewListener(ctx, l, tlsCert, tlsKey)
+	ll, err := egress.NewListener(ctx, l, tlsConfig)
 	if err != nil {
 		panic(err)
 	}
