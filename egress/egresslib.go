@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -216,10 +217,24 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		default:
 		}
 
-		// If our underlying WebSocket is disconnected, let's just block forever, simulating no data
-		// received on the socket. TODO: in a world where we need to implement SetDeadline / SetReadDeadline,
-		// we will need to respect those here...
-		select {}
+		// XXX nelson 08/18/2025: This code path remains the source of much confusion. Let me unpack
+		// some observations that led us to to the present behavior. First, we observed that if you
+		// never return an error from ReadFrom, then quic-go will continue to call ReadFrom on old
+		// transports forever -- even if you've switched to a new path *and* closed the old paths, and
+		// even if the QUIC connection is *closed completely!* Yes, you read that correctly: when we
+		// close a QUIC connection, we discover that some internal process of quic-go is still calling
+		// ReadFrom on all of its historical transports, presumably because we never returned an error.
+		// However, we never found a way to return an error that worked. We attempted a design wherein
+		// ReadFrom would, upon intercepting the first error, block until someone called Close() on the
+		// errorlessWebSocketPacketConn, at which point it would return an error of our own choosing. But
+		// we discovered that an error returned by transport A is received by the AcceptStream handler
+		// of transport B, even after we'd migrated from A to B -- and that an error returned by
+		// transport A puts the entire connection in a permanently bad state -- you can no longer call
+		// AcceptStream on the connection, as it will forever return a "transport closed" error. So we
+		// find ourselves in a pickle: if we do return an error, we bork the connection, and if we don't
+		// return an error, we seem to never release the resource. Examining the call stack before the
+		// infinite calls to ReadFrom, it looks like runtime.Goexit was implicated, and thus:
+		runtime.Goexit()
 	}
 
 	copy(p, b)
