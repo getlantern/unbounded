@@ -8,11 +8,8 @@ import (
 )
 
 var (
-	// Must be a valid semver
-	Version                 = "v0.0.2"
 	VersionHeader           = "X-BF-Version"
 	ConsumerSessionIDHeader = "X-BF-ConsumerSessionID"
-	TeamIdPrefix            = "unbounded-team:"
 )
 
 var QUICCfg = quic.Config{
@@ -20,7 +17,6 @@ var QUICCfg = quic.Config{
 	MaxIncomingUniStreams: int64(2 << 16),
 	MaxIdleTimeout:        60 * time.Second,
 	KeepAlivePeriod:       15 * time.Second,
-	EnableDatagrams:       true,
 }
 
 type DebugAddr string
@@ -42,7 +38,6 @@ type QUICStreamNetConn struct {
 	OnClose    func()
 	AddrLocal  net.Addr
 	AddrRemote net.Addr
-	TeamId     string // optional, used by http-proxy-lantern
 }
 
 func (c QUICStreamNetConn) LocalAddr() net.Addr {
