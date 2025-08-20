@@ -1,0 +1,19 @@
+name: Check version.go changed
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: tj-actions/changed-files@v44
+      id: changed-files
+
+    - name: Fail if version.go not changed
+      run: |
+        if ! echo "${{ steps.changed-files.outputs.all_changed_files }}" | grep -q "version.go"; then
+          echo "version.go has not been modified in this PR. Update the version file."
+          exit 1
+        fi
