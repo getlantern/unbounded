@@ -63,10 +63,9 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
-			// TODO: extract the SessionID from the ConsumerInfoIPC message above and add it as a header
-			// to the WebSocket HTTP request
 			hdr := http.Header{}
 			hdr.Set(common.ConsumerSessionIDHeader, consumerInfoMsg.SessionID)
+			hdr.Set(common.VersionHeader, common.Version)
 
 			dialOpts := &websocket.DialOptions{
 				HTTPHeader: hdr,

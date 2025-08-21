@@ -2,9 +2,11 @@ package common
 
 import (
 	"net"
+	"net/http"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -63,4 +65,10 @@ func IsPublicAddr(addr net.IP) bool {
 type UnboundedPacket struct {
 	SourceAddr string
 	Payload    []byte
+}
+
+// Validate the protocol version header. If the header isn't present, you're invalid. NB that a
+// "valid" version must match only the *major* version.
+func IsValidProtocolVersion(r *http.Request) bool {
+	return semver.Major(r.Header.Get(VersionHeader)) == semver.Major(Version)
 }
