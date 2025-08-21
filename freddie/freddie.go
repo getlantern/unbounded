@@ -17,7 +17,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/mod/semver"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -249,7 +248,7 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !isValidProtocolVersion(r) {
+	if !common.IsValidProtocolVersion(r) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		return
@@ -400,10 +399,4 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 // TODO: delete me and replace with a real CORS strategy!
 func enableCors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-}
-
-// Validate the Broflake protocol version header. If the header isn't present, we consider you
-// invalid. Protocol version is currently the major version of Broflake's reference implementation
-func isValidProtocolVersion(r *http.Request) bool {
-	return semver.Major(r.Header.Get(common.VersionHeader)) == semver.Major(common.Version)
 }

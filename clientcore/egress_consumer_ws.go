@@ -6,6 +6,7 @@ package clientcore
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 
@@ -39,8 +40,15 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
+			hdr := http.Header{}
+			hdr.Set(common.VersionHeader, common.Version)
+
+			dialOpts := &websocket.DialOptions{
+				HTTPHeader: hdr,
+			}
+
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)

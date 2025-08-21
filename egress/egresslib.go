@@ -70,6 +70,13 @@ func (l proxyListener) Close() error {
 }
 
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+	if !common.IsValidProtocolVersion(r) {
+		w.WriteHeader(http.StatusTeapot)
+		w.Write([]byte("418\n"))
+		common.Debugf("Refused WebSocket connection, bad protocol version")
+		return
+	}
+
 	// TODO: InsecureSkipVerify=true just disables origin checking, we need to instead add origin
 	// patterns as strings using AcceptOptions.OriginPattern
 	// TODO: disabling compression is a workaround for a WebKit bug:
