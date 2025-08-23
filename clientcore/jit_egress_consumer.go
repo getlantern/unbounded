@@ -2,7 +2,6 @@ package clientcore
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"time"
 
@@ -63,12 +62,8 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
-			hdr := http.Header{}
-			hdr.Set(common.ConsumerSessionIDHeader, consumerInfoMsg.SessionID)
-			hdr.Set(common.VersionHeader, common.Version)
-
 			dialOpts := &websocket.DialOptions{
-				HTTPHeader: hdr,
+				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
 			}
 
 			// TODO: WSS

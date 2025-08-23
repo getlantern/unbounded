@@ -6,7 +6,6 @@ package clientcore
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"time"
 
@@ -40,15 +39,14 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
-			hdr := http.Header{}
-			hdr.Set(common.VersionHeader, common.Version)
-
-			dialOpts := &websocket.DialOptions{
-				HTTPHeader: hdr,
-			}
+			// TODO nelson 08/22/2025: like the JIT egress consumer, we must create a websocket.DialOptions
+			// with Subprotocols constructed using common.CreateSubProtocolsRequest(). However, that means
+			// we need to plumb through the consumer session ID -- and right now, the consumer session ID
+			// semantics don't work with the pre-connected WebSocket created here.
+			panic("you discovered the missing egress consumer functionality")
 
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
+			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
 				<-time.After(options.ErrorBackoff)

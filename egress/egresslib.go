@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -70,7 +71,30 @@ func (l proxyListener) Close() error {
 }
 
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
-	if !common.IsValidProtocolVersion(r) {
+	// Our subprotocols should be a slice containing a single comma-separated string. But weird browsers
+	// could theoretically send multiple Sec-Websocket-Protocol headers, one for each subprotocol, which
+	// would result in a slice containing multiple strings. We handle both cases:
+	rawSubprotocols := r.Header[common.SubprotocolsHeader]
+	joined := strings.Join(rawSubprotocols, ",")
+
+	subprotocols := []string{}
+	for _, sp := range strings.Split(joined, ",") {
+		trimmed := strings.TrimSpace(sp)
+		if trimmed != "" {
+			subprotocols = append(subprotocols, trimmed)
+		}
+	}
+
+	consumerSessionID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
+	if !ok {
+		common.Debugf("Refused WebSocket connection, missing subprotocols")
+		return
+	}
+
+	versionHeader := &http.Header{}
+	versionHeader.Add(common.VersionHeader, version)
+
+	if !common.IsValidProtocolVersion(versionHeader) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		common.Debugf("Refused WebSocket connection, bad protocol version")
@@ -82,7 +106,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// TODO: disabling compression is a workaround for a WebKit bug:
 	// https://github.com/getlantern/broflake/issues/45
 
-	consumerSessionID := r.Header.Get(common.ConsumerSessionIDHeader)
 	if consumerSessionID == "" {
 		common.Debugf("Refused WebSocket connection, missing consumer session ID")
 		return
@@ -94,6 +117,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		&websocket.AcceptOptions{
 			InsecureSkipVerify: true,
 			CompressionMode:    websocket.CompressionDisabled,
+			Subprotocols:       common.NewSubprotocolsResponse(),
 		},
 	)
 	if err != nil {
