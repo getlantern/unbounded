@@ -15,6 +15,11 @@ const (
 	SignalMsgICE
 )
 
+const (
+	SubprotocolsHeader      = "Sec-Websocket-Protocol"
+	subprotocolsMagicCookie = "un80und3d"
+)
+
 type SignalMsgType int
 
 func (t SignalMsgType) String() string {
@@ -174,4 +179,26 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 	}
 
 	return "", nil, err
+}
+
+// We need to pass a few different data items from uncensored peer to egress server at WebSocket
+// dial time. Unfortunately, we cannot use standard HTTP headers for Wasm build targets, because
+// the browser spec disallows arbitrary headers. Our solution is the common trick of abusing the
+// Sec-Websocket-Protocols header, which can be populated via a Wasm-friendly part of the
+// coder/websocket API, to pass arbitrary data. Note that a server receiving a populated
+// Sec-Websocket-Protocols header must reply with a reciprocal header containing some selected
+// protocol from the request.
+func NewSubprotocolsRequest(csid, version string) []string {
+	return []string{subprotocolsMagicCookie, csid, version}
+}
+
+func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
+	if len(s) != 3 {
+		return "", "", false
+	}
+	return s[1], s[2], true
+}
+
+func NewSubprotocolsResponse() []string {
+	return []string{subprotocolsMagicCookie}
 }

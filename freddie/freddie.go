@@ -248,7 +248,7 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !common.IsValidProtocolVersion(r) {
+	if !common.IsValidProtocolVersion(&r.Header) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		return

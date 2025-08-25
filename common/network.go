@@ -10,8 +10,7 @@ import (
 )
 
 var (
-	VersionHeader           = "X-BF-Version"
-	ConsumerSessionIDHeader = "X-BF-ConsumerSessionID"
+	VersionHeader = "X-BF-Version"
 )
 
 var QUICCfg = quic.Config{
@@ -69,6 +68,6 @@ type UnboundedPacket struct {
 
 // Validate the protocol version header. If the header isn't present, you're invalid. NB that a
 // "valid" version must match only the *major* version.
-func IsValidProtocolVersion(r *http.Request) bool {
-	return semver.Major(r.Header.Get(VersionHeader)) == semver.Major(Version)
+func IsValidProtocolVersion(h *http.Header) bool {
+	return semver.Major(h.Get(VersionHeader)) == semver.Major(Version)
 }
