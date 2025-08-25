@@ -3,7 +3,6 @@
   <meta charset="utf-8"/>
   <script src="wasm_exec.js"></script>
   <script>
-    const supportsWT = typeof window !== "undefined" && "WebTransport" in window;
     const go = new Go();
     WebAssembly.instantiateStreaming(fetch("widget.wasm"), go.importObject)
         .then((result) => {
@@ -14,14 +13,13 @@
             5, 
             5, 
             4096, 
-            "", 
-            supportsWT, // use webtransport when possible
+            "",
             "http://localhost:9000", 
             "/v1/signal", 
             2, 
             "", 
-            supportsWT ? "https://localhost:8000" : "http://localhost:8000",
-            supportsWT ? "/wt" : "/ws",
+            "http://localhost:8000",
+            "/ws",
           );
         });
     </script>
