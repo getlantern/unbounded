@@ -2,7 +2,6 @@ package clientcore
 
 import (
 	"context"
-	"net/http"
 	"sync"
 	"time"
 
@@ -16,9 +15,6 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// State 0
 			// (no input data)
 			common.Debugf("JIT egress consumer state 0, waiting for downstream connection...")
-
-			// We're resetting this slot, so send a nil path assertion
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
 
 			// The ($, 1) path assertion indicates that all hosts can be reached,
 			// one hop away, *upon request*. This is distinct from (*, 1), which means that all hosts can
@@ -63,12 +59,8 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			ctx, cancel := context.WithTimeout(ctx, options.ConnectTimeout)
 			defer cancel()
 
-			hdr := http.Header{}
-			hdr.Set(common.ConsumerSessionIDHeader, consumerInfoMsg.SessionID)
-			hdr.Set(common.VersionHeader, common.Version)
-
 			dialOpts := &websocket.DialOptions{
-				HTTPHeader: hdr,
+				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
 			}
 
 			// TODO: WSS
@@ -110,6 +102,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// On read or write error, we counterintuitively close the websocket with StatusNormalClosure.
 			// This is to ensure that the egress server detects closed connections while respecting a
 			// quirk in our WS library's net.Conn wrapper: https://pkg.go.dev/nhooyr.io/websocket#NetConn
+		proxyloop:
 			for {
 				select {
 				case msg := <-com.rx:
@@ -119,13 +112,13 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 						if err != nil {
 							c.Close(websocket.StatusNormalClosure, err.Error())
 							common.Debugf("JIT egress consumer WebSocket write error: %v", err)
-							return 0, []interface{}{}
+							break proxyloop
 						}
 					case ConsumerInfoIPC:
 						if msg.Data.(common.ConsumerInfo).Nil() {
 							c.Close(websocket.StatusNormalClosure, "downstream peer disconnected")
 							common.Debug("JIT egress consumer downstream peer disconnected")
-							return 0, []interface{}{}
+							break proxyloop
 						}
 					default:
 						common.Debugf("JIT egress consumer received unexpected IPC message type: %v\n", msg.IpcType)
@@ -134,7 +127,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				case err := <-readStatus:
 					c.Close(websocket.StatusNormalClosure, err.Error())
 					common.Debugf("JIT egress consumer WebSocket read error: %v", err)
-					return 0, []interface{}{}
+					break proxyloop
 
 					// Ordinarily it would be incorrect to put a worker into an infinite loop without including
 					// a case to listen for context cancellation, but here we handle context cancellation in a
@@ -144,6 +137,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					// stop logic in protocol.go takes over and kills this goroutine.
 				}
 			}
+
+			// We're resetting this slot, so send a nil path assertion
+			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+			return 0, []interface{}{}
 		}),
 	})
 }
