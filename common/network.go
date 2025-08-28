@@ -54,6 +54,8 @@ func (c QUICStreamNetConn) Close() error {
 		c.OnClose()
 	}
 
+	c.Stream.CancelWrite(42069)
+	c.Stream.CancelRead(42069)
 	return c.Stream.Close()
 }
 
