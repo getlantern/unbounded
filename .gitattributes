@@ -1,3 +1,4 @@
-*.ts linguist-detectable=false
-*.js linguist-detectable=false
-*.go linguist-detectable=true
+*.tsx linguist-vendored
+*.ts linguist-vendored
+*.js linguist-vendored
+
