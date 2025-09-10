@@ -1,26 +1,51 @@
-# Unbounded
-<img width="981" alt="image" src="https://github.com/getlantern/browsersunbounded/assets/1143966/4de8bc34-5ed9-4029-93d2-51c0691a5077">
+```
+             _                           _          _ 
+            | |                         | |        | |
+ _   _ _ __ | |__   ___  _   _ _ __   __| | ___  __| |
+| | | | '_ \| '_ \ / _ \| | | | '_ \ / _` |/ _ \/ _` |
+| |_| | | | | |_) | (_) | |_| | | | | (_| |  __/ (_| |
+ \__,_|_| |_|_.__/ \___/ \__,_|_| |_|\__,_|\___|\__,_|
+                                                                                            
+```
 
 # :compass: Table of contents
-* [What is Unbounded?](#question-what-is-browsers-unbounded)
+* [What is Unbounded?](#question-what-is-unbounded)
+* [Features](#boom-features)
+* [Related work](#love_letter-related-work)
 * [System components](#floppy_disk-system-components)
 * [Quickstart for devs](#arrow_forward-quickstart-for-devs)
 * [Observing networks with netstate](#spider_web)
 * [UI](#art-ui)
 
-### :skull: Warning
-This is prototype-grade software!
-
 ### :question: What is Unbounded?
-Unbounded is a system for distributed peer-to-peer proxying. The Unbounded system includes a 
-browser-based client which enables volunteers to instantly provide proxying services just by 
-accessing a web page. However, Unbounded is not just a web application! The Unbounded system 
-introduces software libraries and protocol concepts designed to enable role-agnostic multi-hop p2p 
-proxying across the entire Lantern network or on behalf of any circumvention tool that chooses to 
-integrate it.
+Unbounded is a next-gen technology stack for circumventing internet censorship using peer-to-peer proxies. It
+works by creating an ephemeral swarm of short-lived residential IP addresses, provided by volunteers
+in less censored regions, which create unblockable routes for network requests originating from users 
+in heavily censored regions.
 
-Put another way, Unbounded is a common language which enables circumvention tool users to describe, 
-exchange, and share the resource of internet access across network boundaries and runtime environments.
+The Unbounded software suite functions as a standalone tool to defeat internet censorship, but it can
+also be operationalized as a Go library to provide an interoperable P2P transport for other proxy stacks
+and circumvention tools. We're adding new integrations every day.
+
+If you'd like to join the fight against global internet censorship, the Unbounded volunteer node is 
+designed for maximum portability. It compiles to Wasm and runs in a browser (for a frictionless 
+volunteer experience), but it's also easy to daemonize on a Raspberry Pi or just run in your terminal.
+
+### :boom: Features
+* End-to-end connection state persistence across ephemeral peer transports
+* Truly concurrent volunteer proxy client for IP efficiency: 1 volunteer can proxy for N users simultaneously
+* N:M multiplexing
+* High performance, low latency, rapid peer discovery
+* Maintainable and debuggable: one cross-platform WebAssembly-friendly engine that runs everywhere
+
+### :love_letter: Related work
+Unbounded is a descendant of the "flash proxy" concept first described in 2012 
+([paper](https://crypto.stanford.edu/flashproxy/flashproxy.pdf)).
+
+[uProxy](https://www.uproxy.org/) is a historical project exploring similar ideas.
+
+[Snowflake](https://snowflake.torproject.org/), part of the Tor project, is an earlier implementation 
+of the flash proxy concept, and it served as reference and inspiration for Unbounded.
 
 ### :floppy_disk: System components
 ![system](https://user-images.githubusercontent.com/21117002/176231832-1c558546-8933-4e25-b8df-f60edb4ed6d5.png)
@@ -33,10 +58,11 @@ exchange, and share the resource of internet access across network boundaries an
 | egress     | egress server                                                                                 |
 | freddie    | discovery, signaling, and matchmaking server                                                  |
 | netstate   | network topology observability tool                                                           |
-| ui         | embeddable web user interface                                                                 |
+| ui         | embeddable web user interface          
+
+<img width="981" alt="image" src="https://github.com/getlantern/browsersunbounded/assets/1143966/4de8bc34-5ed9-4029-93d2-51c0691a5077">                                                       |
 
 ### :arrow_forward: Quickstart for devs
-
 1. Clone this repo.
 
 2. Configure **Mozilla Firefox** to use a local HTTP proxy. In settings, search "proxy". Select 
