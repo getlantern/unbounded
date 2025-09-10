@@ -38,16 +38,17 @@ volunteer experience), but it's also easy to daemonize on a Raspberry Pi or just
 * Maintainable and debuggable: one cross-platform WebAssembly-friendly engine that runs everywhere
 
 ### :love_letter: Related work
-Unbounded is a descendant of the "flash proxy" concept first described in 2012
+Unbounded is a descendant of the "flash proxy" concept first described in 2012 by David Fifield,
+Nate Hardison, Jonathan Ellithorpe, Emily Stark, Dan Boneh, Roger Dingledine, and Phil Porras 
 ([paper](https://crypto.stanford.edu/flashproxy/flashproxy.pdf)).
 
 [uProxy](https://www.uproxy.org/) is a historical project exploring similar ideas.
 
-[Snowflake](https://snowflake.torproject.org/), part of the Tor project, is an earlier implementation 
-of the flash proxy concept, and it served as reference and inspiration for Unbounded.
+[Snowflake](https://snowflake.torproject.org/), part of the Tor project, is an earlier implementation
+of the flash proxy concept.
 
-The idea to implement connection state persistence across ephemeral peer transports was formalized as
-"Turbo Tunnel" in 2020 ([paper](https://www.bamsoftware.com/papers/turbotunnel/turbotunnel.pdf)).
+The idea to create connection state persistence across ephemeral peer transports was formalized 
+by David Fifield as "Turbo Tunnel" in 2020 ([paper](https://www.bamsoftware.com/papers/turbotunnel/turbotunnel.pdf)).
 
 ### :floppy_disk: System components
 ![system](https://user-images.githubusercontent.com/21117002/176231832-1c558546-8933-4e25-b8df-f60edb4ed6d5.png)
