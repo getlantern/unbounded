@@ -5,7 +5,6 @@
 | | | | '_ \| '_ \ / _ \| | | | '_ \ / _` |/ _ \/ _` |
 | |_| | | | | |_) | (_) | |_| | | | | (_| |  __/ (_| |
  \__,_|_| |_|_.__/ \___/ \__,_|_| |_|\__,_|\___|\__,_|
-                                                                                            
 ```
 
 # :compass: Table of contents
@@ -52,15 +51,15 @@ of the flash proxy concept, and it served as reference and inspiration for Unbou
 
 | Module     | Description                                                                                   |
 |------------|-----------------------------------------------------------------------------------------------|
-| clientcore | library exposing Unbounded's high level client API                                   |
-| cmd        | driver code for operationalizing Unbounded outside of a controlling process          |   
-| common     | data structures and functionality shared across Unbounded modules                    |
+| clientcore | library exposing Unbounded's high level client API                                            |
+| cmd        | driver code for operationalizing Unbounded outside of a controlling process                   |
+| common     | data structures and functionality shared across Unbounded modules                             |
 | egress     | egress server                                                                                 |
 | freddie    | discovery, signaling, and matchmaking server                                                  |
 | netstate   | network topology observability tool                                                           |
 | ui         | embeddable web user interface          
 
-<img width="981" alt="image" src="https://github.com/getlantern/browsersunbounded/assets/1143966/4de8bc34-5ed9-4029-93d2-51c0691a5077">                                                       |
+<img width="981" alt="image" src="https://github.com/getlantern/browsersunbounded/assets/1143966/4de8bc34-5ed9-4029-93d2-51c0691a5077">   
 
 ### :arrow_forward: Quickstart for devs
 1. Clone this repo.
