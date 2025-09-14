@@ -52,6 +52,8 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():
+					// We're resetting this slot, so send a nil path assertion
+					com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
 					return 0, []interface{}{}
 				}
 			}
@@ -67,6 +69,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
+
+				// We're resetting this slot, so send a nil path assertion
+				com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
