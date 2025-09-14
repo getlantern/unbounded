@@ -52,6 +52,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():
+					// XXX nelson 09/14/2025: it is technically correct to send a nil path assertion to
+					// indicate a reset here -- however, it seems to create a race which regresses the
+					// signaling meltdown issue (https://github.com/getlantern/engineering/issues/2505).
+					// The reason for regression is likely because this is the context cancellation case, and
+					// so the client quiesces and stops consuming IPC messages from the bus -- and so this
+					// nil path assertion winds up sitting in some channel buffer somewhere, and when the
+					// widget is toggled on again, it gets consumed at the wrong time and causes an unexpected
+					// reset. This should be addressed here: https://github.com/getlantern/engineering/issues/2371
+					// com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
 					return 0, []interface{}{}
 				}
 			}
@@ -67,6 +76,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
 				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
+
+				// We're resetting this slot, so send a nil path assertion
+				com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
