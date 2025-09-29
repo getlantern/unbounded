@@ -19,7 +19,7 @@
 ### :question: What is Unbounded?
 Unbounded is a next-gen technology stack for circumventing internet censorship using peer-to-peer proxies. It
 works by creating an ephemeral swarm of short-lived residential IP addresses, provided by volunteers
-in less censored regions, which create unblockable routes for network requests originating from users 
+in less censored regions, which create censorship resistant routes for network requests originating from users 
 in heavily censored regions.
 
 The Unbounded software suite functions as a standalone tool to defeat internet censorship, but it can
@@ -42,10 +42,12 @@ Unbounded is a descendant of the "flash proxy" concept first described in 2012 b
 Nate Hardison, Jonathan Ellithorpe, Emily Stark, Dan Boneh, Roger Dingledine, and Phil Porras 
 ([paper](https://crypto.stanford.edu/flashproxy/flashproxy.pdf)).
 
-[uProxy](https://www.uproxy.org/) is a historical project exploring similar ideas.
+[uProxy]([https://www.uproxy.org/](https://en.wikipedia.org/wiki/UProxy) is a historical project exploring similar 
+ideas that also started in 2012 as a collaboration between Google Ideas (now Jigsaw), the University of Washington,
+and the Brave New Software Project, the creators of [Lantern](https://lantern.io).
 
-[Snowflake](https://snowflake.torproject.org/), part of the Tor project, is an earlier implementation
-of the flash proxy concept.
+[Snowflake](https://snowflake.torproject.org/), part of the Tor project, is an evolution of the same concenpt, with
+roots in both flash proxy and uProxy, and it is widely used today.
 
 The idea to create connection state persistence across ephemeral peer transports was formalized 
 by David Fifield as "Turbo Tunnel" in 2020 ([paper](https://www.bamsoftware.com/papers/turbotunnel/turbotunnel.pdf)).
