@@ -42,7 +42,7 @@ Unbounded is a descendant of the "flash proxy" concept first described in 2012 b
 Nate Hardison, Jonathan Ellithorpe, Emily Stark, Dan Boneh, Roger Dingledine, and Phil Porras 
 ([paper](https://crypto.stanford.edu/flashproxy/flashproxy.pdf)).
 
-[uProxy]([https://www.uproxy.org/](https://en.wikipedia.org/wiki/UProxy) is a historical project exploring similar 
+[uProxy](https://en.wikipedia.org/wiki/UProxy) is a historical project exploring similar 
 ideas that also started in 2012 as a collaboration between Google Ideas (now Jigsaw), the University of Washington,
 and the Brave New Software Project, the creators of [Lantern](https://lantern.io).
 
