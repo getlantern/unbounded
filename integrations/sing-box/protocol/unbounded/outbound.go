@@ -60,7 +60,10 @@ func NewOutbound(
 		return nil, err
 	}
 
-	// TODO: move the TLS cert to UnboundedOutboundOptions and get rid of generateSelfSignedTLSConfig()
+	// TODO: we need to get rid of generateSelfSignedTLSConfig() and use a proper TLS cert here. It
+	// should *prbably* be a sing-box tls.ServerConfig, though it's not clear how that interface
+	// vibes with what the QUIC library expects... alternatively, we could maybe add a tls.Config to
+	// the outbound options? But unsure how to get that plumbed through end to end...
 	QUICLayer, err := UBClientcore.NewQUICLayer(BFConn, generateSelfSignedTLSConfig())
 	if err != nil {
 		return nil, err
