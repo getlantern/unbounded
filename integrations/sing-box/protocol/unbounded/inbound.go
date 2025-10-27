@@ -14,7 +14,7 @@ import (
 	UBEgresslib "github.com/getlantern/broflake/egress"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/inbound"
-	"github.com/sagernet/sing-box/common/uot"
+	// "github.com/sagernet/sing-box/common/uot"
 	"github.com/sagernet/sing-box/log"
 	M "github.com/sagernet/sing/common/metadata"
 	N "github.com/sagernet/sing/common/network"
@@ -38,7 +38,7 @@ func RegisterInbound(registry *inbound.Registry) {
 
 type Inbound struct {
 	inbound.Adapter
-	router   adapter.ConnectionRouterEx // XXX: is this what we want, or an adapter.Router, or...?
+	router   adapter.Router // XXX: is this what we want, or an adapter.Router, or...?
 	logger   log.ContextLogger
 	listener net.Listener // XXX: this is concretely an egress.proxyListener
 }
@@ -52,7 +52,7 @@ func NewInbound(
 ) (adapter.Inbound, error) {
 	inbound := &Inbound{
 		Adapter: inbound.NewAdapter(TypeUnbounded, tag),
-		router:  uot.NewRouter(router, logger),
+		router:  router,
 		logger:  logger,
 	}
 
@@ -71,6 +71,23 @@ func NewInbound(
 	}
 
 	inbound.listener = ll
+
+	// TODO: it seems more sensible to implement this loop in the Start function (below), but it
+	// seems that sing-box calls Start more than once (?!) at boot
+	go func() {
+		for {
+			// egresslib.proxyListener always returns a nil error, so we ignore it
+			conn, _ := inbound.listener.Accept()
+			source := M.SocksaddrFromNet(conn.RemoteAddr()).Unwrap()
+			dest := M.SocksaddrFromNet(conn.LocalAddr()).Unwrap()
+
+			// TODO: is there a better context to use here?
+			// TODO: we should pass an N.CloseHandlerFunc, but what should it be/do?
+			inbound.NewConnectionEx(context.Background(), conn, dest, source, nil)
+			select {}
+		}
+	}()
+
 	return inbound, nil
 }
 
@@ -78,11 +95,6 @@ func (i *Inbound) Start(stage adapter.StartStage) error {
 	// TODO: start stuff, see existing protocol examples
 
 	// TODO: there must be a way to shut this down with Close()
-	go func() {
-		for {
-			_, _ = i.listener.Accept()
-		}
-	}()
 
 	return nil
 }
@@ -99,7 +111,17 @@ func (i *Inbound) NewConnectionEx(
 	destination M.Socksaddr,
 	onClose N.CloseHandlerFunc,
 ) {
-	// TODO: do stuff
+	var metadata adapter.InboundContext
+	metadata.Inbound = i.Tag()
+	metadata.InboundType = i.Type()
+
+	// TODO: InboundDetour, InboundOptions
+
+	metadata.OriginDestination = M.SocksaddrFromNet(i.listener.Addr()).Unwrap()
+	metadata.Source = source
+	metadata.Destination = destination
+
+	i.router.RouteConnectionEx(ctx, conn, metadata, onClose)
 }
 
 // TODO: delete me
