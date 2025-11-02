@@ -4,8 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
-	"net/http"
-	"net/url"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -15,20 +13,6 @@ import (
 
 type ReliableStreamLayer interface {
 	DialContext(ctx context.Context) (net.Conn, error)
-}
-
-func CreateHTTPTransport(c ReliableStreamLayer) *http.Transport {
-	return &http.Transport{
-		Proxy: func(req *http.Request) (*url.URL, error) {
-			return url.Parse("http://i.do.nothing")
-		},
-		Dial: func(network, addr string) (net.Conn, error) {
-			return c.DialContext(context.Background())
-		},
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return c.DialContext(ctx)
-		},
-	}
 }
 
 func NewQUICLayer(bfconn *BroflakeConn, tlsConfig *tls.Config) (*QUICLayer, error) {
@@ -113,7 +97,14 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &common.QUICStreamNetConn{Stream: stream}, nil
+
+	// XXX: we set AddrLocal and AddrRemote here only for compatibility with go-socks5:
+	// https://github.com/armon/go-socks5/issues/50
+	return &common.QUICStreamNetConn{
+		Stream:     stream,
+		AddrLocal:  &net.TCPAddr{},
+		AddrRemote: &net.TCPAddr{},
+	}, nil
 }
 
 // QUICLayer is a ReliableStreamLayer

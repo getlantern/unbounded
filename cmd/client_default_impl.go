@@ -15,6 +15,7 @@ import (
 
 var (
 	clientType = "desktop" // Must be "desktop" or "widget"
+	proxyMode  = "socks5"  // Must be "socks5" or "http"
 )
 
 func main() {
