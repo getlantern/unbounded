@@ -30,10 +30,6 @@ func (a DebugAddr) String() string {
 	return string(a)
 }
 
-// XXX: AddrLocal and AddrRemote were added for compatibility with http-proxy-lantern, and they
-// must be a type from the Golang standard library (TCPAddr, UDPAddr, etc.) rather than a
-// user-defined type. There's no reason to keep this state other than that http-proxy-lantern is
-// interested in it, and it complains if it doesn't receive a "regular" net.Addr type.
 type QUICStreamNetConn struct {
 	quic.Stream
 	OnClose    func()
