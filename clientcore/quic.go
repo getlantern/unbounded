@@ -100,10 +100,11 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 
 	// XXX: we set AddrLocal and AddrRemote here only for compatibility with go-socks5:
 	// https://github.com/armon/go-socks5/issues/50
+	// These IP/port values are nonsense and have no relevance.
 	return &common.QUICStreamNetConn{
 		Stream:     stream,
-		AddrLocal:  &net.TCPAddr{},
-		AddrRemote: &net.TCPAddr{},
+		AddrLocal:  &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
+		AddrRemote: &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
 	}, nil
 }
 
