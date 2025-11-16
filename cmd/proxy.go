@@ -73,7 +73,9 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	switch proxyMode {
 	case "socks5":
 		go ql.ListenAndMaintainQUICConnection()
-		conf := clientcore.CreateSOCKS5Config(ql)
+		conf := &socks5.Config{
+			Dial: clientcore.CreateSOCKS5Dialer(ql),
+		}
 		socks5, err := socks5.New(conf)
 		if err != nil {
 			panic(err)
