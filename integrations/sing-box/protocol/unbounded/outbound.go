@@ -40,7 +40,7 @@ type Outbound struct {
 	outbound.Adapter
 	logger       logger.ContextLogger
 	broflakeConn *UBClientcore.BroflakeConn
-	QUICLayer    *UBClientcore.QUICLayer
+	SOCKS5Dialer *UBClientcore.SOCKS5Dialer
 }
 
 func NewOutbound(
@@ -69,6 +69,11 @@ func NewOutbound(
 		return nil, err
 	}
 
+	dialer, err := UBClientcore.CreateSOCKS5Dialer(QUICLayer)
+	if err != nil {
+		return nil, err
+	}
+
 	o := &Outbound{
 		Adapter: outbound.NewAdapterWithDialerOptions(
 			TypeUnbounded,
@@ -78,7 +83,7 @@ func NewOutbound(
 		),
 		logger:       logger,
 		broflakeConn: BFConn,
-		QUICLayer:    QUICLayer,
+		SOCKS5Dialer: dialer,
 	}
 
 	go QUICLayer.ListenAndMaintainQUICConnection()
@@ -92,7 +97,9 @@ func (h *Outbound) DialContext(
 ) (net.Conn, error) {
 	// TODO: switch on N.NetworkName to handle both TCP and UDP -- see sing-box/protocol/hysteria2/outbound.go
 	// also TODO: log something useful with h.logger?
-	return h.QUICLayer.DialContext(ctx)
+
+	// XXX: network is ignored by the dialer
+	return h.SOCKS5Dialer(ctx, network, destination.String())
 }
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {

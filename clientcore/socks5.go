@@ -9,9 +9,9 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
-type socks5Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+type SOCKS5Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
 
-func CreateSOCKS5Dialer(c ReliableStreamLayer) socks5Dialer {
+func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, portString, err := net.SplitHostPort(addr)
 		if err != nil {
