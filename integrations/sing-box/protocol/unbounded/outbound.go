@@ -95,7 +95,10 @@ func (h *Outbound) DialContext(
 	// TODO: switch on N.NetworkName to handle both TCP and UDP -- see sing-box/protocol/hysteria2/outbound.go
 	// also TODO: log something useful with h.logger?
 
-	// XXX: network is ignored by the dialer
+	// XXX: this is the log pattern for N.NetworkTCP
+	h.logger.InfoContext(ctx, "outbound connection to ", destination)
+
+	// XXX: network is ignored by Unbounded's SOCKS5 dialer
 	return h.dial(ctx, network, destination.String())
 }
 
