@@ -34,8 +34,8 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 		if ip == nil {
 			// Domain
 			connectReq = append(connectReq, 0x03)
-			connectReq = append(connectReq, []byte(host)...)
 			connectReq = append(connectReq, byte(len(host)))
+			connectReq = append(connectReq, []byte(host)...)
 		} else if ip.To4() != nil {
 			// IPv4
 			connectReq = append(connectReq, 0x01)
