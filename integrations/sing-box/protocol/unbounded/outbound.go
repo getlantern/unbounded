@@ -40,7 +40,7 @@ type Outbound struct {
 	outbound.Adapter
 	logger       logger.ContextLogger
 	broflakeConn *UBClientcore.BroflakeConn
-	SOCKS5Dialer *UBClientcore.SOCKS5Dialer
+	dial         UBClientcore.SOCKS5Dialer
 }
 
 func NewOutbound(
@@ -69,10 +69,7 @@ func NewOutbound(
 		return nil, err
 	}
 
-	dialer, err := UBClientcore.CreateSOCKS5Dialer(QUICLayer)
-	if err != nil {
-		return nil, err
-	}
+	dialer := UBClientcore.CreateSOCKS5Dialer(QUICLayer)
 
 	o := &Outbound{
 		Adapter: outbound.NewAdapterWithDialerOptions(
@@ -83,7 +80,7 @@ func NewOutbound(
 		),
 		logger:       logger,
 		broflakeConn: BFConn,
-		SOCKS5Dialer: dialer,
+		dial:         dialer,
 	}
 
 	go QUICLayer.ListenAndMaintainQUICConnection()
@@ -99,7 +96,7 @@ func (h *Outbound) DialContext(
 	// also TODO: log something useful with h.logger?
 
 	// XXX: network is ignored by the dialer
-	return h.SOCKS5Dialer(ctx, network, destination.String())
+	return h.dial(ctx, network, destination.String())
 }
 
 func (h *Outbound) ListenPacket(ctx context.Context, destination M.Socksaddr) (net.PacketConn, error) {
