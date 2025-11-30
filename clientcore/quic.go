@@ -15,25 +15,31 @@ type ReliableStreamLayer interface {
 	DialContext(ctx context.Context) (net.Conn, error)
 }
 
-func NewQUICLayer(bfconn *BroflakeConn, tlsConfig *tls.Config) (*QUICLayer, error) {
+func NewQUICLayer(
+	bfconn *BroflakeConn,
+	tlsConfig *tls.Config,
+	cancelQUICStreamDeadlinesOnClose bool,
+) (*QUICLayer, error) {
 	q := &QUICLayer{
-		bfconn:       bfconn,
-		t:            &quic.Transport{Conn: bfconn},
-		tlsConfig:    tlsConfig,
-		eventualConn: newEventualConn(),
+		bfconn:                           bfconn,
+		t:                                &quic.Transport{Conn: bfconn},
+		tlsConfig:                        tlsConfig,
+		eventualConn:                     newEventualConn(),
+		cancelQUICStreamDeadlinesOnClose: cancelQUICStreamDeadlinesOnClose,
 	}
 
 	return q, nil
 }
 
 type QUICLayer struct {
-	bfconn       *BroflakeConn
-	t            *quic.Transport
-	tlsConfig    *tls.Config
-	eventualConn *eventualConn
-	mx           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
+	bfconn                           *BroflakeConn
+	t                                *quic.Transport
+	tlsConfig                        *tls.Config
+	eventualConn                     *eventualConn
+	mx                               sync.RWMutex
+	ctx                              context.Context
+	cancel                           context.CancelFunc
+	cancelQUICStreamDeadlinesOnClose bool
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {
@@ -102,9 +108,10 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	// https://github.com/armon/go-socks5/issues/50
 	// These IP/port values are nonsense and have no relevance.
 	return &common.QUICStreamNetConn{
-		Stream:     stream,
-		AddrLocal:  &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
-		AddrRemote: &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
+		Stream:                 stream,
+		AddrLocal:              &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
+		AddrRemote:             &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
+		CancelDeadlinesOnClose: c.cancelQUICStreamDeadlinesOnClose,
 	}, nil
 }
 

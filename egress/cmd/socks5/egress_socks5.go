@@ -40,7 +40,7 @@ func main() {
 		InsecureSkipVerify: true,
 	}
 
-	ll, err := egress.NewListener(ctx, l, tlsConfig)
+	ll, err := egress.NewListener(ctx, l, tlsConfig, false)
 	if err != nil {
 		panic(err)
 	}
