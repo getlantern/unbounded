@@ -48,9 +48,10 @@ var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 type proxyListener struct {
 	net.Listener
 	*connectionManager
-	connections  chan net.Conn
-	addr         net.Addr
-	closeMetrics func(ctx context.Context) error
+	connections                      chan net.Conn
+	addr                             net.Addr
+	closeMetrics                     func(ctx context.Context) error
+	cancelQUICStreamDeadlinesOnClose bool
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -187,8 +188,9 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 					defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
 					nQUICStreamsCounter.Add(context.Background(), -1)
 				},
-				AddrLocal:  l.addr,
-				AddrRemote: tcpAddr,
+				AddrLocal:              l.addr,
+				AddrRemote:             tcpAddr,
+				CancelDeadlinesOnClose: l.cancelQUICStreamDeadlinesOnClose,
 			}
 		}
 	}()
@@ -218,7 +220,12 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
+func NewListener(
+	ctx context.Context,
+	ll net.Listener,
+	tlsConfig *tls.Config,
+	cancelQUICStreamDeadlinesOnClose bool,
+) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
@@ -270,11 +277,12 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
-		Listener:          ll,
-		connectionManager: cm,
-		connections:       make(chan net.Conn, 2048),
-		addr:              ll.Addr(),
-		closeMetrics:      closeFuncMetric,
+		Listener:                         ll,
+		connectionManager:                cm,
+		connections:                      make(chan net.Conn, 2048),
+		addr:                             ll.Addr(),
+		closeMetrics:                     closeFuncMetric,
+		cancelQUICStreamDeadlinesOnClose: cancelQUICStreamDeadlinesOnClose,
 	}
 
 	srv := &http.Server{
