@@ -64,7 +64,15 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	// And here's the ephemeral self-signed TLS certificate at the QUIC layer
 	tlsConfig := generateSelfSignedTLSConfig()
 
-	ql, err := clientcore.NewQUICLayer(bfconn, tlsConfig)
+	var cancelQUICStreamDeadlinesOnClose bool
+	switch proxyMode {
+	case "socks5":
+		cancelQUICStreamDeadlinesOnClose = false
+	case "http":
+		cancelQUICStreamDeadlinesOnClose = true
+	}
+
+	ql, err := clientcore.NewQUICLayer(bfconn, tlsConfig, cancelQUICStreamDeadlinesOnClose)
 	if err != nil {
 		common.Debugf("Cannot start local proxy: failed to create QUIC layer: %v", err)
 		return
