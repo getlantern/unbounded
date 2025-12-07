@@ -50,8 +50,13 @@ func (c QUICStreamNetConn) Close() error {
 		c.OnClose()
 	}
 
-	c.Stream.CancelWrite(42069)
-	c.Stream.CancelRead(42069)
+	// TODO: see https://github.com/getlantern/engineering/issues/2854
+	go func() {
+		<-time.After(1 * time.Second)
+		c.Stream.CancelWrite(42069)
+		c.Stream.CancelRead(42069)
+	}()
+
 	return c.Stream.Close()
 }
 
