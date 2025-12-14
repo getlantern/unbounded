@@ -11,11 +11,13 @@ import (
 	"math/big"
 	"net"
 	"os"
+	"time"
 
 	UBClientcore "github.com/getlantern/broflake/clientcore"
 	UBCommon "github.com/getlantern/broflake/common"
 	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/adapter/outbound"
+	C "github.com/sagernet/sing-box/constant"
 	singlog "github.com/sagernet/sing-box/log"
 	"github.com/sagernet/sing-box/option"
 	"github.com/sagernet/sing/common/logger"
@@ -34,17 +36,8 @@ func (l logAdapter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// TODO: move options types to github.com/sagernet/sing-box/option
-type UnboundedOutboundOptions struct {
-	option.DialerOptions
-	option.ServerOptions
-}
-
-// TODO: move this to github.com/sagernet/sing-box/constant/proxy.go
-const TypeUnbounded = "unbounded"
-
 func RegisterOutbound(registry *outbound.Registry) {
-	outbound.Register[UnboundedOutboundOptions](registry, TypeUnbounded, NewOutbound)
+	outbound.Register[option.UnboundedOutboundOptions](registry, C.TypeUnbounded, NewOutbound)
 }
 
 type Outbound struct {
@@ -59,12 +52,81 @@ func NewOutbound(
 	router adapter.Router,
 	logger singlog.ContextLogger,
 	tag string,
-	options UnboundedOutboundOptions,
+	options option.UnboundedOutboundOptions,
 ) (adapter.Outbound, error) {
-	// TODO: move to UnboundedOutboundOptions and set values correctly
 	bfOpt := UBClientcore.NewDefaultBroflakeOptions()
+	if options.CTableSize != 0 {
+		bfOpt.CTableSize = options.CTableSize
+	}
+
+	if options.PTableSize != 0 {
+		bfOpt.PTableSize = options.PTableSize
+	}
+
+	if options.BusBufferSz != 0 {
+		bfOpt.BusBufferSz = options.BusBufferSz
+	}
+
+	if options.Netstated != "" {
+		bfOpt.Netstated = options.Netstated
+	}
+
 	rtcOpt := UBClientcore.NewDefaultWebRTCOptions()
+	if options.DiscoverySrv != "" {
+		rtcOpt.DiscoverySrv = options.DiscoverySrv
+	}
+
+	if options.DiscoveryEndpoint != "" {
+		rtcOpt.Endpoint = options.DiscoveryEndpoint
+	}
+
+	if options.GenesisAddr != "" {
+		rtcOpt.GenesisAddr = options.GenesisAddr
+	}
+
+	if options.NATFailTimeout != 0 {
+		rtcOpt.NATFailTimeout = time.Duration(options.NATFailTimeout) * time.Second
+	}
+
+	if options.STUNBatchSize != 0 {
+		rtcOpt.STUNBatchSize = uint32(options.STUNBatchSize)
+	}
+
+	if options.Tag != "" {
+		rtcOpt.Tag = options.Tag
+	}
+
+	if options.Patience != 0 {
+		rtcOpt.Patience = time.Duration(options.Patience) * time.Second
+	}
+
+	if options.ErrorBackoff != 0 {
+		rtcOpt.ErrorBackoff = time.Duration(options.ErrorBackoff) * time.Second
+	}
+
+	if options.ConsumerSessionID != "" {
+		rtcOpt.ConsumerSessionID = options.ConsumerSessionID
+	}
+
+	// XXX: This sing-box outbound implements a "desktop" type Unbounded peer, and
+	// desktop peers don't connect to the egress server, so these egress settings
+	// have no effect. We plumb them through here for the sake of future extensibility.
 	egOpt := UBClientcore.NewDefaultEgressOptions()
+	if options.EgressAddr != "" {
+		egOpt.Addr = options.EgressAddr
+	}
+
+	if options.EgressEndpoint != "" {
+		egOpt.Endpoint = options.EgressEndpoint
+	}
+
+	if options.EgressConnectTimeout != 0 {
+		egOpt.ConnectTimeout = time.Duration(options.EgressConnectTimeout) * time.Second
+	}
+
+	if options.EgressErrorBackoff != 0 {
+		egOpt.ErrorBackoff = time.Duration(options.EgressErrorBackoff) * time.Second
+	}
 
 	la := logAdapter{
 		singBoxLogger: logger,
@@ -77,10 +139,7 @@ func NewOutbound(
 		return nil, err
 	}
 
-	// TODO: we need to get rid of generateSelfSignedTLSConfig() and use a proper TLS cert here. It
-	// should *prbably* be a sing-box tls.ServerConfig, though it's not clear how that interface
-	// vibes with what the QUIC library expects... alternatively, we could maybe add a tls.Config to
-	// the outbound options? But unsure how to get that plumbed through end to end...
+	// TODO: plumb through a real TLS cert and get rid of the self-signed generator?
 	QUICLayer, err := UBClientcore.NewQUICLayer(BFConn, generateSelfSignedTLSConfig())
 	if err != nil {
 		return nil, err
@@ -90,7 +149,7 @@ func NewOutbound(
 
 	o := &Outbound{
 		Adapter: outbound.NewAdapterWithDialerOptions(
-			TypeUnbounded,
+			C.TypeUnbounded,
 			tag,
 			[]string{N.NetworkTCP}, // XXX: Unbounded only supports TCP (not UDP) for now
 			options.DialerOptions,
