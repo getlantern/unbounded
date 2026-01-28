@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/pion/transport/v3/stdnet"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -60,11 +61,27 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// webrtcAPI := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
 			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
 
+			// Set the network interface for WebRTC. If none is provided, use the default stdnet.Net
+			// that webrtc would use anyway.
+			rtcNet := options.Net
+			if rtcNet == nil {
+				var err error
+				rtcNet, err = stdnet.NewNet()
+				if err != nil {
+					common.Debugf("Error initializing stdnet.Net: %v", err)
+					return 0, []any{}
+				}
+			}
+			// TODO: maybe we should set webrtcAPI somewhere instead of recreating it every time?
+			settingEngine := &webrtc.SettingEngine{}
+			settingEngine.SetNet(options.Net)
+			api := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
+
 			// Construct the RTCPeerConnection
-			peerConnection, err := webrtc.NewPeerConnection(config)
+			peerConnection, err := api.NewPeerConnection(config)
 			if err != nil {
 				common.Debugf("Error creating RTCPeerConnection: %v", err)
-				return 0, []interface{}{}
+				return 0, []any{}
 			}
 
 			// Producers are the answerers, so we don't create a datachannel

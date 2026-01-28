@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/transport/v3"
 )
 
 type WebRTCOptions struct {
@@ -22,6 +23,7 @@ type WebRTCOptions struct {
 	Patience          time.Duration
 	ErrorBackoff      time.Duration
 	ConsumerSessionID string
+	Net               transport.Net
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
