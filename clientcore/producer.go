@@ -74,7 +74,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 			// TODO: maybe we should set webrtcAPI somewhere instead of recreating it every time?
 			settingEngine := &webrtc.SettingEngine{}
-			settingEngine.SetNet(options.Net)
+			settingEngine.SetNet(rtcNet)
 			api := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
 
 			// Construct the RTCPeerConnection
