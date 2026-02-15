@@ -39,6 +39,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		Patience:          500 * time.Millisecond,
 		ErrorBackoff:      5 * time.Second,
 		ConsumerSessionID: uuid.NewString(),
+		Net:               nil,
 	}
 }
 
