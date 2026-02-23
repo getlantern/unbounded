@@ -166,6 +166,11 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
 
+	// Set optional connection change callback before UI is copied to bus handlers
+	if bfOpt.OnConnectionChangeFunc != nil {
+		ui.OnConnectionChangeFunc = bfOpt.OnConnectionChangeFunc
+	}
+
 	// Step 4: Set up the bus, bind upstream and downstream UI handlers
 	var bus = NewIpcObserver(
 		bfOpt.BusBufferSz,

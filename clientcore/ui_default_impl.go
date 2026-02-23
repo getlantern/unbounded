@@ -9,7 +9,8 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine *BroflakeEngine
+	BroflakeEngine       *BroflakeEngine
+	OnConnectionChangeFunc ConnectionChangeFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {
@@ -45,5 +46,7 @@ func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 }
 
 func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.IP) {
-	// TODO: do something?
+	if ui.OnConnectionChangeFunc != nil {
+		ui.OnConnectionChangeFunc(state, workerIdx, addr)
+	}
 }

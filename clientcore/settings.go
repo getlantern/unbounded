@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"math/rand"
+	"net"
 	"net/http"
 	"time"
 
@@ -59,12 +60,17 @@ func NewDefaultEgressOptions() *EgressOptions {
 	}
 }
 
+// ConnectionChangeFunc is a callback for consumer connection state changes.
+// state: 1 = connected, -1 = disconnected.
+type ConnectionChangeFunc func(state int, workerIdx int, addr net.IP)
+
 type BroflakeOptions struct {
-	ClientType  string
-	CTableSize  int
-	PTableSize  int
-	BusBufferSz int
-	Netstated   string
+	ClientType             string
+	CTableSize             int
+	PTableSize             int
+	BusBufferSz            int
+	Netstated              string
+	OnConnectionChangeFunc ConnectionChangeFunc
 }
 
 func NewDefaultBroflakeOptions() *BroflakeOptions {
