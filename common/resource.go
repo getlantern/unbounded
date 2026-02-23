@@ -188,15 +188,20 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 // coder/websocket API, to pass arbitrary data. Note that a server receiving a populated
 // Sec-Websocket-Protocols header must reply with a reciprocal header containing some selected
 // protocol from the request.
-func NewSubprotocolsRequest(csid, version string) []string {
-	return []string{subprotocolsMagicCookie, csid, version}
+func NewSubprotocolsRequest(csid, peerID, version string) []string {
+	return []string{subprotocolsMagicCookie, csid, peerID, version}
 }
 
-func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
-	if len(s) != 3 {
-		return "", "", false
+func ParseSubprotocolsRequest(s []string) (csid string, peerID string, version string, ok bool) {
+	switch len(s) {
+	case 4:
+		return s[1], s[2], s[3], true
+	case 3:
+		// Backwards compat: old clients don't send peerID
+		return s[1], "", s[2], true
+	default:
+		return "", "", "", false
 	}
-	return s[1], s[2], true
 }
 
 func NewSubprotocolsResponse() []string {
