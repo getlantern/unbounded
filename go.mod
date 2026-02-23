@@ -7,12 +7,14 @@ replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-202
 replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.51.3-unbounded
 
 require (
+	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
 	github.com/coder/websocket v1.8.12
 	github.com/elazarl/goproxy v1.7.2
 	github.com/enobufs/go-nats v0.0.1
 	github.com/getlantern/geo v0.0.0-20240108161311-50692a1b69a9
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
+	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.1.2
 	github.com/quic-go/quic-go v0.51.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
@@ -24,7 +26,6 @@ require (
 
 require (
 	github.com/andybalholm/brotli v1.0.4 // indirect
-	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/dsnet/compress v0.0.2-0.20210315054119-f66993602bf5 // indirect
 	github.com/felixge/httpsnoop v1.0.3 // indirect
@@ -68,7 +69,6 @@ require (
 	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport v0.14.1 // indirect
 	github.com/pion/transport/v2 v2.2.10 // indirect
-	github.com/pion/transport/v3 v3.0.7 // indirect
 	github.com/pion/turn v1.3.7 // indirect
 	github.com/pion/turn/v4 v4.0.2 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
