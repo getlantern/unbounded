@@ -50,6 +50,14 @@ type EgressOptions struct {
 	ConnectTimeout time.Duration
 	ErrorBackoff   time.Duration
 	PeerID         string
+	Identity       *PeerIdentity
+}
+
+// SetIdentity sets the peer identity and updates PeerID to the identity's
+// hex-encoded public key.
+func (o *EgressOptions) SetIdentity(id *PeerIdentity) {
+	o.Identity = id
+	o.PeerID = id.PeerID()
 }
 
 func NewDefaultEgressOptions() *EgressOptions {

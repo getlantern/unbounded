@@ -70,7 +70,7 @@ export interface WasmClient extends EventTarget {
 }
 
 
-// bind the client constructor
+// bind the client constructor and identity generator
 declare global {
 	function newBroflake(
 		type: string,
@@ -84,7 +84,10 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
+		privateKeyHex?: string,
 	): WasmClient;
+
+	function generateIdentity(): { publicKeyHex: string; privateKeyHex: string } | null;
 }
 
 interface Config {
@@ -149,6 +152,7 @@ export class WasmInterface {
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
 		} else {
+			const privateKeyHex = this.loadOrGenerateIdentityKey()
 			this.wasmClient = globalThis.newBroflake(
 				WASM_CLIENT_CONFIG.type,
 				WASM_CLIENT_CONFIG.cTableSz,
@@ -160,9 +164,28 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				privateKeyHex
 			)
 		}
+	}
+
+	private loadOrGenerateIdentityKey = (): string | undefined => {
+		const storageKey = 'unbounded_identity_key'
+		try {
+			const existing = localStorage.getItem(storageKey)
+			if (existing) return existing
+
+			const identity = globalThis.generateIdentity()
+			if (identity) {
+				localStorage.setItem(storageKey, identity.privateKeyHex)
+				console.log('Generated new peer identity, public key:', identity.publicKeyHex)
+				return identity.privateKeyHex
+			}
+		} catch (e) {
+			console.warn('Failed to load/generate peer identity:', e)
+		}
+		return undefined
 	}
 
 	start = () => {
