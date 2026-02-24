@@ -50,6 +50,14 @@ type EgressOptions struct {
 	ConnectTimeout time.Duration
 	ErrorBackoff   time.Duration
 	PeerID         string
+	Identity       *PeerIdentity
+}
+
+// SetIdentity sets the peer identity and updates PeerID to the identity's
+// hex-encoded public key.
+func (o *EgressOptions) SetIdentity(id *PeerIdentity) {
+	o.Identity = id
+	o.PeerID = id.PeerID()
 }
 
 func NewDefaultEgressOptions() *EgressOptions {
@@ -64,6 +72,8 @@ func NewDefaultEgressOptions() *EgressOptions {
 
 // ConnectionChangeFunc is a callback for consumer connection state changes.
 // state: 1 = connected, -1 = disconnected.
+// When state == 1 (connected), addr is the IPv4 or IPv6 address of the new consumer.
+// When state == -1 (disconnected), addr may be nil and should not be assumed to be non-nil.
 type ConnectionChangeFunc func(state int, workerIdx int, addr net.IP)
 
 type BroflakeOptions struct {

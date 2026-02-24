@@ -13,8 +13,9 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine *BroflakeEngine
-	ID             string
+	BroflakeEngine         *BroflakeEngine
+	ID                     string
+	OnConnectionChangeFunc ConnectionChangeFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {
@@ -93,6 +94,10 @@ func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 // consumer (or a 0-length string indicating that address extraction failed); when state == -1,
 // addr == "<nil>"
 func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.IP) {
+	if ui.OnConnectionChangeFunc != nil {
+		ui.OnConnectionChangeFunc(state, workerIdx, addr)
+	}
+
 	addrString := ""
 	if addr != nil {
 		addrString = addr.String()
