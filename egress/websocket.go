@@ -28,8 +28,9 @@ type errorlessWebSocketPacketConn struct {
 	keepalive    time.Duration
 	tcpAddr      *net.TCPAddr
 	readError    chan error
-	peerID       string
-	ingressBytes *uint64 // per-peer atomic counter, shared across all connections from the same peer
+	peerID          string
+	ingressBytes    *uint64 // per-peer atomic counter for OTEL metrics
+	onBytesReceived func(peerID string, n int)
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -87,6 +88,9 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 
 	copy(p, b)
 	atomic.AddUint64(q.ingressBytes, uint64(len(b)))
+	if q.onBytesReceived != nil {
+		q.onBytesReceived(q.peerID, len(b))
+	}
 	return len(b), q.tcpAddr, err
 }
 

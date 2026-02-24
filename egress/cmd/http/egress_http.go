@@ -38,7 +38,7 @@ func main() {
 	// And here's why it doesn't use secure TLS at the QUIC layer
 	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)
 
-	ll, err := egress.NewListener(ctx, l, tlsConfig)
+	ll, err := egress.NewListener(ctx, l, tlsConfig, nil)
 	if err != nil {
 		panic(err)
 	}

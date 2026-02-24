@@ -52,9 +52,10 @@ var nIngressBytesByPeerCounter metric.Int64ObservableUpDownCounter
 type proxyListener struct {
 	net.Listener
 	*connectionManager
-	connections  chan net.Conn
-	addr         net.Addr
-	closeMetrics func(ctx context.Context) error
+	connections     chan net.Conn
+	addr            net.Addr
+	closeMetrics    func(ctx context.Context) error
+	onBytesReceived func(peerID string, n int)
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -145,13 +146,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	actual, _ := peerIngressBytes.LoadOrStore(peerID, counterPtr)
 
 	wspconn := errorlessWebSocketPacketConn{
-		w:            c,
-		addr:         common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive:    websocketKeepalive,
-		tcpAddr:      tcpAddr,
-		readError:    make(chan error),
-		peerID:       peerID,
-		ingressBytes: actual.(*uint64),
+		w:               c,
+		addr:            common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
+		keepalive:       websocketKeepalive,
+		tcpAddr:         tcpAddr,
+		readError:       make(chan error),
+		peerID:          peerID,
+		ingressBytes:    actual.(*uint64),
+		onBytesReceived: l.onBytesReceived,
 	}
 
 	defer wspconn.Close()
@@ -233,7 +235,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
+func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config, onBytesReceived func(peerID string, n int)) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
@@ -307,6 +309,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
+		onBytesReceived:   onBytesReceived,
 	}
 
 	srv := &http.Server{
