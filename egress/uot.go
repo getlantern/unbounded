@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -136,11 +137,16 @@ func readSocksAddr(r io.Reader) (*net.UDPAddr, error) {
 	}
 
 	if host != "" {
-		resolved, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", host, port))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolve %s: %w", host, err)
 		}
-		return resolved, nil
+		if len(ips) == 0 {
+			return nil, fmt.Errorf("no IP addresses found for %s", host)
+		}
+		return &net.UDPAddr{IP: ips[0].IP, Port: int(port)}, nil
 	}
 
 	return &net.UDPAddr{IP: ip, Port: int(port)}, nil
@@ -164,6 +170,11 @@ func handleUoT(tcpConn net.Conn) {
 		return
 	}
 
+	if req.Destination.IP.IsLoopback() {
+		common.Debugf("UoT: refusing to relay to loopback address %v", req.Destination)
+		return
+	}
+
 	udpConn, err := net.DialUDP("udp", nil, req.Destination)
 	if err != nil {
 		common.Debugf("UoT: failed to dial UDP %v: %v", req.Destination, err)
@@ -175,26 +186,37 @@ func handleUoT(tcpConn net.Conn) {
 
 	done := make(chan struct{}, 2)
 
+	// When one direction exits, close both connections to unblock the other goroutine.
+	cleanup := func() {
+		tcpConn.Close()
+		udpConn.Close()
+		done <- struct{}{}
+	}
+
 	// TCP → UDP: read length-prefixed packets from TCP, send as raw UDP
 	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 65535)
+		defer cleanup()
+		buf := make([]byte, maxUDPPayload)
 		for {
 			var length uint16
 			if err := binary.Read(tcpConn, binary.BigEndian, &length); err != nil {
+				common.Debugf("UoT: TCP read length error: %v", err)
 				return
 			}
 			if int(length) > maxUDPPayload {
 				common.Debugf("UoT: dropping oversized frame (%d bytes, max %d)", length, maxUDPPayload)
 				if _, err := io.CopyN(io.Discard, tcpConn, int64(length)); err != nil {
+					common.Debugf("UoT: TCP discard error: %v", err)
 					return
 				}
 				continue
 			}
 			if _, err := io.ReadFull(tcpConn, buf[:length]); err != nil {
+				common.Debugf("UoT: TCP read payload error: %v", err)
 				return
 			}
 			if _, err := udpConn.Write(buf[:length]); err != nil {
+				common.Debugf("UoT: UDP write error: %v", err)
 				return
 			}
 		}
@@ -202,17 +224,24 @@ func handleUoT(tcpConn net.Conn) {
 
 	// UDP → TCP: read raw UDP, write as length-prefixed packets to TCP
 	go func() {
-		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 65535)
+		defer cleanup()
+		buf := make([]byte, maxUDPPayload)
 		for {
 			n, err := udpConn.Read(buf)
 			if err != nil {
+				common.Debugf("UoT: UDP read error: %v", err)
 				return
 			}
+			if n > maxUDPPayload {
+				common.Debugf("UoT: dropping oversized UDP packet (%d bytes)", n)
+				continue
+			}
 			if err := binary.Write(tcpConn, binary.BigEndian, uint16(n)); err != nil {
+				common.Debugf("UoT: TCP write length error: %v", err)
 				return
 			}
 			if _, err := tcpConn.Write(buf[:n]); err != nil {
+				common.Debugf("UoT: TCP write payload error: %v", err)
 				return
 			}
 		}
@@ -229,12 +258,19 @@ func UoTDialer() func(ctx context.Context, network, addr string) (net.Conn, erro
 		if isUoTAddress(addr) {
 			common.Debugf("UoT: intercepting %v", addr)
 			client, server := net.Pipe()
+			connDone := make(chan struct{})
 			go func() {
-				<-ctx.Done()
-				client.Close()
-				server.Close()
+				select {
+				case <-ctx.Done():
+					client.Close()
+					server.Close()
+				case <-connDone:
+				}
 			}()
-			go handleUoT(server)
+			go func() {
+				handleUoT(server)
+				close(connDone)
+			}()
 			return &tcpPipeConn{Conn: client}, nil
 		}
 		var d net.Dialer
