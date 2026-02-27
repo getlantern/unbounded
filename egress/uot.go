@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -18,6 +19,8 @@ const (
 	socksAddrTypeIPv4 = 0x01
 	socksAddrTypeFQDN = 0x03
 	socksAddrTypeIPv6 = 0x04
+
+	maxUDPPayload = 65507
 )
 
 // UoTResolver is a SOCKS5 DNS resolver that passes UoT magic addresses through
@@ -26,16 +29,24 @@ const (
 type UoTResolver struct{}
 
 func (r *UoTResolver) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
-	if name == uotMagicAddress || name == uotLegacyMagicAddress {
+	if isUoTMagicName(name) {
 		// Return nil IP so AddrSpec.Address() falls through to the FQDN,
 		// allowing the Dial function to match on the magic address.
 		return ctx, nil, nil
 	}
-	addr, err := net.ResolveIPAddr("ip", name)
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
 	if err != nil {
 		return ctx, nil, err
 	}
-	return ctx, addr.IP, nil
+	if len(ips) == 0 {
+		return ctx, nil, fmt.Errorf("no IP addresses found for %s", name)
+	}
+	return ctx, ips[0].IP, nil
+}
+
+func isUoTMagicName(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	return strings.EqualFold(name, uotMagicAddress) || strings.EqualFold(name, uotLegacyMagicAddress)
 }
 
 func isUoTAddress(addr string) bool {
@@ -43,7 +54,7 @@ func isUoTAddress(addr string) bool {
 	if h, _, err := net.SplitHostPort(addr); err == nil {
 		host = h
 	}
-	return host == uotMagicAddress || host == uotLegacyMagicAddress
+	return isUoTMagicName(host)
 }
 
 // tcpPipeConn wraps a net.Conn (from net.Pipe) so that LocalAddr() returns a
@@ -173,6 +184,13 @@ func handleUoT(tcpConn net.Conn) {
 			if err := binary.Read(tcpConn, binary.BigEndian, &length); err != nil {
 				return
 			}
+			if int(length) > maxUDPPayload {
+				common.Debugf("UoT: dropping oversized frame (%d bytes, max %d)", length, maxUDPPayload)
+				if _, err := io.CopyN(io.Discard, tcpConn, int64(length)); err != nil {
+					return
+				}
+				continue
+			}
 			if _, err := io.ReadFull(tcpConn, buf[:length]); err != nil {
 				return
 			}
@@ -211,6 +229,11 @@ func UoTDialer() func(ctx context.Context, network, addr string) (net.Conn, erro
 		if isUoTAddress(addr) {
 			common.Debugf("UoT: intercepting %v", addr)
 			client, server := net.Pipe()
+			go func() {
+				<-ctx.Done()
+				client.Close()
+				server.Close()
+			}()
 			go handleUoT(server)
 			return &tcpPipeConn{Conn: client}, nil
 		}
