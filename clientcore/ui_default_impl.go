@@ -9,7 +9,7 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine       *BroflakeEngine
+	BroflakeEngine         *BroflakeEngine
 	OnConnectionChangeFunc ConnectionChangeFunc
 }
 

@@ -24,7 +24,8 @@ type WebRTCOptions struct {
 	Patience          time.Duration
 	ErrorBackoff      time.Duration
 	ConsumerSessionID string
-	Net               transport.Net
+	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
+	Net transport.Net
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {

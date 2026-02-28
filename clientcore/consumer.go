@@ -18,7 +18,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pion/transport/v3/stdnet"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -61,27 +60,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				},
 			}
 
-			// // Example custom DTLS settings
-			// settingEngine := &webrtc.SettingEngine{}
-			// settingEngine.SetDTLSEllipticCurves(elliptic.P256, elliptic.P384, elliptic.X25519)
-			// webrtcAPI := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
-			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
-
-			// Set the network interface for WebRTC. If none is provided, use the default stdnet.Net
-			// that webrtc would use anyway.
-			rtcNet := options.Net
-			if rtcNet == nil {
-				var err error
-				rtcNet, err = stdnet.NewNet()
-				if err != nil {
-					common.Debugf("Error initializing stdnet.Net: %v", err)
-					return 0, []any{}
-				}
+			api, err := newWebRTCAPI(options.Net)
+			if err != nil {
+				common.Debugf("Error creating WebRTC API: %v", err)
+				return 0, []any{}
 			}
-
-			settingEngine := &webrtc.SettingEngine{}
-			settingEngine.SetNet(rtcNet)
-			api := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
 
 			// Construct the RTCPeerConnection
 			peerConnection, err := api.NewPeerConnection(config)
