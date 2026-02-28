@@ -43,7 +43,10 @@ func main() {
 	}
 	defer ll.Close()
 
-	conf := &socks5.Config{}
+	conf := &socks5.Config{
+		Dial:     egress.UoTDialer(),
+		Resolver: &egress.UoTResolver{},
+	}
 	proxy, err := socks5.New(conf)
 	if err != nil {
 		panic(err)
