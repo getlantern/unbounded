@@ -23,11 +23,13 @@ import (
 // at some point in the future. Intercepted *read* errors are sent over the readError channel.
 // Currently, intercepted *write* errors are simply discarded.
 type errorlessWebSocketPacketConn struct {
-	w         *websocket.Conn
-	addr      net.Addr
-	keepalive time.Duration
-	tcpAddr   *net.TCPAddr
-	readError chan error
+	w            *websocket.Conn
+	addr         net.Addr
+	keepalive    time.Duration
+	tcpAddr      *net.TCPAddr
+	readError    chan error
+	peerID       string
+	ingressBytes *uint64 // per-peer atomic counter, shared across all connections from the same peer
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -84,7 +86,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}
 
 	copy(p, b)
-	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
+	atomic.AddUint64(q.ingressBytes, uint64(len(b)))
 	return len(b), q.tcpAddr, err
 }
 
