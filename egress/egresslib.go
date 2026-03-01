@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/getlantern/broflake/common"
@@ -34,8 +36,9 @@ var nClients uint64
 // nQUICStreams is the number of open QUIC streams (not to be confused with QUIC connections)
 var nQUICStreams uint64
 
-// nIngressBytes is the number of bytes received over all WebSocket connections since the last otel measurement callback
-var nIngressBytes uint64
+// peerIngressBytes tracks ingress bytes per peer ID since the last otel measurement callback.
+// Keys are peer ID strings, values are *uint64 (atomic counters).
+var peerIngressBytes sync.Map
 
 // Otel instruments
 var nClientsCounter metric.Int64UpDownCounter
@@ -44,6 +47,7 @@ var nClientsCounter metric.Int64UpDownCounter
 var nQUICConnectionsCounter metric.Int64UpDownCounter
 var nQUICStreamsCounter metric.Int64UpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
+var nIngressBytesByPeerCounter metric.Int64ObservableUpDownCounter
 
 type proxyListener struct {
 	net.Listener
@@ -85,7 +89,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	consumerSessionID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
+	consumerSessionID, peerID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
 	if !ok {
 		common.Debugf("Refused WebSocket connection, missing subprotocols")
 		return
@@ -111,6 +115,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Old clients don't send a peer ID; fall back to consumer session ID so bytes are still tracked
+	if peerID == "" {
+		peerID = consumerSessionID
+	}
+
 	c, err := websocket.Accept(
 		w,
 		r,
@@ -131,12 +140,18 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Get or create the per-peer ingress byte counter
+	counterPtr := new(uint64)
+	actual, _ := peerIngressBytes.LoadOrStore(peerID, counterPtr)
+
 	wspconn := errorlessWebSocketPacketConn{
-		w:         c,
-		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive: websocketKeepalive,
-		tcpAddr:   tcpAddr,
-		readError: make(chan error),
+		w:            c,
+		addr:         common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
+		keepalive:    websocketKeepalive,
+		tcpAddr:      tcpAddr,
+		readError:    make(chan error),
+		peerID:       peerID,
+		ingressBytes: actual.(*uint64),
 	}
 
 	defer wspconn.Close()
@@ -246,15 +261,32 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return nil, err
 	}
 
+	nIngressBytesByPeerCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes-by-peer")
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
-			b := atomic.LoadUint64(&nIngressBytes)
-			o.ObserveInt64(nIngressBytesCounter, int64(b))
-			common.Debugf("Ingress bytes: %v", b)
-			atomic.StoreUint64(&nIngressBytes, uint64(0))
+			var total int64
+			peerIngressBytes.Range(func(key, value any) bool {
+				pid := key.(string)
+				ptr := value.(*uint64)
+				b := int64(atomic.SwapUint64(ptr, 0))
+				if b > 0 {
+					o.ObserveInt64(nIngressBytesByPeerCounter, b,
+						metric.WithAttributes(attribute.String("peer_id", pid)))
+				}
+				total += b
+				return true
+			})
+			o.ObserveInt64(nIngressBytesCounter, total)
+			common.Debugf("Ingress bytes: %v", total)
 			return nil
 		},
 		nIngressBytesCounter,
+		nIngressBytesByPeerCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)
