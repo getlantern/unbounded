@@ -43,13 +43,16 @@ func main() {
 	}
 	defer ll.Close()
 
-	conf := &socks5.Config{}
+	conf := &socks5.Config{
+		Dial:     UoTDialer(),
+		Resolver: &UoTResolver{},
+	}
 	proxy, err := socks5.New(conf)
 	if err != nil {
 		panic(err)
 	}
 
-	common.Debugf("Starting SOCKS5 proxy...")
+	common.Debugf("Starting SOCKS5 UoT proxy...")
 
 	err = proxy.Serve(ll)
 	if err != nil {

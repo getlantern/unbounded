@@ -1,4 +1,4 @@
-package egress
+package main
 
 import (
 	"context"
