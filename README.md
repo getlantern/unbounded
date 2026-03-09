@@ -163,6 +163,7 @@ The "default" column shows the default value if the attribute is not set.
 | branding  | boolean to include logos                                  | true    |
 | mock      | boolean to use the mock wasm client data                  | false   |
 | target    | string "web", "extension-offscreen" or "extension-popup"  | web     |
+| headless  | boolean to skip UI rendering (headless mode)              | false   |
 
 In development, these settings can be customized using the `REACT_APP_*` environment variables in the `.env` or in your terminal.
 For example, to run the widget in "panel" layout, you can run `REACT_APP_LAYOUT=panel yarn start`. To run the widget with mock data,
@@ -173,6 +174,85 @@ you can set `data-layout="panel"` in `ui/public/index.html`.
 
 If you enable the editor (by setting `REACT_APP_EDITOR=true` or `data-editor="true"`), you can also edit the settings dynamically in the browser using a UI editor the renders above the widget.
 *Note* that the `mock` and `target` settings are not dynamic and therefore not editable in the browser. These two settings are static and must be set at the time the wasm interface is initialized.
+
+#### Headless mode (programmatic API)
+
+Headless mode lets you run the WASM proxy without rendering any UI, giving the host page full control over the user experience. When `data-headless="true"` is set, React rendering is skipped entirely — only the WASM proxy engine loads. A global `window.LanternProxy` API is exposed for programmatic control.
+
+This is useful when you want to:
+- Build a custom UI around the proxy (e.g. embed proxy stats in your own dashboard)
+- Run the proxy silently in the background
+- Integrate proxy data (connections, throughput) into an existing application
+
+**Minimal example:**
+
+```html
+<browsers-unbounded data-headless="true"></browsers-unbounded>
+<script defer src="https://embed.lantern.io/static/js/main.js"></script>
+<script>
+  // Wait for the script to load, then use the API
+  async function main() {
+    const proxy = window.LanternProxy;
+
+    // Initialize the WASM engine
+    await proxy.init();
+
+    // Subscribe to events before starting
+    proxy.on('ready', (isReady) => {
+      console.log('Proxy ready:', isReady);
+      if (isReady) proxy.start();
+    });
+
+    proxy.on('sharing', (isSharing) => {
+      console.log('Sharing:', isSharing);
+    });
+
+    proxy.on('connections', (conns) => {
+      console.log('Active connections:', conns.length);
+    });
+
+    proxy.on('throughput', (bps) => {
+      console.log('Throughput:', bps, 'bytes/sec');
+    });
+
+    proxy.on('lifetimeConnections', (count) => {
+      console.log('Total connections served:', count);
+    });
+
+    proxy.on('chunks', (chunks) => {
+      console.log('Data chunks:', chunks);
+    });
+  }
+
+  main();
+</script>
+```
+
+**API reference:**
+
+| Method / Property | Description |
+|---|---|
+| `init(options?)` | Initialize the WASM proxy. Accepts optional `{ mock: boolean }`. Must be called before `start()`. |
+| `start()` | Begin proxying traffic. |
+| `stop()` | Stop proxying traffic. |
+| `on(event, callback)` | Subscribe to an event. Returns an unsubscribe function. |
+| `off(event, callback)` | Unsubscribe from an event. |
+| `getState()` | Returns a snapshot of current state: `{ ready, sharing, connections, throughput, lifetimeConnections, chunks }`. |
+| `initialized` | Boolean — whether `init()` has been called successfully. |
+| `config` | Read-only copy of the WASM client config (discovery server, egress, etc). |
+
+**Events:**
+
+| Event | Payload | Description |
+|---|---|---|
+| `ready` | `boolean` | Fires when the proxy engine is ready to start |
+| `sharing` | `boolean` | Fires when the proxy begins/stops sharing traffic |
+| `connections` | `Connection[]` | Active connection list updates |
+| `throughput` | `number` | Average throughput in bytes/sec |
+| `lifetimeConnections` | `number` | Cumulative connections served |
+| `chunks` | `Chunk[]` | Data chunk updates |
+
+**Note:** `window.LanternProxy` is registered on every page load (even without `data-headless`), so you can use the API alongside the standard UI embed too. The `data-headless` attribute only controls whether the React UI renders.
 
 Links:
 
