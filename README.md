@@ -189,42 +189,38 @@ This is useful when you want to:
 ```html
 <browsers-unbounded data-headless="true"></browsers-unbounded>
 <script defer src="https://embed.lantern.io/static/js/main.js"></script>
-<script>
-  // Wait for the script to load, then use the API
-  async function main() {
-    const proxy = window.LanternProxy;
+<!-- Use type="module" so this runs after deferred scripts and supports top-level await -->
+<script type="module">
+  const proxy = window.LanternProxy;
 
-    // Initialize the WASM engine
-    await proxy.init();
+  // Subscribe to events BEFORE calling init() to avoid missing them
+  proxy.on('ready', (isReady) => {
+    console.log('Proxy ready:', isReady);
+    if (isReady) proxy.start();
+  });
 
-    // Subscribe to events before starting
-    proxy.on('ready', (isReady) => {
-      console.log('Proxy ready:', isReady);
-      if (isReady) proxy.start();
-    });
+  proxy.on('sharing', (isSharing) => {
+    console.log('Sharing:', isSharing);
+  });
 
-    proxy.on('sharing', (isSharing) => {
-      console.log('Sharing:', isSharing);
-    });
+  proxy.on('connections', (conns) => {
+    console.log('Active connections:', conns.length);
+  });
 
-    proxy.on('connections', (conns) => {
-      console.log('Active connections:', conns.length);
-    });
+  proxy.on('throughput', (bps) => {
+    console.log('Throughput:', bps, 'bytes/sec');
+  });
 
-    proxy.on('throughput', (bps) => {
-      console.log('Throughput:', bps, 'bytes/sec');
-    });
+  proxy.on('lifetimeConnections', (count) => {
+    console.log('Total connections served:', count);
+  });
 
-    proxy.on('lifetimeConnections', (count) => {
-      console.log('Total connections served:', count);
-    });
+  proxy.on('chunks', (chunks) => {
+    console.log('Data chunks:', chunks);
+  });
 
-    proxy.on('chunks', (chunks) => {
-      console.log('Data chunks:', chunks);
-    });
-  }
-
-  main();
+  // Now initialize — events registered above will fire during init
+  await proxy.init();
 </script>
 ```
 
@@ -232,9 +228,9 @@ This is useful when you want to:
 
 | Method / Property | Description |
 |---|---|
-| `init(options?)` | Initialize the WASM proxy. Accepts optional `{ mock: boolean }`. Must be called before `start()`. |
-| `start()` | Begin proxying traffic. |
-| `stop()` | Stop proxying traffic. |
+| `init(options?)` | Initialize the WASM proxy. Accepts optional `{ mock: boolean }`. Must be called before `start()`. Safe to call concurrently — duplicate calls return the same promise. |
+| `start()` | Begin proxying traffic (fire-and-forget). |
+| `stop()` | Stop proxying traffic (fire-and-forget). |
 | `on(event, callback)` | Subscribe to an event. Returns an unsubscribe function. |
 | `off(event, callback)` | Unsubscribe from an event. |
 | `getState()` | Returns a snapshot of current state: `{ ready, sharing, connections, throughput, lifetimeConnections, chunks }`. |

@@ -1,15 +1,18 @@
 /**
  * Headless API for controlling the unbounded WASM proxy without rendering any UI.
  *
- * Usage:
+ * Usage (as a module or after the deferred script has loaded):
  *   <browsers-unbounded data-headless="true"></browsers-unbounded>
- *   <script src="https://embed.lantern.io/static/js/main.js"></script>
- *   <script>
+ *   <script defer src="https://embed.lantern.io/static/js/main.js"></script>
+ *   <script type="module">
  *     const proxy = window.LanternProxy;
- *     await proxy.init();
- *     proxy.on('ready', () => proxy.start());
+ *     // Subscribe to events BEFORE calling init() to avoid missing them
+ *     proxy.on('ready', (isReady) => {
+ *       if (isReady) proxy.start();
+ *     });
  *     proxy.on('connections', (conns) => console.log(conns));
  *     proxy.on('throughput', (bps) => console.log(bps));
+ *     await proxy.init();
  *   </script>
  */
 
@@ -48,31 +51,41 @@ function wireEmitters() {
 
 let wasmInterface: WasmInterface | null = null
 let initialized = false
+let initPromise: Promise<void> | null = null
 
 export const LanternProxy = {
 	/**
 	 * Initialize the WASM proxy. Must be called before start().
+	 * Safe to call concurrently — subsequent calls return the same promise.
 	 * @param options.mock - Use mock client for testing (default: false)
 	 */
-	async init(options?: { mock?: boolean }): Promise<void> {
+	init(options?: { mock?: boolean }): Promise<void> {
 		if (initialized) {
-			console.warn('LanternProxy already initialized')
-			return
+			return Promise.resolve()
 		}
-		const mock = options?.mock ?? false
-		wasmInterface = new WasmInterface()
-		const instance = await wasmInterface.initialize({mock, target: Targets.WEB})
-		if (!instance) throw new Error('WASM proxy failed to initialize')
-		initialized = true
+		if (initPromise) {
+			return initPromise
+		}
+		initPromise = (async () => {
+			const mock = options?.mock ?? false
+			wasmInterface = new WasmInterface()
+			const instance = await wasmInterface.initialize({mock, target: Targets.WEB})
+			if (!instance) {
+				initPromise = null
+				throw new Error('WASM proxy failed to initialize')
+			}
+			initialized = true
+		})()
+		return initPromise
 	},
 
-	/** Start proxying traffic. Resolves once sharing begins. */
+	/** Start proxying traffic (fire-and-forget). */
 	start(): void {
 		if (!wasmInterface) throw new Error('LanternProxy not initialized — call init() first')
 		wasmInterface.start()
 	},
 
-	/** Stop proxying traffic. */
+	/** Stop proxying traffic (fire-and-forget). */
 	stop(): void {
 		if (!wasmInterface) throw new Error('LanternProxy not initialized — call init() first')
 		wasmInterface.stop()
@@ -117,5 +130,12 @@ export const LanternProxy = {
 // Wire emitters immediately so subscriptions work before init()
 wireEmitters()
 
-// Expose globally
-;(window as any).LanternProxy = LanternProxy
+// Expose globally — use defineProperty to prevent accidental overwrites
+if (!(window as any).LanternProxy) {
+	Object.defineProperty(window, 'LanternProxy', {
+		value: LanternProxy,
+		writable: false,
+		enumerable: false,
+		configurable: false,
+	})
+}
