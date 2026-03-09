@@ -4,6 +4,9 @@ import App from './App'
 import {StateEmitter} from './hooks/useStateEmitter'
 import {defaultSettings, Settings, Themes} from './constants'
 
+// Always register the headless API on window.LanternProxy
+import './headlessApi'
+
 export const settingsEmitter = new StateEmitter<{ [key: number]: Settings }>({})
 
 const upperSnakeToCamel = (s: string | undefined) => {
@@ -49,12 +52,19 @@ const hydrateSettings = (i: number, dataset: Settings) => {
 
 const init = (embeds: NodeListOf<HTMLElement>) => {
 	embeds.forEach((embed, i) => {
+		const dataset = embed.dataset as unknown as Settings
+		hydrateSettings(i, dataset)
+
+		// Headless mode: skip all UI rendering, just expose window.LanternProxy
+		// Usage: <browsers-unbounded data-headless="true"></browsers-unbounded>
+		if ((embed.dataset as any).headless === 'true') {
+			console.log('Unbounded: headless mode — UI rendering skipped, use window.LanternProxy')
+			return
+		}
+
 		const root = ReactDOM.createRoot(
 			embed
 		)
-
-		const dataset = embed.dataset as unknown as Settings
-		hydrateSettings(i, dataset)
 
 		const observer = new MutationObserver((mutations) => {
 			mutations.forEach((mutation) => {
