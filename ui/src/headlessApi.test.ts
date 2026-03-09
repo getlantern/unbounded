@@ -83,7 +83,7 @@ describe('LanternProxy.on / off', () => {
 		expect(readyCb).toHaveBeenCalledWith(true)
 		expect(connCb).not.toHaveBeenCalled()
 
-		const conns = [{state: 1, workerIdx: 0, addr: '1.2.3.4'}]
+		const conns = [{state: 1 as const, workerIdx: 0, addr: '1.2.3.4'}]
 		connectionsEmitter.update(conns)
 		expect(connCb).toHaveBeenCalledWith(conns)
 	})
