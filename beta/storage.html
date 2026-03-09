@@ -1,0 +1,46 @@
+<!--
+    storage.html is a sandboxed page used to collect Browsers Unbounded metrics (plausible)
+    and to store session state (localStorage). It is loaded in an iframe in the main widget.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"/>
+    <meta content="width=device-width, initial-scale=1" name="viewport"/>
+    <meta http-equiv='cache-control' content='no-cache'>
+    <meta http-equiv='expires' content='0'>
+    <meta http-equiv='pragma' content='no-cache'>
+    <title>Browsers Unbounded</title>
+    <!-- plausible is a lightweight, open-source alternative to Google Analytics -->
+    <script defer data-domain="embed.lantern.io" src="https://plausible.io/js/script.js"></script>
+    <script>window.plausible = window.plausible || function() { (window.plausible.q = window.plausible.q || []).push(arguments) }</script>
+    <!-- the iframe subscribes to messages posted from the widget to set and get data from localstorage -->
+    <script>
+        var SIGNATURE = 'lanternNetwork'
+        window.addEventListener('message', function (event) {
+            var message = event.data
+            if (typeof message !== 'object' || message === null || !message.hasOwnProperty(SIGNATURE)) return
+            switch (message.type) {
+                case 'storageGet':
+                    window.parent.postMessage({
+                        type: 'storageGet',
+                        [SIGNATURE]: true,
+                        data: {
+                            [message.data.key]: localStorage.getItem(message.data.key),
+                        }
+                    }, '*')
+                    break
+                case 'storageSet':
+                    localStorage.setItem(message.data.key, message.data.value)
+                    break
+                case 'event':
+                    window.plausible(message.data.eventName, {props: message.data.eventProperties})
+                    break
+            }
+        }, false)
+
+    </script>
+</head>
+<body>
+</body>
+</html>
