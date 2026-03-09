@@ -58,7 +58,7 @@ const init = (embeds: NodeListOf<HTMLElement>) => {
 		// Headless mode: skip all UI rendering, just expose window.LanternProxy
 		// Usage: <browsers-unbounded data-headless="true"></browsers-unbounded>
 		if ((embed.dataset as any).headless === 'true') {
-			console.log('Unbounded: headless mode — UI rendering skipped, use window.LanternProxy')
+			console.log('Unbounded: headless mode — UI rendering skipped. Call window.LanternProxy.init() to load the proxy engine.')
 			return
 		}
 

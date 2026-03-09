@@ -79,15 +79,15 @@ export const LanternProxy = {
 		return initPromise
 	},
 
-	/** Start proxying traffic (fire-and-forget). */
+	/** Start proxying traffic (fire-and-forget). Must call init() first. */
 	start(): void {
-		if (!wasmInterface) throw new Error('LanternProxy not initialized — call init() first')
+		if (!initialized || !wasmInterface) throw new Error('LanternProxy not initialized — call and await init() first')
 		wasmInterface.start()
 	},
 
-	/** Stop proxying traffic (fire-and-forget). */
+	/** Stop proxying traffic (fire-and-forget). Must call init() first. */
 	stop(): void {
-		if (!wasmInterface) throw new Error('LanternProxy not initialized — call init() first')
+		if (!initialized || !wasmInterface) throw new Error('LanternProxy not initialized — call and await init() first')
 		wasmInterface.stop()
 	},
 
@@ -104,15 +104,15 @@ export const LanternProxy = {
 		listeners.get(event)?.delete(callback)
 	},
 
-	/** Get a snapshot of the current proxy state. */
+	/** Get a snapshot of the current proxy state. Arrays are shallow-copied. */
 	getState(): ProxyState {
 		return {
 			ready: readyEmitter.state,
 			sharing: sharingEmitter.state,
-			connections: connectionsEmitter.state,
+			connections: [...connectionsEmitter.state],
 			throughput: averageThroughputEmitter.state,
 			lifetimeConnections: lifetimeConnectionsEmitter.state,
-			chunks: lifetimeChunksEmitter.state,
+			chunks: [...lifetimeChunksEmitter.state],
 		}
 	},
 

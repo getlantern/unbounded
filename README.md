@@ -177,7 +177,7 @@ If you enable the editor (by setting `REACT_APP_EDITOR=true` or `data-editor="tr
 
 #### Headless mode (programmatic API)
 
-Headless mode lets you run the WASM proxy without rendering any UI, giving the host page full control over the user experience. When `data-headless="true"` is set, React rendering is skipped entirely — only the WASM proxy engine loads. A global `window.LanternProxy` API is exposed for programmatic control.
+Headless mode lets you run the WASM proxy without rendering any UI, giving the host page full control over the user experience. When `data-headless="true"` is set, React rendering is skipped entirely. A global `window.LanternProxy` API is exposed for programmatic control — call `init()` to load the WASM proxy engine, then `start()` to begin sharing.
 
 This is useful when you want to:
 - Build a custom UI around the proxy (e.g. embed proxy stats in your own dashboard)

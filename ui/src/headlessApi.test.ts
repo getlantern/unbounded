@@ -1,4 +1,4 @@
-import {readyEmitter, sharingEmitter, connectionsEmitter, averageThroughputEmitter, lifetimeConnectionsEmitter, lifetimeChunksEmitter} from './utils/wasmInterface'
+import {readyEmitter, sharingEmitter, connectionsEmitter, averageThroughputEmitter, lifetimeConnectionsEmitter, lifetimeChunksEmitter, WasmInterface} from './utils/wasmInterface'
 
 // Mock WasmInterface before importing headlessApi
 jest.mock('./utils/wasmInterface', () => {
@@ -11,14 +11,20 @@ jest.mock('./utils/wasmInterface', () => {
 	const lifetimeChunksEmitter = new StateEmitter([])
 
 	const mockInstance = {}
-	const WasmInterface = jest.fn().mockImplementation(() => ({
-		initialize: jest.fn().mockResolvedValue(mockInstance),
-		start: jest.fn(),
-		stop: jest.fn(),
-	}))
+
+	class MockWasmInterface {
+		initialize = jest.fn().mockResolvedValue(mockInstance)
+		start = jest.fn()
+		stop = jest.fn()
+		ready = false
+		initializing = false
+		connectionMap = {}
+		throughput = {bytesPerSec: 0}
+		connections = []
+	}
 
 	return {
-		WasmInterface,
+		WasmInterface: MockWasmInterface,
 		readyEmitter,
 		sharingEmitter,
 		connectionsEmitter,
@@ -83,7 +89,7 @@ describe('LanternProxy.on / off', () => {
 		expect(readyCb).toHaveBeenCalledWith(true)
 		expect(connCb).not.toHaveBeenCalled()
 
-		const conns = [{state: 1 as const, workerIdx: 0, addr: '1.2.3.4'}]
+		const conns = [{state: 1, workerIdx: 0, addr: '1.2.3.4'}]
 		connectionsEmitter.update(conns)
 		expect(connCb).toHaveBeenCalledWith(conns)
 	})
@@ -101,6 +107,15 @@ describe('LanternProxy.getState', () => {
 		expect(state.sharing).toBe(true)
 		expect(state.throughput).toBe(500)
 		expect(state.lifetimeConnections).toBe(42)
+	})
+
+	test('returns shallow copies of arrays', () => {
+		const conns = [{state: 1, workerIdx: 0, addr: '1.2.3.4'}]
+		connectionsEmitter.update(conns)
+
+		const state = LanternProxy.getState()
+		expect(state.connections).toEqual(conns)
+		expect(state.connections).not.toBe(conns) // different reference
 	})
 })
 
