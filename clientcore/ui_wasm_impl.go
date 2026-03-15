@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall/js"
 
+	"github.com/getlantern/broflake/common"
 	"github.com/google/uuid"
 )
 
@@ -71,7 +72,7 @@ func (ui UIImpl) OnReady() {
 }
 
 func (ui UIImpl) OnStartup() {
-	// Do nothing
+	common.Debugf("Unbounded %v", common.Version)
 }
 
 // 'downstreamChunk' fires once for each chunk of data received
