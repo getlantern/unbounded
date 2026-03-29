@@ -25,7 +25,7 @@ requests originating from users in heavily censored regions.
 **Here are just a few of the things you can do:**
 
 * Transform your friends into a private swarm to help unblock a loved one in a censored region ([tutorial](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm))
-* Add a P2P transport your circumvention app (or create a brand new P2P circumvention app!) (tutorial coming soon)
+* Add a P2P transport to your circumvention app (tutorial coming soon)
 * Volunteer on the Lantern network &mdash; in your browser &mdash; with just one click ([link](https://unbounded.lantern.io))
 * Add the Lantern volunteer widget to your website (tutorial coming soon)
 * Set up a permanent volunteer node on a Raspberry Pi or similar device (tutorial coming soon)
