@@ -13,10 +13,10 @@ We'll need to create 4 components:
 
 ### Egress server
 
-:arrow_right: [https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/egress-server](egress-server)
+:arrow_right: [egress-server](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/egress-server)
 
 Unbounded supports two proxy modes: HTTP or SOCKS5. An egress server can support one mode or the other,
-but not both. Here we create a SOCKS5 egress server. (See [https://github.com/getlantern/unbounded/blob/main/egress/cmd/http](here) for an HTTP mode example.)
+but not both. Here we create a SOCKS5 egress server. (See [here](https://github.com/getlantern/unbounded/blob/main/egress/cmd/http) for an HTTP mode example.)
 
 Deploy this to your favorite cloud hosting provider:
 
@@ -85,7 +85,7 @@ func main() {
 
 ### Signaling server
 
-:arrow_right: [https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/signaling-server](signaling-server)
+:arrow_right: [signaling-server](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/signaling-server)
 
 Deploy this to your favorite cloud hosting provider:
 
@@ -128,7 +128,7 @@ func main() {
 
 ### Censored client
 
-:arrow_right: [https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/censored-client](censored-client)
+:arrow_right: [censored-client](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm/censored-client)
 
 The censored client is the executable that your loved one will run on their computer. It exposes a local
 proxy. A censored client, like the egress server, can support SOCKS5 or HTTP mode, but not both. Here
