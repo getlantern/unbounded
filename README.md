@@ -17,10 +17,18 @@
 * [UI](#art-ui)
 
 ### :question: What is Unbounded?
-Unbounded is a next-gen technology stack for circumventing internet censorship using peer-to-peer proxies. It
-works by creating an ephemeral swarm of short-lived residential IP addresses, provided by volunteers
-in less censored regions, which create censorship resistant routes for network requests originating from users 
-in heavily censored regions.
+Unbounded is a next-gen technology stack for circumventing internet censorship using browser-based 
+P2P proxies. It works by creating an ephemeral swarm of short-lived residential IP addresses, 
+provided by volunteers in less censored regions, which create censorship resistant routes for network 
+requests originating from users in heavily censored regions.
+
+**Here are just a few of the things you can do:**
+
+* Transform your friends into a private swarm to help unblock a loved one in a censored region ([https://github.com/getlantern/unbounded/blob/main/examples/private-swarm](tutorial))
+* Add a P2P transport your circumvention app (or create a brand new P2P circumvention app!) (tutorial coming soon)
+* Volunteer on the Lantern network &mdash; in your browser &mdash; with just one click ([https://unbounded.lantern.io](link))
+* Add the Lantern volunteer widget to your website (tutorial coming soon)
+* Set up a permanent volunteer node on a Raspberry Pi or similar device (tutorial coming soon)
 
 The Unbounded software suite functions as a standalone tool to defeat internet censorship, but it can
 also be operationalized as a Go library to provide an interoperable P2P transport for other proxy stacks
