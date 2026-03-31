@@ -69,7 +69,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			defer cancel()
 
 			dialOpts := &websocket.DialOptions{
-				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
+				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, options.PeerID, common.Version),
 			}
 
 			// TODO: WSS
