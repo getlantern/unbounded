@@ -34,15 +34,15 @@ var nClients uint64
 // nQUICStreams is the number of open QUIC streams (not to be confused with QUIC connections)
 var nQUICStreams uint64
 
+// nQUICConnections is the number of open QUIC connections
+var nQUICConnections uint64
+
 // nIngressBytes is the number of bytes received over all WebSocket connections since the last otel measurement callback
 var nIngressBytes uint64
 
-// Otel instruments
-var nClientsCounter metric.Int64UpDownCounter
-
-// TODO: weirdly, we report the number of open QUIC conections to otel but we don't maintain an atomic value to log it?
-var nQUICConnectionsCounter metric.Int64UpDownCounter
-var nQUICStreamsCounter metric.Int64UpDownCounter
+var nClientsCounter metric.Int64ObservableUpDownCounter
+var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
+var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
 type proxyListener struct {
@@ -142,7 +142,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer wspconn.Close()
 
 	common.Debugf("Accepted a new WebSocket connection! [CSID: %v] (%v total)", consumerSessionID, atomic.AddUint64(&nClients, 1))
-	nClientsCounter.Add(context.Background(), 1)
 
 	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
@@ -179,13 +178,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			common.Debugf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1))
-			nQUICStreamsCounter.Add(context.Background(), 1)
 
 			l.connections <- common.QUICStreamNetConn{
 				Stream: stream,
 				OnClose: func() {
 					defer common.Debugf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
-					nQUICStreamsCounter.Add(context.Background(), -1)
 				},
 				AddrLocal:  l.addr,
 				AddrRemote: tcpAddr,
@@ -222,19 +219,19 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
-	nClientsCounter, err = m.Int64UpDownCounter("concurrent-websockets")
+	nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets")
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICConnectionsCounter, err = m.Int64UpDownCounter("concurrent-quic-connections")
+	nQUICConnectionsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-connections")
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICStreamsCounter, err = m.Int64UpDownCounter("concurrent-quic-streams")
+	nQUICStreamsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-streams")
 	if err != nil {
 		closeFuncMetric(ctx)
 		return nil, err
@@ -248,12 +245,24 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
+			c := atomic.LoadUint64(&nClients)
+			o.ObserveInt64(nClientsCounter, int64(c))
+
+			q := atomic.LoadUint64(&nQUICConnections)
+			o.ObserveInt64(nQUICConnectionsCounter, int64(q))
+
+			s := atomic.LoadUint64(&nQUICStreams)
+			o.ObserveInt64(nQUICStreamsCounter, int64(s))
+
 			b := atomic.LoadUint64(&nIngressBytes)
 			o.ObserveInt64(nIngressBytesCounter, int64(b))
-			common.Debugf("Ingress bytes: %v", b)
+
 			atomic.StoreUint64(&nIngressBytes, uint64(0))
 			return nil
 		},
+		nClientsCounter,
+		nQUICConnectionsCounter,
+		nQUICStreamsCounter,
 		nIngressBytesCounter,
 	)
 	if err != nil {

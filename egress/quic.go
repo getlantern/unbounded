@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/broflake/common"
@@ -49,9 +50,8 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 
 	if !record.lastMigrated.After(t) {
 		(*record.connection).CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
-		nQUICConnectionsCounter.Add(context.Background(), -1)
 		delete(manager.connections, csid)
-		common.Debugf("QUIC connection for CSID %v expired, closed, and deleted", csid)
+		common.Debugf("QUIC connection for CSID %v expired, closed, and deleted (%v total)", csid, atomic.AddUint64(&nQUICConnections, ^uint64(0)))
 	}
 
 	record.mx.Unlock()
@@ -79,8 +79,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 			return nil, err
 		}
 
-		nQUICConnectionsCounter.Add(context.Background(), 1)
-		common.Debugf("%v dialed a new QUIC connection!", pconn.addr)
+		common.Debugf("%v dialed a new QUIC connection! (%v total)", pconn.addr, atomic.AddUint64(&nQUICConnections, uint64(1)))
 		manager.connections[csid] = &connectionRecord{connection: &newConn, lastMigrated: time.Now()}
 		manager.mx.Unlock()
 		return &newConn, nil

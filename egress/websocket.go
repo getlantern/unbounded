@@ -117,7 +117,6 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 
 func (q errorlessWebSocketPacketConn) Close() error {
 	defer common.Debugf("Closed a WebSocket connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0)))
-	defer nClientsCounter.Add(context.Background(), -1)
 	return q.w.Close(websocket.StatusNormalClosure, "")
 }
 
