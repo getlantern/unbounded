@@ -19,20 +19,18 @@
 ### :question: What is Unbounded?
 Unbounded is a next-gen technology stack for circumventing internet censorship using browser-based 
 P2P proxies. It works by creating an ephemeral swarm of short-lived residential IP addresses, 
-provided by volunteers in less censored regions, which create censorship resistant routes for network 
-requests originating from users in heavily censored regions.
+provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
 
 **Here are just a few of the things you can do:**
 
-* Transform your friends into a private swarm to help unblock a loved one in a censored region ([tutorial](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm))
+* Turn your friends into a private swarm to unblock a loved one in a censored region ([tutorial](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm)) :fire:
 * Add a P2P transport to your circumvention app (tutorial coming soon)
-* Volunteer on the Lantern network &mdash; in your browser &mdash; with just one click ([link](https://unbounded.lantern.io))
+* Volunteer on the Lantern network with just one click ([link](https://unbounded.lantern.io))
 * Add the Lantern volunteer widget to your website (tutorial coming soon)
-* Set up a permanent volunteer node on a Raspberry Pi or similar device (tutorial coming soon)
+* Deploy a permanent volunteer node on a Raspberry Pi (tutorial coming soon)
 
 The Unbounded software suite functions as a standalone tool to defeat internet censorship, but it can
-also be operationalized as a Go library to provide an interoperable P2P transport for other proxy stacks
-and circumvention tools. We're adding new integrations every day.
+also be operationalized as a Go library to provide an interoperable P2P transport for other proxy stacks and circumvention tools. We're adding new integrations every day.
 
 If you'd like to join the fight against global internet censorship, the Unbounded volunteer node is 
 designed for maximum portability. It compiles to Wasm and runs in a browser (for a frictionless 

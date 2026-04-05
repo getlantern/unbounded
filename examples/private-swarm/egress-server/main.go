@@ -37,7 +37,6 @@ func main() {
 		panic(err)
 	}
 
-
 	ll, err := egress.NewListener(ctx, l, tlsConfig)
 	if err != nil {
 		panic(err)
