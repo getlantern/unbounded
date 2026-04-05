@@ -18,8 +18,7 @@
 
 ### :question: What is Unbounded?
 Unbounded is a next-gen technology stack for circumventing internet censorship using browser-based 
-P2P proxies. It works by creating an ephemeral swarm of short-lived residential IP addresses, 
-provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
+P2P proxies. It organizes an ephemeral swarm of short-lived residential IP addresses, provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
 
 **Here are just a few of the things you can do:**
 
@@ -29,16 +28,10 @@ provided by volunteers in less censored regions, which create censorship resista
 * Add the Lantern volunteer widget to your website (tutorial coming soon)
 * Deploy a permanent volunteer node on a Raspberry Pi (tutorial coming soon)
 
-The Unbounded software suite functions as a standalone tool to defeat internet censorship, but it can
-also be operationalized as a Go library to provide an interoperable P2P transport for other proxy stacks and circumvention tools. We're adding new integrations every day.
-
-If you'd like to join the fight against global internet censorship, the Unbounded volunteer node is 
-designed for maximum portability. It compiles to Wasm and runs in a browser (for a frictionless 
-volunteer experience), but it's also easy to daemonize on a Raspberry Pi or just run in your terminal.
-
 ### :boom: Features
 * End-to-end connection state persistence across ephemeral peer transports
-* Truly concurrent volunteer proxy client for IP efficiency: 1 volunteer can proxy for N users simultaneously
+* HTTP and SOCKS5 mode
+* Concurrent client for IP efficiency: 1 volunteer can proxy for N users simultaneously
 * N:M multiplexing
 * High performance, low latency, rapid peer discovery
 * Maintainable and debuggable: one cross-platform WebAssembly-friendly engine that runs everywhere
