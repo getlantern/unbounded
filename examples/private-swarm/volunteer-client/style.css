@@ -1,0 +1,30 @@
+body { font-family: monospace; max-width: 700px; margin: 40px auto; padding: 0 20px; background: #111; color: #ddd; }
+h1 { color: #fff; margin-bottom: 4px; }
+h2 { color: #aaa; font-size: 14px; font-weight: normal; margin-top: 0; }
+fieldset { border: 1px solid #444; padding: 12px 16px; margin-bottom: 16px; }
+legend { color: #888; font-size: 12px; }
+label { display: block; margin-bottom: 8px; font-size: 13px; color: #aaa; }
+input[type=text] { background: #222; border: 1px solid #555; color: #ddd; padding: 4px 8px; width: 300px; font-family: monospace; font-size: 13px; }
+input[type=text]:focus { outline: 1px solid #666; }
+button { padding: 8px 20px; font-family: monospace; font-size: 13px; cursor: pointer; border: none; }
+#btn-start { background: #2a6; color: #fff; }
+#btn-start:disabled { background: #444; color: #888; cursor: default; }
+#btn-stop { background: #a33; color: #fff; margin-left: 8px; }
+#btn-stop:disabled { background: #444; color: #888; cursor: default; }
+#status-bar { padding: 10px 14px; background: #1a1a1a; border: 1px solid #444; margin-bottom: 16px; font-size: 13px; }
+.stat { display: inline-block; margin-right: 32px; }
+.stat-label { color: #666; }
+.stat-value { color: #fff; }
+#consumers { border-collapse: collapse; width: 100%; font-size: 13px; margin-bottom: 16px; }
+#consumers th { text-align: left; color: #666; border-bottom: 1px solid #333; padding: 4px 8px; }
+#consumers td { padding: 4px 8px; border-bottom: 1px solid #222; }
+.connected { color: #2a6; }
+.disconnected { color: #666; }
+#log { background: #0a0a0a; border: 1px solid #333; padding: 10px; height: 180px; overflow-y: auto; font-size: 12px; color: #777; }
+#log div { margin-bottom: 2px; }
+.log-event { color: #4af; }
+.log-error { color: #f44; }
+.log-info { color: #aaa; }
+#state-indicator { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #555; margin-right: 6px; vertical-align: middle; }
+#state-indicator.ready { background: #fa0; }
+#state-indicator.running { background: #2a6; }

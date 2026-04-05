@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Unbounded Volunteer Client</title>
+  <script src="wasm_exec.js"></script>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <h1>Unbounded</h1>
+  <h2>Volunteer client &mdash; help unblock the internet</h2>
+
+  <fieldset>
+    <legend>configuration</legend>
+    <label>Signaling server
+      <input type="text" id="cfg-signaling" value="https://your-signaling-server:9000" style="width:380px"/>
+    </label>
+    <label>Egress server
+      <input type="text" id="cfg-egress" value="https://your-egress-server:8000" style="width:380px"/>
+    </label>
+  </fieldset>
+
+  <div style="margin-bottom:16px">
+    <button id="btn-start" disabled>Start</button>
+    <button id="btn-stop" disabled>Stop</button>
+    <span id="state-text" style="margin-left:16px;font-size:13px;color:#888">
+      <span id="state-indicator"></span>loading wasm...
+    </span>
+  </div>
+
+  <div id="status-bar">
+    <span class="stat"><span class="stat-label">people you're helping: </span><span class="stat-value" id="stat-consumers">0</span></span>
+    <span class="stat"><span class="stat-label">throughput: </span><span class="stat-value" id="stat-throughput">&mdash;</span></span>
+  </div>
+
+  <table id="consumers">
+    <thead><tr><th>slot</th><th>addr</th><th>status</th></tr></thead>
+    <tbody id="consumers-body"></tbody>
+  </table>
+
+  <div id="log"></div>
+
+  <script>
+    let broflake = null;
+    let running = false;
+    let generation = 0;
+    const consumerSlots = {};
+
+    const btnStart = document.getElementById('btn-start');
+    const btnStop = document.getElementById('btn-stop');
+    const stateText = document.getElementById('state-text');
+    const stateIndicator = document.getElementById('state-indicator');
+    const statConsumers = document.getElementById('stat-consumers');
+    const statThroughput = document.getElementById('stat-throughput');
+    const consumersBody = document.getElementById('consumers-body');
+    const logEl = document.getElementById('log');
+
+    function log(msg, cls) {
+      const d = document.createElement('div');
+      d.className = cls || 'log-info';
+      d.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function formatBytes(b) {
+      if (b < 1024) return b + ' B/s';
+      if (b < 1048576) return (b / 1024).toFixed(1) + ' KB/s';
+      return (b / 1048576).toFixed(2) + ' MB/s';
+    }
+
+    function updateConsumerTable() {
+      consumersBody.innerHTML = '';
+      let active = 0;
+      for (const [slot, info] of Object.entries(consumerSlots)) {
+        const tr = document.createElement('tr');
+        const connected = info.state === 1;
+        if (connected) active++;
+        tr.innerHTML =
+          '<td>' + slot + '</td>' +
+          '<td>' + (connected ? info.addr || '(unknown)' : '&mdash;') + '</td>' +
+          '<td class="' + (connected ? 'connected' : 'disconnected') + '">' +
+          (connected ? 'connected' : 'idle') + '</td>';
+        consumersBody.appendChild(tr);
+      }
+      statConsumers.textContent = active;
+    }
+
+    function setState(s) {
+      stateIndicator.className = s;
+      if (s === 'ready') stateText.innerHTML = '<span id="state-indicator" class="ready"></span>ready';
+      if (s === 'running') stateText.innerHTML = '<span id="state-indicator" class="running"></span>running';
+      if (s === 'idle') stateText.innerHTML = '<span id="state-indicator"></span>idle';
+    }
+
+    // Rebuild stateIndicator ref after innerHTML swap
+    function getStateIndicator() { return document.getElementById('state-indicator'); }
+
+    function attachEvents(bf) {
+      const myGen = generation;
+
+      bf.addEventListener('ready', function() {
+        if (myGen !== generation) return;
+        log('unbounded ready', 'log-event');
+        btnStart.disabled = false;
+        btnStop.disabled = true;
+        setState('ready');
+      });
+
+      bf.addEventListener('downstreamThroughput', function(e) {
+        if (myGen !== generation) return;
+        statThroughput.textContent = formatBytes(e.detail && e.detail.bytesPerSec || 0);
+      });
+
+      bf.addEventListener('consumerConnectionChange', function(e) {
+        if (myGen !== generation) return;
+        const { state, workerIdx, addr } = e.detail;
+        consumerSlots[workerIdx] = { state, addr };
+        updateConsumerTable();
+        if (state === 1) {
+          log('someone connected' + (addr ? ' from ' + addr : ''), 'log-event');
+        } else {
+          log('someone disconnected', 'log-info');
+        }
+      });
+    }
+
+    btnStart.addEventListener('click', function() {
+      const signaling = document.getElementById('cfg-signaling').value;
+      const egress = document.getElementById('cfg-egress').value;
+
+      generation++;
+      Object.keys(consumerSlots).forEach(k => delete consumerSlots[k]);
+      broflake = newBroflake(
+        'widget',     // ClientType
+        1,            // CTableSize
+        1,            // PTableSize
+        4096,         // BusBufferSz
+        '',           // Netstated
+        signaling,    // DiscoverySrv
+        '/v1/signal', // WebRTC endpoint
+        2,            // STUNBatchSize
+        '',           // Tag
+        egress,       // EgressOptions.Addr
+        '/ws',        // EgressOptions.Endpoint
+      );
+
+      if (!broflake) {
+        log('failed to create broflake instance', 'log-error');
+        return;
+      }
+
+      // ready fires synchronously inside newBroflake() before we can attach listeners,
+      // so the 'ready' listener here only matters for stop/start cycles on this instance.
+      attachEvents(broflake);
+      broflake.start();
+      running = true;
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      setState('running');
+      log('started', 'log-info');
+    });
+
+    btnStop.addEventListener('click', function() {
+      if (!broflake) return;
+      broflake.stop();
+      running = false;
+      btnStart.disabled = true;
+      btnStop.disabled = true;
+      statThroughput.textContent = '\u2014';
+      setState('idle');
+      log('stopped \u2014 waiting for ready event before restart is allowed', 'log-info');
+    });
+
+    // Load and start the wasm module
+    const go = new Go();
+    WebAssembly.instantiateStreaming(fetch('widget.wasm'), go.importObject)
+      .then(function(result) {
+        go.run(result.instance);
+
+        log('unbounded ready', 'log-event');
+        btnStart.disabled = false;
+        setState('ready');
+      })
+      .catch(function(err) {
+        log('failed to load wasm: ' + err, 'log-error');
+        stateText.textContent = 'error loading wasm';
+      });
+  </script>
+</body>
+</html>
