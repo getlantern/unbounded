@@ -217,7 +217,9 @@ func main() {
 
 The volunteer client is a static web page which operationalizes a WebAssembly build of the proxy engine. The WebAssembly proxy engine exposes JavaScript bindings which can be used to create a robust interactive web UI.
 
-The WebAssembly proxy engine (`widget.wasm` and `wasm_exec.js`) can always be found in [this directory](https://github.com/getlantern/unbounded/blob/main/cmd/dist/public). You can also build a new WebAssemblty proxy engine via `cd cmd && ./build_web.sh`.
+Build the WebAssembly proxy engine like so: `cd cmd && ./build_web.sh`
+
+Now you can find `widget.wasm` and `wasm_exec.js` in `cmd/dist/public`.
 
 `CTableSize` and `PTableSize` control the client concurrency. In this example, we set `CTableSize` and `PTableSize` to 1, because there's just a single loved one we're helping to unblock. To create a private swarm intended to help multiple people simultaneously, increase both `CTableSize` and 
 `PTableSize` to a larger integer. (Browser restrictions on concurrent HTTP requests may result in strange behavior for values larger than 5.)
