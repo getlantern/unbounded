@@ -128,11 +128,11 @@ func newEventualConn() *eventualConn {
 }
 
 type eventualConn struct {
-	conn  quic.Connection
+	conn  *quic.Conn
 	ready chan struct{}
 }
 
-func (w *eventualConn) get(ctx context.Context) (quic.Connection, error) {
+func (w *eventualConn) get(ctx context.Context) (*quic.Conn, error) {
 	select {
 	case <-w.ready:
 		return w.conn, nil
@@ -141,7 +141,7 @@ func (w *eventualConn) get(ctx context.Context) (quic.Connection, error) {
 	}
 }
 
-func (w *eventualConn) set(conn quic.Connection) {
+func (w *eventualConn) set(conn *quic.Conn) {
 	w.conn = conn
 	close(w.ready)
 }

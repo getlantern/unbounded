@@ -14,7 +14,7 @@ import (
 
 type connectionRecord struct {
 	mx           sync.Mutex
-	connection   *quic.Connection
+	connection   *quic.Conn
 	lastMigrated time.Time
 	lastPath     *quic.Path
 }
@@ -58,7 +58,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 	manager.mx.Unlock()
 }
 
-func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessWebSocketPacketConn) (*quic.Connection, error) {
+func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessWebSocketPacketConn) (*quic.Conn, error) {
 	manager.mx.Lock()
 
 	transport := &quic.Transport{Conn: pconn}
@@ -80,9 +80,9 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 		}
 
 		common.Debugf("%v dialed a new QUIC connection! (%v total)", pconn.addr, atomic.AddUint64(&nQUICConnections, uint64(1)))
-		manager.connections[csid] = &connectionRecord{connection: &newConn, lastMigrated: time.Now()}
+		manager.connections[csid] = &connectionRecord{connection: newConn, lastMigrated: time.Now()}
 		manager.mx.Unlock()
-		return &newConn, nil
+		return newConn, nil
 	}
 
 	// Atomic migration path
