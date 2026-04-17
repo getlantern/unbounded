@@ -287,12 +287,20 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		closeMetrics:      closeFuncMetric,
 	}
 
+	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.
+	// Registering on the default mux here previously made this function
+	// unsafe to call twice in the same process — the second call would
+	// panic on duplicate `/ws` registration, which broke tests, graceful
+	// restarts, and any host that embeds multiple egress listeners.
+	mux := http.NewServeMux()
+	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
+
 	srv := &http.Server{
+		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)

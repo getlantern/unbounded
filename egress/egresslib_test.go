@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -13,6 +12,10 @@ import (
 // unconditional panic that used to fire from the serve goroutine spawned
 // inside NewListener. Closing the listener is a normal shutdown path; the
 // goroutine should exit quietly, not take the process down with it.
+//
+// The assertion is implicit: a panic from the internal serve goroutine is
+// fatal to the test binary (goroutine panics can't be recovered from outside
+// the panicking goroutine). If this test reaches the end, the fix holds.
 func TestNewListener_CleanShutdownDoesNotPanic(t *testing.T) {
 	ctx := context.Background()
 
@@ -20,6 +23,10 @@ func TestNewListener_CleanShutdownDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	// Close the underlying listener even if NewListener errors — ll.Close()
+	// only covers the success path, and t.Fatalf skips the explicit close.
+	t.Cleanup(func() { _ = tcpL.Close() })
+
 	ll, err := NewListener(ctx, tcpL, &tls.Config{
 		NextProtos:         []string{"broflake"},
 		InsecureSkipVerify: true,
@@ -28,21 +35,21 @@ func TestNewListener_CleanShutdownDoesNotPanic(t *testing.T) {
 		t.Fatalf("NewListener: %v", err)
 	}
 
-	// Give the internal serve goroutine a moment to enter Accept.
-	time.Sleep(50 * time.Millisecond)
-
-	// Clean shutdown path: closing the wrapped listener cascades to the
-	// underlying TCP listener, which causes srv.Serve to return net.ErrClosed.
-	// Pre-fix this panicked the process; post-fix it should log-and-return.
+	// Clean shutdown path. We don't need to wait for the serve goroutine to
+	// enter Accept first — http.Server.Serve handles a pre-closed listener
+	// identically to one closed mid-Accept (both surface net.ErrClosed).
 	if err := ll.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	// Give the goroutine time to exit. If the fix regresses, the panic fires
-	// here and takes the test binary with it — there's no good way to recover
-	// from a goroutine panic, so a hang-or-crash is the signal.
+	// We need to give the serve goroutine a moment to run its exit branch
+	// before the test returns — if the fix regressed, the panic fires from
+	// that goroutine asynchronously after Close(), and we want to observe it.
+	//
+	// A goroutine-count poll would be ideal instead of a fixed delay, but
+	// broflake spawns background workers we can't distinguish from the serve
+	// goroutine, so the count never converges cleanly. 100ms is enough for
+	// a scheduler tick to run the error-handling branch on any reasonable
+	// machine and doesn't meaningfully slow down the test suite.
 	time.Sleep(100 * time.Millisecond)
-
-	// Sanity check: the test goroutine is still alive and well.
-	runtime.GC()
 }
