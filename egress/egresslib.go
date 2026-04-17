@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -286,16 +287,33 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		closeMetrics:      closeFuncMetric,
 	}
 
+	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.
+	// Registering on the default mux here previously made this function
+	// unsafe to call twice in the same process — the second call would
+	// panic on duplicate `/ws` registration, which broke tests, graceful
+	// restarts, and any host that embeds multiple egress listeners.
+	mux := http.NewServeMux()
+	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
+
 	srv := &http.Server{
+		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
 
-	http.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)
-		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+		// srv.Serve always returns a non-nil error, but a clean shutdown (the
+		// listener was closed or http.Server.Shutdown was called) returns one
+		// of a known set that callers — including our tests and any graceful
+		// restart path — should treat as non-fatal. Only panic when the error
+		// is genuinely unexpected.
+		if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+			common.Debugf("Egress server stopped listening cleanly: %v", err)
+			return
+		}
+		panic(fmt.Sprintf("egress server stopped listening unexpectedly: %v", err))
 	}()
 
 	return l, nil
