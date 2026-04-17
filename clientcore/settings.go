@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/pion/transport/v4"
+
+	"github.com/getlantern/broflake/common/covertdtls"
 )
 
 type WebRTCOptions struct {
@@ -26,6 +28,10 @@ type WebRTCOptions struct {
 	ConsumerSessionID string
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net
+	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
+	// producer/widget side. See common/covertdtls and net4people/bbs#603
+	// for background. The zero value disables the feature.
+	CovertDTLS covertdtls.Config
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
@@ -42,6 +48,9 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		ErrorBackoff:      5 * time.Second,
 		ConsumerSessionID: uuid.NewString(),
 		Net:               nil,
+		// randomizemimic matches Snowflake v2.13.1's default and is the most
+		// stable mode: each handshake picks a random real-browser fingerprint.
+		CovertDTLS: covertdtls.Config{Randomize: true, Mimic: true},
 	}
 }
 

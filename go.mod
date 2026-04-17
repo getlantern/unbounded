@@ -17,6 +17,7 @@ require (
 	github.com/pion/transport/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/quic-go/quic-go v0.51.0
+	github.com/theodorsm/covert-dtls v1.5.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
 	go.opentelemetry.io/otel v1.36.0
 	go.opentelemetry.io/otel/metric v1.36.0
