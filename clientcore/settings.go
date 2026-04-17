@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pion/transport/v3"
+	"github.com/pion/transport/v4"
 
 	"github.com/getlantern/broflake/common/covertdtls"
 )

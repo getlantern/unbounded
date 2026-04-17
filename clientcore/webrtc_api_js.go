@@ -3,7 +3,7 @@
 package clientcore
 
 import (
-	"github.com/pion/transport/v3"
+	"github.com/pion/transport/v4"
 	"github.com/pion/webrtc/v4"
 )
 
