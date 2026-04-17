@@ -1,6 +1,6 @@
 module github.com/getlantern/broflake
 
-go 1.23.6
+go 1.24.0
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
@@ -17,11 +17,12 @@ require (
 	github.com/pion/transport/v3 v3.0.7
 	github.com/pion/webrtc/v4 v4.1.2
 	github.com/quic-go/quic-go v0.51.0
+	github.com/theodorsm/covert-dtls v1.5.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.42.0
 	go.opentelemetry.io/otel v1.36.0
 	go.opentelemetry.io/otel/metric v1.36.0
 	go.opentelemetry.io/otel/trace v1.36.0
-	golang.org/x/mod v0.25.0
+	golang.org/x/mod v0.29.0
 )
 
 require (
@@ -54,7 +55,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.12 // indirect
 	github.com/pion/datachannel v1.5.10 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
-	github.com/pion/dtls/v3 v3.0.6 // indirect
+	github.com/pion/dtls/v3 v3.1.2 // indirect
 	github.com/pion/ice/v4 v4.0.10 // indirect
 	github.com/pion/interceptor v0.1.40 // indirect
 	github.com/pion/logging v0.2.4 // indirect
@@ -69,6 +70,7 @@ require (
 	github.com/pion/stun/v3 v3.0.0 // indirect
 	github.com/pion/transport v0.14.1 // indirect
 	github.com/pion/transport/v2 v2.2.10 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn v1.3.7 // indirect
 	github.com/pion/turn/v4 v4.0.2 // indirect
 	github.com/pkg/errors v0.8.1 // indirect
@@ -86,12 +88,12 @@ require (
 	go.uber.org/mock v0.5.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.19.1 // indirect
-	golang.org/x/crypto v0.39.0 // indirect
-	golang.org/x/net v0.41.0 // indirect
-	golang.org/x/sync v0.15.0 // indirect
-	golang.org/x/sys v0.33.0 // indirect
-	golang.org/x/text v0.26.0 // indirect
-	golang.org/x/tools v0.33.0 // indirect
+	golang.org/x/crypto v0.45.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.18.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
+	golang.org/x/tools v0.38.0 // indirect
 	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4 // indirect
 	google.golang.org/grpc v1.71.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
