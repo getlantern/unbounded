@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -295,7 +296,16 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	common.Debugf("Egress server listening for WebSocket connections on %v", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)
-		panic(fmt.Sprintf("stopped listening and serving for some reason: %v", err))
+		// srv.Serve always returns a non-nil error, but a clean shutdown (the
+		// listener was closed or http.Server.Shutdown was called) returns one
+		// of a known set that callers — including our tests and any graceful
+		// restart path — should treat as non-fatal. Only panic when the error
+		// is genuinely unexpected.
+		if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
+			common.Debugf("Egress server stopped listening cleanly: %v", err)
+			return
+		}
+		panic(fmt.Sprintf("egress server stopped listening unexpectedly: %v", err))
 	}()
 
 	return l, nil
