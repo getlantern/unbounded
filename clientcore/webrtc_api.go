@@ -3,8 +3,8 @@
 package clientcore
 
 import (
-	"github.com/pion/transport/v3"
-	"github.com/pion/transport/v3/stdnet"
+	"github.com/pion/transport/v4"
+	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/webrtc/v4"
 )
 
