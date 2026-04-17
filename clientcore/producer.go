@@ -19,6 +19,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/covertdtls"
 )
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
@@ -54,14 +55,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				},
 			}
 
-			// // Example custom DTLS settings
-			// settingEngine := &webrtc.SettingEngine{}
-			// settingEngine.SetDTLSEllipticCurves(elliptic.P256, elliptic.P384, elliptic.X25519)
-			// webrtcAPI := webrtc.NewAPI(webrtc.WithSettingEngine(*settingEngine))
-			// peerConnection, err := webrtcAPI.NewPeerConnection(config)
-
-			// Construct the RTCPeerConnection
-			peerConnection, err := webrtc.NewPeerConnection(config)
+			// Producers are the answerers, which makes them the active peer in
+			// the DTLS handshake per RFC 5763 — they send the ClientHello. The
+			// default pion fingerprint is DPI-filtered in Russia (see
+			// net4people/bbs#603), so we route through a SettingEngine with a
+			// covert-dtls hook when enabled.
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS)
 			if err != nil {
 				common.Debugf("Error creating RTCPeerConnection: %v", err)
 				return 0, []interface{}{}
@@ -635,4 +634,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			return 0, []interface{}{}
 		}),
 	})
+}
+
+func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config) (*webrtc.PeerConnection, error) {
+	if !dtls.Enabled() {
+		return webrtc.NewPeerConnection(config)
+	}
+	se := webrtc.SettingEngine{}
+	if err := covertdtls.Apply(dtls, &se); err != nil {
+		return nil, err
+	}
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config)
 }
