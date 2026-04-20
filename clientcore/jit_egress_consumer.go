@@ -3,6 +3,7 @@ package clientcore
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -71,6 +72,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			dialOpts := &websocket.DialOptions{
 				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
 			}
+			common.Debugf("JIT egress consumer dialing with CSID=%s", consumerInfoMsg.SessionID)
 
 			// TODO: WSS
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
@@ -92,6 +94,43 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			c := input[0].(*websocket.Conn)
 			common.Debugf("JIT egress consumer state 1, WebSocket connection established!")
 
+			// Per-direction counters for the widget↔egress WebSocket.
+			// If datachannel metrics show bytes arriving at widget's
+			// com.rx (consumer → widget) but this socket is writing
+			// zero bytes toward egress, the bug is in the router. If
+			// the socket is writing but egress isn't sending back (zero
+			// bytes read), the egress side isn't completing the QUIC
+			// handshake. If both are zero, bytes never even reached
+			// the widget.
+			var wsRxBytes, wsRxMsgs, wsRxDrops atomic.Uint64
+			var wsTxBytes, wsTxMsgs atomic.Uint64
+			wsStatsDone := make(chan struct{})
+			go func() {
+				t := time.NewTicker(time.Second)
+				defer t.Stop()
+				var lastRB, lastRM, lastRD, lastTB, lastTM uint64
+				for {
+					select {
+					case <-wsStatsDone:
+						return
+					case <-t.C:
+						rb, rm, rd := wsRxBytes.Load(), wsRxMsgs.Load(), wsRxDrops.Load()
+						tb, tm := wsTxBytes.Load(), wsTxMsgs.Load()
+						dRB, dRM, dRD := rb-lastRB, rm-lastRM, rd-lastRD
+						dTB, dTM := tb-lastTB, tm-lastTM
+						lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
+						if dRB+dTB+dRD > 0 {
+							common.Debugf(
+								"widget↔egress ws 1s: rx %d msgs %d bytes (drops %d), "+
+									"tx %d msgs %d bytes",
+								dRM, dRB, dRD, dTM, dTB,
+							)
+						}
+					}
+				}
+			}()
+			defer close(wsStatsDone)
+
 			// WebSocket read loop:
 			readStatus := make(chan error)
 			go func(ctx context.Context) {
@@ -105,9 +144,11 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					// Wrap the chunk and send it on to the router
 					select {
 					case com.tx <- IPCMsg{IpcType: ChunkIPC, Data: b}:
-						// Do nothing, msg sent
+						wsRxBytes.Add(uint64(len(b)))
+						wsRxMsgs.Add(1)
 					default:
 						// Drop the chunk if we can't keep up with the data rate
+						wsRxDrops.Add(1)
 					}
 				}
 			}(ctx)
@@ -121,12 +162,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
-						err := c.Write(ctx, websocket.MessageBinary, msg.Data.([]byte))
+						payload := msg.Data.([]byte)
+						err := c.Write(ctx, websocket.MessageBinary, payload)
 						if err != nil {
 							c.Close(websocket.StatusNormalClosure, err.Error())
-							common.Debugf("JIT egress consumer WebSocket write error: %v", err)
+							common.Debugf("JIT egress consumer WebSocket write error (%d bytes): %v", len(payload), err)
 							break proxyloop
 						}
+						wsTxBytes.Add(uint64(len(payload)))
+						wsTxMsgs.Add(1)
 					case ConsumerInfoIPC:
 						if msg.Data.(common.ConsumerInfo).Nil() {
 							c.Close(websocket.StatusNormalClosure, "downstream peer disconnected")
