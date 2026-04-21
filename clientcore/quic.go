@@ -40,6 +40,16 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	for {
+		// Bail out if Close() cancelled the context. Without this check
+		// the outer loop would spin-create a new quic.Listen → Accept
+		// pair every millisecond, each Accept returning context.Canceled
+		// immediately, burning CPU and logging "QUIC listener error
+		// (context canceled), closing!" thousands of times per second
+		// whenever a single tunnel is torn down.
+		if c.ctx.Err() != nil {
+			return
+		}
+
 		listener, err := quic.Listen(c.bfconn, c.tlsConfig, &common.QUICCfg)
 		if err != nil {
 			common.Debugf("Error creating QUIC listener: %v\n", err)

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -552,15 +553,60 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			allowAll := []common.Endpoint{{Host: "*", Distance: 1}}
 			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}
 
-			// Inbound from datachannel:
+			// Inbound from datachannel (widget → us) and outbound
+			// (us → widget) counters. One-second summaries follow so
+			// we can confirm whether bytes are flowing each direction
+			// or being dropped at the IPC hop. Scoped to this proxy
+			// session — stop the logger when the loop exits so closing
+			// the datachannel doesn't leave a zombie goroutine behind.
+			//
+			// Gated behind BROFLAKE_STATS so production builds pay
+			// nothing (zero atomic increments, no goroutine, no log
+			// volume).
+			var dcRxBytes, dcRxMsgs, dcRxDrops atomic.Uint64
+			var dcTxBytes, dcTxMsgs atomic.Uint64
 			d.OnMessage(func(msg webrtc.DataChannelMessage) {
 				select {
 				case com.tx <- IPCMsg{IpcType: ChunkIPC, Data: msg.Data}:
-					// Do nothing, msg sent
+					if bfStatsEnabled {
+						dcRxBytes.Add(uint64(len(msg.Data)))
+						dcRxMsgs.Add(1)
+					}
 				default:
 					// Drop the chunk if we can't keep up with the data rate
+					if bfStatsEnabled {
+						dcRxDrops.Add(1)
+					}
 				}
 			})
+			dcStatsDone := make(chan struct{})
+			if bfStatsEnabled {
+				go func() {
+					t := time.NewTicker(time.Second)
+					defer t.Stop()
+					var lastRB, lastRM, lastRD, lastTB, lastTM uint64
+					for {
+						select {
+						case <-dcStatsDone:
+							return
+						case <-t.C:
+							rb, rm, rd := dcRxBytes.Load(), dcRxMsgs.Load(), dcRxDrops.Load()
+							tb, tm := dcTxBytes.Load(), dcTxMsgs.Load()
+							dRB, dRM, dRD := rb-lastRB, rm-lastRM, rd-lastRD
+							dTB, dTM := tb-lastTB, tm-lastTM
+							lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
+							if dRB+dTB+dRD > 0 {
+								common.Debugf(
+									"datachannel 1s: rx %d msgs %d bytes (drops %d), "+
+										"tx %d msgs %d bytes",
+									dRM, dRB, dRD, dTM, dTB,
+								)
+							}
+						}
+					}
+				}()
+				defer close(dcStatsDone)
+			}
 
 		proxyloop:
 			for {
@@ -583,9 +629,14 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
-						if err := d.Send(msg.Data.([]byte)); err != nil {
-							common.Debugf("Error sending to datachannel, resetting!")
+						payload := msg.Data.([]byte)
+						if err := d.Send(payload); err != nil {
+							common.Debugf("Error sending to datachannel (%d bytes): %v, resetting!", len(payload), err)
 							break proxyloop
+						}
+						if bfStatsEnabled {
+							dcTxBytes.Add(uint64(len(payload)))
+							dcTxMsgs.Add(1)
 						}
 					}
 					// Since we're putting this state into an infinite loop, explicitly handle cancellation
