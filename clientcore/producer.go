@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -576,15 +577,55 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID},
 			}
 
-			// Inbound from datachannel:
+			// Inbound from datachannel (consumer → widget) and outbound
+			// (widget → consumer) counters + 1s summary. Mirrors the
+			// consumer-side instrumentation so both ends of the
+			// datachannel are visible from the logs. Gated on
+			// BROFLAKE_STATS; zero cost in production.
+			var pdcRxBytes, pdcRxMsgs, pdcRxDrops atomic.Uint64
+			var pdcTxBytes, pdcTxMsgs atomic.Uint64
 			d.OnMessage(func(msg webrtc.DataChannelMessage) {
 				select {
 				case com.tx <- IPCMsg{IpcType: ChunkIPC, Data: msg.Data}:
-					// Do nothing, msg sent
+					if bfStatsEnabled {
+						pdcRxBytes.Add(uint64(len(msg.Data)))
+						pdcRxMsgs.Add(1)
+					}
 				default:
 					// Drop the chunk if we can't keep up with the data rate
+					if bfStatsEnabled {
+						pdcRxDrops.Add(1)
+					}
 				}
 			})
+			pdcStatsDone := make(chan struct{})
+			if bfStatsEnabled {
+				go func() {
+					t := time.NewTicker(time.Second)
+					defer t.Stop()
+					var lastRB, lastRM, lastRD, lastTB, lastTM uint64
+					for {
+						select {
+						case <-pdcStatsDone:
+							return
+						case <-t.C:
+							rb, rm, rd := pdcRxBytes.Load(), pdcRxMsgs.Load(), pdcRxDrops.Load()
+							tb, tm := pdcTxBytes.Load(), pdcTxMsgs.Load()
+							dRB, dRM, dRD := rb-lastRB, rm-lastRM, rd-lastRD
+							dTB, dTM := tb-lastTB, tm-lastTM
+							lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
+							if dRB+dTB+dRD > 0 {
+								common.Debugf(
+									"widget datachannel 1s: rx %d msgs %d bytes (drops %d), "+
+										"tx %d msgs %d bytes",
+									dRM, dRB, dRD, dTM, dTB,
+								)
+							}
+						}
+					}
+				}()
+				defer close(pdcStatsDone)
+			}
 
 		proxyloop:
 			for {
@@ -607,9 +648,14 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
-						if err := d.Send(msg.Data.([]byte)); err != nil {
-							common.Debugf("Error sending to datachannel, resetting!")
+						payload := msg.Data.([]byte)
+						if err := d.Send(payload); err != nil {
+							common.Debugf("Error sending to datachannel (%d bytes): %v, resetting!", len(payload), err)
 							break proxyloop
+						}
+						if bfStatsEnabled {
+							pdcTxBytes.Add(uint64(len(payload)))
+							pdcTxMsgs.Add(1)
 						}
 					case PathAssertionIPC:
 						pa := msg.Data.(common.PathAssertion)
