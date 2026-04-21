@@ -72,7 +72,11 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			dialOpts := &websocket.DialOptions{
 				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
 			}
-			common.Debugf("JIT egress consumer dialing with CSID=%s", consumerInfoMsg.SessionID)
+			// Log only a short prefix of the CSID — enough to correlate
+			// with the egress's connection record in the same time
+			// window without exposing the full session identifier in
+			// shipped logs.
+			common.Debugf("JIT egress consumer dialing with CSID=%s…", csidPrefix(consumerInfoMsg.SessionID))
 
 			// TODO: WSS
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
@@ -102,34 +106,38 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// bytes read), the egress side isn't completing the QUIC
 			// handshake. If both are zero, bytes never even reached
 			// the widget.
+			//
+			// Gated on BROFLAKE_STATS; zero cost in production.
 			var wsRxBytes, wsRxMsgs, wsRxDrops atomic.Uint64
 			var wsTxBytes, wsTxMsgs atomic.Uint64
 			wsStatsDone := make(chan struct{})
-			go func() {
-				t := time.NewTicker(time.Second)
-				defer t.Stop()
-				var lastRB, lastRM, lastRD, lastTB, lastTM uint64
-				for {
-					select {
-					case <-wsStatsDone:
-						return
-					case <-t.C:
-						rb, rm, rd := wsRxBytes.Load(), wsRxMsgs.Load(), wsRxDrops.Load()
-						tb, tm := wsTxBytes.Load(), wsTxMsgs.Load()
-						dRB, dRM, dRD := rb-lastRB, rm-lastRM, rd-lastRD
-						dTB, dTM := tb-lastTB, tm-lastTM
-						lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
-						if dRB+dTB+dRD > 0 {
-							common.Debugf(
-								"widget↔egress ws 1s: rx %d msgs %d bytes (drops %d), "+
-									"tx %d msgs %d bytes",
-								dRM, dRB, dRD, dTM, dTB,
-							)
+			if bfStatsEnabled {
+				go func() {
+					t := time.NewTicker(time.Second)
+					defer t.Stop()
+					var lastRB, lastRM, lastRD, lastTB, lastTM uint64
+					for {
+						select {
+						case <-wsStatsDone:
+							return
+						case <-t.C:
+							rb, rm, rd := wsRxBytes.Load(), wsRxMsgs.Load(), wsRxDrops.Load()
+							tb, tm := wsTxBytes.Load(), wsTxMsgs.Load()
+							dRB, dRM, dRD := rb-lastRB, rm-lastRM, rd-lastRD
+							dTB, dTM := tb-lastTB, tm-lastTM
+							lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
+							if dRB+dTB+dRD > 0 {
+								common.Debugf(
+									"widget↔egress ws 1s: rx %d msgs %d bytes (drops %d), "+
+										"tx %d msgs %d bytes",
+									dRM, dRB, dRD, dTM, dTB,
+								)
+							}
 						}
 					}
-				}
-			}()
-			defer close(wsStatsDone)
+				}()
+				defer close(wsStatsDone)
+			}
 
 			// WebSocket read loop:
 			readStatus := make(chan error)
@@ -144,11 +152,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					// Wrap the chunk and send it on to the router
 					select {
 					case com.tx <- IPCMsg{IpcType: ChunkIPC, Data: b}:
-						wsRxBytes.Add(uint64(len(b)))
-						wsRxMsgs.Add(1)
+						if bfStatsEnabled {
+							wsRxBytes.Add(uint64(len(b)))
+							wsRxMsgs.Add(1)
+						}
 					default:
 						// Drop the chunk if we can't keep up with the data rate
-						wsRxDrops.Add(1)
+						if bfStatsEnabled {
+							wsRxDrops.Add(1)
+						}
 					}
 				}
 			}(ctx)
@@ -169,8 +181,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 							common.Debugf("JIT egress consumer WebSocket write error (%d bytes): %v", len(payload), err)
 							break proxyloop
 						}
-						wsTxBytes.Add(uint64(len(payload)))
-						wsTxMsgs.Add(1)
+						if bfStatsEnabled {
+							wsTxBytes.Add(uint64(len(payload)))
+							wsTxMsgs.Add(1)
+						}
 					case ConsumerInfoIPC:
 						if msg.Data.(common.ConsumerInfo).Nil() {
 							c.Close(websocket.StatusNormalClosure, "downstream peer disconnected")
@@ -200,4 +214,15 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			return 0, []interface{}{}
 		}),
 	})
+}
+
+// csidPrefix returns the first 8 characters of a CSID (or the whole
+// thing if shorter). UUIDs at v4 are 36 chars; 8 is enough prefix to
+// correlate a widget dial with a matching egress-side connection record
+// in a shared time window, without leaking the full session identifier.
+func csidPrefix(csid string) string {
+	if len(csid) > 8 {
+		return csid[:8]
+	}
+	return csid
 }

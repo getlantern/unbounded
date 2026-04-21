@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,18 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
+// Data-plane stats instrumentation. Gated behind the BROFLAKE_STATS env
+// var so production builds pay zero cost (no atomic increments, no
+// background goroutine, no log volume) while debug runs get per-second
+// summaries of the four data-plane choke points.
+//
+// Set BROFLAKE_STATS=1 before launch (or in a systemd unit for a widget)
+// to enable.
+//
+// bfStatsEnabled is evaluated once at init so we don't re-stat the env
+// on the hot Read/Write path.
+var bfStatsEnabled = os.Getenv("BROFLAKE_STATS") != ""
+
 // bfConnStats tracks per-direction cumulative bytes on the consumer-side
 // BroflakeConn so we can confirm whether QUIC handshake traffic is
 // actually reaching bfconn.Read (and whether our Writes are being
@@ -26,45 +39,48 @@ import (
 // ReadFrom / WriteTo call; read by a single goroutine that logs a
 // compact summary once a second. Using atomics keeps the hot path
 // lock-free.
+//
+// These are intentionally process-global rather than per-BroflakeConn:
+// broflake runs exactly one BroflakeConn per process (one Broflake engine
+// per Lantern tunnel), so global aggregation matches reality. If that
+// ever changes, the log line would become ambiguous and we'd need to
+// key by LocalAddr().
 var (
-	bfReadBytes        atomic.Uint64
-	bfReadCalls        atomic.Uint64
-	bfWriteBytes       atomic.Uint64
-	bfWriteCalls       atomic.Uint64
-	bfWriteDropCalls   atomic.Uint64
-	bfStatsLoggerOnce  sync.Once
-	bfStatsStopLogging = make(chan struct{})
+	bfReadBytes       atomic.Uint64
+	bfReadCalls       atomic.Uint64
+	bfWriteBytes      atomic.Uint64
+	bfWriteCalls      atomic.Uint64
+	bfWriteDropCalls  atomic.Uint64
+	bfStatsLoggerOnce sync.Once
 )
 
 func startBfConnStatsLoggerOnce() {
+	if !bfStatsEnabled {
+		return
+	}
 	bfStatsLoggerOnce.Do(func() {
 		go func() {
 			t := time.NewTicker(time.Second)
 			defer t.Stop()
 			var lastR, lastRC, lastW, lastWC, lastWD uint64
-			for {
-				select {
-				case <-bfStatsStopLogging:
-					return
-				case <-t.C:
-					r, rc := bfReadBytes.Load(), bfReadCalls.Load()
-					w, wc := bfWriteBytes.Load(), bfWriteCalls.Load()
-					wd := bfWriteDropCalls.Load()
-					dR, dRC := r-lastR, rc-lastRC
-					dW, dWC := w-lastW, wc-lastWC
-					dWD := wd - lastWD
-					lastR, lastRC, lastW, lastWC, lastWD = r, rc, w, wc, wd
-					// Only log when *something* happened this second; a
-					// perfectly quiet tunnel would otherwise add one line
-					// per second of noise forever.
-					if dR+dW+dWD > 0 {
-						common.Debugf(
-							"bfconn 1s summary: read %d bytes in %d calls, "+
-								"wrote %d bytes in %d calls, %d writes dropped "+
-								"(channel full)",
-							dR, dRC, dW, dWC, dWD,
-						)
-					}
+			for range t.C {
+				r, rc := bfReadBytes.Load(), bfReadCalls.Load()
+				w, wc := bfWriteBytes.Load(), bfWriteCalls.Load()
+				wd := bfWriteDropCalls.Load()
+				dR, dRC := r-lastR, rc-lastRC
+				dW, dWC := w-lastW, wc-lastWC
+				dWD := wd - lastWD
+				lastR, lastRC, lastW, lastWC, lastWD = r, rc, w, wc, wd
+				// Only log when *something* happened this second; a
+				// perfectly quiet tunnel would otherwise add one line
+				// per second of noise forever.
+				if dR+dW+dWD > 0 {
+					common.Debugf(
+						"bfconn 1s summary: read %d bytes in %d calls, "+
+							"wrote %d bytes in %d calls, %d writes dropped "+
+							"(channel full)",
+						dR, dRC, dW, dWC, dWD,
+					)
 				}
 			}
 		}()
@@ -84,7 +100,9 @@ func (c BroflakeConn) LocalAddr() net.Addr {
 }
 
 func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	startBfConnStatsLoggerOnce()
+	if bfStatsEnabled {
+		startBfConnStatsLoggerOnce()
+	}
 	for {
 		var ctx context.Context
 
@@ -111,10 +129,17 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 				return 0, nil, err
 			}
 
-			copy(p, unboundedPacket.Payload)
-			bfReadBytes.Add(uint64(len(unboundedPacket.Payload)))
-			bfReadCalls.Add(1)
-			return len(unboundedPacket.Payload), common.DebugAddr(unboundedPacket.SourceAddr), nil
+			// copy returns the actual number of bytes written to p,
+			// which may be less than len(Payload) if the caller's
+			// buffer is short. Return that value — returning
+			// len(Payload) would violate the net.PacketConn contract
+			// (n <= len(p)) and also over-count bfReadBytes.
+			n := copy(p, unboundedPacket.Payload)
+			if bfStatsEnabled {
+				bfReadBytes.Add(uint64(n))
+				bfReadCalls.Add(1)
+			}
+			return n, common.DebugAddr(unboundedPacket.SourceAddr), nil
 		case <-ctx.Done():
 			// We're past our deadline, so let's return failure!
 			return 0, nil, ctx.Err()
@@ -126,7 +151,9 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 }
 
 func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	startBfConnStatsLoggerOnce()
+	if bfStatsEnabled {
+		startBfConnStatsLoggerOnce()
+	}
 	// TODO: This copy seems necessary to avoid a data race
 	b := make([]byte, len(p))
 	copy(b, p)
@@ -134,13 +161,17 @@ func (c BroflakeConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	select {
 	case c.writeChan <- IPCMsg{IpcType: ChunkIPC, Data: b}:
 		// Do nothing, message sent
-		bfWriteBytes.Add(uint64(len(b)))
-		bfWriteCalls.Add(1)
+		if bfStatsEnabled {
+			bfWriteBytes.Add(uint64(len(b)))
+			bfWriteCalls.Add(1)
+		}
 	default:
 		// Drop the chunk if we can't keep up with the data rate.
 		// Tracked so we can tell a QUIC handshake stall from a
 		// back-pressure drop in the bfconn stats summary.
-		bfWriteDropCalls.Add(1)
+		if bfStatsEnabled {
+			bfWriteDropCalls.Add(1)
+		}
 	}
 
 	return len(b), nil
