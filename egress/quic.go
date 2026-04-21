@@ -14,7 +14,7 @@ import (
 
 type connectionRecord struct {
 	mx           sync.Mutex
-	connection   *quic.Connection
+	connection   *quic.Conn
 	lastMigrated time.Time
 	lastPath     *quic.Path
 }
@@ -49,7 +49,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 	record.mx.Lock()
 
 	if !record.lastMigrated.After(t) {
-		(*record.connection).CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
+		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		delete(manager.connections, csid)
 		common.Debugf("QUIC connection for CSID %v expired, closed, and deleted (%v total)", csid, atomic.AddUint64(&nQUICConnections, ^uint64(0)))
 	}
@@ -58,7 +58,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 	manager.mx.Unlock()
 }
 
-func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessWebSocketPacketConn) (*quic.Connection, error) {
+func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessWebSocketPacketConn) (*quic.Conn, error) {
 	manager.mx.Lock()
 
 	transport := &quic.Transport{Conn: pconn}
@@ -80,9 +80,9 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 		}
 
 		common.Debugf("%v dialed a new QUIC connection! (%v total)", pconn.addr, atomic.AddUint64(&nQUICConnections, uint64(1)))
-		manager.connections[csid] = &connectionRecord{connection: &newConn, lastMigrated: time.Now()}
+		manager.connections[csid] = &connectionRecord{connection: newConn, lastMigrated: time.Now()}
 		manager.mx.Unlock()
-		return &newConn, nil
+		return newConn, nil
 	}
 
 	// Atomic migration path
@@ -92,7 +92,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 	manager.mx.Unlock()
 	defer record.mx.Unlock()
 
-	path, err := (*record.connection).AddPath(transport)
+	path, err := record.connection.AddPath(transport)
 	if err != nil {
 		return nil, fmt.Errorf("AddPath error: %v", err)
 	}
@@ -114,7 +114,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 	record.lastMigrated = time.Now()
 
 	if record.lastPath != nil {
-		err = (*record.lastPath).Close()
+		err = record.lastPath.Close()
 
 		// If we encounter an error closing the last path, we still proceed with a successful migration
 		if err != nil {

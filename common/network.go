@@ -31,7 +31,7 @@ func (a DebugAddr) String() string {
 }
 
 type QUICStreamNetConn struct {
-	quic.Stream
+	*quic.Stream
 	OnClose    func()
 	AddrLocal  net.Addr
 	AddrRemote net.Addr

@@ -169,7 +169,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	go func() {
 		for {
-			stream, err := (*conn).AcceptStream(wsContext)
+			stream, err := conn.AcceptStream(wsContext)
 
 			if err != nil {
 				common.Debugf("QUIC AcceptStream error for %v, terminating handler (%v)", wspconn.addr, err)
