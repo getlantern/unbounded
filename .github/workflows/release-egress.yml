@@ -1,0 +1,205 @@
+name: Release egress binary
+
+# Every merge to main that changes egress-relevant code auto-bumps the
+# semver patch in common/version.go, tags the commit, and publishes a
+# GitHub Release with linux/amd64 + linux/arm64 egress binaries and
+# their sha256 sums. The lantern-cloud egress provisioner (cmd/api/vps/
+# cloudinit_egress.go) then fetches these at VM boot.
+#
+# Path filter: we deliberately DON'T trigger on freddie-, clientcore-, UI-,
+# netstate-, or docs-only changes. Those have no effect on the egress binary.
+#
+# Author-driven major/minor bumps still work: if common/version.go already
+# differs from the latest release tag, the workflow respects that version
+# instead of incrementing the patch. So a PR that wants v2.4.0 just edits
+# version.go; no flags needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'egress/**'
+      - 'common/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/release-egress.yml'
+
+# Serialize so two back-to-back merges can't race on the version bump.
+# cancel-in-progress: false — we want every merge to produce a release,
+# not to let a later merge skip the earlier one's artifacts.
+concurrency:
+  group: release-egress
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create tags, push bump commit, publish releases
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version:    ${{ steps.pick.outputs.version }}
+      bumped:     ${{ steps.pick.outputs.bumped }}
+      target_sha: ${{ steps.pick.outputs.target_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a token that can push back to main. GITHUB_TOKEN works
+          # because permissions.contents=write above.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine next version
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current=$(grep -oP '(?<=Version = ")v[^"]+' common/version.go)
+          if [ -z "$current" ]; then
+            echo "ERROR: could not parse Version from common/version.go"
+            exit 1
+          fi
+          # Validate the parsed value is strict semver before we use it
+          # anywhere shell-interpolated. Belt-and-suspenders: version.go is
+          # editable by PR authors, so we never trust its content verbatim.
+          if ! printf '%s' "$current" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: Version \"$current\" is not strict semver vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          # Latest NON-draft NON-prerelease release only. We never want a
+          # stale/WIP release to masquerade as the current shipping
+          # version and derail our bump math.
+          last_tag=$(gh release list \
+            --exclude-drafts --exclude-pre-releases --limit 1 \
+            --json tagName --jq '.[0].tagName // ""')
+
+          # Validate last_tag the same way we validated current. Reject
+          # anything weird rather than silently picking a bad baseline.
+          if [ -n "$last_tag" ] && \
+             ! printf '%s' "$last_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: latest release tag \"$last_tag\" is not strict semver — refusing to continue"
+            exit 1
+          fi
+
+          bumped=false
+          if [ -z "$last_tag" ]; then
+            # First-ever release: ship current as-is, no bump.
+            echo "no prior release found; releasing current version $current as the initial release"
+            next="$current"
+          elif [ "$current" != "$last_tag" ]; then
+            # PR author manually bumped version.go. Respect their value.
+            echo "manual bump detected: $last_tag -> $current"
+            next="$current"
+          else
+            # Auto patch-bump. current looks like "v2.3.0".
+            IFS='.' read -r maj min patch <<< "${current#v}"
+            next="v${maj}.${min}.$((patch + 1))"
+            echo "auto patch-bump: $current -> $next"
+
+            sed -i "s|const Version = \"[^\"]*\"|const Version = \"$next\"|" common/version.go
+            grep -n "Version = " common/version.go
+
+            git config user.name  'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add common/version.go
+            # [skip ci] prevents this commit from re-triggering the same workflow.
+            git commit -m "chore: bump egress version to $next [skip ci]"
+            git push origin HEAD:main
+            bumped=true
+          fi
+
+          # Pin downstream jobs to the exact commit we just operated on —
+          # either the trigger SHA (no bump) or the bump commit SHA (bump).
+          # Otherwise checking out `ref: main` in build/release would race
+          # any commit that lands on main after us. concurrency serializes
+          # OUR workflow runs, but doesn't block direct pushes from humans.
+          target_sha=$(git rev-parse HEAD)
+          echo "version=$next"       >> "$GITHUB_OUTPUT"
+          echo "bumped=$bumped"      >> "$GITHUB_OUTPUT"
+          echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Pin to the exact SHA the version job operated on. Using
+          # `ref: main` would pick up any commits landed after our
+          # version step finished, silently building a different tree
+          # than we just tagged.
+          ref: ${{ needs.version.outputs.target_sha }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build egress
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          out="egress-${GOOS}-${GOARCH}"
+          # -s -w strip debug/symbol tables; the binary is self-contained
+          # (CGO_ENABLED=0 → static, portable across Ubuntu/Debian/CentOS).
+          go build -trimpath -ldflags="-s -w" -o "$out" ./egress/cmd/sing-box/
+          sha256sum "$out" > "${out}.sha256"
+          ls -lh "$out" "${out}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: egress-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            egress-${{ matrix.goos }}-${{ matrix.goarch }}
+            egress-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Same pinning rationale as build: check out the exact SHA
+          # we're about to release, not wherever main happens to be now.
+          ref: ${{ needs.version.outputs.target_sha }}
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pull the version output into an env var rather than
+          # interpolating ${{ ... }} directly into a run: command. The
+          # version string goes through shell, and even though we validated
+          # it in the `version` job, routing via env is the safer pattern.
+          VERSION:    ${{ needs.version.outputs.version }}
+          TARGET_SHA: ${{ needs.version.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          # --generate-notes fills the body with the commit list since the
+          # previous release tag. --target is the SHA the version job
+          # decided on — which is what build just compiled from.
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes \
+            --target "$TARGET_SHA" \
+            dist/egress-linux-amd64 \
+            dist/egress-linux-amd64.sha256 \
+            dist/egress-linux-arm64 \
+            dist/egress-linux-arm64.sha256
