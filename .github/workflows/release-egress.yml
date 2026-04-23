@@ -1,0 +1,176 @@
+name: Release egress binary
+
+# Every merge to main that changes egress-relevant code auto-bumps the
+# semver patch in common/version.go, tags the commit, and publishes a
+# GitHub Release with linux/amd64 + linux/arm64 egress binaries and
+# their sha256 sums. The lantern-cloud egress provisioner (cmd/api/vps/
+# cloudinit_egress.go) then fetches these at VM boot.
+#
+# Path filter: we deliberately DON'T trigger on freddie-, clientcore-, UI-,
+# netstate-, or docs-only changes. Those have no effect on the egress binary.
+#
+# Author-driven major/minor bumps still work: if common/version.go already
+# differs from the latest release tag, the workflow respects that version
+# instead of incrementing the patch. So a PR that wants v2.4.0 just edits
+# version.go; no flags needed.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'egress/**'
+      - 'common/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/release-egress.yml'
+
+# Serialize so two back-to-back merges can't race on the version bump.
+# cancel-in-progress: false — we want every merge to produce a release,
+# not to let a later merge skip the earlier one's artifacts.
+concurrency:
+  group: release-egress
+  cancel-in-progress: false
+
+permissions:
+  contents: write # create tags, push bump commit, publish releases
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pick.outputs.version }}
+      bumped:  ${{ steps.pick.outputs.bumped }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Use a token that can push back to main. GITHUB_TOKEN works
+          # because permissions.contents=write above.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine next version
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          current=$(grep -oP '(?<=Version = ")v[^"]+' common/version.go)
+          if [ -z "$current" ]; then
+            echo "ERROR: could not parse Version from common/version.go"
+            exit 1
+          fi
+          # Validate the parsed value is strict semver before we use it
+          # anywhere shell-interpolated. Belt-and-suspenders: version.go is
+          # editable by PR authors, so we never trust its content verbatim.
+          if ! printf '%s' "$current" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: Version \"$current\" is not strict semver vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          last_tag=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // ""')
+
+          if [ -n "$last_tag" ] && [ "$current" != "$last_tag" ]; then
+            # PR author manually bumped version.go. Use that version.
+            echo "manual bump detected: $last_tag -> $current"
+            echo "version=$current" >> "$GITHUB_OUTPUT"
+            echo "bumped=false"     >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Auto patch-bump. current looks like "v2.3.0".
+          IFS='.' read -r maj min patch <<< "${current#v}"
+          next="v${maj}.${min}.$((patch + 1))"
+          echo "auto patch-bump: $current -> $next"
+
+          # Edit version.go in place.
+          sed -i "s|const Version = \"[^\"]*\"|const Version = \"$next\"|" common/version.go
+          grep -n "Version = " common/version.go
+
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add common/version.go
+          # [skip ci] prevents this commit from re-triggering the same workflow.
+          git commit -m "chore: bump egress version to $next [skip ci]"
+          git push origin HEAD:main
+
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+          echo "bumped=true"   >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [linux]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Pick up the version-bump commit if we made one.
+          ref: main
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build egress
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          set -euo pipefail
+          out="egress-${GOOS}-${GOARCH}"
+          # -s -w strip debug/symbol tables; the binary is self-contained
+          # (CGO_ENABLED=0 → static, portable across Ubuntu/Debian/CentOS).
+          go build -trimpath -ldflags="-s -w" -o "$out" ./egress/cmd/sing-box/
+          sha256sum "$out" > "${out}.sha256"
+          ls -lh "$out" "${out}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: egress-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            egress-${{ matrix.goos }}-${{ matrix.goarch }}
+            egress-${{ matrix.goos }}-${{ matrix.goarch }}.sha256
+          retention-days: 7
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Pull the version output into an env var rather than
+          # interpolating ${{ ... }} directly into a run: command. The
+          # version string goes through shell, and even though we validated
+          # it in the `version` job, routing via env is the safer pattern.
+          VERSION:  ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          target_sha=$(git rev-parse HEAD)
+          # --generate-notes fills the body with the commit list since the
+          # previous release tag. --target pins the release to the commit
+          # we actually built (which is HEAD of main after any bump).
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --generate-notes \
+            --target "$target_sha" \
+            dist/egress-linux-amd64 \
+            dist/egress-linux-amd64.sha256 \
+            dist/egress-linux-arm64 \
+            dist/egress-linux-arm64.sha256
