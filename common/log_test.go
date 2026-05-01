@@ -6,6 +6,7 @@ import (
 	"log"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -74,6 +75,60 @@ func TestSetDebugLogger_BackCompat(t *testing.T) {
 	if !strings.Contains(buf.String(), "legacy: hello legacy\n") {
 		t.Fatalf("*log.Logger not used: %q", buf.String())
 	}
+}
+
+// TestDebug_FallsBackToStderrWhenSlogDebugDisabled pins down the second
+// half of the default contract: when the active slog handler drops Debug
+// (true for the stdlib default at LevelInfo, and any host that hasn't
+// opted in to debug), broflake messages must fall back to stderr instead
+// of disappearing. The standalone broflake binaries under cmd/ rely on
+// this — they call common.Debugf for all visibility and never configure
+// slog. Without this fallback they'd go completely silent.
+func TestDebug_FallsBackToStderrWhenSlogDebugDisabled(t *testing.T) {
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	// Reset to default debugFn in case a prior test mutated package state.
+	SetSlogLogger(nil)
+
+	// Slog handler at LevelInfo — Debug records are dropped.
+	var slogBuf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&slogBuf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+	// Redirect the package-level legacyStderr to a buffer so we can assert
+	// fallback delivery without spamming the test runner's stderr.
+	var stderrBuf syncBuffer
+	prevStderr := legacyStderr
+	legacyStderr = log.New(&stderrBuf, "", 0)
+	t.Cleanup(func() { legacyStderr = prevStderr })
+
+	Debugf("fallback %s", "ok")
+
+	if slogBuf.Len() != 0 {
+		t.Fatalf("slog handler at Info should have dropped Debug record; got %q", slogBuf.String())
+	}
+	if !strings.Contains(stderrBuf.String(), "fallback ok") {
+		t.Fatalf("expected stderr fallback to capture message; got %q", stderrBuf.String())
+	}
+}
+
+// syncBuffer is a goroutine-safe bytes.Buffer for tests. The fallback test
+// only writes synchronously so the mutex is overkill, but using it
+// pre-empts a flake if a later test exercises a goroutine path.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // TestSetDebugLogger_NilResetsToDefault makes sure passing nil restores

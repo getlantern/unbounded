@@ -1,29 +1,39 @@
 package common
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"sync"
 )
 
 // debugFn handles each formatted debug message broflake produces. It's
 // swappable so embedders can route output anywhere they like.
 //
-// The default routes through slog.Default(), which makes broflake's
-// internals visible in any host that has configured a slog handler — most
-// notably the Lantern client, where radiance calls slog.SetDefault() at
-// startup. Before this default existed, broflake's debug output went to
-// stderr via a private *log.Logger, which the structured-log pipeline never
-// captured (so "Consumer state 0", "Sending genesis offer", and similar
-// breadcrumbs were silently dropped on production clients).
+// The default first tries slog.Default() — which makes broflake's
+// internals visible in any host that has configured a slog handler at
+// LevelDebug, most notably the Lantern client, where radiance calls
+// slog.SetDefault() at startup. If the active slog handler has Debug
+// disabled (true for the stdlib default, which sits at LevelInfo), the
+// message falls back to stderr so the standalone broflake binaries under
+// cmd/ keep the visibility they had before this migration. This dual
+// behavior matters because cmd/client_default_impl.go and friends never
+// explicitly configure slog and would otherwise go silent.
 var (
-	debugFn = defaultDebugFn
-	logMx   sync.RWMutex
+	debugFn      = defaultDebugFn
+	legacyStderr = log.New(os.Stderr, "", log.LstdFlags)
+	logMx        sync.RWMutex
 )
 
 func defaultDebugFn(msg string) {
-	slog.Default().Debug(msg, "pkg", "broflake")
+	h := slog.Default().Handler()
+	if h.Enabled(context.Background(), slog.LevelDebug) {
+		slog.Default().Debug(msg, "pkg", "broflake")
+		return
+	}
+	legacyStderr.Println(msg)
 }
 
 // SetSlogLogger routes broflake's debug output through the given slog
