@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/getlantern/broflake/common"
 	netstatecl "github.com/getlantern/broflake/netstate/client"
 	"github.com/getlantern/geo"
 )
@@ -267,7 +267,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		common.Debugf("Error: %v", err)
+		slog.Debug(fmt.Sprintf("Error: %v", err))
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
@@ -276,7 +276,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	inst := netstatecl.Instruction{}
 	err = json.Unmarshal(b, &inst)
 	if err != nil {
-		common.Debugf("Error: %v", err)
+		slog.Debug(fmt.Sprintf("Error: %v", err))
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
@@ -383,6 +383,10 @@ func geolocate(geoDb string, addr net.IP) (lat float64, lon float64) {
 }
 
 func main() {
+	// Configure slog at debug level — preserves the prior always-on stderr behavior of common.Debugf
+	// for the operational debug logs in this daemon.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	// If GEODB is unspecified, we'll run netstated sans geolocation
 	geoDb = os.Getenv("GEODB")
 
@@ -390,12 +394,12 @@ func main() {
 		_, err := url.ParseRequestURI(geoDb)
 
 		if err != nil {
-			common.Debugf("GEODB is not a valid URL! We won't perform geolocation...")
+			slog.Debug(fmt.Sprintf("GEODB is not a valid URL! We won't perform geolocation..."))
 		} else {
-			common.Debugf("Using %v for geolocation...", geoDb)
+			slog.Debug(fmt.Sprintf("Using %v for geolocation...", geoDb))
 		}
 	} else {
-		common.Debug("GEODB not specified! We won't perform geolocation...")
+		slog.Debug(fmt.Sprint("GEODB not specified! We won't perform geolocation..."))
 	}
 
 	// If UNSAFE == 1, we'll expose the Graphviz-related endpoints which are useful for debugging,
@@ -403,13 +407,13 @@ func main() {
 	unsafe, err := strconv.ParseInt(os.Getenv("UNSAFE"), 10, 64)
 
 	if err != nil {
-		common.Debugf("UNSAFE not specified or not valid! Using default value...")
+		slog.Debug(fmt.Sprintf("UNSAFE not specified or not valid! Using default value..."))
 	}
 
 	if unsafe == 0 {
-		common.Debugf("UNSAFE=0, we won't expose Graphviz endpoints...")
+		slog.Debug(fmt.Sprintf("UNSAFE=0, we won't expose Graphviz endpoints..."))
 	} else if unsafe == 1 {
-		common.Debugf("*** WARNING *** UNSAFE=1, we'll expose Graphviz endpoints!")
+		slog.Debug(fmt.Sprintf("*** WARNING *** UNSAFE=1, we'll expose Graphviz endpoints!"))
 	}
 
 	// The gv client is hardcoded to hit the /neato endpoint on port 8080, so we don't currently
@@ -456,9 +460,9 @@ func main() {
 
 	http.HandleFunc("/data", handleData)
 	http.HandleFunc("/exec", handleExec)
-	common.Debugf("netstated listening on %v", srv.Addr)
+	slog.Debug(fmt.Sprintf("netstated listening on %v", srv.Addr))
 	err = srv.ListenAndServe()
 	if err != nil {
-		common.Debug(err)
+		slog.Debug(fmt.Sprint(err))
 	}
 }

@@ -4,6 +4,8 @@
 package clientcore
 
 import (
+	"fmt"
+	"log/slog"
 	"net"
 	"strings"
 	"syscall/js"
@@ -72,7 +74,7 @@ func (ui UIImpl) OnReady() {
 }
 
 func (ui UIImpl) OnStartup() {
-	common.Debugf("Unbounded %v", common.Version)
+	slog.Debug(fmt.Sprintf("Unbounded %v", common.Version))
 }
 
 // 'downstreamChunk' fires once for each chunk of data received

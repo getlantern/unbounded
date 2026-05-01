@@ -4,16 +4,19 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 
 	"github.com/armon/go-socks5"
 
-	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 )
 
 func main() {
+	// Configure slog at debug level — keeps the example's startup messages visible by default.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	ctx := context.Background()
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -48,8 +51,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	common.Debugf("Starting SOCKS5 proxy...")
+	slog.Debug(fmt.Sprintf("Starting SOCKS5 proxy..."))
 
 	err = proxy.Serve(ll)
 	if err != nil {

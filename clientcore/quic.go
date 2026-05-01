@@ -3,6 +3,8 @@ package clientcore
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -52,14 +54,14 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 
 		listener, err := quic.Listen(c.bfconn, c.tlsConfig, &common.QUICCfg)
 		if err != nil {
-			common.Debugf("Error creating QUIC listener: %v\n", err)
+			slog.Debug(fmt.Sprintf("Error creating QUIC listener: %v\n", err))
 			continue
 		}
 
 		for {
 			conn, err := listener.Accept(c.ctx)
 			if err != nil {
-				common.Debugf("QUIC listener error (%v), closing!\n", err)
+				slog.Debug(fmt.Sprintf("QUIC listener error (%v), closing!\n", err))
 				listener.Close()
 				break
 			}
@@ -67,12 +69,12 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 			c.mx.Lock()
 			c.eventualConn.set(conn)
 			c.mx.Unlock()
-			common.Debug("QUIC connection established, ready to proxy!")
+			slog.Debug(fmt.Sprint("QUIC connection established, ready to proxy!"))
 
 			// Connection established, block until we detect a half open or a ctx cancel
 			_, err = conn.AcceptStream(c.ctx)
 			if err != nil {
-				common.Debugf("QUIC connection error (%v), closing!", err)
+				slog.Debug(fmt.Sprintf("QUIC connection error (%v), closing!", err))
 				conn.CloseWithError(42069, "")
 			}
 
