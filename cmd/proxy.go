@@ -52,14 +52,14 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	// TODO: this is just to prevent a race with client boot processes, it's not worth getting too
 	// fancy with an event-driven solution because the local proxy is all mocked functionality anyway
 	<-time.After(2 * time.Second)
-	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@                                                       @"))
-	slog.Debug(fmt.Sprintf("@ This peer uses an ephemeral self-signed TLS           @"))
-	slog.Debug(fmt.Sprintf("@ certificate at the QUIC layer!                        @"))
-	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"))
+	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@                                                       @")
+	slog.Warn("@ This peer uses an ephemeral self-signed TLS           @")
+	slog.Warn("@ certificate at the QUIC layer!                        @")
+	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 
 	// And here's the ephemeral self-signed TLS certificate at the QUIC layer
 	tlsConfig := generateSelfSignedTLSConfig()

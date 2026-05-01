@@ -14,6 +14,9 @@ import (
 )
 
 func main() {
+	// Configure slog at debug level — keeps the example's startup messages visible by default.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	ctx := context.Background()
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -15,6 +15,10 @@ import (
 )
 
 func main() {
+	// Configure slog at debug level — preserves the prior always-on stderr behavior of common.Debugf
+	// for the operational debug logs in this standalone binary.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	ctx := context.Background()
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -25,14 +29,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
-	slog.Debug(fmt.Sprintf("@                                                       @"))
-	slog.Debug(fmt.Sprintf("@ This standalone egress server does not use secure TLS @"))
-	slog.Debug(fmt.Sprintf("@ at the QUIC layer!                                    @"))
-	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"))
+	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@ DANGER                                                @")
+	slog.Warn("@                                                       @")
+	slog.Warn("@ This standalone egress server does not use secure TLS @")
+	slog.Warn("@ at the QUIC layer!                                    @")
+	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
 
 	// And here's why it doesn't use secure TLS at the QUIC layer
 	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)

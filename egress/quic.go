@@ -84,10 +84,8 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 		manager.mx.Unlock()
 		return newConn, nil
 	}
-	slog.
-
-		// Atomic migration path
-		Debug(fmt.Sprintf("Trying to migrate QUIC connection for %v [CSID %v]", pconn.addr, csid))
+	// Atomic migration path
+	slog.Debug(fmt.Sprintf("Trying to migrate QUIC connection for %v [CSID %v]", pconn.addr, csid))
 	t1 := time.Now()
 	record.mx.Lock()
 	manager.mx.Unlock()

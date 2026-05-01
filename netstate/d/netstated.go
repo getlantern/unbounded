@@ -383,6 +383,10 @@ func geolocate(geoDb string, addr net.IP) (lat float64, lon float64) {
 }
 
 func main() {
+	// Configure slog at debug level — preserves the prior always-on stderr behavior of common.Debugf
+	// for the operational debug logs in this daemon.
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+
 	// If GEODB is unspecified, we'll run netstated sans geolocation
 	geoDb = os.Getenv("GEODB")
 
