@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -199,28 +200,25 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 }
 
 func (f *Freddie) ListenAndServe() error {
-	common.Debugf(
-		"Freddie (%v) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
+	slog.Debug(fmt.Sprintf("Freddie (%v) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
 		common.Version,
 		f.srv.Addr,
 		consumerTTL,
 		remoteICEGatheringTTL,
-		defaultMsgTTL,
-	)
+		defaultMsgTTL))
+
 	return f.srv.ListenAndServe()
 }
 
 func (f *Freddie) ListenAndServeTLS(certFile, keyFile string) error {
 	f.srv.TLSConfig = f.TLSConfig
-
-	common.Debugf(
-		"Freddie (%v/tls) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
+	slog.Debug(fmt.Sprintf("Freddie (%v/tls) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
 		common.Version,
 		f.srv.Addr,
 		consumerTTL,
 		remoteICEGatheringTTL,
-		defaultMsgTTL,
-	)
+		defaultMsgTTL))
+
 	return f.srv.ListenAndServeTLS(certFile, keyFile)
 }
 

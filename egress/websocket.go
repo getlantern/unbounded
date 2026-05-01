@@ -3,6 +3,8 @@ package egress
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"net"
 	"runtime"
 	"sync/atomic"
@@ -44,7 +46,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		for {
 			select {
 			case <-time.After(q.keepalive):
-				common.Debugf("%v PING", q.addr)
+				slog.Debug(fmt.Sprintf("%v PING", q.addr))
 				q.w.Ping(context.Background())
 			case <-readDone:
 				return
@@ -97,12 +99,13 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 
 	b, err := json.Marshal(unboundedPacket)
 	if err != nil {
-		// XXX: it's not clear what the desired behavior is here. Sure, this is an "errorless" PacketConn,
-		// but we really only intended to hide errors related to *transport failure* from the caller...
-		// *not* serialization errors like this. The right thing is probably to be more specific about
-		// which errors to hide, per the comment below. But since we haven't implemented that yet, we'll
-		// just hide this error too! I hope you're reading the logs...
-		common.Debugf("WriteTo JSON marshaling error (hidden from caller): %v", err)
+		slog.
+			// XXX: it's not clear what the desired behavior is here. Sure, this is an "errorless" PacketConn,
+			// but we really only intended to hide errors related to *transport failure* from the caller...
+			// *not* serialization errors like this. The right thing is probably to be more specific about
+			// which errors to hide, per the comment below. But since we haven't implemented that yet, we'll
+			// just hide this error too! I hope you're reading the logs...
+			Debug(fmt.Sprintf("WriteTo JSON marshaling error (hidden from caller): %v", err))
 		return len(p), nil
 	}
 
@@ -116,7 +119,7 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 }
 
 func (q errorlessWebSocketPacketConn) Close() error {
-	defer common.Debugf("Closed a WebSocket connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0)))
+	defer slog.Debug(fmt.Sprintf("Closed a WebSocket connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0))))
 	return q.w.Close(websocket.StatusNormalClosure, "")
 }
 

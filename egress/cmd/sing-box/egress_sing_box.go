@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 
 	"github.com/armon/go-socks5"
 
-	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 	egcmdcommon "github.com/getlantern/broflake/egress/cmd/common"
 )
@@ -24,15 +24,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@                                                       @")
-	common.Debugf("@ This standalone egress server does not use secure TLS @")
-	common.Debugf("@ at the QUIC layer!                                    @")
-	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
+	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@                                                       @"))
+	slog.Debug(fmt.Sprintf("@ This standalone egress server does not use secure TLS @"))
+	slog.Debug(fmt.Sprintf("@ at the QUIC layer!                                    @"))
+	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"))
 
 	// And here's why it doesn't use secure TLS at the QUIC layer
 	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)
@@ -51,8 +50,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	common.Debugf("Starting SOCKS5 UoT proxy...")
+	slog.Debug(fmt.Sprintf("Starting SOCKS5 UoT proxy..."))
 
 	err = proxy.Serve(ll)
 	if err != nil {

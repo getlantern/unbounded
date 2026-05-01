@@ -3,10 +3,9 @@ package clientcore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"strconv"
-
-	"github.com/getlantern/broflake/common"
 )
 
 type SOCKS5Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -47,7 +46,7 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 			ip6 := ip.To16()
 			connectReq = append(connectReq, ip6...)
 		} else {
-			common.Debug("Congratulations, you found the unimplemented handler for malformed SOCKS5 hosts!")
+			slog.Debug(fmt.Sprint("Congratulations, you found the unimplemented handler for malformed SOCKS5 hosts!"))
 		}
 
 		// Port as big endian
@@ -119,7 +118,7 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 			// IPv6
 			readLen = 16
 		default:
-			common.Debug("Congratulations, you found the unimplemented handler for malformed SOCKS CONNECT responses!")
+			slog.Debug(fmt.Sprint("Congratulations, you found the unimplemented handler for malformed SOCKS CONNECT responses!"))
 		}
 
 		// +2 for the port

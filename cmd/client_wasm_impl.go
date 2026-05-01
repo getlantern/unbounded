@@ -4,14 +4,15 @@
 package main
 
 import (
+	"fmt"
+	"log/slog"
 	"syscall/js"
 
 	"github.com/getlantern/broflake/clientcore"
-	"github.com/getlantern/broflake/common"
 )
 
 func main() {
-	common.Debugf("wasm client started...")
+	slog.Debug(fmt.Sprintf("wasm client started..."))
 
 	// A constructor is exposed to JS. Some (but not all) defaults are forcibly overridden by passing
 	// args. You *must* pass valid values for all of these args:
@@ -54,11 +55,10 @@ func main() {
 
 			_, ui, err := clientcore.NewBroflake(&bfOpt, rtcOpt, egOpt)
 			if err != nil {
-				common.Debugf("newBroflake error: %v", err)
+				slog.Debug(fmt.Sprintf("newBroflake error: %v", err))
 				return nil
 			}
-
-			common.Debugf("Built new Broflake API: %v", ui.ID)
+			slog.Debug(fmt.Sprintf("Built new Broflake API: %v", ui.ID))
 			return js.Global().Get(ui.ID)
 		}),
 	)

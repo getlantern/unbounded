@@ -8,7 +8,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"math/rand"
 	"net/http"
@@ -30,9 +32,10 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
-			// State 0
-			// (no input data)
-			common.Debugf("Consumer state 0, constructing RTCPeerConnection...")
+			slog.
+				// State 0
+				// (no input data)
+				Debug(fmt.Sprintf("Consumer state 0, constructing RTCPeerConnection..."))
 
 			// We're resetting this slot, so send a nil path assertion IPC message
 			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
@@ -41,17 +44,17 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			if scache.size() == 0 {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 				if err != nil {
-					common.Debugf("Error creating STUN batch: %v", err)
+					slog.Debug(fmt.Sprintf("Error creating STUN batch: %v", err))
 					return 0, []interface{}{}
 				}
 
 				scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
-				common.Debugf("Populated the STUN cache (%v servers)", scache.size())
+				slog.Debug(fmt.Sprintf("Populated the STUN cache (%v servers)", scache.size()))
 			}
 
 			STUNSrvs := scache.cohort()
-			common.Debugf("Using %v/%v STUN servers: %v", len(STUNSrvs), options.STUNBatchSize, STUNSrvs)
-			common.Debugf("STUN cache size: %v", scache.size())
+			slog.Debug(fmt.Sprintf("Using %v/%v STUN servers: %v", len(STUNSrvs), options.STUNBatchSize, STUNSrvs))
+			slog.Debug(fmt.Sprintf("STUN cache size: %v", scache.size()))
 
 			config := webrtc.Configuration{
 				ICEServers: []webrtc.ICEServer{
@@ -63,14 +66,14 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			api, err := newWebRTCAPI(options.Net)
 			if err != nil {
-				common.Debugf("Error creating WebRTC API: %v", err)
+				slog.Debug(fmt.Sprintf("Error creating WebRTC API: %v", err))
 				return 0, []any{}
 			}
 
 			// Construct the RTCPeerConnection
 			peerConnection, err := api.NewPeerConnection(config)
 			if err != nil {
-				common.Debugf("Error creating RTCPeerConnection: %v", err)
+				slog.Debug(fmt.Sprintf("Error creating RTCPeerConnection: %v", err))
 				return 0, []any{}
 			}
 
@@ -79,7 +82,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			dataChannelConfig := webrtc.DataChannelInit{Ordered: new(bool), MaxRetransmits: new(uint16)}
 			d, err := peerConnection.CreateDataChannel("data", &dataChannelConfig)
 			if err != nil {
-				common.Debugf("Error creating WebRTC datachannel: %v", err)
+				slog.Debug(fmt.Sprintf("Error creating WebRTC datachannel: %v", err))
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -95,7 +98,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionEstablished := make(chan *webrtc.DataChannel, 1)
 
 			d.OnOpen(func() {
-				common.Debugf("A datachannel has opened!")
+				slog.Debug(fmt.Sprintf("A datachannel has opened!"))
 				connectionEstablished <- d
 			})
 
@@ -105,14 +108,14 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// benefit from faster connection failure detection by listening for the `failed` event.
 			connectionClosed := make(chan struct{}, 1)
 			d.OnClose(func() {
-				common.Debugf("A datachannel has closed!")
+				slog.Debug(fmt.Sprintf("A datachannel has closed!"))
 				connectionClosed <- struct{}{}
 			})
 
 			// Ditto, but for connection state changes
 			connectionChange := make(chan webrtc.PeerConnectionState, 16)
 			peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
-				common.Debugf("Peer connection state change: %v", s.String())
+				slog.Debug(fmt.Sprintf("Peer connection state change: %v", s.String()))
 				connectionChange <- s
 			})
 
@@ -121,7 +124,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// we could probably use the ICE connection state change event to determine the precise
 			// moment of NAT traversal failure (instead of just waiting on a timer).
 			peerConnection.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
-				common.Debugf("ICE connection state change: %v", s.String())
+				slog.Debug(fmt.Sprintf("ICE connection state change: %v", s.String()))
 			})
 
 			return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -136,7 +139,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionEstablished := input[1].(chan *webrtc.DataChannel)
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
-			common.Debugf("Consumer state 1...")
+			slog.Debug(fmt.Sprintf("Consumer state 1..."))
 
 			// Listen for genesis messages
 			req, err := http.NewRequestWithContext(
@@ -146,7 +149,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				nil,
 			)
 			if err != nil {
-				common.Debugf("Error constructing request")
+				slog.Debug(fmt.Sprintf("Error constructing request"))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -154,7 +157,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
-				common.Debugf("Couldn't subscribe to genesis stream at %v: %v", options.DiscoverySrv+options.Endpoint, err)
+				slog.Debug(fmt.Sprintf("Couldn't subscribe to genesis stream at %v: %v", options.DiscoverySrv+options.Endpoint, err))
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
@@ -162,7 +165,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Handle bad protocol version
 			if res.StatusCode == http.StatusTeapot {
-				common.Debugf("Received 'bad protocol version' response")
+				slog.Debug(fmt.Sprintf("Received 'bad protocol version' response"))
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
@@ -206,7 +209,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 					rt, _, err := common.DecodeSignalMsg(rawMsg)
 					if err != nil {
-						common.Debugf("Error decoding signal message: %v (msg: %v)", err, string(rawMsg))
+						slog.Debug(fmt.Sprintf("Error decoding signal message: %v (msg: %v)", err, string(rawMsg)))
 						<-time.After(options.ErrorBackoff)
 						// Take the error in stride, continue listening to our existing HTTP request stream
 						continue
@@ -234,20 +237,18 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Endgame case 2: create an offer SDP, pick a random genesis candidate, and shoot our shot
 			sdp, err := peerConnection.CreateOffer(nil)
 			if err != nil {
-				// An error creating the offer is troubling, so let's start fresh by resetting the state
-				common.Debugf("Error creating offer SDP: %v", err)
+				slog.Debug(
+					// An error creating the offer is troubling, so let's start fresh by resetting the state
+					fmt.Sprintf("Error creating offer SDP: %v", err))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			idx := rand.Intn(len(genesisCandidates))
 			replyTo := genesisCandidates[idx]
-
-			common.Debugf(
-				"Sending offer for genesis message %v/%v (patience: %v)",
+			slog.Debug(fmt.Sprintf("Sending offer for genesis message %v/%v (patience: %v)",
 				idx+1,
 				len(genesisCandidates),
-				options.Patience,
-			)
+				options.Patience))
 
 			return 2, []interface{}{
 				peerConnection,
@@ -272,11 +273,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionEstablished := input[3].(chan *webrtc.DataChannel)
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
-			common.Debugf("Consumer state 2...")
+			slog.Debug(fmt.Sprintf("Consumer state 2..."))
 
 			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag})
 			if err != nil {
-				common.Debugf("Error marshaling JSON: %v", err)
+				slog.Debug(fmt.Sprintf("Error marshaling JSON: %v", err))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -294,7 +295,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				strings.NewReader(form.Encode()),
 			)
 			if err != nil {
-				common.Debugf("Error constructing request")
+				slog.Debug(fmt.Sprintf("Error constructing request"))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -303,7 +304,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
-				common.Debugf("Couldn't signal offer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err)
+				slog.Debug(fmt.Sprintf("Couldn't signal offer SDP to %v: %v", options.DiscoverySrv+options.Endpoint, err))
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
@@ -311,18 +312,20 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			switch res.StatusCode {
 			case http.StatusTeapot:
-				common.Debugf("Received 'bad protocol version' response")
+				slog.Debug(fmt.Sprintf("Received 'bad protocol version' response"))
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusNotFound:
-				// We didn't win the connection
-				common.Debugf("Too late for genesis message %v! Got %v", replyTo, res.Status)
+				slog.Debug(
+					// We didn't win the connection
+					fmt.Sprintf("Too late for genesis message %v! Got %v", replyTo, res.Status))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusOK:
 				// We won the connection, proceed
 			default:
-				// Unexpected bad stuff
-				common.Debugf("Unexpected http status code: %v", res.StatusCode)
+				slog.Debug(
+					// Unexpected bad stuff
+					fmt.Sprintf("Unexpected http status code: %v", res.StatusCode))
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
@@ -330,25 +333,26 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// The HTTP request is complete
 			answerBytes, err := io.ReadAll(res.Body)
 			if err != nil {
-				common.Debugf("Error reading body: %v\n", err)
+				slog.Debug(fmt.Sprintf("Error reading body: %v\n", err))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// TODO: Freddie sends back a 0-length body when nobody replied to our message. Is that the
 			// smartest way to handle this case systemwide?
 			if len(answerBytes) == 0 {
-				// NB: to receive a 200 OK with a 0-length body here indicates that our signaling partner
-				// was alive to receive our offer and accepted it, but subsequently either A) died before
-				// they were able to perform ICE gathering and send back an answer, or B) took so long to
-				// perform ICE gathering that Freddie's TTL for this step expired.
-				common.Debugf("No response for our offer SDP!")
+				slog.Debug(
+					// NB: to receive a 200 OK with a 0-length body here indicates that our signaling partner
+					// was alive to receive our offer and accepted it, but subsequently either A) died before
+					// they were able to perform ICE gathering and send back an answer, or B) took so long to
+					// perform ICE gathering that Freddie's TTL for this step expired.
+					fmt.Sprintf("No response for our offer SDP!"))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// Looks like we got some kind of response. Should be an answer SDP in a SignalMsg
 			replyTo, answer, err := common.DecodeSignalMsg(answerBytes)
 			if err != nil {
-				common.Debugf("Error decoding signal message: %v (msg: %v)", err, string(answerBytes))
+				slog.Debug(fmt.Sprintf("Error decoding signal message: %v (msg: %v)", err, string(answerBytes)))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -369,7 +373,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// This kicks off ICE candidate gathering
 			err = peerConnection.SetLocalDescription(sdp)
 			if err != nil {
-				common.Debugf("Error setting local description: %v", err)
+				slog.Debug(fmt.Sprintf("Error setting local description: %v", err))
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -378,15 +382,15 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Assign the answer to our connection
 			err = peerConnection.SetRemoteDescription(answer.(webrtc.SessionDescription))
 			if err != nil {
-				common.Debugf("Error setting remote description: %v", err)
+				slog.Debug(fmt.Sprintf("Error setting remote description: %v", err))
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
 
 			<-gatherComplete
-			common.Debug("ICE gathering complete!")
-			common.Debugf("Local candidates: %v", candidates)
+			slog.Debug(fmt.Sprint("ICE gathering complete!"))
+			slog.Debug(fmt.Sprintf("Local candidates: %v", candidates))
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
@@ -399,9 +403,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			if !hasNonHostCandidate {
-				common.Debugf("ICE failed to gather any non-host candidates, aborting!")
+				slog.Debug(fmt.Sprintf("ICE failed to gather any non-host candidates, aborting!"))
 				scache.drop()
-				common.Debugf("Dropped the current STUN cohort (reason: ICE failed)")
+				slog.Debug(fmt.Sprintf("Dropped the current STUN cohort (reason: ICE failed)"))
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -424,7 +428,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionEstablished := input[3].(chan *webrtc.DataChannel)
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
-			common.Debugf("Consumer state 3...")
+			slog.Debug(fmt.Sprintf("Consumer state 3..."))
 
 			iceMsg := common.ICEMsg{
 				Candidates:        candidates,
@@ -433,7 +437,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			iceMsgJSON, err := json.Marshal(iceMsg)
 			if err != nil {
-				common.Debugf("Error marshaling JSON: %v", err)
+				slog.Debug(fmt.Sprintf("Error marshaling JSON: %v", err))
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -452,7 +456,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				strings.NewReader(form.Encode()),
 			)
 			if err != nil {
-				common.Debugf("Error constructing request")
+				slog.Debug(fmt.Sprintf("Error constructing request"))
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -463,7 +467,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
-				common.Debugf("Couldn't signal ICE candidates to %v: %v", options.DiscoverySrv+options.Endpoint, err)
+				slog.Debug(fmt.Sprintf("Couldn't signal ICE candidates to %v: %v", options.DiscoverySrv+options.Endpoint, err))
 				<-time.After(options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -473,13 +477,13 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			switch res.StatusCode {
 			case http.StatusTeapot:
-				common.Debugf("Received 'bad protocol version' response")
+				slog.Debug(fmt.Sprintf("Received 'bad protocol version' response"))
 				<-time.After(options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			case http.StatusNotFound:
-				common.Debugf("Signaling partner hung up, aborting!")
+				slog.Debug(fmt.Sprintf("Signaling partner hung up, aborting!"))
 
 				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
 				// interpret that signal to mean that our current STUN cohort is too slow, and we should
@@ -492,7 +496,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// is performing the ICE gathering step. Thus, dropping the cohort here is basically just
 				// voodoo, but it's probably harmless voodoo.
 				scache.drop()
-				common.Debugf("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				slog.Debug(fmt.Sprintf("Dropped the current STUN cohort (reason: signaling partner hung up)"))
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -501,8 +505,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// Signaling is complete, so we can short circuit instead of awaiting the response body
 				return 4, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			default:
-				// Borked!
-				common.Debugf("Received unexpected status code: %v", res.StatusCode)
+				slog.Debug(
+					// Borked!
+					fmt.Sprintf("Received unexpected status code: %v", res.StatusCode))
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -517,7 +522,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionEstablished := input[1].(chan *webrtc.DataChannel)
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
-			common.Debugf("Consumer state 4, signaling complete!")
+			slog.Debug(fmt.Sprintf("Consumer state 4, signaling complete!"))
 
 			// XXX: Use our current cohort of STUN servers to perform NAT behavior discovery such that we
 			// can send interesting traces revealing the outcome of our NAT traversal attempt. If the
@@ -526,11 +531,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			select {
 			case d := <-connectionEstablished:
-				common.Debugf("A WebRTC connection has been established!")
+				slog.Debug(fmt.Sprintf("A WebRTC connection has been established!"))
 				go otel.CollectAndSendNATBehaviorTelemetry(STUNSrvs, "nat_success")
 				return 5, []interface{}{peerConnection, d, connectionChange, connectionClosed}
 			case <-time.After(options.NATFailTimeout):
-				common.Debugf("NAT failure, aborting!")
+				slog.Debug(fmt.Sprintf("NAT failure, aborting!"))
 				go otel.CollectAndSendNATBehaviorTelemetry(STUNSrvs, "nat_failure")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -596,11 +601,10 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 							dTB, dTM := tb-lastTB, tm-lastTM
 							lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
 							if dRB+dTB+dRD > 0 {
-								common.Debugf(
-									"datachannel 1s: rx %d msgs %d bytes (drops %d), "+
-										"tx %d msgs %d bytes",
-									dRM, dRB, dRD, dTM, dTB,
-								)
+								slog.Debug(fmt.Sprintf("datachannel 1s: rx %d msgs %d bytes (drops %d), "+
+									"tx %d msgs %d bytes",
+									dRM, dRB, dRD, dTM, dTB))
+
 							}
 						}
 					}
@@ -615,15 +619,15 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// Handle connection failure
 				case s := <-connectionChange:
 					if s == webrtc.PeerConnectionStateFailed || s == webrtc.PeerConnectionStateDisconnected {
-						common.Debugf("Connection failure, resetting!")
+						slog.Debug(fmt.Sprintf("Connection failure, resetting!"))
 						break proxyloop
 					} else if s == webrtc.PeerConnectionStateClosed {
-						common.Debugf("Connection closed, resetting!")
+						slog.Debug(fmt.Sprintf("Connection closed, resetting!"))
 						break proxyloop
 					}
 				// Handle connection failure for Firefox
 				case _ = <-connectionClosed:
-					common.Debugf("Connection closed, resetting!")
+					slog.Debug(fmt.Sprintf("Connection closed, resetting!"))
 					break proxyloop
 					// Handle messages from the router
 				case msg := <-com.rx:
@@ -631,7 +635,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					case ChunkIPC:
 						payload := msg.Data.([]byte)
 						if err := d.Send(payload); err != nil {
-							common.Debugf("Error sending to datachannel (%d bytes): %v, resetting!", len(payload), err)
+							slog.Debug(fmt.Sprintf("Error sending to datachannel (%d bytes): %v, resetting!", len(payload), err))
 							break proxyloop
 						}
 						if bfStatsEnabled {

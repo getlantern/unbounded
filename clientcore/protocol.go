@@ -3,11 +3,11 @@ package clientcore
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"math"
 	"math/rand"
 	"sync"
-
-	"github.com/getlantern/broflake/common"
 )
 
 const (
@@ -49,13 +49,13 @@ func (fsm *WorkerFSM) Start() {
 				fsm.wg.Done()
 			}
 		}()
-		common.Debug("Starting WorkerFSM...")
+		slog.Debug(fmt.Sprint("Starting WorkerFSM..."))
 		fsm.ctx, fsm.cancel = context.WithCancel(context.Background())
 
 		for {
 			select {
 			case <-fsm.ctx.Done():
-				common.Debug("End of last state, stopping WorkerFSM...")
+				slog.Debug(fmt.Sprint("End of last state, stopping WorkerFSM..."))
 				return
 			default:
 				fsm.currentState, fsm.nextInput = fsm.state[fsm.currentState](fsm.ctx, fsm.com, fsm.nextInput)

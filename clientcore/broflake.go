@@ -3,11 +3,11 @@ package clientcore
 
 import (
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"time"
 
-	"github.com/getlantern/broflake/common"
 	netstatecl "github.com/getlantern/broflake/netstate/client"
 )
 
@@ -38,14 +38,14 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 func (b *BroflakeEngine) start() {
 	b.cTable.Start()
 	b.pTable.Start()
-	common.Debug("▶ Broflake started!")
+	slog.Debug(fmt.Sprint("▶ Broflake started!"))
 
 	if b.netstated != "" {
 		go func() {
-			common.Debug("Netstate hearbeat ON")
+			slog.Debug(fmt.Sprint("Netstate hearbeat ON"))
 
 			for {
-				common.Debug("Netstate HEARTBEAT")
+				slog.Debug(fmt.Sprint("Netstate HEARTBEAT"))
 				err := netstatecl.Exec(
 					b.netstated,
 					&netstatecl.Instruction{
@@ -56,14 +56,14 @@ func (b *BroflakeEngine) start() {
 				)
 
 				if err != nil {
-					common.Debugf("Netstate client Exec error: %v", err)
+					slog.Debug(fmt.Sprintf("Netstate client Exec error: %v", err))
 				}
 
 				select {
 				case <-time.After(b.netstateHeartbeat):
 					// Do nothing, iterate the loop
 				case <-b.netstateStop:
-					defer common.Debug("Netstate heartbeat OFF")
+					defer slog.Debug(fmt.Sprint("Netstate heartbeat OFF"))
 					return
 				}
 			}
@@ -81,20 +81,19 @@ func (b *BroflakeEngine) stop() {
 		if b.netstated != "" {
 			b.netstateStop <- struct{}{}
 		}
-
-		common.Debug("■ Broflake stopped.")
+		slog.Debug(fmt.Sprint("■ Broflake stopped."))
 		b.ui.OnReady()
 	}()
 }
 
 func (b *BroflakeEngine) debug() {
-	common.Debugf("NumGoroutine: %v", runtime.NumGoroutine())
+	slog.Debug(fmt.Sprintf("NumGoroutine: %v", runtime.NumGoroutine()))
 }
 
 func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOptions) (bfconn *BroflakeConn, ui *UIImpl, err error) {
 	if bfOpt.ClientType != "desktop" && bfOpt.ClientType != "widget" {
 		err = fmt.Errorf("invalid clientType '%v\n'", bfOpt.ClientType)
-		common.Debugf(err.Error())
+		slog.Debug(err.Error())
 		return bfconn, ui, err
 	}
 

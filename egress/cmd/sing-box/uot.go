@@ -5,11 +5,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
-
-	"github.com/getlantern/broflake/common"
 )
 
 const (
@@ -159,30 +158,28 @@ func handleUoT(tcpConn net.Conn) {
 
 	req, err := readUoTRequest(tcpConn)
 	if err != nil {
-		common.Debugf("UoT: failed to read request: %v", err)
+		slog.Debug(fmt.Sprintf("UoT: failed to read request: %v", err))
 		return
 	}
-
-	common.Debugf("UoT: relay to %v (isConnect=%v)", req.Destination, req.IsConnect)
+	slog.Debug(fmt.Sprintf("UoT: relay to %v (isConnect=%v)", req.Destination, req.IsConnect))
 
 	if !req.IsConnect {
-		common.Debugf("UoT: non-connect mode not supported")
+		slog.Debug(fmt.Sprintf("UoT: non-connect mode not supported"))
 		return
 	}
 
 	if req.Destination.IP.IsLoopback() {
-		common.Debugf("UoT: refusing to relay to loopback address %v", req.Destination)
+		slog.Debug(fmt.Sprintf("UoT: refusing to relay to loopback address %v", req.Destination))
 		return
 	}
 
 	udpConn, err := net.DialUDP("udp", nil, req.Destination)
 	if err != nil {
-		common.Debugf("UoT: failed to dial UDP %v: %v", req.Destination, err)
+		slog.Debug(fmt.Sprintf("UoT: failed to dial UDP %v: %v", req.Destination, err))
 		return
 	}
 	defer udpConn.Close()
-
-	common.Debugf("UoT: connected UDP to %v", req.Destination)
+	slog.Debug(fmt.Sprintf("UoT: connected UDP to %v", req.Destination))
 
 	done := make(chan struct{}, 2)
 
@@ -200,23 +197,23 @@ func handleUoT(tcpConn net.Conn) {
 		for {
 			var length uint16
 			if err := binary.Read(tcpConn, binary.BigEndian, &length); err != nil {
-				common.Debugf("UoT: TCP read length error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: TCP read length error: %v", err))
 				return
 			}
 			if int(length) > maxUDPPayload {
-				common.Debugf("UoT: dropping oversized frame (%d bytes, max %d)", length, maxUDPPayload)
+				slog.Debug(fmt.Sprintf("UoT: dropping oversized frame (%d bytes, max %d)", length, maxUDPPayload))
 				if _, err := io.CopyN(io.Discard, tcpConn, int64(length)); err != nil {
-					common.Debugf("UoT: TCP discard error: %v", err)
+					slog.Debug(fmt.Sprintf("UoT: TCP discard error: %v", err))
 					return
 				}
 				continue
 			}
 			if _, err := io.ReadFull(tcpConn, buf[:length]); err != nil {
-				common.Debugf("UoT: TCP read payload error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: TCP read payload error: %v", err))
 				return
 			}
 			if _, err := udpConn.Write(buf[:length]); err != nil {
-				common.Debugf("UoT: UDP write error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: UDP write error: %v", err))
 				return
 			}
 		}
@@ -229,19 +226,19 @@ func handleUoT(tcpConn net.Conn) {
 		for {
 			n, err := udpConn.Read(buf)
 			if err != nil {
-				common.Debugf("UoT: UDP read error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: UDP read error: %v", err))
 				return
 			}
 			if n > maxUDPPayload {
-				common.Debugf("UoT: dropping oversized UDP packet (%d bytes)", n)
+				slog.Debug(fmt.Sprintf("UoT: dropping oversized UDP packet (%d bytes)", n))
 				continue
 			}
 			if err := binary.Write(tcpConn, binary.BigEndian, uint16(n)); err != nil {
-				common.Debugf("UoT: TCP write length error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: TCP write length error: %v", err))
 				return
 			}
 			if _, err := tcpConn.Write(buf[:n]); err != nil {
-				common.Debugf("UoT: TCP write payload error: %v", err)
+				slog.Debug(fmt.Sprintf("UoT: TCP write payload error: %v", err))
 				return
 			}
 		}
@@ -256,7 +253,7 @@ func handleUoT(tcpConn net.Conn) {
 func UoTDialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if isUoTAddress(addr) {
-			common.Debugf("UoT: intercepting %v", addr)
+			slog.Debug(fmt.Sprintf("UoT: intercepting %v", addr))
 			client, server := net.Pipe()
 			connDone := make(chan struct{})
 			go func() {

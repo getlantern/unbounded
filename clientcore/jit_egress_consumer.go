@@ -2,6 +2,8 @@ package clientcore
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,9 +15,10 @@ import (
 func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM {
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
-			// State 0
-			// (no input data)
-			common.Debugf("JIT egress consumer state 0, waiting for downstream connection...")
+			slog.
+				// State 0
+				// (no input data)
+				Debug(fmt.Sprintf("JIT egress consumer state 0, waiting for downstream connection..."))
 
 			// The ($, 1) path assertion indicates that all hosts can be reached,
 			// one hop away, *upon request*. This is distinct from (*, 1), which means that all hosts can
@@ -72,16 +75,17 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			dialOpts := &websocket.DialOptions{
 				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
 			}
-			// Log only a short prefix of the CSID — enough to correlate
-			// with the egress's connection record in the same time
-			// window without exposing the full session identifier in
-			// shipped logs.
-			common.Debugf("JIT egress consumer dialing with CSID=%s…", csidPrefix(consumerInfoMsg.SessionID))
+			slog.
+				// Log only a short prefix of the CSID — enough to correlate
+				// with the egress's connection record in the same time
+				// window without exposing the full session identifier in
+				// shipped logs.
+				Debug(fmt.Sprintf("JIT egress consumer dialing with CSID=%s…", csidPrefix(consumerInfoMsg.SessionID)))
 
 			// TODO: WSS
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
 			if err != nil {
-				common.Debugf("Couldn't connect to egress server at %v: %v", options.Addr, err)
+				slog.Debug(fmt.Sprintf("Couldn't connect to egress server at %v: %v", options.Addr, err))
 
 				// We're resetting this slot, so send a nil path assertion
 				com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
@@ -96,7 +100,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// State 1
 			// input[0]: *websocket.Conn
 			c := input[0].(*websocket.Conn)
-			common.Debugf("JIT egress consumer state 1, WebSocket connection established!")
+			slog.Debug(fmt.Sprintf("JIT egress consumer state 1, WebSocket connection established!"))
 
 			// Per-direction counters for the widget↔egress WebSocket.
 			// If datachannel metrics show bytes arriving at widget's
@@ -127,11 +131,10 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 							dTB, dTM := tb-lastTB, tm-lastTM
 							lastRB, lastRM, lastRD, lastTB, lastTM = rb, rm, rd, tb, tm
 							if dRB+dTB+dRD > 0 {
-								common.Debugf(
-									"widget↔egress ws 1s: rx %d msgs %d bytes (drops %d), "+
-										"tx %d msgs %d bytes",
-									dRM, dRB, dRD, dTM, dTB,
-								)
+								slog.Debug(fmt.Sprintf("widget↔egress ws 1s: rx %d msgs %d bytes (drops %d), "+
+									"tx %d msgs %d bytes",
+									dRM, dRB, dRD, dTM, dTB))
+
 							}
 						}
 					}
@@ -178,7 +181,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 						err := c.Write(ctx, websocket.MessageBinary, payload)
 						if err != nil {
 							c.Close(websocket.StatusNormalClosure, err.Error())
-							common.Debugf("JIT egress consumer WebSocket write error (%d bytes): %v", len(payload), err)
+							slog.Debug(fmt.Sprintf("JIT egress consumer WebSocket write error (%d bytes): %v", len(payload), err))
 							break proxyloop
 						}
 						if bfStatsEnabled {
@@ -188,16 +191,16 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 					case ConsumerInfoIPC:
 						if msg.Data.(common.ConsumerInfo).Nil() {
 							c.Close(websocket.StatusNormalClosure, "downstream peer disconnected")
-							common.Debug("JIT egress consumer downstream peer disconnected")
+							slog.Debug(fmt.Sprint("JIT egress consumer downstream peer disconnected"))
 							break proxyloop
 						}
 					default:
-						common.Debugf("JIT egress consumer received unexpected IPC message type: %v\n", msg.IpcType)
+						slog.Debug(fmt.Sprintf("JIT egress consumer received unexpected IPC message type: %v\n", msg.IpcType))
 						// We don't know what to do with this message type, so silently discard it
 					}
 				case err := <-readStatus:
 					c.Close(websocket.StatusNormalClosure, err.Error())
-					common.Debugf("JIT egress consumer WebSocket read error: %v", err)
+					slog.Debug(fmt.Sprintf("JIT egress consumer WebSocket read error: %v", err))
 					break proxyloop
 
 					// Ordinarily it would be incorrect to put a worker into an infinite loop without including

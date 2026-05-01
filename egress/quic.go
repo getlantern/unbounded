@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,7 +52,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 	if !record.lastMigrated.After(t) {
 		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		delete(manager.connections, csid)
-		common.Debugf("QUIC connection for CSID %v expired, closed, and deleted (%v total)", csid, atomic.AddUint64(&nQUICConnections, ^uint64(0)))
+		slog.Debug(fmt.Sprintf("QUIC connection for CSID %v expired, closed, and deleted (%v total)", csid, atomic.AddUint64(&nQUICConnections, ^uint64(0))))
 	}
 
 	record.mx.Unlock()
@@ -66,7 +67,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 
 	// Atomic creation path
 	if !ok {
-		common.Debugf("No existing QUIC connection for %v [CSID: %v], dialing...", pconn.addr, csid)
+		slog.Debug(fmt.Sprintf("No existing QUIC connection for %v [CSID: %v], dialing...", pconn.addr, csid))
 		newConn, err := transport.Dial(
 			context.Background(),
 			common.DebugAddr("NELSON WUZ HERE"),
@@ -78,15 +79,15 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 			manager.mx.Unlock()
 			return nil, err
 		}
-
-		common.Debugf("%v dialed a new QUIC connection! (%v total)", pconn.addr, atomic.AddUint64(&nQUICConnections, uint64(1)))
+		slog.Debug(fmt.Sprintf("%v dialed a new QUIC connection! (%v total)", pconn.addr, atomic.AddUint64(&nQUICConnections, uint64(1))))
 		manager.connections[csid] = &connectionRecord{connection: newConn, lastMigrated: time.Now()}
 		manager.mx.Unlock()
 		return newConn, nil
 	}
+	slog.
 
-	// Atomic migration path
-	common.Debugf("Trying to migrate QUIC connection for %v [CSID %v]", pconn.addr, csid)
+		// Atomic migration path
+		Debug(fmt.Sprintf("Trying to migrate QUIC connection for %v [CSID %v]", pconn.addr, csid))
 	t1 := time.Now()
 	record.mx.Lock()
 	manager.mx.Unlock()
@@ -110,7 +111,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 	}
 
 	t2 := time.Now()
-	common.Debugf("Migrated a QUIC connection to %v! (took %vs)", pconn.addr, t2.Sub(t1).Seconds())
+	slog.Debug(fmt.Sprintf("Migrated a QUIC connection to %v! (took %vs)", pconn.addr, t2.Sub(t1).Seconds()))
 	record.lastMigrated = time.Now()
 
 	if record.lastPath != nil {
@@ -118,9 +119,9 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn *errorlessW
 
 		// If we encounter an error closing the last path, we still proceed with a successful migration
 		if err != nil {
-			common.Debugf("Error closing last path for %v: %v", pconn.addr, err)
+			slog.Debug(fmt.Sprintf("Error closing last path for %v: %v", pconn.addr, err))
 		} else {
-			common.Debugf("Closed old path for %v", pconn.addr)
+			slog.Debug(fmt.Sprintf("Closed old path for %v", pconn.addr))
 		}
 	}
 

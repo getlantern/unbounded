@@ -4,12 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 
 	"github.com/armon/go-socks5"
 
-	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 )
 
@@ -48,8 +48,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	common.Debugf("Starting SOCKS5 proxy...")
+	slog.Debug(fmt.Sprintf("Starting SOCKS5 proxy..."))
 
 	err = proxy.Serve(ll)
 	if err != nil {

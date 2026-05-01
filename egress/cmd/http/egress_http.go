@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
 
 	"github.com/elazarl/goproxy"
 
-	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/egress"
 	egcmdcommon "github.com/getlantern/broflake/egress/cmd/common"
 )
@@ -25,15 +25,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-
-	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@ DANGER                                                @")
-	common.Debugf("@                                                       @")
-	common.Debugf("@ This standalone egress server does not use secure TLS @")
-	common.Debugf("@ at the QUIC layer!                                    @")
-	common.Debugf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
+	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@ DANGER                                                @"))
+	slog.Debug(fmt.Sprintf("@                                                       @"))
+	slog.Debug(fmt.Sprintf("@ This standalone egress server does not use secure TLS @"))
+	slog.Debug(fmt.Sprintf("@ at the QUIC layer!                                    @"))
+	slog.Debug(fmt.Sprintf("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"))
 
 	// And here's why it doesn't use secure TLS at the QUIC layer
 	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)
@@ -47,16 +46,16 @@ func main() {
 	// Instantiate our local HTTP CONNECT proxy
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = true
-	common.Debugf("Starting HTTP CONNECT proxy...")
+	slog.Debug(fmt.Sprintf("Starting HTTP CONNECT proxy..."))
 
 	proxy.OnRequest().DoFunc(
 		func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-			common.Debug("HTTP proxy just saw a request:")
+			slog.Debug(fmt.Sprint("HTTP proxy just saw a request:"))
 			// TODO: overriding the context is a hack to prevent "context canceled" errors when proxying
 			// HTTP (not HTTPS) requests. It's not yet clear why this is necessary -- it may be a quirk
 			// of elazarl/goproxy. See: https://github.com/getlantern/broflake/issues/47
 			r = r.WithContext(context.Background())
-			common.Debug(r)
+			slog.Debug(fmt.Sprint(r))
 			return r, nil
 		},
 	)
