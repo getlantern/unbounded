@@ -87,10 +87,14 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 				//     = "idle_timeout"); this is the suspect cause of the
 				//     "path probe error" failures the egress sees
 				//   - the egress closing the connection from its side
-				//     (err_class = "application_close"); part of normal
-				//     teardown when migrationWindow expires
+				//     (err_class = "application_close_remote"); part of
+				//     normal teardown when migrationWindow expires
 				//   - QUICLayer.Close() being called locally
 				//     (err_class = "context_canceled")
+				//   - a local app-error close (err_class =
+				//     "application_close_local"), which shouldn't happen
+				//     during steady-state operation but if it does we want
+				//     it visible separately, not lumped in with "remote"
 				//   - other transport-level failures
 				//
 				// Connection lifetime is the other key signal — a
@@ -189,9 +193,15 @@ func (w *eventualConn) set(conn *quic.Conn) {
 //   - handshake_timeout: the QUIC handshake itself didn't finish in
 //     time. Distinct from idle_timeout because it never reached the
 //     "ready to proxy" state.
-//   - application_close: the peer (egress, in our case) called
+//   - application_close_remote: the peer (egress, in our case) called
 //     CloseWithError. Normal teardown when migrationWindow expires
 //     and the egress flushes the connection record.
+//   - application_close_local: WE called CloseWithError on the
+//     connection. In the consumer's QUICLayer this should not happen
+//     during steady-state operation — a non-zero count here would
+//     indicate either a future code path closing locally or a quic-go
+//     internal that surfaces as a local app-error. Worth flagging
+//     separately so triage doesn't conflate it with normal teardown.
 //   - transport_error: a quic-go-internal transport failure
 //     (e.g. protocol violation, decryption failure).
 //   - stateless_reset: the egress sent a stateless reset because it
@@ -220,7 +230,16 @@ func classifyQUICError(err error) string {
 	case errors.As(err, &handshakeErr):
 		return "handshake_timeout"
 	case errors.As(err, &appErr):
-		return "application_close"
+		// quic.ApplicationError carries a Remote bool: true means the
+		// peer initiated the close, false means we did. Lumping both
+		// into "application_close" would hide the difference between
+		// "egress finished its migrationWindow and flushed the record"
+		// (remote, expected) and "the local QUICLayer closed its own
+		// connection mid-flight" (local, suspicious).
+		if appErr.Remote {
+			return "application_close_remote"
+		}
+		return "application_close_local"
 	case errors.As(err, &transportErr):
 		return "transport_error"
 	case errors.As(err, &versionErr):
