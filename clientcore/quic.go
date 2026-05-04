@@ -3,10 +3,12 @@ package clientcore
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 
@@ -61,7 +63,10 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 		for {
 			conn, err := listener.Accept(c.ctx)
 			if err != nil {
-				slog.Debug(fmt.Sprintf("QUIC listener error (%v), closing!\n", err))
+				slog.Debug("QUIC listener error, closing",
+					"err", err,
+					"err_class", classifyQUICError(err),
+				)
 				listener.Close()
 				break
 			}
@@ -69,12 +74,39 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 			c.mx.Lock()
 			c.eventualConn.set(conn)
 			c.mx.Unlock()
-			slog.Debug(fmt.Sprint("QUIC connection established, ready to proxy!"))
+			connStart := time.Now()
+			slog.Debug("QUIC connection established, ready to proxy!")
 
 			// Connection established, block until we detect a half open or a ctx cancel
 			_, err = conn.AcceptStream(c.ctx)
 			if err != nil {
-				slog.Debug(fmt.Sprintf("QUIC connection error (%v), closing!", err))
+				// Classify so we can tell the difference between
+				//
+				//   - the consumer's own QUIC stack idle-timing-out the
+				//     connection during a producer re-pair gap (err_class
+				//     = "idle_timeout"); this is the suspect cause of the
+				//     "path probe error" failures the egress sees
+				//   - the egress closing the connection from its side
+				//     (err_class = "application_close_remote"); part of
+				//     normal teardown when migrationWindow expires
+				//   - QUICLayer.Close() being called locally
+				//     (err_class = "context_canceled")
+				//   - a local app-error close (err_class =
+				//     "application_close_local"), which shouldn't happen
+				//     during steady-state operation but if it does we want
+				//     it visible separately, not lumped in with "remote"
+				//   - other transport-level failures
+				//
+				// Connection lifetime is the other key signal — a
+				// stillborn connection (lifetime < a few seconds) means
+				// the handshake itself was unstable; a connection that
+				// lives ~MaxIdleTimeout-ish before erroring is the
+				// classic re-pair-gap idle timeout signature.
+				slog.Debug("QUIC connection ended",
+					"err", err,
+					"err_class", classifyQUICError(err),
+					"lifetime_s", time.Since(connStart).Seconds(),
+				)
 				conn.CloseWithError(42069, "")
 			}
 
@@ -146,4 +178,78 @@ func (w *eventualConn) get(ctx context.Context) (*quic.Conn, error) {
 func (w *eventualConn) set(conn *quic.Conn) {
 	w.conn = conn
 	close(w.ready)
+}
+
+// classifyQUICError maps a quic-go / context error into a short tag
+// suitable for structured-log filtering. Used by the consumer-side
+// QUICLayer to distinguish failure modes that all show up in production
+// as the same "QUIC connection error" line:
+//
+//   - idle_timeout: the connection sat idle past MaxIdleTimeout and
+//     quic-go's local state was discarded. This is the suspect cause
+//     of the "egress sees path probe timeout" prod failures — if the
+//     consumer GC'd its connection during a WebRTC re-pair gap, the
+//     egress's PATH_CHALLENGE has nothing to respond to it.
+//   - handshake_timeout: the QUIC handshake itself didn't finish in
+//     time. Distinct from idle_timeout because it never reached the
+//     "ready to proxy" state.
+//   - application_close_remote: the peer (egress, in our case) called
+//     CloseWithError. Normal teardown when migrationWindow expires
+//     and the egress flushes the connection record.
+//   - application_close_local: WE called CloseWithError on the
+//     connection. In the consumer's QUICLayer this should not happen
+//     during steady-state operation — a non-zero count here would
+//     indicate either a future code path closing locally or a quic-go
+//     internal that surfaces as a local app-error. Worth flagging
+//     separately so triage doesn't conflate it with normal teardown.
+//   - transport_error: a quic-go-internal transport failure
+//     (e.g. protocol violation, decryption failure).
+//   - stateless_reset: the egress sent a stateless reset because it
+//     no longer recognises the connection ID. Usually means egress-
+//     side state was lost and re-creation is required.
+//   - version_negotiation: client/server couldn't agree on a QUIC
+//     version. Should not happen in our setup.
+//   - context_canceled / deadline_exceeded: the QUICLayer's own
+//     context was cancelled (typically by Close()).
+//   - other: anything else, including raw I/O errors from bfconn.
+func classifyQUICError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var (
+		idleErr      *quic.IdleTimeoutError
+		handshakeErr *quic.HandshakeTimeoutError
+		appErr       *quic.ApplicationError
+		transportErr *quic.TransportError
+		versionErr   *quic.VersionNegotiationError
+		resetErr     *quic.StatelessResetError
+	)
+	switch {
+	case errors.As(err, &idleErr):
+		return "idle_timeout"
+	case errors.As(err, &handshakeErr):
+		return "handshake_timeout"
+	case errors.As(err, &appErr):
+		// quic.ApplicationError carries a Remote bool: true means the
+		// peer initiated the close, false means we did. Lumping both
+		// into "application_close" would hide the difference between
+		// "egress finished its migrationWindow and flushed the record"
+		// (remote, expected) and "the local QUICLayer closed its own
+		// connection mid-flight" (local, suspicious).
+		if appErr.Remote {
+			return "application_close_remote"
+		}
+		return "application_close_local"
+	case errors.As(err, &transportErr):
+		return "transport_error"
+	case errors.As(err, &versionErr):
+		return "version_negotiation"
+	case errors.As(err, &resetErr):
+		return "stateless_reset"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	}
+	return "other"
 }
