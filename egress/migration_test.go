@@ -60,7 +60,12 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		migrationWindow: 5 * time.Second,
 		probeTimeout:    5 * time.Second,
 	}
-	t.Cleanup(func() { closeAllRecords(cm) })
+	// closeAllRecords is registered LAST below so it runs FIRST in
+	// cleanup (t.Cleanup is LIFO). The order matters: we want QUIC
+	// connections closed before their underlying PacketConns disappear,
+	// otherwise quic-go's read goroutines observe a vanished transport
+	// before they observe the connection close, which produces noisy
+	// error logs and occasionally races on the test's assertion path.
 
 	csid := "test-csid-happy"
 
@@ -102,6 +107,9 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		t.Fatalf("ListenPacket pconnB: %v", err)
 	}
 	t.Cleanup(func() { _ = pconnB.Close() })
+	// Registered after both PacketConns so it runs first (LIFO) and
+	// closes the QUIC conns while their transports are still alive.
+	t.Cleanup(func() { closeAllRecords(cm) })
 
 	connB, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
 	if err != nil {
@@ -145,13 +153,15 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	consumer, _ := startTestConsumer(t)
 	t.Cleanup(func() { _ = consumer.Close() })
 
+	probeTimeout := 1500 * time.Millisecond // short so the test runs fast
 	cm := &connectionManager{
 		connections:     map[string]*connectionRecord{},
 		tlsConfig:       testClientTLS(),
 		migrationWindow: 5 * time.Second,
-		probeTimeout:    1500 * time.Millisecond, // short so the test runs fast
+		probeTimeout:    probeTimeout,
 	}
-	t.Cleanup(func() { closeAllRecords(cm) })
+	// closeAllRecords is registered LAST below so it runs FIRST in
+	// cleanup (LIFO); see comment in the happy-path test for why.
 
 	csid := "test-csid-probe-timeout"
 
@@ -173,6 +183,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rawB.Close() })
 	dropping := &droppingPacketConn{PacketConn: rawB}
+	t.Cleanup(func() { closeAllRecords(cm) })
 
 	start := time.Now()
 	_, err = cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
@@ -180,14 +191,24 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatalf("createOrMigrate succeeded over a dropping path (expected probe timeout)")
 	}
-	// Don't assert on the exact wording — quic-go's error message could
-	// shift between versions — but it must be in the path-probe family
-	// AND must come back within ~probeTimeout (not block forever).
-	if elapsed > 4*time.Second {
-		t.Errorf("probe took %v to time out; expected ~%v", elapsed, cm.probeTimeout)
+	// Bound timing relative to probeTimeout, with slack on both sides
+	// so future bumps to probeTimeout don't require touching this test
+	// and CI scheduler jitter doesn't cause flakes:
+	//
+	//   - lowerSlack covers small early-return paths (e.g. quic-go
+	//     short-circuits before the full probeTimeout elapses on a
+	//     known-broken path). 100ms is generous enough for the
+	//     known-good case while still catching "probe returned
+	//     instantly" regressions.
+	//   - upperSlack covers ctx setup overhead, scheduler drift, and
+	//     the AddPath call that runs before Probe. 2s is a heuristic
+	//     that's been stable across local + CI runs.
+	const lowerSlack, upperSlack = 100 * time.Millisecond, 2 * time.Second
+	if elapsed < probeTimeout-lowerSlack {
+		t.Errorf("probe returned in %v, well before probeTimeout=%v (slack=%v)", elapsed, probeTimeout, lowerSlack)
 	}
-	if elapsed < cm.probeTimeout {
-		t.Errorf("probe returned in %v before probeTimeout (%v)", elapsed, cm.probeTimeout)
+	if elapsed > probeTimeout+upperSlack {
+		t.Errorf("probe took %v to return, past probeTimeout=%v+%v slack", elapsed, probeTimeout, upperSlack)
 	}
 
 	// And critically: the connection record must still be in the table

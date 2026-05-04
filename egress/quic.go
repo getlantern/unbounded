@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
-	"sync"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
