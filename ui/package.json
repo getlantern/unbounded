@@ -36,7 +36,10 @@
     "typescript": "^5.8.3",
     "web-vitals": "^2.1.4",
     "webpack": "^5.75.0",
-    "webpack-watched-glob-entries-plugin": "^2.2.6"
+    "webpack-watched-glob-entries-plugin": "^3.2.0"
+  },
+  "resolutions": {
+    "webpack-watched-glob-entries-plugin": "^3.2.0"
   },
   "scripts": {
     "dev:web": "react-scripts start",
