@@ -159,6 +159,18 @@ export const useGeo = () => {
 	const pendingAdds = useRef<Set<number>>(new Set())
 	const pendingRemoves = useRef<Set<number>>(new Set())
 
+	// Monotonic id for connection notifications. Using workerIdx as the
+	// notification id silently dropped most hearts: Broflake reuses 8
+	// worker slots, so a slot-3 reconnect would re-push id=3 while the
+	// previous id=3 was still in notificationQueue. pushNotification's
+	// "replace if id matches" branch then swapped it in place, and the
+	// Notification effect's `notification.id === notifications[0].id`
+	// short-circuit kept the Explosion mounted with an unchanged id —
+	// so its [id]-keyed useEffect never re-fired and no animation
+	// played. The waiting notification at id=-1 still wants dedup, so
+	// only the per-connection callsite needs a unique id.
+	const nextNotificationId = useRef(0)
+
 	const updateArcs = useCallback((connections: Connection[]) => {
 		/***
 			The webgl lib mutates the arcs arr in place. These mutations must be retained so that existing arcs do not
@@ -230,7 +242,7 @@ export const useGeo = () => {
 				if (!countryName) return
 				if (target === Targets.EXTENSION_POPUP && startTs.current + 1000 > performance.now()) return // don't show notifications on initial load because of initial sync w/ bg script
 				pushNotification({
-					id: geo.workerIdx,
+					id: ++nextNotificationId.current,
 					// text: `Helping a new person in ${countryName.split(',')[0]}`,
 					text: `${t('helping', {country: countryName})}`,
 					autoHide: true,
