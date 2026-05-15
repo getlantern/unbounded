@@ -134,11 +134,19 @@ export const useGeo = () => {
 	// const connections = useQueueState(rawConnections)
 	const active = connections.some(c => c.state === 1)
 	const sharing = useEmitterState(sharingEmitter)
-	const [updating, setUpdating] = useState(false)
 	const startTs = useRef(performance.now())
 	const {target} = useContext(AppContext).settings
 
-	const updateArcs = useCallback(async (connections: Connection[]) => {
+	// Serialize concurrent updateArcs invocations so the async
+	// geoLookupAll between mutations can't interleave between two
+	// callers and clobber each other's view of `arcs`. Without this,
+	// fast-arriving connections (3 within ~200 ms) raced and produced
+	// an inconsistent arcs array that three.js then tried to render,
+	// throwing "Cannot read properties of undefined (reading 'x')" 60×
+	// per second until React's error boundary blanked the canvas.
+	const updateLock = useRef<Promise<void>>(Promise.resolve())
+
+	const updateArcs = useCallback((connections: Connection[]) => {
 		/***
 			The webgl lib mutates the arcs arr in place. These mutations must be retained so that existing arcs do not
 		  re-animate on state changes. I.e. we can't simply return a new map here. Arcs must be removed/added using the
@@ -150,56 +158,67 @@ export const useGeo = () => {
 		  be wasteful of resources. The added benefit is that their current rendering state (as in its animated position)
 		  is also not reset in the process." - https://github.com/vasturiano
 		 ***/
-		if (!country.current) country.current = await geoLookup(null) // lookup user country first time
+		const next = updateLock.current.then(async () => {
+			if (!country.current) country.current = await geoLookup(null) // lookup user country first time
 
-		const removedConnections = connections.filter(c => c.state === -1)
-		decrementArcs(arcs, removedConnections) // mutate arcs in place
+			const removedConnections = connections.filter(c => c.state === -1)
+			const addedConnections = connections.filter(c => c.state === 1)
+			const geos = await geoLookupAll(addedConnections)
 
-		// removedConnections.forEach(con => {
-		// 	removeNotification(con.workerIdx)
-		// })
+			setArcs(prev => {
+				// Operate on a shallow copy so the React state's underlying
+				// array is never partially mutated mid-render. Inner arc
+				// object identities are preserved — react-globe.gl uses
+				// reference equality to skip WebGL re-creation for arcs that
+				// didn't change.
+				const drafted = [...prev]
+				decrementArcs(drafted, removedConnections)
+				incrementArcs(drafted, geos)
 
-		const addedConnections = connections.filter(c => c.state === 1)
-		const geos = await geoLookupAll(addedConnections)
-		incrementArcs(arcs, geos)
+				const isoCountMap = {} as { [key: string]: number }
+				drafted.forEach(arc => {
+					if (!isoCountMap[arc.iso]) isoCountMap[arc.iso] = arc.count
+				})
 
-		const isoCountMap = {} as { [key: string]: number }
-		arcs.forEach(arc => {
-			if (!isoCountMap[arc.iso]) isoCountMap[arc.iso] = arc.count
-		})
-
-		const newArcs = createArcs(geos, isoCountMap, country.current)
-
-		const updatedArcs = [...arcs, ...newArcs]
-		setArcs(updatedArcs)
-
-		// dispatch push notifications
-		geos.forEach(geo => {
-			const country = updatedArcs.find(a => a.iso === geo.iso)?.country
-			if (!country) return
-			if (target === Targets.EXTENSION_POPUP && startTs.current + 1000 > performance.now()) return // don't show notifications on initial load because of initial sync w/ bg script
-			pushNotification({
-				id: geo.workerIdx,
-				// text: `Helping a new person in ${country.split(',')[0]}`,
-				text: `${t('helping', {country})}`,
-				autoHide: true,
-				heart: true
+				const newArcs = createArcs(geos, isoCountMap, country.current!)
+				return [...drafted, ...newArcs]
 			})
+
+			// dispatch push notifications. Use the freshly resolved geo →
+			// country map directly rather than reaching back into the post-
+			// update arcs state, which is racy under serialized updates.
+			geos.forEach(geo => {
+				const iso = geo.iso as keyof typeof countries
+				const countryName = (countries[iso] || countries[CENSORED_ISO_FALLBACK]).name
+				if (!countryName) return
+				if (target === Targets.EXTENSION_POPUP && startTs.current + 1000 > performance.now()) return // don't show notifications on initial load because of initial sync w/ bg script
+				pushNotification({
+					id: geo.workerIdx,
+					// text: `Helping a new person in ${countryName.split(',')[0]}`,
+					text: `${t('helping', {country: countryName})}`,
+					autoHide: true,
+					heart: true
+				})
+			})
+		}).catch(err => {
+			// Swallow + log so a single update's failure doesn't poison the
+			// chain — every subsequent updateArcs would be skipped otherwise
+			// because the lock would stay rejected.
+			console.error('updateArcs failed', err)
 		})
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [arcs])
+		updateLock.current = next
+		return next
+	}, [target, t])
 
 	useEffect(() => {
-		if (updating) return // don't update while updating 🤪doing so causes a race condition
 		// check if connections have changed since the last update (using arcs workerIdx)
 		const updatedConnections = connections.filter(con => {
 			if (con.state === -1) return arcs.some(arc => arc.workerIdx === con.workerIdx)
 			return !arcs.some(arc => arc.workerIdx === con.workerIdx)
 		})
 		if (!updatedConnections.length) return // only update on changes
-		setUpdating(true)
-		updateArcs(updatedConnections).then(() => setUpdating(false))
-	}, [connections, updateArcs, updating, arcs])
+		updateArcs(updatedConnections)
+	}, [connections, arcs, updateArcs])
 
 	useEffect(() => {
 		if (sharing && !active) pushNotification({
