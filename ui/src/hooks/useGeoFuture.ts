@@ -146,6 +146,19 @@ export const useGeo = () => {
 	// per second until React's error boundary blanked the canvas.
 	const updateLock = useRef<Promise<void>>(Promise.resolve())
 
+	// Mirror the committed arcs in a ref so the enqueue-time dedup
+	// always sees the latest state, even from a stale-closure effect.
+	const arcsRef = useRef<Arch[]>([])
+	useEffect(() => { arcsRef.current = arcs }, [arcs])
+
+	// workerIdx values that are already in a queued/in-flight update.
+	// Serialization alone is not enough: an effect tick that fires
+	// while a lookup is pending would otherwise see the not-yet-
+	// committed arcs and enqueue the same workerIdx a second time,
+	// which would double-count and double-notify on resolution.
+	const pendingAdds = useRef<Set<number>>(new Set())
+	const pendingRemoves = useRef<Set<number>>(new Set())
+
 	const updateArcs = useCallback((connections: Connection[]) => {
 		/***
 			The webgl lib mutates the arcs arr in place. These mutations must be retained so that existing arcs do not
@@ -158,12 +171,34 @@ export const useGeo = () => {
 		  be wasteful of resources. The added benefit is that their current rendering state (as in its animated position)
 		  is also not reset in the process." - https://github.com/vasturiano
 		 ***/
+		// Compute the actual delta against the latest committed arcs
+		// plus the already-queued pending sets, and claim the chosen
+		// workers as pending immediately. This is what prevents a
+		// re-render that fires before the next setArcs commits from
+		// re-enqueueing the same workerIdx.
+		const toRemove: Connection[] = []
+		const toAdd: Connection[] = []
+		for (const con of connections) {
+			if (con.state === -1) {
+				const inArcs = arcsRef.current.some(a => a.workerIdx === con.workerIdx)
+				if (inArcs && !pendingRemoves.current.has(con.workerIdx)) {
+					toRemove.push(con)
+					pendingRemoves.current.add(con.workerIdx)
+				}
+			} else if (con.state === 1) {
+				const inArcs = arcsRef.current.some(a => a.workerIdx === con.workerIdx)
+				if (!inArcs && !pendingAdds.current.has(con.workerIdx)) {
+					toAdd.push(con)
+					pendingAdds.current.add(con.workerIdx)
+				}
+			}
+		}
+		if (toAdd.length === 0 && toRemove.length === 0) return updateLock.current
+
 		const next = updateLock.current.then(async () => {
 			if (!country.current) country.current = await geoLookup(null) // lookup user country first time
 
-			const removedConnections = connections.filter(c => c.state === -1)
-			const addedConnections = connections.filter(c => c.state === 1)
-			const geos = await geoLookupAll(addedConnections)
+			const geos = await geoLookupAll(toAdd)
 
 			setArcs(prev => {
 				// Operate on a shallow copy so the React state's underlying
@@ -172,7 +207,7 @@ export const useGeo = () => {
 				// reference equality to skip WebGL re-creation for arcs that
 				// didn't change.
 				const drafted = [...prev]
-				decrementArcs(drafted, removedConnections)
+				decrementArcs(drafted, toRemove)
 				incrementArcs(drafted, geos)
 
 				const isoCountMap = {} as { [key: string]: number }
@@ -184,9 +219,11 @@ export const useGeo = () => {
 				return [...drafted, ...newArcs]
 			})
 
-			// dispatch push notifications. Use the freshly resolved geo →
-			// country map directly rather than reaching back into the post-
-			// update arcs state, which is racy under serialized updates.
+			// dispatch push notifications. `geos` only contains workers
+			// that this job actually added (they were filtered against the
+			// pending+committed sets at enqueue time), so we won't fire
+			// duplicate "helping" notifications for a worker an earlier
+			// queued job already handled.
 			geos.forEach(geo => {
 				const iso = geo.iso as keyof typeof countries
 				const countryName = (countries[iso] || countries[CENSORED_ISO_FALLBACK]).name
@@ -205,20 +242,23 @@ export const useGeo = () => {
 			// chain — every subsequent updateArcs would be skipped otherwise
 			// because the lock would stay rejected.
 			console.error('updateArcs failed', err)
+		}).finally(() => {
+			// Release the pending claims now that this job has either
+			// committed its setArcs or failed. After this point, arcsRef
+			// (updated by the arcs->ref effect) reflects the new truth.
+			toAdd.forEach(c => pendingAdds.current.delete(c.workerIdx))
+			toRemove.forEach(c => pendingRemoves.current.delete(c.workerIdx))
 		})
 		updateLock.current = next
 		return next
 	}, [target, t])
 
 	useEffect(() => {
-		// check if connections have changed since the last update (using arcs workerIdx)
-		const updatedConnections = connections.filter(con => {
-			if (con.state === -1) return arcs.some(arc => arc.workerIdx === con.workerIdx)
-			return !arcs.some(arc => arc.workerIdx === con.workerIdx)
-		})
-		if (!updatedConnections.length) return // only update on changes
-		updateArcs(updatedConnections)
-	}, [connections, arcs, updateArcs])
+		// Hand the full connections array to updateArcs; it will
+		// internally diff against the latest committed arcs + the
+		// pending set to decide what actually needs work.
+		updateArcs(connections)
+	}, [connections, updateArcs])
 
 	useEffect(() => {
 		if (sharing && !active) pushNotification({
