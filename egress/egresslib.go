@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/telemetry"
@@ -291,7 +292,17 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	// panic on duplicate `/ws` registration, which broke tests, graceful
 	// restarts, and any host that embeds multiple egress listeners.
 	mux := http.NewServeMux()
-	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws"))
+	// Wrap the handler for span propagation only — explicitly attach a noop
+	// MeterProvider so otelhttp does NOT emit http.server.* histograms here.
+	// The default attribute set on those histograms includes net.sock.peer.addr,
+	// net.sock.peer.port and http.user_agent, which together create a fresh
+	// time series for every WebSocket connection (~thousands/day on a single
+	// egress) and blow up SigNoz cardinality. The four ObservableUpDownCounters
+	// above already cover the only useful signals (concurrent ws/quic/streams,
+	// ingress bytes); per-request HTTP metrics on a single upgrade endpoint
+	// add no information.
+	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws",
+		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider())))
 
 	srv := &http.Server{
 		Handler:      mux,
