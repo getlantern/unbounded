@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -35,14 +34,14 @@ func main() {
 	if proxyPort == "" {
 		proxyPort = "1080"
 	}
-	slog.Debug(fmt.Sprintf("Welcome to Broflake %v", common.Version))
-	slog.Debug(fmt.Sprintf("clientType: %v", clientType))
-	slog.Debug(fmt.Sprintf("freddie: %v", freddie))
-	slog.Debug(fmt.Sprintf("egress: %v", egress))
-	slog.Debug(fmt.Sprintf("netstated: %v", netstated))
-	slog.Debug(fmt.Sprintf("tag: %v", tag))
-	slog.Debug(fmt.Sprintf("pprof: %v", pprof))
-	slog.Debug(fmt.Sprintf("proxyPort: %v", proxyPort))
+	slog.Debug("Welcome to Broflake", "version", common.Version)
+	slog.Debug("clientType", "client_type", clientType)
+	slog.Debug("freddie", "freddie", freddie)
+	slog.Debug("egress", "egress", egress)
+	slog.Debug("netstated", "netstated", netstated)
+	slog.Debug("tag", "tag", tag)
+	slog.Debug("pprof", "pprof", pprof)
+	slog.Debug("proxyPort", "proxy_port", proxyPort)
 
 	bfOpt := clientcore.NewDefaultBroflakeOptions()
 	bfOpt.ClientType = clientType
@@ -73,7 +72,7 @@ func main() {
 
 	if pprof != "" {
 		go func() {
-			slog.Debug(fmt.Sprint(http.ListenAndServe("localhost:"+pprof, nil)))
+			slog.Debug("ListenAndServe returned", "error", http.ListenAndServe("localhost:"+pprof, nil))
 		}()
 	}
 

@@ -54,7 +54,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	slog.Debug(fmt.Sprintf("Starting SOCKS5 UoT proxy..."))
+	slog.Debug("Starting SOCKS5 UoT proxy...")
 
 	err = proxy.Serve(ll)
 	if err != nil {

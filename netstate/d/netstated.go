@@ -267,7 +267,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 
 	b, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Error: %v", err))
+		slog.Debug("Error", "error", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
@@ -276,7 +276,7 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 	inst := netstatecl.Instruction{}
 	err = json.Unmarshal(b, &inst)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Error: %v", err))
+		slog.Debug("Error", "error", err)
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
@@ -394,12 +394,12 @@ func main() {
 		_, err := url.ParseRequestURI(geoDb)
 
 		if err != nil {
-			slog.Debug(fmt.Sprintf("GEODB is not a valid URL! We won't perform geolocation..."))
+			slog.Debug("GEODB is not a valid URL! We won't perform geolocation...")
 		} else {
-			slog.Debug(fmt.Sprintf("Using %v for geolocation...", geoDb))
+			slog.Debug("Using geolocation", "url", geoDb)
 		}
 	} else {
-		slog.Debug(fmt.Sprint("GEODB not specified! We won't perform geolocation..."))
+		slog.Debug("GEODB not specified! We won't perform geolocation...")
 	}
 
 	// If UNSAFE == 1, we'll expose the Graphviz-related endpoints which are useful for debugging,
@@ -407,13 +407,13 @@ func main() {
 	unsafe, err := strconv.ParseInt(os.Getenv("UNSAFE"), 10, 64)
 
 	if err != nil {
-		slog.Debug(fmt.Sprintf("UNSAFE not specified or not valid! Using default value..."))
+		slog.Debug("UNSAFE not specified or not valid! Using default value...")
 	}
 
 	if unsafe == 0 {
-		slog.Debug(fmt.Sprintf("UNSAFE=0, we won't expose Graphviz endpoints..."))
+		slog.Debug("UNSAFE=0, we won't expose Graphviz endpoints...")
 	} else if unsafe == 1 {
-		slog.Debug(fmt.Sprintf("*** WARNING *** UNSAFE=1, we'll expose Graphviz endpoints!"))
+		slog.Debug("*** WARNING *** UNSAFE=1, we'll expose Graphviz endpoints!")
 	}
 
 	// The gv client is hardcoded to hit the /neato endpoint on port 8080, so we don't currently
@@ -460,9 +460,9 @@ func main() {
 
 	http.HandleFunc("/data", handleData)
 	http.HandleFunc("/exec", handleExec)
-	slog.Debug(fmt.Sprintf("netstated listening on %v", srv.Addr))
+	slog.Debug("netstated listening on", "addr", srv.Addr)
 	err = srv.ListenAndServe()
 	if err != nil {
-		slog.Debug(fmt.Sprint(err))
+		slog.Debug("ListenAndServe error", "error", err)
 	}
 }

@@ -38,14 +38,14 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 func (b *BroflakeEngine) start() {
 	b.cTable.Start()
 	b.pTable.Start()
-	slog.Debug(fmt.Sprint("▶ Broflake started!"))
+	slog.Debug("▶ Broflake started!")
 
 	if b.netstated != "" {
 		go func() {
-			slog.Debug(fmt.Sprint("Netstate hearbeat ON"))
+			slog.Debug("Netstate hearbeat ON")
 
 			for {
-				slog.Debug(fmt.Sprint("Netstate HEARTBEAT"))
+				slog.Debug("Netstate HEARTBEAT")
 				err := netstatecl.Exec(
 					b.netstated,
 					&netstatecl.Instruction{
@@ -56,14 +56,14 @@ func (b *BroflakeEngine) start() {
 				)
 
 				if err != nil {
-					slog.Debug(fmt.Sprintf("Netstate client Exec error: %v", err))
+					slog.Debug("Netstate client Exec error", "error", err)
 				}
 
 				select {
 				case <-time.After(b.netstateHeartbeat):
 					// Do nothing, iterate the loop
 				case <-b.netstateStop:
-					defer slog.Debug(fmt.Sprint("Netstate heartbeat OFF"))
+					defer slog.Debug("Netstate heartbeat OFF")
 					return
 				}
 			}
@@ -81,13 +81,13 @@ func (b *BroflakeEngine) stop() {
 		if b.netstated != "" {
 			b.netstateStop <- struct{}{}
 		}
-		slog.Debug(fmt.Sprint("■ Broflake stopped."))
+		slog.Debug("■ Broflake stopped.")
 		b.ui.OnReady()
 	}()
 }
 
 func (b *BroflakeEngine) debug() {
-	slog.Debug(fmt.Sprintf("NumGoroutine: %v", runtime.NumGoroutine()))
+	slog.Debug("NumGoroutine", "goroutines", runtime.NumGoroutine())
 }
 
 func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOptions) (bfconn *BroflakeConn, ui *UIImpl, err error) {

@@ -50,7 +50,7 @@ func main() {
 
 	ql, err := clientcore.NewQUICLayer(bfconn, tlsConfig)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Cannot start local proxy: failed to create QUIC layer: %v", err))
+		slog.Debug("Cannot start local proxy: failed to create QUIC layer", "error", err)
 		return
 	}
 
@@ -64,7 +64,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	slog.Debug(fmt.Sprintf("Starting SOCKS5 proxy on %v...", addr))
+	slog.Debug("Starting SOCKS5 proxy", "addr", addr)
 	err = socks5.ListenAndServe("tcp", addr)
 	if err != nil {
 		panic(err)

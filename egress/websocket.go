@@ -3,7 +3,6 @@ package egress
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"runtime"
@@ -46,7 +45,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		for {
 			select {
 			case <-time.After(q.keepalive):
-				slog.Debug(fmt.Sprintf("%v PING", q.addr))
+				slog.Debug("PING", "addr", q.addr)
 				q.w.Ping(context.Background())
 			case <-readDone:
 				return
@@ -104,7 +103,7 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 		// *not* serialization errors like this. The right thing is probably to be more specific about
 		// which errors to hide, per the comment below. But since we haven't implemented that yet, we'll
 		// just hide this error too! I hope you're reading the logs...
-		slog.Debug(fmt.Sprintf("WriteTo JSON marshaling error (hidden from caller): %v", err))
+		slog.Debug("WriteTo JSON marshaling error, hidden from caller", "error", err)
 		return len(p), nil
 	}
 
@@ -118,7 +117,7 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 }
 
 func (q errorlessWebSocketPacketConn) Close() error {
-	defer slog.Debug(fmt.Sprintf("Closed a WebSocket connection! (%v total)", atomic.AddUint64(&nClients, ^uint64(0))))
+	defer slog.Debug("Closed a WebSocket connection", "total", atomic.AddUint64(&nClients, ^uint64(0)))
 	return q.w.Close(websocket.StatusNormalClosure, "")
 }
 

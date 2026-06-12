@@ -46,7 +46,7 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 			ip6 := ip.To16()
 			connectReq = append(connectReq, ip6...)
 		} else {
-			slog.Debug(fmt.Sprint("Congratulations, you found the unimplemented handler for malformed SOCKS5 hosts!"))
+			slog.Debug("Congratulations, you found the unimplemented handler for malformed SOCKS5 hosts!")
 		}
 
 		// Port as big endian
@@ -118,7 +118,7 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 			// IPv6
 			readLen = 16
 		default:
-			slog.Debug(fmt.Sprint("Congratulations, you found the unimplemented handler for malformed SOCKS CONNECT responses!"))
+			slog.Debug("Congratulations, you found the unimplemented handler for malformed SOCKS CONNECT responses!")
 		}
 
 		// +2 for the port

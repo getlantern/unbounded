@@ -2,7 +2,6 @@
 package clientcore
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
@@ -135,7 +134,7 @@ func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 				)
 
 				if err != nil {
-					slog.Debug(fmt.Sprintf("Netstate client Exec error: %v", err))
+					slog.Debug("Netstate client Exec error", "error", err)
 				}
 			}
 		}

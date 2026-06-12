@@ -4,7 +4,6 @@
 package main
 
 import (
-	"fmt"
 	"log/slog"
 	"syscall/js"
 
@@ -12,7 +11,7 @@ import (
 )
 
 func main() {
-	slog.Debug(fmt.Sprintf("wasm client started..."))
+	slog.Debug("wasm client started...")
 
 	// A constructor is exposed to JS. Some (but not all) defaults are forcibly overridden by passing
 	// args. You *must* pass valid values for all of these args:
@@ -55,10 +54,10 @@ func main() {
 
 			_, ui, err := clientcore.NewBroflake(&bfOpt, rtcOpt, egOpt)
 			if err != nil {
-				slog.Debug(fmt.Sprintf("newBroflake error: %v", err))
+				slog.Debug("newBroflake error", "error", err)
 				return nil
 			}
-			slog.Debug(fmt.Sprintf("Built new Broflake API: %v", ui.ID))
+			slog.Debug("Built new Broflake API", "id", ui.ID)
 			return js.Global().Get(ui.ID)
 		}),
 	)
