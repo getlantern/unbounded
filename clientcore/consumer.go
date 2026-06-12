@@ -146,7 +146,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				nil,
 			)
 			if err != nil {
-				slog.Debug("Error constructing request")
+				slog.Debug("Error constructing request", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -288,7 +288,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				strings.NewReader(form.Encode()),
 			)
 			if err != nil {
-				slog.Debug("Error constructing request")
+				slog.Debug("Error constructing request", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -444,7 +444,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				strings.NewReader(form.Encode()),
 			)
 			if err != nil {
-				slog.Debug("Error constructing request")
+				slog.Debug("Error constructing request", "error", err)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}

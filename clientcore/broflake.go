@@ -42,7 +42,7 @@ func (b *BroflakeEngine) start() {
 
 	if b.netstated != "" {
 		go func() {
-			slog.Debug("Netstate hearbeat ON")
+			slog.Debug("Netstate heartbeat ON")
 
 			for {
 				slog.Debug("Netstate HEARTBEAT")
