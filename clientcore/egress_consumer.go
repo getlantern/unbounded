@@ -6,7 +6,6 @@ package clientcore
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -22,7 +21,7 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			slog.
 				// State 0
 				// (no input data)
-				Debug(fmt.Sprintf("Egress consumer state 0, opening WebSocket connection..."))
+				Debug("Egress consumer state 0, opening WebSocket connection...")
 
 			// We're resetting this slot, so send a nil path assertion IPC message
 			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
@@ -51,7 +50,7 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			// TODO: WSS
 			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, nil)
 			if err != nil {
-				slog.Debug(fmt.Sprintf("Couldn't connect to egress server at %v: %v", options.Addr, err))
+				slog.Debug("Couldn't connect to egress server", "addr", options.Addr, "error", err)
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
 			}
@@ -62,7 +61,7 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			// State 1
 			// input[0]: *websocket.Conn
 			c := input[0].(*websocket.Conn)
-			slog.Debug(fmt.Sprintf("Egress consumer state 1, WebSocket connection established!"))
+			slog.Debug("Egress consumer state 1, WebSocket connection established!")
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -104,12 +103,12 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 					err := c.Write(ctx, websocket.MessageBinary, msg.Data.([]byte))
 					if err != nil {
 						c.Close(websocket.StatusNormalClosure, err.Error())
-						slog.Debug(fmt.Sprintf("Egress consumer WebSocket write error: %v", err))
+						slog.Debug("Egress consumer WebSocket write error", "error", err)
 						return 0, []interface{}{}
 					}
 				case err := <-readStatus:
 					c.Close(websocket.StatusNormalClosure, err.Error())
-					slog.Debug(fmt.Sprintf("Egress consumer WebSocket read error: %v", err))
+					slog.Debug("Egress consumer WebSocket read error", "error", err)
 					return 0, []interface{}{}
 
 					// Ordinarily it would be incorrect to put a worker into an infinite loop without including

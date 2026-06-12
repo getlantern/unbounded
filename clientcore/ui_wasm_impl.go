@@ -4,7 +4,6 @@
 package clientcore
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"strings"
@@ -74,7 +73,7 @@ func (ui UIImpl) OnReady() {
 }
 
 func (ui UIImpl) OnStartup() {
-	slog.Debug(fmt.Sprintf("Unbounded %v", common.Version))
+	slog.Debug("Unbounded", "version", common.Version)
 }
 
 // 'downstreamChunk' fires once for each chunk of data received

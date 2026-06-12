@@ -9,7 +9,6 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -77,10 +76,13 @@ func startBfConnStatsLoggerOnce() {
 				// perfectly quiet tunnel would otherwise add one line
 				// per second of noise forever.
 				if dR+dW+dWD > 0 {
-					slog.Debug(fmt.Sprintf("bfconn 1s summary: read %d bytes in %d calls, "+
-						"wrote %d bytes in %d calls, %d writes dropped "+
-						"(channel full)",
-						dR, dRC, dW, dWC, dWD))
+					slog.Debug("bfconn 1s summary",
+						"read_bytes", dR,
+						"read_calls", dRC,
+						"write_bytes", dW,
+						"write_calls", dWC,
+						"write_drops", dWD,
+					)
 
 				}
 			}
@@ -205,7 +207,7 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 			slog.
 				// State 0
 				// (no input data)
-				Debug(fmt.Sprintf("User stream producer state 0..."))
+				Debug("User stream producer state 0...")
 			// TODO: check for a non-nil path assertion to alert the UI that we're ready to proxy?
 			select {}
 		}),

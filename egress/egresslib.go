@@ -90,7 +90,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	consumerSessionID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
 	if !ok {
-		slog.Debug(fmt.Sprintf("Refused WebSocket connection, missing subprotocols"))
+		slog.Debug("Refused WebSocket connection, missing subprotocols")
 		return
 	}
 
@@ -100,7 +100,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	if !common.IsValidProtocolVersion(versionHeader) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
-		slog.Debug(fmt.Sprintf("Refused WebSocket connection, bad protocol version"))
+		slog.Debug("Refused WebSocket connection, bad protocol version")
 		return
 	}
 
@@ -110,7 +110,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// https://github.com/getlantern/broflake/issues/45
 
 	if consumerSessionID == "" {
-		slog.Debug(fmt.Sprintf("Refused WebSocket connection, missing consumer session ID"))
+		slog.Debug("Refused WebSocket connection, missing consumer session ID")
 		return
 	}
 
@@ -124,13 +124,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Error accepting WebSocket connection: %v", err))
+		slog.Debug("Error accepting WebSocket connection", "error", err)
 		return
 	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Error resolving TCPAddr: %v", err))
+		slog.Debug("Error resolving TCPAddr", "error", err)
 		return
 	}
 
@@ -143,11 +143,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer wspconn.Close()
-	slog.Debug(fmt.Sprintf("Accepted a new WebSocket connection! [CSID: %v] (%v total)", consumerSessionID, atomic.AddUint64(&nClients, 1)))
+	slog.Debug("Accepted a new WebSocket connection!", "csid", consumerSessionID, "total", atomic.AddUint64(&nClients, 1))
 
 	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("createOrMigrate error: %v, closing!", err))
+		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
 
@@ -173,17 +173,17 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			stream, err := conn.AcceptStream(wsContext)
 
 			if err != nil {
-				slog.Debug(fmt.Sprintf("QUIC AcceptStream error for %v, terminating handler (%v)", wspconn.addr, err))
+				slog.Debug("QUIC AcceptStream error, terminating handler", "addr", wspconn.addr, "error", err)
 				QUICLayerError <- struct{}{}
 				close(QUICLayerError)
 				return
 			}
-			slog.Debug(fmt.Sprintf("Accepted a new QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, 1)))
+			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 
 			l.connections <- common.QUICStreamNetConn{
 				Stream: stream,
 				OnClose: func() {
-					defer slog.Debug(fmt.Sprintf("Closed a QUIC stream! (%v total)", atomic.AddUint64(&nQUICStreams, ^uint64(0))))
+					defer slog.Debug("Closed a QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, ^uint64(0)))
 				},
 				AddrLocal:  l.addr,
 				AddrRemote: tcpAddr,
@@ -193,13 +193,10 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	select {
 	case <-wspconn.readError:
-		slog.
-			// Normal *outside-in* tunnel collapse: on the first read error intercepted at the WebSocket
-			// layer, we initiate the migration procedure, delete the inner QUIC layer connection state if
-			// necessary, then return from handleWebsocket.
-			Debug(fmt.Sprintf("%v read error, waiting %vs for migration...",
-				wspconn.addr,
-				l.connectionManager.migrationWindow.Seconds()))
+		// Normal *outside-in* tunnel collapse: on the first read error intercepted at the WebSocket
+		// layer, we initiate the migration procedure, delete the inner QUIC layer connection state if
+		// necessary, then return from handleWebsocket.
+		slog.Debug("read error, waiting for migration...", "addr", wspconn.addr, "migration_window_s", l.connectionManager.migrationWindow.Seconds())
 
 		t1 := time.Now()
 		<-time.After(l.connectionManager.migrationWindow)
@@ -309,7 +306,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 	}
-	slog.Debug(fmt.Sprintf("Egress server listening for WebSocket connections on %v", ll.Addr()))
+	slog.Debug("Egress server listening for WebSocket connections", "addr", ll.Addr())
 	go func() {
 		err := srv.Serve(ll)
 		// srv.Serve always returns a non-nil error, but a clean shutdown (the
@@ -318,7 +315,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		// restart path — should treat as non-fatal. Only panic when the error
 		// is genuinely unexpected.
 		if err == nil || errors.Is(err, http.ErrServerClosed) || errors.Is(err, net.ErrClosed) {
-			slog.Debug(fmt.Sprintf("Egress server stopped listening cleanly: %v", err))
+			slog.Debug("Egress server stopped listening cleanly", "error", err)
 			return
 		}
 		panic(fmt.Sprintf("egress server stopped listening unexpectedly: %v", err))

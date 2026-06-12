@@ -200,24 +200,24 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 }
 
 func (f *Freddie) ListenAndServe() error {
-	slog.Debug(fmt.Sprintf("Freddie (%v) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
-		common.Version,
-		f.srv.Addr,
-		consumerTTL,
-		remoteICEGatheringTTL,
-		defaultMsgTTL))
+	slog.Debug("Freddie listening on",
+		"version", common.Version,
+		"addr", f.srv.Addr,
+		"consumer_ttl", consumerTTL,
+		"remote_ice_gathering_ttl", remoteICEGatheringTTL,
+		"default_msg_ttl", defaultMsgTTL)
 
 	return f.srv.ListenAndServe()
 }
 
 func (f *Freddie) ListenAndServeTLS(certFile, keyFile string) error {
 	f.srv.TLSConfig = f.TLSConfig
-	slog.Debug(fmt.Sprintf("Freddie (%v/tls) listening on %v (consumerTTL: %v remoteICEGatheringTTL: %v defaultMsgTTL: %v)",
-		common.Version,
-		f.srv.Addr,
-		consumerTTL,
-		remoteICEGatheringTTL,
-		defaultMsgTTL))
+	slog.Debug("Freddie listening on (TLS)",
+		"version", common.Version,
+		"addr", f.srv.Addr,
+		"consumer_ttl", consumerTTL,
+		"remote_ice_gathering_ttl", remoteICEGatheringTTL,
+		"default_msg_ttl", defaultMsgTTL)
 
 	return f.srv.ListenAndServeTLS(certFile, keyFile)
 }

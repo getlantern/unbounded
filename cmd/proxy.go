@@ -66,7 +66,7 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 
 	ql, err := clientcore.NewQUICLayer(bfconn, tlsConfig)
 	if err != nil {
-		slog.Debug(fmt.Sprintf("Cannot start local proxy: failed to create QUIC layer: %v", err))
+		slog.Debug("Cannot start local proxy: failed to create QUIC layer", "error", err)
 		return
 	}
 
@@ -84,7 +84,7 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 		}
 
 		go func() {
-			slog.Debug(fmt.Sprintf("Starting SOCKS5 proxy on %v...", addr))
+			slog.Debug("Starting SOCKS5 proxy on", "addr", addr)
 			err := socks5.ListenAndServe("tcp", addr)
 			if err != nil {
 				panic(err)
@@ -101,14 +101,14 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 
 		proxy.OnRequest().DoFunc(
 			func(r *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-				slog.Debug(fmt.Sprint("HTTP proxy just saw a request:"))
-				slog.Debug(fmt.Sprint(r))
+				slog.Debug("HTTP proxy just saw a request:")
+				slog.Debug("HTTP proxy request", "request", r)
 				return r, nil
 			},
 		)
 
 		go func() {
-			slog.Debug(fmt.Sprintf("Starting HTTP CONNECT proxy on %v...", addr))
+			slog.Debug("Starting HTTP CONNECT proxy on", "addr", addr)
 			err := http.ListenAndServe(addr, proxy)
 			if err != nil {
 				panic(err)

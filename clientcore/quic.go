@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"sync"
@@ -56,7 +55,7 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 
 		listener, err := quic.Listen(c.bfconn, c.tlsConfig, &common.QUICCfg)
 		if err != nil {
-			slog.Debug(fmt.Sprintf("Error creating QUIC listener: %v\n", err))
+			slog.Debug("Error creating QUIC listener", "error", err)
 			continue
 		}
 
