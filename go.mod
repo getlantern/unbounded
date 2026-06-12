@@ -2,15 +2,12 @@ module github.com/getlantern/broflake
 
 go 1.24.0
 
-replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
-
 replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.59.0-unbounded
 
 require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
 	github.com/coder/websocket v1.8.12
 	github.com/elazarl/goproxy v1.7.2
-	github.com/enobufs/go-nats v0.0.1
 	github.com/getlantern/geo v0.0.0-20240108161311-50692a1b69a9
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
@@ -51,7 +48,6 @@ require (
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/pierrec/lz4/v4 v4.1.12 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
-	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/dtls/v3 v3.1.2 // indirect
 	github.com/pion/ice/v4 v4.2.2 // indirect
 	github.com/pion/interceptor v0.1.44 // indirect
@@ -63,13 +59,8 @@ require (
 	github.com/pion/sctp v1.9.4 // indirect
 	github.com/pion/sdp/v3 v3.0.18 // indirect
 	github.com/pion/srtp/v3 v3.0.10 // indirect
-	github.com/pion/stun v0.6.1 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
-	github.com/pion/transport v0.14.1 // indirect
-	github.com/pion/transport/v2 v2.2.10 // indirect
-	github.com/pion/turn v1.3.7 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
-	github.com/pkg/errors v0.8.1 // indirect
 	github.com/ulikunitz/xz v0.5.10 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	github.com/xi2/xz v0.0.0-20171230120015-48954b6210f8 // indirect

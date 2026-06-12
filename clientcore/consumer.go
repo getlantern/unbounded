@@ -503,7 +503,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case http.StatusOK:
 				// Signaling is complete, so we can short circuit instead of awaiting the response body
-				return 4, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+				return 4, []interface{}{peerConnection, candidates, connectionEstablished, connectionChange, connectionClosed}
 			default:
 				slog.Debug(
 					// Borked!
@@ -515,28 +515,30 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 4
 			// input[0]: *webrtc.PeerConnection
-			// input[1]: chan *webrtc.DataChannel
-			// input[2]: chan webrtc.PeerConnectionState
-			// input[3]: chan struct{}
+			// input[1]: []webrtc.ICECandidate
+			// input[2]: chan *webrtc.DataChannel
+			// input[3]: chan webrtc.PeerConnectionState
+			// input[4]: chan struct{}
 			peerConnection := input[0].(*webrtc.PeerConnection)
-			connectionEstablished := input[1].(chan *webrtc.DataChannel)
-			connectionChange := input[2].(chan webrtc.PeerConnectionState)
-			connectionClosed := input[3].(chan struct{})
-			slog.Debug(fmt.Sprintf("Consumer state 4, signaling complete!"))
+			candidates := input[1].([]webrtc.ICECandidate)
+			connectionEstablished := input[2].(chan *webrtc.DataChannel)
+			connectionChange := input[3].(chan webrtc.PeerConnectionState)
+			connectionClosed := input[4].(chan struct{})
+			slog.Debug("Consumer state 4, signaling complete!")
 
-			// XXX: Use our current cohort of STUN servers to perform NAT behavior discovery such that we
-			// can send interesting traces revealing the outcome of our NAT traversal attempt. If the
-			// cohort fails here, we won't drop it.
-			STUNSrvs := scache.cohort()
+			// Summarize NAT behavior from the ICE candidates we just gathered so we can send
+			// interesting traces revealing the outcome of our NAT traversal attempt, without a
+			// redundant standalone STUN probe.
+			natSummary := summarizeNATFromICE(candidates)
 
 			select {
 			case d := <-connectionEstablished:
-				slog.Debug(fmt.Sprintf("A WebRTC connection has been established!"))
-				go otel.CollectAndSendNATBehaviorTelemetry(STUNSrvs, "nat_success")
+				slog.Debug("A WebRTC connection has been established!")
+				go otel.SendNATBehaviorTelemetry(natSummary, "nat_success")
 				return 5, []interface{}{peerConnection, d, connectionChange, connectionClosed}
 			case <-time.After(options.NATFailTimeout):
-				slog.Debug(fmt.Sprintf("NAT failure, aborting!"))
-				go otel.CollectAndSendNATBehaviorTelemetry(STUNSrvs, "nat_failure")
+				slog.Debug("NAT failure, aborting!")
+				go otel.SendNATBehaviorTelemetry(natSummary, "nat_failure")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
