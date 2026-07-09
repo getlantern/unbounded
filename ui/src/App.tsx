@@ -10,6 +10,7 @@ import {sharingEmitter, WasmInterface} from './utils/wasmInterface'
 import {isMobile} from './utils/isMobile'
 import Editor from './components/organisms/editor'
 import Floating from "./components/organisms/floating";
+import Simple from './components/organisms/simple'
 import Storage from './components/molecules/storage'
 import useMessaging from './hooks/useMessaging'
 import {Targets, Layouts} from './constants'
@@ -102,6 +103,9 @@ const App = ({appId, embed}: Props) => {
           )}
           { settings.layout === Layouts.FLOATING && (
             <Floating />
+          )}
+          { settings.layout === Layouts.SIMPLE && (
+            <Simple />
           )}
         </Suspense>
       </Layout>

@@ -10,6 +10,7 @@ interface Props {
 export const getBorderRadius = (layout: Layouts) => {
   switch (layout) {
     case Layouts.PANEL:
+    case Layouts.SIMPLE:
       return '16px';
     case Layouts.FLOATING:
       return '16px 16px 0 0';
@@ -24,7 +25,7 @@ const AppWrapper = styled.section`
   font-family: 'Urbanist', sans-serif;
   display: flex;
   width: 100%;
-  max-width: ${({layout}: Props) => layout === Layouts.PANEL ? '330px' : layout === Layouts.FLOATING ? '360px'  : 'unset'};
+  max-width: ${({layout}: Props) => layout === Layouts.PANEL ? '330px' : layout === Layouts.FLOATING ? '360px' : layout === Layouts.SIMPLE ? '344px' : 'unset'};
   border-radius: ${({ layout }: Props) => getBorderRadius(layout)};
   background-color: ${({theme, $menu}: Props) => theme === Themes.DARK ? COLORS.grey5 : $menu ? COLORS.grey1 : COLORS.white };
   box-sizing: content-box;

@@ -28,7 +28,7 @@ export const UV_MAP_PATH_DARK = 'https://embed.lantern.io/uv-map-dark.png'
 export const GOOGLE_FONT_LINKS = [
 	{href: 'https://fonts.googleapis.com', rel: 'preconnect'},
 	{href: 'https://fonts.gstatic.com', rel: 'preconnect'},
-	{href: 'https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500&display=swap', rel: 'stylesheet'}
+	{href: 'https://fonts.googleapis.com/css2?family=Urbanist:wght@400;500;600&display=swap', rel: 'stylesheet'}
 ]
 
 export const SIGNATURE = 'lanternNetwork'
@@ -53,6 +53,7 @@ export enum Layouts {
 	'BANNER' = 'banner',
 	'PANEL' = 'panel',
 	'FLOATING' = 'floating',
+	'SIMPLE' = 'simple',
 }
 
 export enum Themes {

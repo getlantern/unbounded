@@ -12,7 +12,7 @@ const Modal = ({ onIgnore, isCensored }: {onIgnore: () => void, isCensored: bool
 	const [show, setShow] = useState(true);
 
 	const modalRoot = document.getElementById('geo-modal');
-	const canRenderModal = !collapse || layout === Layouts.PANEL;
+	const canRenderModal = !collapse || layout === Layouts.PANEL || layout === Layouts.SIMPLE;
 
 	useEffect(() => {
 		// if the modal can't be rendered, we to auto ignore the censored state otherwise the user will be stuck
