@@ -15,15 +15,13 @@ export const SIMPLE_COLORS = {
 const Container = styled.div`
   box-sizing: border-box;
   width: 100%;
-  height: 344px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  // pin the control bar to the bottom padding line so the 36px inset holds on
-  // all four sides in both states (a fixed gap can't: the two bars differ in
-  // height, so one of them would always float above or overflow the padding)
-  justify-content: space-between;
-  padding: 36px;
+  // height is content-driven so the globe-to-bar gap stays constant across
+  // the off/on states (the two bars differ in height, the card absorbs it)
+  gap: 24px;
+  padding: 48px 36px 36px;
   border: 1px solid ${COLORS.grey2};
   border-radius: 16px;
 `
