@@ -9,12 +9,13 @@ interface Props {
 	checked: boolean
 	disabled: boolean
 	loading: boolean
+	small?: boolean // force the compact size regardless of menu/collapse settings
 }
 
-const Switch = ({onToggle, checked, disabled, loading}: Props) => {
+const Switch = ({onToggle, checked, disabled, loading, small}: Props) => {
 	const tutorialOn = useEmitterState(tutorialOnEmitter);
 	const {theme, menu, collapse} = useContext(AppContext).settings
-	const isLarge = !menu && !collapse
+	const isLarge = !small && !menu && !collapse
 
 	return (
 		<Container>
