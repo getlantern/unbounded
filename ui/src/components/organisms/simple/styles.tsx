@@ -49,7 +49,7 @@ const OffPill = styled.div`
   &::before {
     content: '';
     position: absolute;
-    inset: 0;
+    inset: -2px; // sit the ring outside the pill edge (outer stroke)
     border: 2px solid ${SIMPLE_COLORS.glow};
     border-radius: inherit;
     box-shadow: 0 0 10px ${SIMPLE_COLORS.glow}, 0 0 10px ${SIMPLE_COLORS.glow};
