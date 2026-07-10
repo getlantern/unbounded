@@ -16,9 +16,9 @@ const Container = styled.div`
   box-sizing: border-box;
   width: 100%;
   // fixed height with top-packed content: the globe-to-bar gap is a constant
-  // 24px in both states, and the leftover space sits below the bar — 68px
+  // 24px in both states, and the leftover space sits below the bar — 64px
   // under the off pill, exactly 36px under the taller on panel
-  height: 370px;
+  height: 366px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -35,7 +35,7 @@ const OffPill = styled.div`
   gap: 16px;
   padding: 8px 16px;
   background-color: ${COLORS.blue5};
-  border-radius: 9999px;
+  border-radius: 8px; // match the on panel
 
   // lighter off-state track than the shared Switch default (Figma 3536:6688);
   // inset ring instead of a border so the knob geometry is untouched
@@ -76,7 +76,9 @@ const OnPanel = styled.div`
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 16px;
+  // the switch is 8px taller than the text it shares a row with, so a 4px top
+  // padding puts both texts 8px from their panel edge
+  padding: 4px 16px 8px;
   width: 100%;
   background-color: ${SIMPLE_COLORS.green};
   border-radius: 8px;
