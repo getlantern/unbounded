@@ -22,15 +22,21 @@ export const useSharingToggle = (onToggle?: (share: boolean) => void) => {
 	const [ignoreCensored, setIgnoreCensored] = useState(false)
 	const [cachedGeo, setCachedGeo] = useState<string | null>(null)
 
-	const init = async () => {
-		console.log(`wasmInterface: ${wasmInterface}`)
-		if (!wasmInterface) return
+	const init = async (): Promise<boolean> => {
+		if (!wasmInterface) return false
 		setLoading(true)
 		console.log(`initializing p2p ${mock ? '"wasm"' : 'wasm'}`)
-		const instance = await wasmInterface.initialize({mock, target})
-		if (!instance) return console.warn('wasm failed to initialize')
-		console.log(`p2p ${mock ? '"wasm"' : 'wasm'} initialized!`)
-		setLoading(false)
+		try {
+			const instance = await wasmInterface.initialize({mock, target})
+			if (!instance) {
+				console.warn('wasm failed to initialize')
+				return false
+			}
+			console.log(`p2p ${mock ? '"wasm"' : 'wasm'} initialized!`)
+			return true
+		} finally {
+			setLoading(false)
+		}
 	}
 
 	const isCensoredGeo = async () => {
@@ -47,8 +53,11 @@ export const useSharingToggle = (onToggle?: (share: boolean) => void) => {
 				return
 			}
 		}
-		if (needsInit) await init()
+		if (!wasmInterface) return
 		if (share) {
+			// lazy init is only needed to start sharing; bail if it fails (or is
+			// already in flight) rather than calling start() on a non-ready client
+			if (needsInit && !(await init())) return
 			wasmInterface.start()
 			tutorialOnEmitter.update(false)
 		}
