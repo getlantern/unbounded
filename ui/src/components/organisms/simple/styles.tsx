@@ -9,6 +9,7 @@ export const SIMPLE_COLORS = {
 	glow: '#00BDD6',
 	toggleOff: '#A2A2A2',
 	toggleOffStroke: '#848484',
+	dotRing: '#D4FAD6',
 }
 
 const Container = styled.div`
@@ -18,7 +19,10 @@ const Container = styled.div`
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 24px;
+  // pin the control bar to the bottom padding line so the 36px inset holds on
+  // all four sides in both states (a fixed gap can't: the two bars differ in
+  // height, so one of them would always float above or overflow the padding)
+  justify-content: space-between;
   padding: 36px;
   border: 1px solid ${COLORS.grey2};
   border-radius: 16px;
@@ -103,10 +107,10 @@ const BarText = styled.p`
 const StatusDot = styled.span`
   width: 12px;
   height: 12px;
-  margin: 6px;
+  margin: 5px; // 12px dot + 2x1px border + 2x5px margin keeps the 24px slot
   border-radius: 50%;
   background-color: ${SIMPLE_COLORS.lightGreen};
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2);
+  border: 1px solid ${SIMPLE_COLORS.dotRing};
 `
 
 export {Container, OffPill, OnPanel, PanelRow, PanelLeft, BarText, StatusDot}

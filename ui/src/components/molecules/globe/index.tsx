@@ -36,14 +36,15 @@ const calcOffset = (size: number, title: boolean, menu: boolean) => {
 }
 
 // visual tuning for the simple layout: a 240px canvas with the camera pulled in
-// (cameraAltitude) renders the sphere itself at ~193px, centered in (and
-// overflowing) a 193px layout box. The light sits at 45° between overhead and
-// camera-facing so the top highlight stays soft, and the dimmed ambient shades
-// the sphere darker toward the bottom.
+// (cameraAltitude) renders the sphere itself at ~180px, centered in (and
+// overflowing) a 180px layout box — the 30px of canvas around the sphere is
+// headroom for arcs. The light sits at 45° between overhead and camera-facing
+// so the top highlight stays soft, and the dimmed ambient shades the sphere
+// darker toward the bottom.
 const SIMPLE_GLOBE = {
 	canvasSize: 240,
-	boxSize: 193,
-	cameraAltitude: 1.85,
+	boxSize: 180,
+	cameraAltitude: 2.03,
 	minDistance: 240,
 	directionalIntensity: .12,
 	ambientDim: .8,
