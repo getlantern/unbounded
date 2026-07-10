@@ -16,9 +16,9 @@ const Container = styled.div`
   box-sizing: border-box;
   width: 100%;
   // fixed height with top-packed content: the globe-to-bar gap is a constant
-  // 24px in both states, and the leftover space sits below the bar — 64px
+  // 24px in both states, and the leftover space sits below the bar — 72px
   // under the off pill, exactly 36px under the taller on panel
-  height: 366px;
+  height: 374px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -64,7 +64,9 @@ const OffPill = styled.div`
     position: absolute;
     inset: -2px; // sit the ring outside the pill edge (outer stroke)
     border: 2px solid ${SIMPLE_COLORS.glow};
-    border-radius: inherit;
+    // pill radius + the 2px offset, so the ring stays concentric with the
+    // pill's 8px corners
+    border-radius: 10px;
     box-shadow: 0 0 10px ${SIMPLE_COLORS.glow}, 0 0 10px ${SIMPLE_COLORS.glow};
     animation: breathe 2.75s ease-in-out infinite;
   }
@@ -76,9 +78,9 @@ const OnPanel = styled.div`
   display: flex;
   flex-direction: column;
   gap: 8px;
-  // the switch is 8px taller than the text it shares a row with, so a 4px top
-  // padding puts both texts 8px from their panel edge
-  padding: 4px 16px 8px;
+  // the switch is 8px taller than the text it shares a row with, so an 8px top
+  // padding puts both texts 12px from their panel edge
+  padding: 8px 16px 12px;
   width: 100%;
   background-color: ${SIMPLE_COLORS.green};
   border-radius: 8px;

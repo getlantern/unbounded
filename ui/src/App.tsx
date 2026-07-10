@@ -94,7 +94,7 @@ const App = ({appId, embed}: Props) => {
       <Layout>
         <Suspense fallback={'Loading..'}>
           <div id="geo-modal"></div>
-          <Toast/>
+          { settings.layout !== Layouts.SIMPLE && <Toast/> }
           { settings.layout === Layouts.BANNER && (
             <Banner />
           )}
