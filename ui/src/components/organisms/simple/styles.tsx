@@ -7,6 +7,8 @@ export const SIMPLE_COLORS = {
 	lightGreen: '#A2DDAF',
 	heart: '#ED4C5C',
 	glow: '#00BDD6',
+	toggleOff: '#A2A2A2',
+	toggleOffStroke: '#848484',
 }
 
 const Container = styled.div`
@@ -30,6 +32,13 @@ const OffPill = styled.div`
   padding: 8px 16px;
   background-color: ${COLORS.blue5};
   border-radius: 9999px;
+
+  // lighter off-state track than the shared Switch default (Figma 3536:6688);
+  // inset ring instead of a border so the knob geometry is untouched
+  label > span {
+    background-color: ${SIMPLE_COLORS.toggleOff};
+    box-shadow: inset 0 0 0 1px ${SIMPLE_COLORS.toggleOffStroke};
+  }
 
   @keyframes breathe {
     0% {
