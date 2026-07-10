@@ -54,7 +54,7 @@ const Simple = () => {
 					<OffPill>
 						<HeartIcon/>
 						<BarText>{t('joinActionMode')}</BarText>
-						<Switch {...switchProps} small/>
+						<Switch {...switchProps}/>
 					</OffPill>
 				) : (
 					<OnPanel>
@@ -63,7 +63,7 @@ const Simple = () => {
 								<StatusDot/>
 								<BarText>{t('actionModeOn')}</BarText>
 							</PanelLeft>
-							<Switch {...switchProps} small/>
+							<Switch {...switchProps}/>
 						</PanelRow>
 						<PanelRow>
 							<PanelLeft>

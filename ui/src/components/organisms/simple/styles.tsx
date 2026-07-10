@@ -1,4 +1,4 @@
-import styled, {keyframes} from 'styled-components'
+import styled from 'styled-components'
 import {COLORS} from '../../../constants'
 
 // palette private to the simple layout (from the Figma spec)
@@ -9,22 +9,7 @@ export const SIMPLE_COLORS = {
 	glow: '#00BDD6',
 	toggleOff: '#A2A2A2',
 	toggleOffStroke: '#848484',
-	dotRing: '#D4FAD6',
 }
-
-// shared by the off-pill glow and the status-dot ring; a keyframes helper
-// (not an inline @keyframes) so it's injected whichever state renders first
-const breathe = keyframes`
-  0% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 1;
-  }
-`
 
 const Container = styled.div`
   box-sizing: border-box;
@@ -33,7 +18,7 @@ const Container = styled.div`
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 16px;
+  gap: 24px;
   padding: 36px;
   border: 1px solid ${COLORS.grey2};
   border-radius: 16px;
@@ -55,6 +40,18 @@ const OffPill = styled.div`
     box-shadow: inset 0 0 0 1px ${SIMPLE_COLORS.toggleOffStroke};
   }
 
+  @keyframes breathe {
+    0% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
   // the glow lives on a pseudo-element so the breathing animates opacity
   // (compositor-only) instead of re-rasterizing a drop-shadow filter each frame;
   // the border rides along so it fades in and out with the glow
@@ -65,7 +62,7 @@ const OffPill = styled.div`
     border: 2px solid ${SIMPLE_COLORS.glow};
     border-radius: inherit;
     box-shadow: 0 0 10px ${SIMPLE_COLORS.glow}, 0 0 10px ${SIMPLE_COLORS.glow};
-    animation: ${breathe} 2.75s ease-in-out infinite;
+    animation: breathe 2.75s ease-in-out infinite;
   }
 `
 
@@ -73,8 +70,8 @@ const OnPanel = styled.div`
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 4px 16px;
+  gap: 8px;
+  padding: 8px 16px;
   width: 100%;
   background-color: ${SIMPLE_COLORS.green};
   border-radius: 8px;
@@ -104,23 +101,12 @@ const BarText = styled.p`
 `
 
 const StatusDot = styled.span`
-  position: relative;
   width: 12px;
   height: 12px;
   margin: 6px;
   border-radius: 50%;
   background-color: ${SIMPLE_COLORS.lightGreen};
-
-  // 1px ring just outside the dot (Figma 3534:1113), breathing like the
-  // off-state glow
-  &::before {
-    content: '';
-    position: absolute;
-    inset: -1px;
-    border: 1px solid ${SIMPLE_COLORS.dotRing};
-    border-radius: 50%;
-    animation: ${breathe} 2.75s ease-in-out infinite;
-  }
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.2);
 `
 
 export {Container, OffPill, OnPanel, PanelRow, PanelLeft, BarText, StatusDot}
