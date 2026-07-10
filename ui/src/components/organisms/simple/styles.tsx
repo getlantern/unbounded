@@ -26,6 +26,9 @@ const Container = styled.div`
   padding: 48px 36px 36px;
   border: 1px solid ${COLORS.grey2};
   border-radius: 16px;
+  // the globe canvas spans the card's inner width so arcs never hit a visible
+  // canvas edge; this clips them at the card's rounded boundary instead
+  overflow: hidden;
 `
 
 const OffPill = styled.div`
