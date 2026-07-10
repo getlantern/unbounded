@@ -44,13 +44,15 @@ const OffPill = styled.div`
   }
 
   // the glow lives on a pseudo-element so the breathing animates opacity
-  // (compositor-only) instead of re-rasterizing a drop-shadow filter each frame
+  // (compositor-only) instead of re-rasterizing a drop-shadow filter each frame;
+  // the border rides along so it fades in and out with the glow
   &::before {
     content: '';
     position: absolute;
     inset: 0;
+    border: 2px solid ${SIMPLE_COLORS.glow};
     border-radius: inherit;
-    box-shadow: 0 0 10px ${SIMPLE_COLORS.glow};
+    box-shadow: 0 0 10px ${SIMPLE_COLORS.glow}, 0 0 10px ${SIMPLE_COLORS.glow};
     animation: breathe 2.75s ease-in-out infinite;
   }
 `
