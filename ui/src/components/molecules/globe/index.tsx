@@ -143,7 +143,7 @@ const Globe = ({target}: Props) => {
 		const controls = globe.current.controls()
 		const camera = globe.current.camera()
 		const scene = globe.current.scene()
-		controls.enableZoom = target !== Targets.EXTENSION_POPUP // disable zoom on extension popup
+		controls.enableZoom = target !== Targets.EXTENSION_POPUP && !simple // disable zoom on extension popup and simple layout
 		controls.autoRotate = true
 		controls.maxDistance = 1500
 		controls.minDistance = simple ? SIMPLE_GLOBE.minDistance : 300
