@@ -15,11 +15,13 @@ export const SIMPLE_COLORS = {
 const Container = styled.div`
   box-sizing: border-box;
   width: 100%;
+  // fixed height with top-packed content: the globe-to-bar gap is a constant
+  // 24px in both states, and the leftover space sits below the bar — 68px
+  // under the off pill, exactly 36px under the taller on panel
+  height: 370px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  // height is content-driven so the globe-to-bar gap stays constant across
-  // the off/on states (the two bars differ in height, the card absorbs it)
   gap: 24px;
   padding: 48px 36px 36px;
   border: 1px solid ${COLORS.grey2};
@@ -70,6 +72,7 @@ const OffPill = styled.div`
 
 const OnPanel = styled.div`
   box-sizing: border-box;
+  position: relative; // paint above the globe canvas, which overflows its box
   display: flex;
   flex-direction: column;
   gap: 8px;

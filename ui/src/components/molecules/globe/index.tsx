@@ -35,16 +35,17 @@ const calcOffset = (size: number, title: boolean, menu: boolean) => {
 	return offset
 }
 
-// visual tuning for the simple layout: a 240px canvas with the camera pulled in
+// visual tuning for the simple layout: a 264px canvas with the camera pulled in
 // (cameraAltitude) renders the sphere itself at ~180px, centered in (and
-// overflowing) a 180px layout box — the 30px of canvas around the sphere is
-// headroom for arcs. The light sits at 45° between overhead and camera-facing
-// so the top highlight stays soft, and the dimmed ambient shades the sphere
-// darker toward the bottom.
+// overflowing) a 180px layout box — the 42px of canvas around the sphere is
+// headroom for arcs, sized so the canvas edge (where arcs clip) sits ~7px shy
+// of the card's top edge. The light sits at 45° between overhead and
+// camera-facing so the top highlight stays soft, and the dimmed ambient shades
+// the sphere darker toward the bottom.
 const SIMPLE_GLOBE = {
-	canvasSize: 240,
+	canvasSize: 264,
 	boxSize: 180,
-	cameraAltitude: 2.03,
+	cameraAltitude: 2.30,
 	minDistance: 240,
 	directionalIntensity: .12,
 	ambientDim: .8,
