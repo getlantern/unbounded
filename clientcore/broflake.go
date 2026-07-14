@@ -2,6 +2,7 @@
 package clientcore
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -20,18 +21,23 @@ type BroflakeEngine struct {
 	tag               string
 	netstateHeartbeat time.Duration
 	netstateStop      chan struct{}
+	ctx               context.Context
+	cancel            context.CancelFunc
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &BroflakeEngine{
-		cTable,
-		pTable,
-		ui,
-		wg,
-		netstated,
-		tag,
-		1 * time.Minute,
-		make(chan struct{}, 0),
+		cTable:            cTable,
+		pTable:            pTable,
+		ui:                ui,
+		wg:                wg,
+		netstated:         netstated,
+		tag:               tag,
+		netstateHeartbeat: time.Minute,
+		netstateStop:      make(chan struct{}),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 }
 
@@ -72,6 +78,7 @@ func (b *BroflakeEngine) start() {
 }
 
 func (b *BroflakeEngine) stop() {
+	b.cancel()
 	b.cTable.Stop()
 	b.pTable.Stop()
 
@@ -174,7 +181,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	var bus = NewIpcObserver(
 		bfOpt.BusBufferSz,
 		UpstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag),
-		DownstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag),
+		DownstreamUIHandler(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag),
 	)
 
 	// Step 5: Build consumer router and producer router
@@ -188,9 +195,9 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	}
 
 	// Step 6: Start the bus, init the routers, fire our UI events to announce that we're ready
-	bus.Start()
-	cRouter.Init()
-	pRouter.Init()
+	bus.Start(broflake.ctx)
+	cRouter.Init(broflake.ctx)
+	pRouter.Init(broflake.ctx)
 	ui.OnReady()
 	ui.OnStartup()
 	return bfconn, ui, nil

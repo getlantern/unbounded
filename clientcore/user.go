@@ -204,12 +204,14 @@ func (c BroflakeConn) SetDeadline(t time.Time) error {
 func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	worker := NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
-			slog.
-				// State 0
-				// (no input data)
-				Debug("User stream producer state 0...")
+			slog.Debug("User stream producer state 0...")
 			// TODO: check for a non-nil path assertion to alert the UI that we're ready to proxy?
-			select {}
+			// This slot is passive — its channels are driven by the consumer of the BroflakeConn,
+			// so the state has no work of its own. Block on ctx rather than a bare select{}: on Stop the
+			// FSM's Start goroutine must return to release its WaitGroup token, which the engine's
+			// async teardown waits on before it signals the engine has fully stopped.
+			<-ctx.Done()
+			return 0, nil
 		}),
 	})
 

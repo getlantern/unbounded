@@ -3,6 +3,7 @@ package clientcore
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
@@ -54,6 +55,7 @@ func (fsm *WorkerFSM) Start() {
 		for {
 			select {
 			case <-fsm.ctx.Done():
+				closeWorkerResource(fsm.nextInput)
 				slog.Debug("End of last state, stopping WorkerFSM...")
 				return
 			default:
@@ -61,6 +63,19 @@ func (fsm *WorkerFSM) Start() {
 			}
 		}
 	}()
+}
+
+func closeWorkerResource(input []any) {
+	if len(input) == 0 {
+		return
+	}
+
+	switch c := input[0].(type) {
+	case io.Closer:
+		_ = c.Close()
+	case interface{ CloseNow() error }:
+		_ = c.CloseNow()
+	}
 }
 
 // Stop this WorkerFSM (takes effect upon returning from the currently executing state)

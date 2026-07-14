@@ -1,6 +1,8 @@
 // ipc.go defines structures and functionality for communication between client system components
 package clientcore
 
+import "context"
+
 // ChunkIPC: data plane traffic
 // PathAssertionIPC: how upstream processes describe their connectivity for downstream processes
 // ConsumerInfoIPC: how downstream processes describe their connectivity for upstream processes
@@ -43,22 +45,30 @@ type ipcObserver struct {
 	onRx       func(IPCMsg)
 }
 
-func (o *ipcObserver) Start() {
-	go func() {
-		for {
-			msg := <-o.Downstream.tx
-			o.onTx(msg)
-			o.Upstream.tx <- msg
-		}
-	}()
+func forwardIPC(ctx context.Context, src <-chan IPCMsg, dst chan<- IPCMsg, hook func(IPCMsg)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-src:
+			if !ok {
+				return
+			}
 
-	go func() {
-		for {
-			msg := <-o.Upstream.rx
-			o.onRx(msg)
-			o.Downstream.rx <- msg
+			hook(msg)
+
+			select {
+			case <-ctx.Done():
+				return
+			case dst <- msg:
+			}
 		}
-	}()
+	}
+}
+
+func (o *ipcObserver) Start(ctx context.Context) {
+	go forwardIPC(ctx, o.Downstream.tx, o.Upstream.tx, o.onTx)
+	go forwardIPC(ctx, o.Upstream.rx, o.Downstream.rx, o.onRx)
 }
 
 func NewIpcObserver(bufferSz int, onTx, onRx func(IPCMsg)) *ipcObserver {
