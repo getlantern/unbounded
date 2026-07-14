@@ -36,7 +36,12 @@ export const Notification = () => {
 	const notifications = useEmitterState(notificationQueue)
 	const [notification, setNotification] = useState<NotificationType | null>(null)
 	const show = notification?.show ?? false
+	const simple = layout === Layouts.SIMPLE
 	const fontSize = layout === Layouts.BANNER ? 14 : 12
+	// in the simple layout the sphere bottom sits at the container bottom and the
+	// globe-to-control gap is 24px, so -12 puts the notification 12px above the control
+	const bottomShown = simple ? -12 : 0
+	const bottomHidden = simple ? -22 : -10
 
 	useEffect(() => {
 		if (!notifications.length) return setNotification(null)
@@ -63,9 +68,10 @@ export const Notification = () => {
 	return (
 		<Container
 			theme={theme}
+			$simple={simple}
 			style={{
 				top: 'unset',
-				bottom: show ? 0 : -10,
+				bottom: show ? bottomShown : bottomHidden,
 				opacity: show ? 1 : 0,
 			}}
 		>

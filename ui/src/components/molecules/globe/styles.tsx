@@ -4,6 +4,7 @@ interface Props {
 	active: boolean
 	offset: number
 	size: number
+	$simple?: boolean
 }
 const Container = styled.div`
   width: 100%;
@@ -19,6 +20,11 @@ const Container = styled.div`
     top: ${({offset}: Props) => offset}px; // ugly offset to match figma @todo try to fix this with flexbox
     cursor: ${({active}: Props) => active ? 'pointer': 'all-scroll'};
   }
+
+  ${({$simple}: Props) => $simple ? `
+  canvas {
+    filter: brightness(1.15);
+  }` : ''}
 
   > span.shadow {
     position: absolute;

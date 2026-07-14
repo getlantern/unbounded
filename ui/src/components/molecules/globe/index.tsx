@@ -10,7 +10,7 @@ import GlobeComponent from 'react-globe.gl'
 import {Container} from './styles'
 import {useContext, useEffect, useMemo, useRef, useState} from 'react'
 import {AppContext} from '../../../context'
-import {BREAKPOINT, COLORS, Targets, Themes, UV_MAP_PATH_DARK, UV_MAP_PATH_LIGHT} from '../../../constants'
+import {BREAKPOINT, COLORS, Layouts, Targets, Themes, UV_MAP_PATH_DARK, UV_MAP_PATH_LIGHT} from '../../../constants'
 import Shadow from './shadow'
 import ToolTip from '../toolTip'
 import {useGeo} from '../../../hooks/useGeoFuture'
@@ -33,6 +33,24 @@ const calcOffset = (size: number, title: boolean, menu: boolean) => {
 	if (title) offset += 40
 	if (menu) offset -= 40
 	return offset
+}
+
+// visual tuning for the simple layout: the canvas spans the card's full inner
+// width (344px card minus 1px borders) with the camera pulled back
+// (cameraAltitude) so the sphere itself renders at ~180px, centered in (and
+// overflowing) a 180px layout box. The canvas edges — where arcs clip — sit at
+// or beyond the card's borders, so arcs are only ever cut by the card's own
+// overflow:hidden, never by a visible canvas boundary inside it. The light
+// sits at 45° between overhead and camera-facing so the top highlight stays
+// soft, and the dimmed ambient shades the sphere darker toward the bottom.
+const SIMPLE_GLOBE = {
+	canvasSize: 342,
+	boxSize: 180,
+	cameraAltitude: 3.19,
+	minDistance: 240,
+	directionalIntensity: .12,
+	ambientDim: .8,
+	lightPosition: [0, 350, 350],
 }
 
 
@@ -80,7 +98,8 @@ const Globe = ({target}: Props) => {
 	// const sharing = useEmitterState(sharingEmitter)
 	const {width, settings} = useContext(AppContext)
 	const {theme, title, menu} = settings
-	const size = width < BREAKPOINT ? 250 : 400
+	const simple = settings.layout === Layouts.SIMPLE
+	const size = simple ? SIMPLE_GLOBE.canvasSize : width < BREAKPOINT ? 250 : 400
 	const isSetup = useRef(false)
 	const [arc, setArc] = useState(null)
 	const count = arc ? arc.count : 0
@@ -127,18 +146,24 @@ const Globe = ({target}: Props) => {
 		const controls = globe.current.controls()
 		const camera = globe.current.camera()
 		const scene = globe.current.scene()
-		controls.enableZoom = target !== Targets.EXTENSION_POPUP // disable zoom on extension popup
+		controls.enableZoom = target !== Targets.EXTENSION_POPUP && !simple // disable zoom on extension popup and simple layout
 		controls.autoRotate = true
 		controls.maxDistance = 1500
-		controls.minDistance = 300
+		controls.minDistance = simple ? SIMPLE_GLOBE.minDistance : 300
 		controls.autoRotateSpeed = 1.5
+		const ambientLight = scene.children.find(obj3d => obj3d.type === 'AmbientLight')
+		if (simple && ambientLight) ambientLight.intensity *= SIMPLE_GLOBE.ambientDim
 		const directionalLight = scene.children.find(obj3d => obj3d.type === 'DirectionalLight')
-		if (directionalLight) directionalLight.intensity = .25
-		const clonedLight = directionalLight.clone()
-		clonedLight.position.set(0, 500, 0)
-		camera.add(clonedLight)
-		scene.add(camera)
-		scene.remove(directionalLight)
+		if (directionalLight) {
+			directionalLight.intensity = simple ? SIMPLE_GLOBE.directionalIntensity : .25
+			const clonedLight = directionalLight.clone()
+			if (simple) clonedLight.position.set(...SIMPLE_GLOBE.lightPosition)
+			else clonedLight.position.set(0, 500, 0)
+			camera.add(clonedLight)
+			scene.add(camera)
+			scene.remove(directionalLight)
+		}
+		if (simple) globe.current.pointOfView({altitude: SIMPLE_GLOBE.cameraAltitude}, 0)
 	}
 
 	const setRotateSpeed = (speed) => {
@@ -218,10 +243,14 @@ const Globe = ({target}: Props) => {
 	return (
 		<Container
 			ref={container}
-			offset={calcOffset(size, title, menu)}
+			offset={simple ? (SIMPLE_GLOBE.boxSize - size) / 2 : calcOffset(size, title, menu)}
 			size={size}
 			active={!!arc}
-			style={{
+			$simple={simple}
+			style={simple ? {
+				minHeight: SIMPLE_GLOBE.boxSize,
+				maxHeight: SIMPLE_GLOBE.boxSize,
+			} : {
 				minHeight: 250, // sm breakpoint
 				maxHeight: (!menu && title) ? 424 : (!menu || title) ? 400 : 350, // lg breakpoint
 			}}
@@ -230,9 +259,13 @@ const Globe = ({target}: Props) => {
 			onMouseEnter={() => setRotateSpeed(1)}
 			onMouseLeave={() => setRotateSpeed(1.5)}
 		>
-			<Shadow
-				scale={1/(altitude/2)} // altitude is 2-14
-			/>
+			{
+				!simple && (
+					<Shadow
+						scale={1/(altitude/2)} // altitude is 2-14
+					/>
+				)
+			}
 			<GlobeComponent
 				ref={globe}
 				onGlobeReady={setUp}

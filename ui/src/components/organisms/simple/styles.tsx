@@ -1,0 +1,124 @@
+import styled from 'styled-components'
+import {COLORS} from '../../../constants'
+
+// palette private to the simple layout (from the Figma spec)
+export const SIMPLE_COLORS = {
+	green: '#0A8638',
+	lightGreen: '#A2DDAF',
+	heart: '#ED4C5C',
+	glow: '#00BDD6',
+	toggleOff: '#A2A2A2',
+	toggleOffStroke: '#848484',
+	dotRing: '#D4FAD6',
+}
+
+const Container = styled.div`
+  box-sizing: border-box;
+  width: 100%;
+  // fixed height with top-packed content: the globe-to-bar gap is a constant
+  // 24px in both states, and the leftover space sits below the bar — 72px
+  // under the off pill, exactly 36px under the taller on panel
+  height: 374px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 48px 36px 36px;
+  border: 1px solid ${COLORS.grey2};
+  border-radius: 16px;
+  // the globe canvas spans the card's inner width so arcs never hit a visible
+  // canvas edge; this clips them at the card's rounded boundary instead
+  overflow: hidden;
+`
+
+const OffPill = styled.div`
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background-color: ${COLORS.blue5};
+  border-radius: 8px; // match the on panel
+
+  // lighter off-state track than the shared Switch default (Figma 3536:6688);
+  // inset ring instead of a border so the knob geometry is untouched
+  label > span {
+    background-color: ${SIMPLE_COLORS.toggleOff};
+    box-shadow: inset 0 0 0 1px ${SIMPLE_COLORS.toggleOffStroke};
+  }
+
+  @keyframes breathe {
+    0% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0;
+    }
+    100% {
+      opacity: 1;
+    }
+  }
+
+  // the glow lives on a pseudo-element so the breathing animates opacity
+  // (compositor-only) instead of re-rasterizing a drop-shadow filter each frame;
+  // the border rides along so it fades in and out with the glow
+  &::before {
+    content: '';
+    position: absolute;
+    inset: -2px; // sit the ring outside the pill edge (outer stroke)
+    border: 2px solid ${SIMPLE_COLORS.glow};
+    // pill radius + the 2px offset, so the ring stays concentric with the
+    // pill's 8px corners
+    border-radius: 10px;
+    box-shadow: 0 0 10px ${SIMPLE_COLORS.glow}, 0 0 10px ${SIMPLE_COLORS.glow};
+    animation: breathe 2.75s ease-in-out infinite;
+  }
+`
+
+const OnPanel = styled.div`
+  box-sizing: border-box;
+  position: relative; // paint above the globe canvas, which overflows its box
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  // the switch is 8px taller than the text it shares a row with, so an 8px top
+  // padding puts both texts 12px from their panel edge
+  padding: 8px 16px 12px;
+  width: 100%;
+  background-color: ${SIMPLE_COLORS.green};
+  border-radius: 8px;
+`
+
+const PanelRow = styled.div`
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+`
+
+const PanelLeft = styled.div`
+  display: flex;
+  align-items: center;
+  gap: 8px;
+`
+
+const BarText = styled.p`
+  margin: 0;
+  font-weight: 600;
+  font-size: 16px;
+  line-height: 24px;
+  color: ${COLORS.white};
+  white-space: nowrap;
+`
+
+const StatusDot = styled.span`
+  width: 12px;
+  height: 12px;
+  margin: 5px; // 12px dot + 2x1px border + 2x5px margin keeps the 24px slot
+  border-radius: 50%;
+  background-color: ${SIMPLE_COLORS.lightGreen};
+  border: 1px solid ${SIMPLE_COLORS.dotRing};
+`
+
+export {Container, OffPill, OnPanel, PanelRow, PanelLeft, BarText, StatusDot}
