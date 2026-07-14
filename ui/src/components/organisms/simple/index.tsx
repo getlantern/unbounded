@@ -53,7 +53,7 @@ const Simple = () => {
 				!sharing ? (
 					<OffPill>
 						<HeartIcon/>
-						<BarText>{t('joinActionMode')}</BarText>
+						<BarText>{t('enableActionMode')}</BarText>
 						<Switch {...switchProps}/>
 					</OffPill>
 				) : (
