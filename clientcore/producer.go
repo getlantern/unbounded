@@ -147,8 +147,6 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():
-					// Close the carried peerConnection before dropping it, or its interceptor
-					// goroutines leak; returning to state 0 with empty input discards it otherwise.
 					peerConnection.Close()
 					return 0, []interface{}{}
 				}

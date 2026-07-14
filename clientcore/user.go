@@ -206,10 +206,8 @@ func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			slog.Debug("User stream producer state 0...")
 			// TODO: check for a non-nil path assertion to alert the UI that we're ready to proxy?
-			// This slot is passive — its channels are driven by the consumer of the BroflakeConn,
-			// so the state has no work of its own. Block on ctx rather than a bare select{}: on Stop the
-			// FSM's Start goroutine must return to release its WaitGroup token, which the engine's
-			// async teardown waits on before it signals the engine has fully stopped.
+
+			// block until ctx is canceled
 			<-ctx.Done()
 			return 0, nil
 		}),

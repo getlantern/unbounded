@@ -84,10 +84,9 @@ func (b *BroflakeEngine) stop() {
 	go func() {
 		b.wg.Wait()
 
-		// Cancel the engine context (routers, bus observer, UI ticker) only after the workers
-		// have exited: several worker states do bare blocking com.tx sends, so the routers must
-		// keep draining com.tx until then, or a worker parked on a full-buffer send never reaches
-		// its between-states ctx check and wg.Wait never returns.
+		// Cancel the engine ctx only after workers exit. Some worker states block on com.tx
+		// sends, and stopping routers earlier can strand a worker on a full buffer and hang
+		// wg.Wait.
 		b.cancel()
 
 		if b.netstated != "" {
