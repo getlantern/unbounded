@@ -505,6 +505,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Producer state 4, signaling complete!")
 
 			select {
+			case <-ctx.Done():
+				peerConnection.Close()
+				return 0, []interface{}{}
 			case d := <-connectionEstablished:
 				slog.Debug("A WebRTC connection has been established!")
 				return 5, []interface{}{

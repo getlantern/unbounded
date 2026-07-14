@@ -78,10 +78,10 @@ type UI interface {
 func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	var bytesPerSec int64
 	var tick uint
-	tickMs := time.Duration(1000 / uiRefreshHz)
+	tickInterval := time.Second / uiRefreshHz
 
 	go func() {
-		ticker := time.NewTicker(tickMs * time.Millisecond)
+		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
 		for {
 			select {
