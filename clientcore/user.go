@@ -204,12 +204,12 @@ func (c BroflakeConn) SetDeadline(t time.Time) error {
 func NewProducerUserStream(wg *sync.WaitGroup) (*BroflakeConn, *WorkerFSM) {
 	worker := NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
-			slog.
-				// State 0
-				// (no input data)
-				Debug("User stream producer state 0...")
+			slog.Debug("User stream producer state 0...")
 			// TODO: check for a non-nil path assertion to alert the UI that we're ready to proxy?
-			select {}
+
+			// block until ctx is canceled
+			<-ctx.Done()
+			return 0, nil
 		}),
 	})
 

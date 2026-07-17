@@ -147,6 +147,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation
 				case <-ctx.Done():
+					peerConnection.Close()
 					return 0, []interface{}{}
 				}
 			}
@@ -502,6 +503,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Producer state 4, signaling complete!")
 
 			select {
+			case <-ctx.Done():
+				peerConnection.Close()
+				return 0, []interface{}{}
 			case d := <-connectionEstablished:
 				slog.Debug("A WebRTC connection has been established!")
 				return 5, []interface{}{

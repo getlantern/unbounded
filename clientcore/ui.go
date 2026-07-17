@@ -2,6 +2,7 @@
 package clientcore
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"strconv"
@@ -74,19 +75,26 @@ type UI interface {
 	OnConsumerConnectionChange(state int, workerIdx int, addr net.IP)
 }
 
-func DownstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	var bytesPerSec int64
 	var tick uint
-	tickMs := time.Duration(1000 / uiRefreshHz)
+	tickInterval := time.Second / uiRefreshHz
 
 	go func() {
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
 		for {
-			<-time.After(tickMs * time.Millisecond)
-			ui.OnDownstreamThroughput(int(atomic.LoadInt64(&bytesPerSec)))
-			if tick%uiRefreshHz == 0 {
-				atomic.SwapInt64(&bytesPerSec, 0)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				ui.OnDownstreamThroughput(int(atomic.LoadInt64(&bytesPerSec)))
+				tick++
+				if tick == uiRefreshHz {
+					atomic.SwapInt64(&bytesPerSec, 0)
+					tick = 0
+				}
 			}
-			tick++
 		}
 	}()
 

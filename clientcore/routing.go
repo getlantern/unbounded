@@ -2,6 +2,7 @@
 package clientcore
 
 import (
+	"context"
 	"sync"
 
 	"github.com/getlantern/broflake/common"
@@ -12,10 +13,8 @@ import (
 // upstream tableRouter, in managing a WorkerTable consisting of workers which handle egress traffic,
 // decides how to best utilize those connections (ie, in serial, in parallel, 1:1, multipath, etc.)
 type TableRouter interface {
-	Init()
-
+	Init(ctx context.Context)
 	onBus(msg IPCMsg)
-
 	onWorker(msg IPCMsg, workerIdx workerID)
 }
 
@@ -25,28 +24,53 @@ type baseRouter struct {
 	table      *WorkerTable
 	busHook    func(r *baseRouter, msg IPCMsg)
 	workerHook func(r *baseRouter, msg IPCMsg, workerIdx workerID)
+	ctx        context.Context
+}
+
+func recvIPC(ctx context.Context, ch <-chan IPCMsg, fn func(IPCMsg)) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			fn(msg)
+		}
+	}
+}
+
+func sendIPC(ctx context.Context, ch chan<- IPCMsg, msg IPCMsg) {
+	select {
+	case <-ctx.Done():
+	case ch <- msg:
+	}
+}
+
+func (r *baseRouter) hasWorker(id workerID) bool {
+	idx := int(id)
+	return idx >= 0 && idx < len(r.table.slot)
 }
 
 func (r *baseRouter) Init(
+	ctx context.Context,
 	listen chan IPCMsg,
 	onBus func(msg IPCMsg),
-	onWorker func(msg IPCMsg,
-		workerIdx workerID),
+	onWorker func(msg IPCMsg, workerIdx workerID),
 ) {
+	r.ctx = ctx
 	for i := range r.table.slot {
-		go func(i int) {
-			for {
-				msg := <-r.table.slot[i].com.tx
-				onWorker(msg, workerID(i))
-			}
-		}(i)
+		workerCh := r.table.slot[i].com.tx
+
+		go func(workerIdx workerID, ch <-chan IPCMsg) {
+			recvIPC(ctx, ch, func(msg IPCMsg) {
+				onWorker(msg, workerIdx)
+			})
+		}(workerID(i), workerCh)
 	}
 
-	go func() {
-		for {
-			onBus(<-listen)
-		}
-	}()
+	go recvIPC(ctx, listen, onBus)
 }
 
 func (r *baseRouter) onBus(msg IPCMsg) {
@@ -62,8 +86,8 @@ type upstreamRouter struct {
 	baseRouter
 }
 
-func (r *upstreamRouter) Init() {
-	r.baseRouter.Init(r.bus.tx, r.onBus, r.onWorker)
+func (r *upstreamRouter) Init(ctx context.Context) {
+	r.baseRouter.Init(ctx, r.bus.tx, r.onBus, r.onWorker)
 }
 
 func (r *upstreamRouter) onBus(msg IPCMsg) {
@@ -80,11 +104,15 @@ func (r *upstreamRouter) onWorker(msg IPCMsg, workerIdx workerID) {
 }
 
 func (r *upstreamRouter) toBus(msg IPCMsg) {
-	r.bus.rx <- msg
+	sendIPC(r.ctx, r.bus.rx, msg)
 }
 
 func (r *upstreamRouter) toWorker(msg IPCMsg, peerIdx workerID) {
-	r.table.slot[peerIdx].com.rx <- msg
+	if !r.hasWorker(peerIdx) {
+		return
+	}
+
+	sendIPC(r.ctx, r.table.slot[peerIdx].com.rx, msg)
 }
 
 // A downstreamRouter parameterizes a baseRouter to send on tx and receive on rx
@@ -92,8 +120,8 @@ type downstreamRouter struct {
 	baseRouter
 }
 
-func (r *downstreamRouter) Init() {
-	r.baseRouter.Init(r.bus.rx, r.onBus, r.onWorker)
+func (r *downstreamRouter) Init(ctx context.Context) {
+	r.baseRouter.Init(ctx, r.bus.rx, r.onBus, r.onWorker)
 }
 
 func (r *downstreamRouter) onBus(msg IPCMsg) {
@@ -108,11 +136,15 @@ func (r *downstreamRouter) onWorker(msg IPCMsg, workerIdx workerID) {
 }
 
 func (r *downstreamRouter) toBus(msg IPCMsg) {
-	r.bus.tx <- msg
+	sendIPC(r.ctx, r.bus.tx, msg)
 }
 
 func (r *downstreamRouter) toWorker(msg IPCMsg) {
-	r.table.slot[msg.Wid].com.rx <- msg
+	if !r.hasWorker(msg.Wid) {
+		return
+	}
+
+	sendIPC(r.ctx, r.table.slot[msg.Wid].com.rx, msg)
 }
 
 func (r *downstreamRouter) toAllWorkers(msg IPCMsg) {
