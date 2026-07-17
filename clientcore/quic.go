@@ -50,6 +50,16 @@ type QUICLayer struct {
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {
+	// ctx is set by NewQUICLayer (the only supported constructor). Guard
+	// against a QUICLayer built via struct literal: refuse to start rather
+	// than nil-deref on c.ctx.Err() below. We deliberately do NOT lazily
+	// init ctx/cancel here — that would put the write back in this goroutine
+	// and reintroduce the Close() race NewQUICLayer exists to prevent.
+	if c.ctx == nil {
+		slog.Error("QUICLayer.ListenAndMaintainQUICConnection called on a layer not built via NewQUICLayer; refusing to start")
+		return
+	}
+
 	for {
 		// Bail out if Close() cancelled the context. Without this check
 		// the outer loop would spin-create a new quic.Listen → Accept

@@ -40,3 +40,26 @@ func TestQUICLayerCloseBeforeListen(t *testing.T) {
 		t.Fatal("ListenAndMaintainQUICConnection did not return after Close()")
 	}
 }
+
+// TestQUICLayerListenWithoutConstructor guards the struct-literal case: a
+// QUICLayer built without NewQUICLayer has a nil ctx, and
+// ListenAndMaintainQUICConnection must refuse to start rather than nil-deref on
+// c.ctx.Err().
+func TestQUICLayerListenWithoutConstructor(t *testing.T) {
+	q := &QUICLayer{} // no ctx/cancel
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("ListenAndMaintainQUICConnection panicked on a nil-ctx layer: %v", r)
+			}
+			close(done)
+		}()
+		q.ListenAndMaintainQUICConnection()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ListenAndMaintainQUICConnection did not return on a nil-ctx layer")
+	}
+}
