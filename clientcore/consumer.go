@@ -223,6 +223,12 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					if err != nil {
 						slog.Debug("Error decoding signal message", "error", err, "msg", string(rawMsg))
 						sleepOrDone(ctx, options.ErrorBackoff)
+						if ctx.Err() != nil {
+							// Cancelled during backoff: hand control back to the FSM
+							// runner (which only observes cancellation between states)
+							// rather than spinning this inner listen loop.
+							return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+						}
 						// Take the error in stride, continue listening to our existing HTTP request stream
 						continue
 					}
