@@ -19,11 +19,21 @@ type ReliableStreamLayer interface {
 }
 
 func NewQUICLayer(bfconn *BroflakeConn, tlsConfig *tls.Config) (*QUICLayer, error) {
+	// ctx/cancel are set here, not in ListenAndMaintainQUICConnection, so they
+	// exist before that goroutine starts and before any Close() can race it.
+	// If they were initialized inside the goroutine, a Close() that landed
+	// first would read a nil cancel and no-op, and the goroutine would then run
+	// quic.Listen/Accept on a context that never gets cancelled — leaking the
+	// listener, the maintain goroutine, and bfconn on every teardown that beats
+	// the goroutine's first line.
+	ctx, cancel := context.WithCancel(context.Background())
 	q := &QUICLayer{
 		bfconn:       bfconn,
 		t:            &quic.Transport{Conn: bfconn},
 		tlsConfig:    tlsConfig,
 		eventualConn: newEventualConn(),
+		ctx:          ctx,
+		cancel:       cancel,
 	}
 
 	return q, nil
@@ -40,8 +50,6 @@ type QUICLayer struct {
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {
-	c.ctx, c.cancel = context.WithCancel(context.Background())
-
 	for {
 		// Bail out if Close() cancelled the context. Without this check
 		// the outer loop would spin-create a new quic.Listen → Accept
