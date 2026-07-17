@@ -25,6 +25,21 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
+// sleepOrDone waits for d, returning early if ctx is cancelled. The consumer
+// FSM's error-backoff sleeps use this instead of a bare <-time.After so a
+// WorkerFSM stopped mid-backoff (e.g. an unbounded outbound being torn down on
+// a network change) exits promptly rather than lingering a full ErrorBackoff.
+// Without it, rapid outbound rebuilds stack overlapping FSMs whose backoffs
+// haven't elapsed. See getlantern/engineering#3698.
+func sleepOrDone(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
+}
+
 func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
 
@@ -155,7 +170,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				slog.Debug("Couldn't subscribe to genesis stream", "url", options.DiscoverySrv+options.Endpoint, "error", err)
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			defer res.Body.Close()
@@ -163,7 +178,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Handle bad protocol version
 			if res.StatusCode == http.StatusTeapot {
 				slog.Debug("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -207,7 +222,13 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					rt, _, err := common.DecodeSignalMsg(rawMsg)
 					if err != nil {
 						slog.Debug("Error decoding signal message", "error", err, "msg", string(rawMsg))
-						<-time.After(options.ErrorBackoff)
+						sleepOrDone(ctx, options.ErrorBackoff)
+						if ctx.Err() != nil {
+							// Cancelled during backoff: hand control back to the FSM
+							// runner (which only observes cancellation between states)
+							// rather than spinning this inner listen loop.
+							return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+						}
 						// Take the error in stride, continue listening to our existing HTTP request stream
 						continue
 					}
@@ -298,7 +319,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				slog.Debug("Couldn't signal offer SDP", "url", options.DiscoverySrv+options.Endpoint, "error", err)
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			defer res.Body.Close()
@@ -306,7 +327,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			switch res.StatusCode {
 			case http.StatusTeapot:
 				slog.Debug("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusNotFound:
 				slog.Debug("Too late for genesis message", "reply_to", replyTo, "status", res.Status)
@@ -315,7 +336,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// We won the connection, proceed
 			default:
 				slog.Debug("Unexpected http status code", "status_code", res.StatusCode)
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -456,7 +477,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
 				slog.Debug("Couldn't signal ICE candidates", "url", options.DiscoverySrv+options.Endpoint, "error", err)
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -466,7 +487,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			switch res.StatusCode {
 			case http.StatusTeapot:
 				slog.Debug("Received 'bad protocol version' response")
-				<-time.After(options.ErrorBackoff)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
