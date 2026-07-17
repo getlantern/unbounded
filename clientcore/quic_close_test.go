@@ -47,18 +47,18 @@ func TestQUICLayerCloseBeforeListen(t *testing.T) {
 // c.ctx.Err().
 func TestQUICLayerListenWithoutConstructor(t *testing.T) {
 	q := &QUICLayer{} // no ctx/cancel
-	done := make(chan struct{})
+	// Convey any panic back over a channel rather than calling t.* from the
+	// goroutine, which could otherwise fire after the test completed.
+	result := make(chan any, 1)
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Errorf("ListenAndMaintainQUICConnection panicked on a nil-ctx layer: %v", r)
-			}
-			close(done)
-		}()
+		defer func() { result <- recover() }()
 		q.ListenAndMaintainQUICConnection()
 	}()
 	select {
-	case <-done:
+	case r := <-result:
+		if r != nil {
+			t.Errorf("ListenAndMaintainQUICConnection panicked on a nil-ctx layer: %v", r)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ListenAndMaintainQUICConnection did not return on a nil-ctx layer")
 	}
