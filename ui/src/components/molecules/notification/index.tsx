@@ -1,6 +1,6 @@
 import {Container, Text} from './styles'
 import {StateEmitter, useEmitterState} from '../../../hooks/useStateEmitter'
-import {useContext, useEffect, useState} from 'react'
+import {useContext, useEffect, useRef, useState} from 'react'
 import {Ellipse} from '../../atoms/ellipse'
 import Explosion from './explosion'
 import {AppContext} from '../../../context'
@@ -37,6 +37,10 @@ export const Notification = () => {
 	const notifications = useEmitterState(notificationQueue)
 	const sharing = useEmitterState(sharingEmitter)
 	const [notification, setNotification] = useState<NotificationType | null>(null)
+	// ref mirror so the flush effect can reach the current notification's
+	// timers without depending on it (and without side effects in an updater)
+	const notificationRef = useRef<NotificationType | null>(null)
+	useEffect(() => { notificationRef.current = notification }, [notification])
 	const show = notification?.show ?? false
 	const simple = layout === Layouts.SIMPLE
 	const fontSize = layout === Layouts.BANNER ? 14 : 12
@@ -52,11 +56,10 @@ export const Notification = () => {
 	// on -> off toggle indefinitely.
 	useEffect(() => {
 		if (sharing) return
-		setNotification(current => {
-			if (current?.timeoutHide) clearTimeout(current.timeoutHide)
-			if (current?.timeoutRemove) clearTimeout(current.timeoutRemove)
-			return null
-		})
+		const current = notificationRef.current
+		if (current?.timeoutHide) clearTimeout(current.timeoutHide)
+		if (current?.timeoutRemove) clearTimeout(current.timeoutRemove)
+		setNotification(null)
 		if (notificationQueue.state.length) notificationQueue.update([])
 	}, [sharing])
 

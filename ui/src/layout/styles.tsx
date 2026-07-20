@@ -26,9 +26,10 @@ const AppWrapper = styled.section`
   display: flex;
   // simple gets a definite width: in shrink-to-fit hosts (flex/inline-block
   // slots) width:100% collapses to max-content, which differs between the
-  // off/on control bars and makes the card resize when toggled
+  // off/on control bars and makes the card resize when toggled. Its
+  // max-width:100% still lets hosts narrower than 344px shrink the card.
   width: ${({layout}: Props) => layout === Layouts.SIMPLE ? '344px' : '100%'};
-  max-width: ${({layout}: Props) => layout === Layouts.PANEL ? '330px' : layout === Layouts.FLOATING ? '360px' : layout === Layouts.SIMPLE ? '344px' : 'unset'};
+  max-width: ${({layout}: Props) => layout === Layouts.PANEL ? '330px' : layout === Layouts.FLOATING ? '360px' : layout === Layouts.SIMPLE ? '100%' : 'unset'};
   border-radius: ${({ layout }: Props) => getBorderRadius(layout)};
   background-color: ${({theme, $menu}: Props) => theme === Themes.DARK ? COLORS.grey5 : $menu ? COLORS.grey1 : COLORS.white };
   box-sizing: content-box;

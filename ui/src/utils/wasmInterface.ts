@@ -201,8 +201,10 @@ export class WasmInterface {
 			// clear on stop instead of lingering until the workers wind down.
 			// (emitting an empty array would NOT clear arcs: useGeo's updateArcs
 			// only removes arcs for connections it sees with state -1)
-			this.connectionMap = {}
-			this.connections = this.connections.map(c => ({...c, state: -1}))
+			const stopped: { [key: number]: Connection } = {}
+			this.connections.forEach(c => stopped[c.workerIdx] = {...c, state: -1})
+			this.connectionMap = stopped
+			this.connections = this.idxMapToArr(this.connectionMap)
 			connectionsEmitter.update(this.connections)
 		}
 	}
@@ -230,6 +232,13 @@ export class WasmInterface {
 	}
 
 	handleConnection = (e: { detail: Connection }) => {
+		// on web the wasm client's workers wind down asynchronously after
+		// stop(), and its listeners stay attached; stop() already broadcast
+		// the disconnected state, so drop late events — otherwise an in-flight
+		// state:1 event re-activates an arc/count while the widget is off and
+		// double-increments lifetimeConnections against the reset map. (the
+		// extension popup receives synced state instead, so it is exempt)
+		if (this.target !== Targets.EXTENSION_POPUP && !sharingEmitter.state) return
 		const {detail: connection} = e
 		const {state, workerIdx} = connection
 		const existingState = this.connectionMap[workerIdx]?.state || -1
