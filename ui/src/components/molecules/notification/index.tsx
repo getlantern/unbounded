@@ -5,6 +5,7 @@ import {Ellipse} from '../../atoms/ellipse'
 import Explosion from './explosion'
 import {AppContext} from '../../../context'
 import {Layouts} from '../../../constants'
+import {sharingEmitter} from '../../../utils/wasmInterface'
 
 interface NotificationType {
 	id: number
@@ -34,6 +35,7 @@ export const removeNotification = (id: number) => {
 export const Notification = () => {
 	const {theme, layout} = useContext(AppContext).settings
 	const notifications = useEmitterState(notificationQueue)
+	const sharing = useEmitterState(sharingEmitter)
 	const [notification, setNotification] = useState<NotificationType | null>(null)
 	const show = notification?.show ?? false
 	const simple = layout === Layouts.SIMPLE
@@ -42,6 +44,21 @@ export const Notification = () => {
 	// globe-to-control gap is 24px, so -12 puts the notification 12px above the control
 	const bottomShown = simple ? -12 : 0
 	const bottomHidden = simple ? -22 : -10
+
+	// turning sharing off dismisses everything: flush the queue, cancel any
+	// pending hide/remove timers, and drop the visible notification. Without
+	// this, a non-autoHide notification (e.g. "waiting for connections") only
+	// ever clears when another notification arrives, so it outlives a quick
+	// on -> off toggle indefinitely.
+	useEffect(() => {
+		if (sharing) return
+		setNotification(current => {
+			if (current?.timeoutHide) clearTimeout(current.timeoutHide)
+			if (current?.timeoutRemove) clearTimeout(current.timeoutRemove)
+			return null
+		})
+		if (notificationQueue.state.length) notificationQueue.update([])
+	}, [sharing])
 
 	useEffect(() => {
 		if (!notifications.length) return setNotification(null)

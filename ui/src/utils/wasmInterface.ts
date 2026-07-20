@@ -197,6 +197,13 @@ export class WasmInterface {
 			readyEmitter.update(this.ready)
 			this.wasmClient.stop()
 			sharingEmitter.update(false)
+			// mark every connection disconnected so arcs and the helping count
+			// clear on stop instead of lingering until the workers wind down.
+			// (emitting an empty array would NOT clear arcs: useGeo's updateArcs
+			// only removes arcs for connections it sees with state -1)
+			this.connectionMap = {}
+			this.connections = this.connections.map(c => ({...c, state: -1}))
+			connectionsEmitter.update(this.connections)
 		}
 	}
 
