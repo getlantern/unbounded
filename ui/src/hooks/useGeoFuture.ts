@@ -241,6 +241,7 @@ export const useGeo = () => {
 				const countryName = (countries[iso] || countries[CENSORED_ISO_FALLBACK]).name
 				if (!countryName) return
 				if (target === Targets.EXTENSION_POPUP && startTs.current + 1000 > performance.now()) return // don't show notifications on initial load because of initial sync w/ bg script
+				if (!sharingEmitter.state) return // this job's lookup outlived a stop; don't announce a connection the user already ended
 				pushNotification({
 					id: ++nextNotificationId.current,
 					// text: `Helping a new person in ${countryName.split(',')[0]}`,
@@ -271,6 +272,20 @@ export const useGeo = () => {
 		// pending set to decide what actually needs work.
 		updateArcs(connections)
 	}, [connections, updateArcs])
+
+	useEffect(() => {
+		if (sharing) return
+		// stop()'s synthetic state:-1 broadcast can't remove an arc whose add
+		// job is still awaiting its geo lookup (the -1 diffs against arcs that
+		// aren't committed yet and is dropped). Chain a full clear behind the
+		// lock so it runs after every in-flight job has settled; adds enqueued
+		// by a subsequent restart chain after the clear, so they're safe.
+		updateLock.current = updateLock.current.then(() => {
+			pendingAdds.current.clear()
+			pendingRemoves.current.clear()
+			setArcs(prev => prev.length ? [] : prev)
+		})
+	}, [sharing])
 
 	useEffect(() => {
 		if (sharing && !active) pushNotification({
