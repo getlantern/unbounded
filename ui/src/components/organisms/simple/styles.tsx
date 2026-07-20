@@ -36,7 +36,7 @@ const OffPill = styled.div`
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 8px; // minimum only — space-between stretches it; 16px wouldn't fit
   // fill the card interior (overriding the Container's align-items: center)
   // so the pill and the on panel are always the same width
   align-self: stretch;

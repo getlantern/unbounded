@@ -52,7 +52,7 @@ const Simple = () => {
 			{
 				!sharing ? (
 					<OffPill>
-						<PanelLeft style={{gap: 16}}>
+						<PanelLeft>
 							<HeartIcon/>
 							<BarText>{t('enableActionMode')}</BarText>
 						</PanelLeft>
