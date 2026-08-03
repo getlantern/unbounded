@@ -1,0 +1,280 @@
+package egress
+
+import (
+	"net"
+	"sync"
+	"sync/atomic"
+	"testing"
+)
+
+// resetStats isolates tests from each other and from any package-level state
+// left behind by the egress tests that spin up real listeners.
+func resetStats(t *testing.T) {
+	t.Helper()
+	statsMx.Lock()
+	statsByCC = map[string]*countryStats{}
+	statsMx.Unlock()
+	atomic.StoreInt64(&unknownCCs.clients, 0)
+	atomic.StoreInt64(&unknownCCs.ingressBytes, 0)
+}
+
+func collect(t *testing.T) map[string][2]int64 {
+	t.Helper()
+	out := map[string][2]int64{}
+	eachCountryStats(func(cc string, clients, bytes int64) {
+		out[cc] = [2]int64{clients, bytes}
+	})
+	return out
+}
+
+func TestStatsFor_SameCountrySharesOneEntry(t *testing.T) {
+	resetStats(t)
+	a, b := statsFor("CN"), statsFor("CN")
+	if a != b {
+		t.Fatal("statsFor returned distinct entries for the same country")
+	}
+	if statsFor("RU") == a {
+		t.Fatal("statsFor returned the same entry for different countries")
+	}
+}
+
+// An empty country must land in the unknown bucket rather than creating a
+// series keyed by the empty string, which reads as missing data in queries.
+func TestStatsFor_EmptyCountryGoesToUnknown(t *testing.T) {
+	resetStats(t)
+	if statsFor("") != unknownCCs {
+		t.Fatal("empty country did not map to the unknown bucket")
+	}
+}
+
+// donorCountry returns the literal unknownCountry, never "", so statsFor must
+// route that value to the same block as "". Otherwise the map gains an "unknown"
+// key while eachCountryStats also appends its own unknownCountry row, emitting
+// two observations with an identical donor_country attribute in one otel
+// callback — a duplicate series, with the real traffic in the map entry and the
+// always-reported row stuck at zero.
+func TestStatsFor_UnknownLiteralRoutesToUnknownBucket(t *testing.T) {
+	resetStats(t)
+	if statsFor(unknownCountry) != unknownCCs {
+		t.Fatal("unknownCountry did not map to the unknown bucket")
+	}
+	statsMx.Lock()
+	_, leaked := statsByCC[unknownCountry]
+	statsMx.Unlock()
+	if leaked {
+		t.Fatalf("statsFor(%q) created a map entry; it must reuse the unknown bucket", unknownCountry)
+	}
+}
+
+// Whatever donorCountry produces for an unresolvable peer must survive a round
+// trip through statsFor and eachCountryStats as exactly one series.
+func TestEachCountryStats_UnknownEmittedExactlyOnce(t *testing.T) {
+	resetStats(t)
+	s := statsFor(donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443}))
+	atomic.AddInt64(&s.clients, 1)
+	atomic.AddInt64(&s.ingressBytes, 42)
+
+	counts := map[string]int{}
+	var bytesSeen int64
+	eachCountryStats(func(cc string, _, bytes int64) {
+		counts[cc]++
+		if cc == unknownCountry {
+			bytesSeen += bytes
+		}
+	})
+
+	if counts[unknownCountry] != 1 {
+		t.Fatalf("unknown series emitted %d times, want exactly 1 (duplicate attribute set)", counts[unknownCountry])
+	}
+	if bytesSeen != 42 {
+		t.Fatalf("unknown series reported %d bytes, want 42 — traffic landed in the wrong bucket", bytesSeen)
+	}
+}
+
+func TestEachCountryStats_ReportsPerCountryAndDrainsBytes(t *testing.T) {
+	resetStats(t)
+	cn, ru := statsFor("CN"), statsFor("RU")
+	atomic.AddInt64(&cn.clients, 2)
+	atomic.AddInt64(&cn.ingressBytes, 500)
+	atomic.AddInt64(&ru.clients, 1)
+	atomic.AddInt64(&ru.ingressBytes, 100)
+
+	got := collect(t)
+	if got["CN"] != [2]int64{2, 500} {
+		t.Errorf("CN = %v, want [2 500]", got["CN"])
+	}
+	if got["RU"] != [2]int64{1, 100} {
+		t.Errorf("RU = %v, want [1 100]", got["RU"])
+	}
+
+	// Bytes are interval-scoped and must drain, while client counts persist
+	// because they describe currently-open connections.
+	got = collect(t)
+	if got["CN"] != [2]int64{2, 0} {
+		t.Errorf("after drain CN = %v, want [2 0]", got["CN"])
+	}
+	if got["RU"] != [2]int64{1, 0} {
+		t.Errorf("after drain RU = %v, want [1 0]", got["RU"])
+	}
+}
+
+// Idle countries are skipped to bound series count, but "unknown" must always
+// report so the metric never disappears entirely. A vanished series is
+// indistinguishable from a dead exporter, which is the outage we most need to
+// be able to see.
+func TestEachCountryStats_AlwaysReportsUnknownEvenWhenIdle(t *testing.T) {
+	resetStats(t)
+	statsFor("CN") // known but idle
+
+	got := collect(t)
+	if _, ok := got[unknownCountry]; !ok {
+		t.Fatalf("unknown country series missing from an idle report: %v", got)
+	}
+	if _, ok := got["CN"]; ok {
+		t.Errorf("idle country CN should have been skipped, got %v", got["CN"])
+	}
+}
+
+// The read path adds bytes concurrently from many connections; the reporting
+// callback drains concurrently. No byte may be lost or double counted.
+func TestEachCountryStats_NoLostBytesUnderConcurrency(t *testing.T) {
+	resetStats(t)
+	const writers, perWriter = 8, 1000
+	cn := statsFor("CN")
+
+	var drained int64
+	stop := make(chan struct{})
+	var drainWg sync.WaitGroup
+	drainWg.Add(1)
+	go func() {
+		defer drainWg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				eachCountryStats(func(cc string, _, bytes int64) {
+					if cc == "CN" {
+						atomic.AddInt64(&drained, bytes)
+					}
+				})
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perWriter; j++ {
+				atomic.AddInt64(&cn.ingressBytes, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+	drainWg.Wait()
+
+	// Final drain to sweep anything added after the last concurrent pass.
+	eachCountryStats(func(cc string, _, bytes int64) {
+		if cc == "CN" {
+			atomic.AddInt64(&drained, bytes)
+		}
+	})
+
+	if got := atomic.LoadInt64(&drained); got != writers*perWriter {
+		t.Fatalf("drained %d bytes, want %d (lost or double-counted)", got, writers*perWriter)
+	}
+}
+
+// Telemetry must never carry the full session identifier, matching the practice
+// established by csidPrefix in clientcore/jit_egress_consumer.go. Short inputs
+// pass through rather than panicking on the slice bound.
+func TestCsidPrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                                     "",
+		"abc":                                  "abc",
+		"12345678":                             "12345678",
+		"123456789":                            "12345678",
+		"0f8b2c1e-4a5d-4c9f-8e7a-1b2c3d4e5f60": "0f8b2c1e",
+	} {
+		if got := csidPrefix(in); got != want {
+			t.Errorf("csidPrefix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// donorGeo is swapped behind an atomic pointer, and the read path must never see
+// a nil lookup — including before any listener has run initDonorGeo.
+func TestDonorGeoAccessors(t *testing.T) {
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+
+	if lookupDonorGeo() == nil {
+		t.Fatal("lookupDonorGeo returned nil; init should seed geo.NoLookup")
+	}
+	if got := lookupDonorGeo().CountryCode(net.ParseIP("8.8.8.8")); got != "" {
+		t.Errorf("default lookup returned %q, want \"\" (NoLookup)", got)
+	}
+
+	setDonorGeo(stubCountryLookup{cc: "CN"})
+	if got := donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8")}); got != "CN" {
+		t.Errorf("donorCountry after swap = %q, want CN", got)
+	}
+}
+
+// stubCountryLookup is a minimal geo.CountryLookup for exercising the swap.
+type stubCountryLookup struct{ cc string }
+
+func (s stubCountryLookup) CountryCode(net.IP) string { return s.cc }
+func (s stubCountryLookup) Ready() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
+func TestDBNameFromURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.tar.gz", "GeoLite2-Country", true},
+		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country", "GeoLite2-Country", true},
+		{
+			// The case that motivated this: MaxMind's real permalink puts the
+			// edition in the query, so path.Base over the raw URL would have
+			// produced "geoip_download?edition_id=...&license_key=..." and used
+			// it as both a tarball member name and a local filename.
+			"maxmind permalink",
+			"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=secret&suffix=tar.gz",
+			"GeoLite2-Country", true,
+		},
+		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country", true},
+		{"fragment", "https://example.com/GeoLite2-Country.tar.gz#frag", "GeoLite2-Country", true},
+		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db", true},
+		{"not a url", "GeoLite2-Country.tar.gz", "", false},
+		{"no path", "https://example.com", "", false},
+		{"root path", "https://example.com/", "", false},
+	} {
+		got, ok := dbNameFromURL(tc.in)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("%s: dbNameFromURL(%q) = (%q, %v), want (%q, %v)", tc.name, tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// With no GEODB configured the lookup is geo.NoLookup, whose CountryCode returns
+// "". That must surface as unknownCountry, never as an empty label.
+func TestDonorCountry_DefaultsToUnknown(t *testing.T) {
+	for _, addr := range []net.Addr{
+		&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443},
+		&net.TCPAddr{}, // no IP
+		nil,
+		&net.UDPAddr{IP: net.ParseIP("8.8.8.8")}, // not a TCPAddr
+	} {
+		if got := donorCountry(addr); got != unknownCountry {
+			t.Errorf("donorCountry(%v) = %q, want %q", addr, got, unknownCountry)
+		}
+	}
+}

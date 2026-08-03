@@ -29,6 +29,21 @@ type errorlessWebSocketPacketConn struct {
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
 	readError chan error
+
+	// stats accumulates this connection's bytes against its donor country. It is
+	// a pointer so the read path does a single atomic add against memory it
+	// already holds, rather than hashing a map key per packet. Methods on this
+	// type use value receivers, so mutable per-session state must be behind a
+	// pointer to be shared with the handler.
+	stats *countryStats
+	// sessionBytes is the handler's per-session byte counter, reported on the
+	// session span. Separate from stats.ingressBytes, which the otel callback
+	// resets every interval.
+	sessionBytes *int64
+	// keepaliveFailed is set when a keepalive ping goes unanswered, which is the
+	// signature of a wedged peer rather than one that disconnected. The handler
+	// reports it as the session's teardown reason.
+	keepaliveFailed *atomic.Bool
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -46,7 +61,25 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 			select {
 			case <-time.After(q.keepalive):
 				slog.Debug("PING", "addr", q.addr)
-				q.w.Ping(context.Background())
+				// Bound the ping and record its failure. coder/websocket's Ping
+				// waits for the matching pong, so with the previous
+				// context.Background() a peer that stops answering — the exact
+				// signature of a frozen browser widget — wedged this goroutine
+				// forever and discarded the error, making a freeze invisible.
+				// A timed-out ping is a *positive* freeze signal, as opposed to
+				// the mere absence of traffic, which is indistinguishable from a
+				// user closing the tab.
+				pingCtx, cancel := context.WithTimeout(context.Background(), q.keepalive)
+				err := q.w.Ping(pingCtx)
+				cancel()
+				if err != nil {
+					if q.keepaliveFailed != nil {
+						q.keepaliveFailed.Store(true)
+					}
+					slog.Debug("PING failed", "addr", q.addr, "error", err)
+					// The read below will fail once the peer is gone; leave
+					// teardown to it rather than racing it from here.
+				}
 			case <-readDone:
 				return
 			}
@@ -85,7 +118,19 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}
 
 	copy(p, b)
-	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
+	// Attribute bytes to this connection's donor country and to its session.
+	// Both are nil-checked because migration_test and other callers construct
+	// this type directly without the instrumentation fields.
+	//
+	// The former global nIngressBytes add is gone: ingress-bytes is now observed
+	// from the per-country blocks, so incrementing a global nothing reads would
+	// be a pointless atomic on the hot read path.
+	if q.stats != nil {
+		atomic.AddInt64(&q.stats.ingressBytes, int64(len(b)))
+	}
+	if q.sessionBytes != nil {
+		atomic.AddInt64(q.sessionBytes, int64(len(b)))
+	}
 	return len(b), q.tcpAddr, err
 }
 

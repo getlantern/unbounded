@@ -192,11 +192,92 @@ func NewSubprotocolsRequest(csid, version string) []string {
 	return []string{subprotocolsMagicCookie, csid, version}
 }
 
-func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
-	if len(s) != 3 {
-		return "", "", false
+// NewSubprotocolsRequestWithCountry is NewSubprotocolsRequest plus an optional
+// consumer country, so the egress can attribute a session to the region it is
+// actually serving. The egress otherwise only ever sees the *donor's* address:
+// the consumer sits behind the donor's WebRTC data channel, so nothing about
+// where a session terminates is observable server-side without being told.
+//
+// Deliberately a separate constructor rather than a new parameter on
+// NewSubprotocolsRequest: callers that have no country to offer, or that choose
+// not to disclose one, should keep emitting the 3-element form and stay
+// byte-identical on the wire to every release before this one.
+//
+// Privacy note: this travels consumer -> donor -> egress, so a donor forwarding
+// it can read it. A donor already learns far more than a country code from ICE
+// candidate exchange (the consumer's public IP), so the marginal disclosure to
+// the donor is small — but it is not zero, and an empty country is always a
+// valid choice. Pass a country only when the consumer has consented to it.
+func NewSubprotocolsRequestWithCountry(csid, version, country string) []string {
+	if country == "" {
+		return NewSubprotocolsRequest(csid, version)
 	}
-	return s[1], s[2], true
+	return []string{subprotocolsMagicCookie, csid, version, country}
+}
+
+// ParseSubprotocolsRequest accepts both the 3-element form and the 4-element
+// form that carries a consumer country, so a new egress keeps serving old
+// donors. Because the field is trailing and optional, an old egress also keeps
+// serving new donors only if it tolerates the extra element — it does not (it
+// requires exactly 3), so donors must not emit the 4-element form until the
+// egress fleet has been upgraded past this commit.
+func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
+	csid, version, _, ok = ParseSubprotocolsRequestWithCountry(s)
+	return csid, version, ok
+}
+
+// ParseSubprotocolsRequestWithCountry additionally returns the consumer country
+// when the peer supplied one; country is "" for the 3-element form.
+func ParseSubprotocolsRequestWithCountry(s []string) (csid, version, country string, ok bool) {
+	// Validate the magic cookie rather than only the arity. The previous parser
+	// checked length alone, so any 3-element Sec-Websocket-Protocol list parsed
+	// as ok and the mismatch surfaced later as a vaguer websocket.Accept failure.
+	// The cookie is a single shared constant that has never changed, so nothing
+	// that has ever spoken this protocol is affected by rejecting a wrong one.
+	if len(s) < 1 || s[0] != subprotocolsMagicCookie {
+		return "", "", "", false
+	}
+
+	switch len(s) {
+	case 3:
+		return s[1], s[2], "", true
+	case 4:
+		return s[1], s[2], normalizeCountry(s[3]), true
+	default:
+		return "", "", "", false
+	}
+}
+
+// normalizeCountry bounds an untrusted country to a two-letter ISO-3166-1 alpha-2
+// code, uppercased, or returns "" to mean "not supplied".
+//
+// This value arrives in a client-controlled Sec-Websocket-Protocol element and
+// flows into span attributes. Passing it through verbatim would let any peer
+// mint arbitrarily long or arbitrarily many distinct attribute values, which is
+// a cardinality and payload amplification attack on the tracing backend rather
+// than merely bad data. Dropping unparseable values is deliberate: a session
+// labelled "not supplied" is a small loss, whereas a session that can label
+// itself anything is a liability.
+//
+// Rejecting rather than truncating, because a truncated garbage value is
+// indistinguishable from a real code and would silently pollute the same
+// dimension.
+func normalizeCountry(country string) string {
+	if len(country) != 2 {
+		return ""
+	}
+	out := []byte(country)
+	for i, c := range out {
+		switch {
+		case c >= 'a' && c <= 'z':
+			out[i] = c - ('a' - 'A')
+		case c >= 'A' && c <= 'Z':
+			// already canonical
+		default:
+			return ""
+		}
+	}
+	return string(out)
 }
 
 func NewSubprotocolsResponse() []string {
