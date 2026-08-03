@@ -32,7 +32,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # create tags, push bump commit, publish releases
+  contents: write       # create tags, push the bump branch, publish releases
+  pull-requests: write  # open the version-bump PR (main is protected)
 
 jobs:
   version:
@@ -40,6 +41,7 @@ jobs:
     outputs:
       version:    ${{ steps.pick.outputs.version }}
       bumped:     ${{ steps.pick.outputs.bumped }}
+      release:    ${{ steps.pick.outputs.release }}
       target_sha: ${{ steps.pick.outputs.target_sha }}
     steps:
       - uses: actions/checkout@v4
@@ -104,9 +106,36 @@ jobs:
             git config user.name  'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add common/version.go
-            # [skip ci] prevents this commit from re-triggering the same workflow.
-            git commit -m "chore: bump egress version to $next [skip ci]"
-            git push origin HEAD:main
+
+            # main is a protected branch ("Changes must be made through a pull
+            # request"), so pushing the bump directly fails with GH006 and takes
+            # the whole release down with it. That is exactly what happened on
+            # every egress-relevant merge until this change: the workflow bumped
+            # v2.3.3 -> v2.3.4, got rejected, and no release was ever published.
+            #
+            # So open a PR instead. Deliberately NO [skip ci] here: merging this
+            # PR must re-trigger the workflow, and on that run version.go will
+            # differ from the latest release tag, so the "manual bump detected"
+            # branch above takes over and publishes without needing to push
+            # anything. One human click per release, and the tag always points at
+            # a commit that is genuinely on main.
+            branch="chore/egress-release-$next"
+            git commit -m "chore: bump egress version to $next"
+
+            # --force so a re-run of a failed release refreshes the branch rather
+            # than dying on "already exists".
+            git push --force origin "HEAD:refs/heads/$branch"
+
+            # Reuse an open PR if one is already out for this version; gh pr
+            # create would otherwise fail the job on a re-run.
+            if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')" ]; then
+              gh pr create \
+                --base main --head "$branch" \
+                --title "chore: bump egress version to $next" \
+                --body "Automated egress version bump opened by release-egress.yml. main is protected, so the workflow cannot push this commit directly. Merging this PR re-triggers the release workflow, which will then see version.go ahead of the latest release tag and publish $next."
+            fi
+
+            echo "opened/updated bump PR on $branch; release will publish when it merges"
             bumped=true
           fi
 
@@ -116,12 +145,21 @@ jobs:
           # any commit that lands on main after us. concurrency serializes
           # OUR workflow runs, but doesn't block direct pushes from humans.
           target_sha=$(git rev-parse HEAD)
+          # release=false when this run only opened a bump PR: version.go is not
+          # on main yet, so tagging target_sha would tag a commit off-main and
+          # publish a binary whose common.Version disagrees with the tag.
+          if [ "$bumped" = "true" ]; then release=false; else release=true; fi
+
           echo "version=$next"       >> "$GITHUB_OUTPUT"
           echo "bumped=$bumped"      >> "$GITHUB_OUTPUT"
+          echo "release=$release"    >> "$GITHUB_OUTPUT"
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
+    # Skipped on runs that only opened a bump PR; the merge of that PR triggers
+    # the run that actually builds and releases.
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -166,6 +204,7 @@ jobs:
 
   release:
     needs: [version, build]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
