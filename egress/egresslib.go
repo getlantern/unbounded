@@ -347,6 +347,14 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 			// by country are unaffected. Anything that reduced with max/latest
 			// instead of sum needs a spaceAggregation of sum to stay correct.
 			//
+			// CAUTION when summing: these datapoints also carry a `via` resource
+			// attribute identifying the telemetry collector that forwarded them
+			// (ops-0/1/2), and the same datapoint arrives once per collector. The
+			// egress is a single instance — instance.id has exactly one value,
+			// unbounded-us-linode-nj.iantem.io — so summing across `via` triples
+			// the real figure. Sum across donor_country, but filter or average
+			// across `via`.
+			//
 			// Note these counts come from per-session counters incremented and
 			// decremented exactly once around the handler, whereas the legacy
 			// global nClients decrements in the conn's Close(). nClients is now
