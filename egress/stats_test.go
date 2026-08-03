@@ -188,6 +188,52 @@ func TestEachCountryStats_NoLostBytesUnderConcurrency(t *testing.T) {
 	}
 }
 
+// Telemetry must never carry the full session identifier, matching the practice
+// established by csidPrefix in clientcore/jit_egress_consumer.go. Short inputs
+// pass through rather than panicking on the slice bound.
+func TestCsidPrefix(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                                     "",
+		"abc":                                  "abc",
+		"12345678":                             "12345678",
+		"123456789":                            "12345678",
+		"0f8b2c1e-4a5d-4c9f-8e7a-1b2c3d4e5f60": "0f8b2c1e",
+	} {
+		if got := csidPrefix(in); got != want {
+			t.Errorf("csidPrefix(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// donorGeo is swapped behind an atomic pointer, and the read path must never see
+// a nil lookup — including before any listener has run initDonorGeo.
+func TestDonorGeoAccessors(t *testing.T) {
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+
+	if lookupDonorGeo() == nil {
+		t.Fatal("lookupDonorGeo returned nil; init should seed geo.NoLookup")
+	}
+	if got := lookupDonorGeo().CountryCode(net.ParseIP("8.8.8.8")); got != "" {
+		t.Errorf("default lookup returned %q, want \"\" (NoLookup)", got)
+	}
+
+	setDonorGeo(stubCountryLookup{cc: "CN"})
+	if got := donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8")}); got != "CN" {
+		t.Errorf("donorCountry after swap = %q, want CN", got)
+	}
+}
+
+// stubCountryLookup is a minimal geo.CountryLookup for exercising the swap.
+type stubCountryLookup struct{ cc string }
+
+func (s stubCountryLookup) CountryCode(net.IP) string { return s.cc }
+func (s stubCountryLookup) Ready() <-chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}
+
 func TestDBNameFromURL(t *testing.T) {
 	for _, tc := range []struct {
 		name, in, want string

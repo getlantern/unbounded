@@ -5,6 +5,18 @@ import (
 	"sync/atomic"
 )
 
+// csidPrefix shortens a consumer session ID for telemetry. Mirrors the helper of
+// the same name in clientcore/jit_egress_consumer.go, whose comment states the
+// intent: enough to correlate a session within a time window "without leaking the
+// full session identifier". Eight characters is ample against the low tens of
+// concurrent sessions this fleet carries, and nothing joins on the full value.
+func csidPrefix(csid string) string {
+	if len(csid) <= 8 {
+		return csid
+	}
+	return csid[:8]
+}
+
 // countryStats accumulates per-donor-country counters. Each live WebSocket holds
 // a pointer to the entry for its own country, so the read path does one atomic
 // add against memory it already has rather than taking a lock or hashing a map

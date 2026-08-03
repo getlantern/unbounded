@@ -143,7 +143,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// The donor country is not known until the peer address resolves after
 	// Accept, so it is attached further down.
 	_, span := tracer.Start(r.Context(), spanWebSocketSession, oteltrace.WithAttributes(
-		attribute.String(attrConsumerSessionID, consumerSessionID),
+		attribute.String(attrConsumerSessionID, csidPrefix(consumerSessionID)),
 		attribute.String(attrProtocolVersion, version),
 	))
 	if consumerCountry != "" {
@@ -213,7 +213,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer wspconn.Close()
-	slog.Debug("Accepted a new WebSocket connection!", "csid", consumerSessionID, "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
+	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
 	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {

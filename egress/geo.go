@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/geo"
@@ -25,7 +26,30 @@ const unknownCountry = "unknown"
 // unchanged when GEODB is unset — every series is simply labelled
 // unknownCountry. Geolocation is observability, never a gate on serving
 // traffic.
-var donorGeo geo.CountryLookup = geo.NoLookup{}
+//
+// Held in an atomic pointer rather than a plain package variable. initDonorGeo's
+// sync.Once already makes the write happen once, before the first listener serves
+// anything, so today every read is ordered after it by a happens-before chain
+// through goroutine creation — but that argument is subtle, invisible at the read
+// site, and silently broken by any future caller that writes this from elsewhere.
+// donorCountry runs once per WebSocket session rather than per packet, so an
+// atomic load costs nothing worth measuring and makes the safety local.
+var donorGeo atomic.Pointer[geo.CountryLookup]
+
+func init() {
+	var l geo.CountryLookup = geo.NoLookup{}
+	donorGeo.Store(&l)
+}
+
+// setDonorGeo swaps in a new lookup.
+func setDonorGeo(l geo.CountryLookup) {
+	donorGeo.Store(&l)
+}
+
+// lookupDonorGeo returns the current lookup, never nil (init seeds NoLookup).
+func lookupDonorGeo() geo.CountryLookup {
+	return *donorGeo.Load()
+}
 
 // initDonorGeoOnce guards initDonorGeo. NewListener is deliberately safe to call
 // more than once per process (multiple embedded listeners, graceful restarts,
@@ -58,7 +82,7 @@ func initDonorGeoLocked() {
 		slog.Debug(fmt.Sprintf("Cannot derive a database name from GEODB %q, donor country will be %q", geoDb, unknownCountry))
 		return
 	}
-	donorGeo = geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, nameInTarball, geo.CountryCode)
+	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, nameInTarball, geo.CountryCode))
 	slog.Debug(fmt.Sprintf("Using %v to geolocate donors", geoDb))
 }
 
@@ -111,7 +135,7 @@ func donorCountry(addr net.Addr) string {
 	if !ok || tcpAddr == nil || tcpAddr.IP == nil {
 		return unknownCountry
 	}
-	if cc := donorGeo.CountryCode(tcpAddr.IP); cc != "" {
+	if cc := lookupDonorGeo().CountryCode(tcpAddr.IP); cc != "" {
 		return cc
 	}
 	return unknownCountry
