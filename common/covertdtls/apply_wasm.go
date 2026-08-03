@@ -2,20 +2,29 @@
 
 package covertdtls
 
-import "github.com/pion/webrtc/v4"
+import (
+	"errors"
+
+	"github.com/pion/webrtc/v4"
+)
 
 // Apply is a no-op on js/wasm. This is not a temporary shim: browser WebRTC
 // performs its own DTLS handshake, so a widget running in a browser has no
 // ability to randomize or mimic its ClientHello fingerprint no matter what the
-// config asks for.
+// config asks for. See the package doc for what that means for coverage.
 //
-// Worth stating plainly, because the native build uses this to evade the DPI
-// filtering described in the package doc: **browser widgets do not get that
-// protection**, and a config that sets randomize/mimic is silently ineffective
-// there. Callers wanting fingerprint control must run a native producer.
+// Returns nil for every configured mode rather than an error, so a shared config
+// carrying a covertdtls mode does not fail widget startup over a capability the
+// platform cannot provide.
 //
-// Returns nil rather than an error so a shared config carrying a covertdtls mode
-// does not fail widget startup over a capability the platform cannot provide.
+// The nil-SettingEngine check is kept identical to the native implementation on
+// purpose. A nil engine is a caller bug rather than a platform limitation, and
+// validation that fires under only one build tag means such a bug is caught on
+// native and passes silently in the widget. That divergence costs more than the
+// three lines it takes to avoid.
 func Apply(cfg Config, s *webrtc.SettingEngine) error {
+	if s == nil {
+		return errors.New("covertdtls: nil SettingEngine")
+	}
 	return nil
 }

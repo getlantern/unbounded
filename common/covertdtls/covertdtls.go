@@ -1,8 +1,18 @@
 // Package covertdtls wraps github.com/theodorsm/covert-dtls so broflake
-// widgets can randomize or mimic their DTLS ClientHello fingerprint. The
+// producers can randomize or mimic their DTLS ClientHello fingerprint. The
 // default pion/dtls fingerprint was being DPI-filtered in Russia starting
 // 2026-03-30 (net4people/bbs#603), blocking Snowflake and, by extension, any
 // pion-based WebRTC transport — including unbounded.
+//
+// NATIVE PRODUCERS ONLY. Fingerprint shaping works by installing hooks on
+// pion's DTLS handshake, so it applies only where pion performs that handshake.
+// In a browser the handshake belongs to the browser's own WebRTC stack, so
+// Apply is a no-op on js/wasm (see apply_wasm.go) and a browser widget gets no
+// fingerprint protection whatever its config says. A config setting
+// randomize/mimic is therefore silently ineffective in the widget — deliberately
+// silent, so a shared config does not fail widget startup over a capability the
+// platform cannot provide. Read that as a coverage gap, not a bug: DPI filtering
+// of the kind described above is not something a browser widget can evade.
 //
 // The API mirrors the equivalent package in Snowflake v2.13.1 so operators
 // familiar with one project can drop into the other.
