@@ -65,6 +65,31 @@ func TestNewSubprotocolsRequestWithCountry_EmptyCountryIsWireIdentical(t *testin
 	}
 }
 
+// A correctly-sized list bearing the wrong cookie must be rejected here rather
+// than passed through to fail later inside websocket.Accept with a vaguer error.
+func TestParseSubprotocolsRequest_RejectsWrongMagicCookie(t *testing.T) {
+	for _, in := range [][]string{
+		{"not-the-cookie", "csid", "v2.3.1"},
+		{"not-the-cookie", "csid", "v2.3.1", "CN"},
+		{"", "csid", "v2.3.1"},
+	} {
+		if _, _, ok := ParseSubprotocolsRequest(in); ok {
+			t.Errorf("ParseSubprotocolsRequest(%v) = ok, want rejected on cookie mismatch", in)
+		}
+		if _, _, _, ok := ParseSubprotocolsRequestWithCountry(in); ok {
+			t.Errorf("ParseSubprotocolsRequestWithCountry(%v) = ok, want rejected on cookie mismatch", in)
+		}
+	}
+
+	// And the constructors' own output must still be accepted.
+	if _, _, ok := ParseSubprotocolsRequest(NewSubprotocolsRequest("csid", "v2.3.1")); !ok {
+		t.Error("rejected our own 3-element request")
+	}
+	if _, _, _, ok := ParseSubprotocolsRequestWithCountry(NewSubprotocolsRequestWithCountry("csid", "v2.3.1", "CN")); !ok {
+		t.Error("rejected our own 4-element request")
+	}
+}
+
 func TestParseSubprotocolsRequest_RejectsWrongArity(t *testing.T) {
 	for _, in := range [][]string{
 		nil,

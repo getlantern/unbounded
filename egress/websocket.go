@@ -96,10 +96,13 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}
 
 	copy(p, b)
-	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
-	// Attribute the same bytes to this connection's donor country and to its
-	// session. Both are nil-checked because migration_test and other callers
-	// construct this type directly without the instrumentation fields.
+	// Attribute bytes to this connection's donor country and to its session.
+	// Both are nil-checked because migration_test and other callers construct
+	// this type directly without the instrumentation fields.
+	//
+	// The former global nIngressBytes add is gone: ingress-bytes is now observed
+	// from the per-country blocks, so incrementing a global nothing reads would
+	// be a pointless atomic on the hot read path.
 	if q.stats != nil {
 		atomic.AddInt64(&q.stats.ingressBytes, int64(len(b)))
 	}

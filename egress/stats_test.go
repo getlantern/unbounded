@@ -47,6 +47,50 @@ func TestStatsFor_EmptyCountryGoesToUnknown(t *testing.T) {
 	}
 }
 
+// donorCountry returns the literal unknownCountry, never "", so statsFor must
+// route that value to the same block as "". Otherwise the map gains an "unknown"
+// key while eachCountryStats also appends its own unknownCountry row, emitting
+// two observations with an identical donor_country attribute in one otel
+// callback — a duplicate series, with the real traffic in the map entry and the
+// always-reported row stuck at zero.
+func TestStatsFor_UnknownLiteralRoutesToUnknownBucket(t *testing.T) {
+	resetStats(t)
+	if statsFor(unknownCountry) != unknownCCs {
+		t.Fatal("unknownCountry did not map to the unknown bucket")
+	}
+	statsMx.Lock()
+	_, leaked := statsByCC[unknownCountry]
+	statsMx.Unlock()
+	if leaked {
+		t.Fatalf("statsFor(%q) created a map entry; it must reuse the unknown bucket", unknownCountry)
+	}
+}
+
+// Whatever donorCountry produces for an unresolvable peer must survive a round
+// trip through statsFor and eachCountryStats as exactly one series.
+func TestEachCountryStats_UnknownEmittedExactlyOnce(t *testing.T) {
+	resetStats(t)
+	s := statsFor(donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443}))
+	atomic.AddInt64(&s.clients, 1)
+	atomic.AddInt64(&s.ingressBytes, 42)
+
+	counts := map[string]int{}
+	var bytesSeen int64
+	eachCountryStats(func(cc string, _, bytes int64) {
+		counts[cc]++
+		if cc == unknownCountry {
+			bytesSeen += bytes
+		}
+	})
+
+	if counts[unknownCountry] != 1 {
+		t.Fatalf("unknown series emitted %d times, want exactly 1 (duplicate attribute set)", counts[unknownCountry])
+	}
+	if bytesSeen != 42 {
+		t.Fatalf("unknown series reported %d bytes, want 42 — traffic landed in the wrong bucket", bytesSeen)
+	}
+}
+
 func TestEachCountryStats_ReportsPerCountryAndDrainsBytes(t *testing.T) {
 	resetStats(t)
 	cn, ru := statsFor("CN"), statsFor("RU")
@@ -141,6 +185,36 @@ func TestEachCountryStats_NoLostBytesUnderConcurrency(t *testing.T) {
 
 	if got := atomic.LoadInt64(&drained); got != writers*perWriter {
 		t.Fatalf("drained %d bytes, want %d (lost or double-counted)", got, writers*perWriter)
+	}
+}
+
+func TestDBNameFromURL(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.tar.gz", "GeoLite2-Country", true},
+		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country", "GeoLite2-Country", true},
+		{
+			// The case that motivated this: MaxMind's real permalink puts the
+			// edition in the query, so path.Base over the raw URL would have
+			// produced "geoip_download?edition_id=...&license_key=..." and used
+			// it as both a tarball member name and a local filename.
+			"maxmind permalink",
+			"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=secret&suffix=tar.gz",
+			"GeoLite2-Country", true,
+		},
+		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country", true},
+		{"fragment", "https://example.com/GeoLite2-Country.tar.gz#frag", "GeoLite2-Country", true},
+		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db", true},
+		{"not a url", "GeoLite2-Country.tar.gz", "", false},
+		{"no path", "https://example.com", "", false},
+		{"root path", "https://example.com/", "", false},
+	} {
+		got, ok := dbNameFromURL(tc.in)
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("%s: dbNameFromURL(%q) = (%q, %v), want (%q, %v)", tc.name, tc.in, got, ok, tc.want, tc.ok)
+		}
 	}
 }
 

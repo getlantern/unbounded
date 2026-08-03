@@ -43,9 +43,6 @@ var nQUICStreams uint64
 // nQUICConnections is the number of open QUIC connections
 var nQUICConnections uint64
 
-// nIngressBytes is the number of bytes received over all WebSocket connections since the last otel measurement callback
-var nIngressBytes uint64
-
 var nClientsCounter metric.Int64ObservableUpDownCounter
 var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
 var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
@@ -289,13 +286,22 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
-	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+	closeFuncMetrics := telemetry.EnableOTELMetrics(ctx)
 
 	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
 	// metrics rather than instead of them: the counters answer "is the fleet
 	// carrying traffic", the spans answer "did this particular consumer session
 	// get served", and neither substitutes for the other.
-	telemetry.EnableOTELTracing(ctx)
+	closeFuncTracing := telemetry.EnableOTELTracing(ctx)
+
+	// Shut both down together on listener close. Dropping the tracing shutdown
+	// would leak the provider and discard whatever spans were still buffered,
+	// which on a low-traffic egress could be most of them.
+	closeFuncMetric := func(ctx context.Context) error {
+		errMetrics := closeFuncMetrics(ctx)
+		errTracing := closeFuncTracing(ctx)
+		return errors.Join(errMetrics, errTracing)
+	}
 
 	// Geolocation is optional; without GEODB every series is labelled "unknown".
 	initDonorGeo()

@@ -25,11 +25,21 @@ var (
 )
 
 // statsFor returns the counter block for a country, creating it on first use.
-// Entries are never removed: the set of countries that have ever connected is
-// small and bounded, and keeping them means a country that drops to zero
-// clients keeps reporting 0 instead of vanishing from the series.
+// Entries are never removed — the set of countries that have ever connected is
+// small and bounded, so reclaiming them would buy nothing — but note that a
+// retained entry is not the same as a retained series: eachCountryStats skips
+// countries that are fully idle for an interval, so a country that drops to zero
+// clients does stop reporting until it next sees traffic. Only unknownCountry is
+// guaranteed to report every interval.
 func statsFor(cc string) *countryStats {
-	if cc == "" {
+	// Both the empty string and the literal unknownCountry route to the same
+	// block. donorCountry never returns "" — it returns unknownCountry — so
+	// without that second case the map would gain an "unknown" key while
+	// eachCountryStats also appends its own unknownCountry row, emitting two
+	// observations with an identical donor_country attribute in a single otel
+	// callback. That is a duplicate series, and the real traffic would land in
+	// the map entry while the always-reported row sat at zero.
+	if cc == "" || cc == unknownCountry {
 		return unknownCCs
 	}
 	statsMx.Lock()
