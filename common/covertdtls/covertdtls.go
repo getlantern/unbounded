@@ -1,8 +1,18 @@
 // Package covertdtls wraps github.com/theodorsm/covert-dtls so broflake
-// widgets can randomize or mimic their DTLS ClientHello fingerprint. The
+// producers can randomize or mimic their DTLS ClientHello fingerprint. The
 // default pion/dtls fingerprint was being DPI-filtered in Russia starting
 // 2026-03-30 (net4people/bbs#603), blocking Snowflake and, by extension, any
 // pion-based WebRTC transport — including unbounded.
+//
+// NATIVE PRODUCERS ONLY. Fingerprint shaping works by installing hooks on
+// pion's DTLS handshake, so it applies only where pion performs that handshake.
+// In a browser the handshake belongs to the browser's own WebRTC stack, so
+// Apply is a no-op on js/wasm (see apply_wasm.go) and a browser widget gets no
+// fingerprint protection whatever its config says. A config setting
+// randomize/mimic is therefore silently ineffective in the widget — deliberately
+// silent, so a shared config does not fail widget startup over a capability the
+// platform cannot provide. Read that as a coverage gap, not a bug: DPI filtering
+// of the kind described above is not something a browser widget can evade.
 //
 // The API mirrors the equivalent package in Snowflake v2.13.1 so operators
 // familiar with one project can drop into the other.
@@ -12,11 +22,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/theodorsm/covert-dtls/pkg/fingerprints"
-	"github.com/theodorsm/covert-dtls/pkg/mimicry"
-	"github.com/theodorsm/covert-dtls/pkg/randomize"
-	"github.com/theodorsm/covert-dtls/pkg/utils"
 )
 
 // Mode names accepted by ParseModeString.
@@ -66,34 +72,4 @@ func ParseModeString(s string) (Config, error) {
 		return cfg, errors.New("covertdtls: unknown mode (want randomize, mimic, randomizemimic, or disable)")
 	}
 	return cfg, nil
-}
-
-// Apply installs the configured ClientHello hook on the given SettingEngine.
-// Returns nil if the config has no effect (Enabled() == false).
-func Apply(cfg Config, s *webrtc.SettingEngine) error {
-	if s == nil {
-		return errors.New("covertdtls: nil SettingEngine")
-	}
-	switch {
-	case cfg.Fingerprint != "":
-		mimic := &mimicry.MimickedClientHello{}
-		if err := mimic.LoadFingerprint(cfg.Fingerprint); err != nil {
-			return err
-		}
-		s.SetSRTPProtectionProfiles(utils.DefaultSRTPProtectionProfiles()...)
-		s.SetDTLSClientHelloMessageHook(mimic.Hook)
-	case cfg.Mimic:
-		mimic := &mimicry.MimickedClientHello{}
-		if cfg.Randomize {
-			if err := mimic.LoadRandomFingerprint(); err != nil {
-				return err
-			}
-		}
-		s.SetSRTPProtectionProfiles(utils.DefaultSRTPProtectionProfiles()...)
-		s.SetDTLSClientHelloMessageHook(mimic.Hook)
-	case cfg.Randomize:
-		rand := randomize.RandomizedMessageClientHello{RandomALPN: true}
-		s.SetDTLSClientHelloMessageHook(rand.Hook)
-	}
-	return nil
 }

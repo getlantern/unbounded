@@ -1,0 +1,66 @@
+name: Build widget (wasm)
+
+# The browser widget is compiled to js/wasm from ./cmd (see cmd/build_web.sh),
+# but nothing in CI built that target, and ui/public/widget.wasm is a committed
+# prebuilt binary. Between them, a source change could break the widget build
+# and every check would still pass — which is exactly what happened: covertdtls
+# landed in clientcore without wasm build tags and broke `GOOS=js GOARCH=wasm
+# go build ./cmd` on main, undetected.
+#
+# This job exists so that failure mode cannot recur silently. It only compiles;
+# it deliberately does not regenerate or commit widget.wasm, since publishing a
+# binary is a release decision, not a CI side effect.
+#
+# Build only, no `go vet`: vetting under wasm tags currently reports four
+# pre-existing findings in clientcore (user.go lostcancel x2, unreachable code in
+# egress_consumer.go and webrtc_api_js.go) that native vet never type-checks.
+# Adding the step would land this job red on arrival. Worth fixing separately,
+# then enabling here.
+#
+# No step interpolates event data (issue/PR titles, branch names, commit
+# messages) into a run: command, so there is no workflow-injection surface here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clientcore/**'
+      - 'common/**'
+      - 'cmd/**'
+      - 'netstate/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-widget-wasm.yml'
+  pull_request:
+    paths:
+      - 'clientcore/**'
+      - 'common/**'
+      - 'cmd/**'
+      - 'netstate/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-widget-wasm.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-wasm:
+    name: go build js/wasm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build widget for js/wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        # Mirrors cmd/build_web.sh, minus the output path: we only care that it
+        # compiles. -o /dev/null keeps the artifact out of the workspace so it
+        # can't be mistaken for something publishable.
+        run: go build -ldflags "-s -w" -o /dev/null ./cmd
