@@ -12,11 +12,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/pion/webrtc/v4"
 	"github.com/theodorsm/covert-dtls/pkg/fingerprints"
-	"github.com/theodorsm/covert-dtls/pkg/mimicry"
-	"github.com/theodorsm/covert-dtls/pkg/randomize"
-	"github.com/theodorsm/covert-dtls/pkg/utils"
 )
 
 // Mode names accepted by ParseModeString.
@@ -66,34 +62,4 @@ func ParseModeString(s string) (Config, error) {
 		return cfg, errors.New("covertdtls: unknown mode (want randomize, mimic, randomizemimic, or disable)")
 	}
 	return cfg, nil
-}
-
-// Apply installs the configured ClientHello hook on the given SettingEngine.
-// Returns nil if the config has no effect (Enabled() == false).
-func Apply(cfg Config, s *webrtc.SettingEngine) error {
-	if s == nil {
-		return errors.New("covertdtls: nil SettingEngine")
-	}
-	switch {
-	case cfg.Fingerprint != "":
-		mimic := &mimicry.MimickedClientHello{}
-		if err := mimic.LoadFingerprint(cfg.Fingerprint); err != nil {
-			return err
-		}
-		s.SetSRTPProtectionProfiles(utils.DefaultSRTPProtectionProfiles()...)
-		s.SetDTLSClientHelloMessageHook(mimic.Hook)
-	case cfg.Mimic:
-		mimic := &mimicry.MimickedClientHello{}
-		if cfg.Randomize {
-			if err := mimic.LoadRandomFingerprint(); err != nil {
-				return err
-			}
-		}
-		s.SetSRTPProtectionProfiles(utils.DefaultSRTPProtectionProfiles()...)
-		s.SetDTLSClientHelloMessageHook(mimic.Hook)
-	case cfg.Randomize:
-		rand := randomize.RandomizedMessageClientHello{RandomALPN: true}
-		s.SetDTLSClientHelloMessageHook(rand.Hook)
-	}
-	return nil
 }
