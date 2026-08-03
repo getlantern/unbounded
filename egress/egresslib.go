@@ -16,8 +16,11 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/telemetry"
@@ -47,6 +50,25 @@ var nClientsCounter metric.Int64ObservableUpDownCounter
 var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
 var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
+
+// tracer emits one span per WebSocket session. Sessions are the unit an
+// operator actually asks about ("did this consumer get served?"), and a span
+// per session carries the consumer session ID without the unbounded-cardinality
+// problem that the same ID would cause as a metric label.
+var tracer = otel.Tracer("github.com/getlantern/broflake/egress")
+
+// Span and attribute names for the per-session spans.
+const (
+	spanWebSocketSession = "egress.websocket_session"
+
+	attrConsumerSessionID = "broflake.consumer_session_id"
+	attrDonorCountry      = "broflake.donor_country"
+	attrConsumerCountry   = "broflake.consumer_country"
+	attrIngressBytes      = "broflake.session_ingress_bytes"
+	attrQUICStreams       = "broflake.session_quic_streams"
+	attrTeardownReason    = "broflake.teardown_reason"
+	attrProtocolVersion   = "broflake.protocol_version"
+)
 
 type proxyListener struct {
 	net.Listener
@@ -88,7 +110,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	consumerSessionID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
+	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
 	if !ok {
 		slog.Debug("Refused WebSocket connection, missing subprotocols")
 		return
@@ -114,6 +136,42 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// One span per WebSocket session. Started before websocket.Accept so that a
+	// failed accept is still visible rather than vanishing, and parented to the
+	// otelhttp request span. We discard the returned context deliberately: the
+	// QUIC stream goroutine below runs on its own lifecycle (wsContext), and
+	// threading a request-scoped context into it would tie stream teardown to
+	// this handler's span rather than to the migration window.
+	//
+	// The donor country is not known until the peer address resolves after
+	// Accept, so it is attached further down.
+	_, span := tracer.Start(r.Context(), spanWebSocketSession, oteltrace.WithAttributes(
+		attribute.String(attrConsumerSessionID, consumerSessionID),
+		attribute.String(attrProtocolVersion, version),
+	))
+	if consumerCountry != "" {
+		span.SetAttributes(attribute.String(attrConsumerCountry, consumerCountry))
+	}
+
+	// Per-session counters. These are the numbers that answer "did this session
+	// actually carry traffic?", which the fleet-wide counters cannot.
+	var sessionBytes int64
+	var sessionStreams int64
+	teardownReason := "websocket_closed"
+	defer func() {
+		span.SetAttributes(
+			attribute.Int64(attrIngressBytes, atomic.LoadInt64(&sessionBytes)),
+			attribute.Int64(attrQUICStreams, atomic.LoadInt64(&sessionStreams)),
+			attribute.String(attrTeardownReason, teardownReason),
+		)
+		// A session that moved no bytes is the failure mode worth finding, so
+		// mark it on the span rather than leaving every session status Unset.
+		if atomic.LoadInt64(&sessionBytes) == 0 {
+			span.SetStatus(otelcodes.Error, "session carried no ingress bytes")
+		}
+		span.End()
+	}()
+
 	c, err := websocket.Accept(
 		w,
 		r,
@@ -124,29 +182,46 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
+		teardownReason = "websocket_accept_failed"
+		span.RecordError(err)
 		slog.Debug("Error accepting WebSocket connection", "error", err)
 		return
 	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
+		teardownReason = "peer_addr_unresolvable"
+		span.RecordError(err)
 		slog.Debug("Error resolving TCPAddr", "error", err)
 		return
 	}
 
+	// Resolved once per session, never per packet: this is a database lookup and
+	// the read path is hot.
+	donorCC := donorCountry(tcpAddr)
+	stats := statsFor(donorCC)
+	span.SetAttributes(attribute.String(attrDonorCountry, donorCC))
+
+	atomic.AddInt64(&stats.clients, 1)
+	defer atomic.AddInt64(&stats.clients, -1)
+
 	wspconn := errorlessWebSocketPacketConn{
-		w:         c,
-		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive: websocketKeepalive,
-		tcpAddr:   tcpAddr,
-		readError: make(chan error),
+		w:            c,
+		addr:         common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
+		keepalive:    websocketKeepalive,
+		tcpAddr:      tcpAddr,
+		readError:    make(chan error),
+		stats:        stats,
+		sessionBytes: &sessionBytes,
 	}
 
 	defer wspconn.Close()
-	slog.Debug("Accepted a new WebSocket connection!", "csid", consumerSessionID, "total", atomic.AddUint64(&nClients, 1))
+	slog.Debug("Accepted a new WebSocket connection!", "csid", consumerSessionID, "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
 	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
+		teardownReason = "create_or_migrate_failed"
+		span.RecordError(err)
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
@@ -178,6 +253,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				close(QUICLayerError)
 				return
 			}
+			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 
 			l.connections <- common.QUICStreamNetConn{
@@ -214,6 +290,16 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
 	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
+
+	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
+	// metrics rather than instead of them: the counters answer "is the fleet
+	// carrying traffic", the spans answer "did this particular consumer session
+	// get served", and neither substitutes for the other.
+	telemetry.EnableOTELTracing(ctx)
+
+	// Geolocation is optional; without GEODB every series is labelled "unknown".
+	initDonorGeo()
+
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 	var err error
 	nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets")
@@ -242,19 +328,28 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
-			c := atomic.LoadUint64(&nClients)
-			o.ObserveInt64(nClientsCounter, int64(c))
-
 			q := atomic.LoadUint64(&nQUICConnections)
 			o.ObserveInt64(nQUICConnectionsCounter, int64(q))
 
 			s := atomic.LoadUint64(&nQUICStreams)
 			o.ObserveInt64(nQUICStreamsCounter, int64(s))
 
-			b := atomic.LoadUint64(&nIngressBytes)
-			o.ObserveInt64(nIngressBytesCounter, int64(b))
-
-			atomic.StoreUint64(&nIngressBytes, uint64(0))
+			// concurrent-websockets and ingress-bytes are now reported per donor
+			// country rather than as a single unlabelled series. Totals are
+			// preserved: summing across the country dimension gives the same
+			// number the unlabelled series carried, so queries that don't group
+			// by country are unaffected. Anything that reduced with max/latest
+			// instead of sum needs a spaceAggregation of sum to stay correct.
+			//
+			// Note these counts come from per-session counters incremented and
+			// decremented exactly once around the handler, whereas the legacy
+			// global nClients decrements in the conn's Close(). nClients is now
+			// only used for the log lines.
+			eachCountryStats(func(cc string, clients, ingressBytes int64) {
+				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
+				o.ObserveInt64(nClientsCounter, clients, attrs)
+				o.ObserveInt64(nIngressBytesCounter, ingressBytes, attrs)
+			})
 			return nil
 		},
 		nClientsCounter,

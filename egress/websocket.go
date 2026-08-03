@@ -29,6 +29,17 @@ type errorlessWebSocketPacketConn struct {
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
 	readError chan error
+
+	// stats accumulates this connection's bytes against its donor country. It is
+	// a pointer so the read path does a single atomic add against memory it
+	// already holds, rather than hashing a map key per packet. Methods on this
+	// type use value receivers, so mutable per-session state must be behind a
+	// pointer to be shared with the handler.
+	stats *countryStats
+	// sessionBytes is the handler's per-session byte counter, reported on the
+	// session span. Separate from stats.ingressBytes, which the otel callback
+	// resets every interval.
+	sessionBytes *int64
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -86,6 +97,15 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 
 	copy(p, b)
 	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
+	// Attribute the same bytes to this connection's donor country and to its
+	// session. Both are nil-checked because migration_test and other callers
+	// construct this type directly without the instrumentation fields.
+	if q.stats != nil {
+		atomic.AddInt64(&q.stats.ingressBytes, int64(len(b)))
+	}
+	if q.sessionBytes != nil {
+		atomic.AddInt64(q.sessionBytes, int64(len(b)))
+	}
 	return len(b), q.tcpAddr, err
 }
 
