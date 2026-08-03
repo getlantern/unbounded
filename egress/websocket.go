@@ -40,6 +40,10 @@ type errorlessWebSocketPacketConn struct {
 	// session span. Separate from stats.ingressBytes, which the otel callback
 	// resets every interval.
 	sessionBytes *int64
+	// keepaliveFailed is set when a keepalive ping goes unanswered, which is the
+	// signature of a wedged peer rather than one that disconnected. The handler
+	// reports it as the session's teardown reason.
+	keepaliveFailed *atomic.Bool
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -57,7 +61,25 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 			select {
 			case <-time.After(q.keepalive):
 				slog.Debug("PING", "addr", q.addr)
-				q.w.Ping(context.Background())
+				// Bound the ping and record its failure. coder/websocket's Ping
+				// waits for the matching pong, so with the previous
+				// context.Background() a peer that stops answering — the exact
+				// signature of a frozen browser widget — wedged this goroutine
+				// forever and discarded the error, making a freeze invisible.
+				// A timed-out ping is a *positive* freeze signal, as opposed to
+				// the mere absence of traffic, which is indistinguishable from a
+				// user closing the tab.
+				pingCtx, cancel := context.WithTimeout(context.Background(), q.keepalive)
+				err := q.w.Ping(pingCtx)
+				cancel()
+				if err != nil {
+					if q.keepaliveFailed != nil {
+						q.keepaliveFailed.Store(true)
+					}
+					slog.Debug("PING failed", "addr", q.addr, "error", err)
+					// The read below will fail once the peer is gone; leave
+					// teardown to it rather than racing it from here.
+				}
 			case <-readDone:
 				return
 			}

@@ -2,6 +2,7 @@ package common
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -87,6 +88,38 @@ func TestParseSubprotocolsRequest_RejectsWrongMagicCookie(t *testing.T) {
 	}
 	if _, _, _, ok := ParseSubprotocolsRequestWithCountry(NewSubprotocolsRequestWithCountry("csid", "v2.3.1", "CN")); !ok {
 		t.Error("rejected our own 4-element request")
+	}
+}
+
+// The country element is client-controlled and flows into span attributes, so an
+// unbounded value would be a cardinality/payload attack on the tracing backend
+// rather than just bad data. Anything that isn't a 2-letter ASCII code must come
+// back as "not supplied" rather than truncated, since a truncated garbage value
+// is indistinguishable from a real code.
+func TestParseSubprotocolsRequestWithCountry_BoundsUntrustedCountry(t *testing.T) {
+	cookie := NewSubprotocolsRequest("csid", "v2.3.1")[0]
+
+	for _, tc := range []struct{ in, want string }{
+		{"CN", "CN"},
+		{"cn", "CN"},                    // normalized
+		{"Cn", "CN"},                    // normalized
+		{"", ""},                        // absent
+		{"C", ""},                       // too short
+		{"CHN", ""},                     // too long
+		{"C1", ""},                      // digit
+		{"C-", ""},                      // punctuation
+		{"日本", ""},                      // multibyte: 2 runes but 6 bytes
+		{strings.Repeat("A", 4096), ""}, // payload amplification attempt
+		{"cn\nX-Injected: 1", ""},       // header-injection shaped
+	} {
+		_, _, got, ok := ParseSubprotocolsRequestWithCountry([]string{cookie, "csid", "v2.3.1", tc.in})
+		if !ok {
+			t.Errorf("country %q: parse failed outright; the request should still be accepted with no country", tc.in)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("country %q: got %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

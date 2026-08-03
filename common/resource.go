@@ -242,10 +242,42 @@ func ParseSubprotocolsRequestWithCountry(s []string) (csid, version, country str
 	case 3:
 		return s[1], s[2], "", true
 	case 4:
-		return s[1], s[2], s[3], true
+		return s[1], s[2], normalizeCountry(s[3]), true
 	default:
 		return "", "", "", false
 	}
+}
+
+// normalizeCountry bounds an untrusted country to a two-letter ISO-3166-1 alpha-2
+// code, uppercased, or returns "" to mean "not supplied".
+//
+// This value arrives in a client-controlled Sec-Websocket-Protocol element and
+// flows into span attributes. Passing it through verbatim would let any peer
+// mint arbitrarily long or arbitrarily many distinct attribute values, which is
+// a cardinality and payload amplification attack on the tracing backend rather
+// than merely bad data. Dropping unparseable values is deliberate: a session
+// labelled "not supplied" is a small loss, whereas a session that can label
+// itself anything is a liability.
+//
+// Rejecting rather than truncating, because a truncated garbage value is
+// indistinguishable from a real code and would silently pollute the same
+// dimension.
+func normalizeCountry(country string) string {
+	if len(country) != 2 {
+		return ""
+	}
+	out := []byte(country)
+	for i, c := range out {
+		switch {
+		case c >= 'a' && c <= 'z':
+			out[i] = c - ('a' - 'A')
+		case c >= 'A' && c <= 'Z':
+			// already canonical
+		default:
+			return ""
+		}
+	}
+	return string(out)
 }
 
 func NewSubprotocolsResponse() []string {

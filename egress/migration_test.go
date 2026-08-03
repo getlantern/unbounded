@@ -389,4 +389,3 @@ func generateTestCert() {
 		PrivateKey:  priv,
 	}
 }
-

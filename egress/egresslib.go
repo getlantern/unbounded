@@ -154,8 +154,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// actually carry traffic?", which the fleet-wide counters cannot.
 	var sessionBytes int64
 	var sessionStreams int64
+	var keepaliveFailed atomic.Bool
 	teardownReason := "websocket_closed"
 	defer func() {
+		// A wedged peer is distinguishable from a disconnected one only by an
+		// unanswered keepalive, so let that outrank the generic close reason.
+		if keepaliveFailed.Load() {
+			teardownReason = "keepalive_timeout"
+		}
 		span.SetAttributes(
 			attribute.Int64(attrIngressBytes, atomic.LoadInt64(&sessionBytes)),
 			attribute.Int64(attrQUICStreams, atomic.LoadInt64(&sessionStreams)),
@@ -187,6 +193,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
+		// c is already accepted at this point but wspconn — and its deferred
+		// Close — is not built until below, so this path leaked the connection
+		// and its goroutines. Pre-existing on main; closing it here since this
+		// branch is being touched anyway.
+		c.CloseNow()
 		teardownReason = "peer_addr_unresolvable"
 		span.RecordError(err)
 		slog.Debug("Error resolving TCPAddr", "error", err)
@@ -203,13 +214,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer atomic.AddInt64(&stats.clients, -1)
 
 	wspconn := errorlessWebSocketPacketConn{
-		w:            c,
-		addr:         common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive:    websocketKeepalive,
-		tcpAddr:      tcpAddr,
-		readError:    make(chan error),
-		stats:        stats,
-		sessionBytes: &sessionBytes,
+		w:               c,
+		addr:            common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
+		keepalive:       websocketKeepalive,
+		tcpAddr:         tcpAddr,
+		readError:       make(chan error),
+		stats:           stats,
+		sessionBytes:    &sessionBytes,
+		keepaliveFailed: &keepaliveFailed,
 	}
 
 	defer wspconn.Close()
