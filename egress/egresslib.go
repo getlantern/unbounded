@@ -48,6 +48,11 @@ var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
 var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
+// refusedCounter tallies connections turned away before a session span exists.
+// A monotonic Counter, not an UpDownCounter: it is a cumulative tally meant to be
+// rate()'d, unlike the concurrency gauges above.
+var refusedCounter metric.Int64ObservableCounter
+
 // tracer emits one span per WebSocket session. Sessions are the unit an
 // operator actually asks about ("did this consumer get served?"), and a span
 // per session carries the consumer session ID without the unbounded-cardinality
@@ -109,7 +114,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
 	if !ok {
-		slog.Debug("Refused WebSocket connection, missing subprotocols")
+		recordRefusal(refusedMissingSubprotocols)
+		slog.Debug("Refused WebSocket connection, missing subprotocols", peerAttrs(r)...)
 		return
 	}
 
@@ -119,7 +125,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	if !common.IsValidProtocolVersion(versionHeader) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
-		slog.Debug("Refused WebSocket connection, bad protocol version")
+		recordRefusal(refusedBadProtocolVersion)
+		slog.Debug("Refused WebSocket connection, bad protocol version", append(peerAttrs(r), "version", version)...)
 		return
 	}
 
@@ -129,7 +136,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// https://github.com/getlantern/broflake/issues/45
 
 	if consumerSessionID == "" {
-		slog.Debug("Refused WebSocket connection, missing consumer session ID")
+		recordRefusal(refusedMissingCSID)
+		slog.Debug("Refused WebSocket connection, missing consumer session ID", peerAttrs(r)...)
 		return
 	}
 
@@ -344,6 +352,12 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return nil, err
 	}
 
+	refusedCounter, err = m.Int64ObservableCounter("refused-websockets")
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
 			q := atomic.LoadUint64(&nQUICConnections)
@@ -371,6 +385,11 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 			// decremented exactly once around the handler, whereas the legacy
 			// global nClients decrements in the conn's Close(). nClients is now
 			// only used for the log lines.
+			eachRefusal(func(reason string, count int64) {
+				o.ObserveInt64(refusedCounter, count,
+					metric.WithAttributes(attribute.String("reason", reason)))
+			})
+
 			eachCountryStats(func(cc string, clients, ingressBytes int64) {
 				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
 				o.ObserveInt64(nClientsCounter, clients, attrs)
@@ -382,6 +401,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		nQUICConnectionsCounter,
 		nQUICStreamsCounter,
 		nIngressBytesCounter,
+		refusedCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)
