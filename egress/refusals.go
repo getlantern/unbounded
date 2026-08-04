@@ -97,18 +97,28 @@ func peerAttrs(r *http.Request) []any {
 		// RemoteAddr is synthesized by net/http from the accepted socket, not
 		// taken from the request, so it needs no bounding.
 		"remote_addr", r.RemoteAddr,
-		"forwarded_for", truncateHeader(r.Header.Get("X-Forwarded-For")),
-		"user_agent", truncateHeader(r.Header.Get("User-Agent")),
+		"forwarded_for", truncateForLog(r.Header.Get("X-Forwarded-For")),
+		"user_agent", truncateForLog(r.Header.Get("User-Agent")),
 	}
 }
 
-// maxLoggedHeaderLen bounds each client-controlled header value written to the
-// log. 256 bytes comfortably fits a real User-Agent and a long X-Forwarded-For
-// proxy chain, so honest values pass through untouched.
-const maxLoggedHeaderLen = 256
+// maxLoggedValueLen is the hard ceiling on the total bytes any single
+// client-controlled value contributes to a log line, marker included. 256 bytes
+// comfortably fits a real User-Agent and a long X-Forwarded-For proxy chain, so
+// honest values pass through untouched.
+const maxLoggedValueLen = 256
 
-// truncateHeader bounds a client-controlled header value before it reaches the
-// log.
+// truncationMarker is appended to a shortened value. Its length is reserved out
+// of maxLoggedValueLen rather than added on top, so the documented ceiling is the
+// actual ceiling — a cap that its own marker can exceed is not a cap.
+const truncationMarker = "…(truncated)"
+
+// truncateForLog bounds a client-controlled value before it reaches the log.
+//
+// Applies to anything the peer chooses: the X-Forwarded-For and User-Agent
+// headers, and the protocol version lifted out of the subprotocol list. The
+// version was missed on the first pass, which is the whole reason this is named
+// for the sink rather than for headers.
 //
 // Both headers this is applied to are entirely attacker-chosen and effectively
 // unbounded in size. Writing them verbatim on a path that is currently refusing
@@ -122,9 +132,10 @@ const maxLoggedHeaderLen = 256
 // break ingestion downstream. The marker matters: a silently shortened value
 // would be indistinguishable from a genuinely short one, and the whole point of
 // logging these is to identify the caller.
-func truncateHeader(v string) string {
-	if len(v) <= maxLoggedHeaderLen {
+func truncateForLog(v string) string {
+	if len(v) <= maxLoggedValueLen {
 		return v
 	}
-	return strings.ToValidUTF8(v[:maxLoggedHeaderLen], "") + "…(truncated)"
+	keep := maxLoggedValueLen - len(truncationMarker)
+	return strings.ToValidUTF8(v[:keep], "") + truncationMarker
 }

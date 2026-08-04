@@ -138,7 +138,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		recordRefusal(refusedBadProtocolVersion)
-		slog.Debug("Refused WebSocket connection, bad protocol version", append(peerAttrs(r), "version", version)...)
+		slog.Debug("Refused WebSocket connection, bad protocol version",
+			append(peerAttrs(r), "version", truncateForLog(version))...)
 		return
 	}
 

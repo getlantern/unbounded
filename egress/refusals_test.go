@@ -199,23 +199,25 @@ func TestRecordRefusal_TakesTypedReason(t *testing.T) {
 // size. On a path refusing ~10 connections/second, writing them verbatim turns a
 // large header into sustained disk pressure, so they must be bounded — while
 // honest values pass through untouched, or the log stops identifying the caller.
-func TestTruncateHeader(t *testing.T) {
-	if got := truncateHeader(""); got != "" {
+func TestTruncateForLog(t *testing.T) {
+	if got := truncateForLog(""); got != "" {
 		t.Errorf("empty: got %q", got)
 	}
 	short := "Mozilla/5.0 (compatible; some-monitor/1.0)"
-	if got := truncateHeader(short); got != short {
+	if got := truncateForLog(short); got != short {
 		t.Errorf("short value was altered: got %q, want %q", got, short)
 	}
-	atLimit := strings.Repeat("a", maxLoggedHeaderLen)
-	if got := truncateHeader(atLimit); got != atLimit {
+	atLimit := strings.Repeat("a", maxLoggedValueLen)
+	if got := truncateForLog(atLimit); got != atLimit {
 		t.Error("a value exactly at the limit must pass through unchanged")
 	}
 
-	over := strings.Repeat("a", maxLoggedHeaderLen+500)
-	got := truncateHeader(over)
-	if len(got) >= len(over) {
-		t.Fatalf("oversized value not bounded: got %d bytes", len(got))
+	over := strings.Repeat("a", maxLoggedValueLen+500)
+	got := truncateForLog(over)
+	// The ceiling must include the marker. A cap its own marker can exceed is
+	// not a cap, and this is the contract the comment on maxLoggedValueLen makes.
+	if len(got) > maxLoggedValueLen {
+		t.Fatalf("result exceeds the documented ceiling: got %d bytes, want <= %d", len(got), maxLoggedValueLen)
 	}
 	if !strings.HasSuffix(got, "…(truncated)") {
 		t.Error("truncation must be marked, or a shortened value is indistinguishable from a short one")
@@ -223,8 +225,8 @@ func TestTruncateHeader(t *testing.T) {
 
 	// A multi-byte value truncated mid-rune must not emit invalid UTF-8, which
 	// would break log ingestion downstream.
-	multi := strings.Repeat("日", maxLoggedHeaderLen) // 3 bytes per rune
-	if got := truncateHeader(multi); !utf8.ValidString(got) {
+	multi := strings.Repeat("日", maxLoggedValueLen) // 3 bytes per rune
+	if got := truncateForLog(multi); !utf8.ValidString(got) {
 		t.Error("truncation produced invalid UTF-8")
 	}
 }
