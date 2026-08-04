@@ -3,6 +3,7 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import {installFreezeWatchdog} from './freezeWatchdog'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -67,6 +68,11 @@ export interface WasmClient extends EventTarget {
 	stop(): void
 
 	debug(): void
+
+	// liveness returns the Go-side heartbeat (see clientcore/watchdog_wasm_impl.go).
+	// Optional because the wasm binary deployed to embed.lantern.io can predate it —
+	// it does today — and because MockWasmClient has no Go runtime to report on.
+	liveness?(): {goTicks: number; goLastTickMs: number; goStartedMs: number; goIntervalMs: number; goNowMs: number} | undefined
 }
 
 
@@ -125,6 +131,17 @@ export class WasmInterface {
 
 		this.initializing = true
 		this.target = target
+
+		// Start watching before instantiating, not after. Compiling a 12MB wasm
+		// module is the single heaviest thing this page does and a plausible freeze
+		// site, so a watchdog installed after it would be blind to exactly the
+		// window most likely to hang. The liveness getter tolerates the client not
+		// existing yet, which is the reason it is a getter and not a value.
+		installFreezeWatchdog({
+			liveness: () => this.wasmClient?.liveness?.(),
+			sharing: () => sharingEmitter.state,
+		})
+
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
 			this.instance = {} as WebAssemblyInstance
