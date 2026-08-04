@@ -299,6 +299,62 @@ test('ignores a liveness object missing required fields', () => {
 	wd.stop()
 })
 
+// goNowMs feeds only the diagnostic clockSkewMs, so losing it must not cost us the
+// primary staleness signal — and must not leak NaN into a report, where it would
+// look like a measurement rather than an absence.
+test('degrades a missing goNowMs without discarding the staleness signal', () => {
+	const {reports, onReport} = capture()
+	const stuckAt = now
+	const wd = new FreezeWatchdog({
+		liveness: () =>
+			({
+				goTicks: 5,
+				goLastTickMs: stuckAt,
+				goStartedMs: stuckAt - 60_000,
+				goIntervalMs: 1000,
+				// goNowMs deliberately absent
+			} as any),
+		onReport,
+	})
+	wd.start()
+
+	fireTick(FREEZE_MS + 4000)
+
+	expect(reports).toHaveLength(1)
+	// The primary signal survives, so the classification is still correct...
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	expect(reports[0].goStaleMs).toBeGreaterThan(FREEZE_MS)
+	// ...and the diagnostic one is absent rather than NaN.
+	expect(reports[0].clockSkewMs).toBeNull()
+	wd.stop()
+})
+
+// NaN and the infinities are numbers by typeof but poison every comparison exactly
+// like a missing field would, so typeof alone is not a sufficient guard.
+test('rejects non-finite numbers in a liveness snapshot', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({
+		liveness: () => ({
+			goTicks: NaN,
+			goLastTickMs: Infinity,
+			goStartedMs: 0,
+			goIntervalMs: 1000,
+			goNowMs: NaN,
+		}),
+		onReport,
+	})
+	wd.start()
+
+	fireTick(FREEZE_MS + 4000)
+
+	expect(reports).toHaveLength(1)
+	// Treated as no snapshot at all, not as a stalled Go runtime.
+	expect(reports[0].kind).toBe('js_starved')
+	expect(reports[0].goStaleMs).toBeNull()
+	expect(reports[0].clockSkewMs).toBeNull()
+	wd.stop()
+})
+
 // A wedged Go runtime is a standing condition, not an event: it matches on every
 // single tick. Unthrottled that is one report every TICK_MS, which fills the
 // retained-report ring in under three minutes and evicts the 'page_died' record
@@ -407,9 +463,64 @@ describe('breadcrumb recovery', () => {
 		// The distinction that matters: a hiccup annoys a user, a death silently
 		// removes a donor from the network.
 		expect(reports[0].recovered).toBe(false)
-		expect(reports[0].sharing).toBe(false) // sharing reflects *this* page life
+		// The dead tab's own evidence, not this page life's. This is the entire
+		// reason the breadcrumb carries them: they are the only account of what that
+		// tab was doing when it stopped. Reading them from `this` instead yields null
+		// attribution and sharing=false at startup, which silently discards the
+		// explanation for the death being reported.
+		expect(reports[0].longestTaskMs).toBe(31_000)
+		expect(reports[0].longestTaskName).toBe('three-globe')
+		expect(reports[0].sharing).toBe(true)
 		// Reported once, then cleared, so reloading does not re-report it forever.
 		expect(window.localStorage.getItem(KEY)).toBeNull()
+		wd.stop()
+	})
+
+	// A record truncated mid-write or left by an older version can carry any type,
+	// and a wrong type here reaches the console and the beacon body.
+	test('does not trust the types of recovered evidence fields', () => {
+		writeCrumb({
+			t: 'deadtab',
+			b: now - DEAD_TAB_MS - 60_000,
+			s: now - DEAD_TAB_MS - 600_000,
+			c: false,
+			h: false,
+			p: 'yes', // not a boolean
+			l: 'thirty seconds', // not a number
+			n: {evil: true}, // not a string
+		})
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].longestTaskMs).toBeNull()
+		expect(reports[0].longestTaskName).toBeNull()
+		expect(reports[0].sharing).toBe(true) // coerced, since 'yes' is truthy
+		wd.stop()
+	})
+
+	// The attribution string round-trips through storage and lands in a console line
+	// and a beacon body, so it is bounded on the way back out.
+	test('bounds a recovered long-task name', () => {
+		writeCrumb({
+			t: 'deadtab',
+			b: now - DEAD_TAB_MS - 60_000,
+			s: now - DEAD_TAB_MS - 600_000,
+			c: false,
+			h: false,
+			p: false,
+			l: 9000,
+			n: 'x'.repeat(5000),
+		})
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].longestTaskName!.length).toBeLessThanOrEqual(128)
 		wd.stop()
 	})
 

@@ -48,6 +48,13 @@ const storagePrefix = 'unbounded.watchdog.'
 const storageTtlMs = 24 * 60 * 60 * 1000
 const maxStoredTabs = 8
 
+// maxTaskNameLen bounds the long-task attribution string. It originates from the
+// DOM (a container's id or name) and survives a round trip through localStorage,
+// so by the time it is read back it is just bytes on the origin — and it ends up in
+// a console line and a beacon body. A real container name is a handful of
+// characters; this only truncates something that was never a name.
+const maxTaskNameLen = 128
+
 // maxReports caps what we retain in memory for window.__unboundedWatchdog. A page
 // that freezes in a loop must not turn its own diagnostics into the leak.
 const maxReports = 20
@@ -155,6 +162,31 @@ interface Liveness {
 	goIntervalMs: number
 	goNowMs: number
 }
+
+// ValidatedLiveness is what readLiveness returns, and the shape the rest of this
+// file is allowed to touch.
+//
+// Only goTicks and goLastTickMs carry the `number` guarantee, because only those
+// two are worth rejecting a whole snapshot over. Every other field is explicitly
+// nullable so no use site can do arithmetic on a missing one — the failure mode
+// being designed out is silent, not loud: reading an absent field yields NaN, every
+// NaN comparison is false, and the value lands in a report looking like data.
+//
+// Enforcing this at the boundary rather than at each use site is the point. The
+// first version validated only the two required fields and then read goNowMs
+// anyway, three lines below a comment claiming NaN had been designed out.
+type ValidatedLiveness = {
+	goTicks: number
+	goLastTickMs: number
+	goStartedMs: number | null
+	goIntervalMs: number | null
+	goNowMs: number | null
+}
+
+// asNumber narrows an unknown to a usable number, rejecting NaN and the
+// infinities: those are numbers by typeof but poison every comparison downstream
+// exactly like a missing field would.
+const asNumber = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
 
 // WatchdogContext supplies what only the caller knows. Passed in rather than
 // imported so this module stays free of app dependencies — wasmInterface imports
@@ -306,17 +338,32 @@ export class FreezeWatchdog {
 		}
 	}
 
-	private readLiveness(): Liveness | undefined {
+	private readLiveness(): ValidatedLiveness | undefined {
 		try {
-			const live = this.ctx.liveness?.()
-			// Guard the shape rather than trusting it: this crosses the wasm
-			// boundary, and a binary predating the Go heartbeat returns undefined
-			// while a future one could change fields. Reading a missing field would
-			// yield NaN and quietly poison every comparison below.
-			if (!live || typeof live.goTicks !== 'number' || typeof live.goLastTickMs !== 'number') {
-				return undefined
+			const live: Partial<Liveness> | undefined = this.ctx.liveness?.()
+			if (!live) return undefined
+
+			// Guard the shape rather than trusting it: this crosses the wasm boundary,
+			// a binary predating the Go heartbeat returns undefined, and a future one
+			// could change fields. Reading a missing field yields NaN, and because
+			// every NaN comparison is false the result is a silently disabled detector
+			// rather than a visible error.
+			const goTicks = asNumber(live.goTicks)
+			const goLastTickMs = asNumber(live.goLastTickMs)
+			// These two are what detection depends on, so a snapshot without them is
+			// no snapshot at all.
+			if (goTicks === null || goLastTickMs === null) return undefined
+
+			// The rest degrade individually. Rejecting the whole snapshot because a
+			// supplementary field was missing would throw away the primary staleness
+			// signal to protect a diagnostic one.
+			return {
+				goTicks,
+				goLastTickMs,
+				goStartedMs: asNumber(live.goStartedMs),
+				goIntervalMs: asNumber(live.goIntervalMs),
+				goNowMs: asNumber(live.goNowMs),
 			}
-			return live
 		} catch {
 			// A wedged Go runtime can make the call itself throw.
 			return undefined
@@ -377,9 +424,12 @@ export class FreezeWatchdog {
 				gapMs,
 				goStaleMs,
 				goTicks: live?.goTicks ?? null,
-				clockSkewMs: live ? now - live.goNowMs : null,
+				clockSkewMs: live?.goNowMs != null ? now - live.goNowMs : null,
 				hidden,
 				recovered: true,
+				longestTaskMs: this.longestTaskMs,
+				longestTaskName: this.longestTaskName,
+				sharing: this.sharing(),
 			})
 		}
 
@@ -392,9 +442,18 @@ export class FreezeWatchdog {
 		return 'js_starved'
 	}
 
+	// report takes every piece of evidence explicitly rather than reading any of it
+	// from instance state.
+	//
+	// That is deliberate and load-bearing: a 'page_died' report describes a
+	// *previous* page life, so its long-task attribution and sharing flag must come
+	// from that life's breadcrumb, not from this one. An earlier version filled them
+	// in from `this`, which at startup means null attribution and sharing=false —
+	// silently discarding the only evidence explaining the death it was reporting.
+	// Requiring them as arguments makes that mistake a compile error.
 	private report(
 		kind: FreezeKind,
-		fields: Pick<FreezeReport, 'gapMs' | 'goStaleMs' | 'goTicks' | 'clockSkewMs' | 'hidden' | 'recovered'>
+		fields: Omit<FreezeReport, 'kind' | 'detectedAt' | 'url' | 'userAgent'>
 	): void {
 		const now = Date.now()
 		// 'page_died' is exempt: it is only ever produced by the startup sweep,
@@ -408,9 +467,6 @@ export class FreezeWatchdog {
 		const report: FreezeReport = {
 			kind,
 			detectedAt: now,
-			longestTaskMs: this.longestTaskMs,
-			longestTaskName: this.longestTaskName,
-			sharing: this.sharing(),
 			url: window.location.href,
 			userAgent: navigator.userAgent,
 			...fields,
@@ -446,7 +502,11 @@ export class FreezeWatchdog {
 						// third-party widget that names the culprit, where the entry name
 						// is almost always the generic 'self'.
 						const attribution = (entry as any).attribution?.[0]
-						this.longestTaskName = attribution?.containerName || attribution?.name || entry.name
+						const name: unknown = attribution?.containerName || attribution?.name || entry.name
+						// Bounded on the way in as well as on the way out: this is written
+						// to localStorage every tick, so an unbounded value would be paid
+						// for repeatedly rather than once.
+						this.longestTaskName = typeof name === 'string' ? name.slice(0, maxTaskNameLen) : null
 					}
 				}
 			})
@@ -528,11 +588,23 @@ export class FreezeWatchdog {
 		for (const crumb of crumbs.slice(0, maxStoredTabs)) {
 			this.report('page_died', {
 				gapMs: now - crumb.b,
+				// The dead tab published no heartbeat we can read now. Nulls rather
+				// than zeros, so this never reads as "Go was fine".
 				goStaleMs: null,
 				goTicks: null,
 				clockSkewMs: null,
 				hidden: !!crumb.h,
 				recovered: false,
+				// From the breadcrumb, not from this page life. The long task the dead
+				// tab recorded is the whole reason it was recorded — it is the only
+				// account of what that tab was doing when it stopped.
+				//
+				// Types are checked rather than trusted: a record truncated by a quota
+				// failure mid-write, or written by an older version of this file, can
+				// carry anything. A wrong type here would reach console and the beacon.
+				longestTaskMs: typeof crumb.l === 'number' ? crumb.l : null,
+				longestTaskName: typeof crumb.n === 'string' ? crumb.n.slice(0, maxTaskNameLen) : null,
+				sharing: !!crumb.p,
 			})
 		}
 	}
