@@ -230,3 +230,24 @@ func TestTruncateForLog(t *testing.T) {
 		t.Error("truncation produced invalid UTF-8")
 	}
 }
+
+// A value short enough to skip truncation can still be invalid UTF-8, and the
+// helper promises callers that nothing invalid reaches slog.
+func TestTruncateForLog_NormalizesShortInvalidUTF8(t *testing.T) {
+	for name, in := range map[string]string{
+		"lone continuation byte": string([]byte{0xff}),
+		"truncated multibyte":    string([]byte{0xe6, 0x97}), // first 2 bytes of 日
+		"valid then invalid":     "ok" + string([]byte{0xfe}),
+	} {
+		got := truncateForLog(in)
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: truncateForLog(%q) = %q, which is not valid UTF-8", name, in, got)
+		}
+	}
+	// Valid short values must still pass through byte-identical.
+	for _, ok := range []string{"", "curl/8.4.0", "日本語"} {
+		if got := truncateForLog(ok); got != ok {
+			t.Errorf("valid value altered: truncateForLog(%q) = %q", ok, got)
+		}
+	}
+}

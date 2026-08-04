@@ -133,8 +133,12 @@ const truncationMarker = "…(truncated)"
 // would be indistinguishable from a genuinely short one, and the whole point of
 // logging these is to identify the caller.
 func truncateForLog(v string) string {
+	// Validate even when no truncation is needed. A short value can already be
+	// invalid UTF-8 (a lone 0xff, say), and this helper promises callers that
+	// nothing invalid reaches slog — a promise the early return was quietly
+	// exempting itself from.
 	if len(v) <= maxLoggedValueLen {
-		return v
+		return strings.ToValidUTF8(v, "")
 	}
 	keep := maxLoggedValueLen - len(truncationMarker)
 	return strings.ToValidUTF8(v[:keep], "") + truncationMarker

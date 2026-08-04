@@ -122,8 +122,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// The element count is logged; the values are not. They are
 		// client-controlled and unbounded in size, and one of them is a session
 		// identifier.
+		// Test the RAW header, not the filtered list: "Sec-WebSocket-Protocol: ,"
+		// filters down to zero values, so keying off the filtered slice reported a
+		// client that clearly sent something as though it had sent nothing.
 		reason, msg := refusedMissingSubprotocols, "Refused WebSocket connection, missing subprotocols"
-		if len(subprotocols) > 0 {
+		if len(rawSubprotocols) > 0 {
 			reason, msg = refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols"
 		}
 		recordRefusal(reason)
