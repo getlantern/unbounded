@@ -497,7 +497,9 @@ describe('breadcrumb recovery', () => {
 		expect(reports).toHaveLength(1)
 		expect(reports[0].longestTaskMs).toBeNull()
 		expect(reports[0].longestTaskName).toBeNull()
-		expect(reports[0].sharing).toBe(true) // coerced, since 'yes' is truthy
+		// Not coerced: 'yes' is truthy, and reporting sharing=true off a non-boolean
+		// would assert something about the dead tab that the record never said.
+		expect(reports[0].sharing).toBe(false)
 		wd.stop()
 	})
 
@@ -595,6 +597,93 @@ describe('breadcrumb recovery', () => {
 		window.dispatchEvent(new Event('pagehide'))
 
 		expect(JSON.parse(window.localStorage.getItem(own!)!).c).toBe(true)
+		wd.stop()
+	})
+
+	// A tick running after pagehide would rewrite the record with c:false and
+	// resurrect a cleanly-closed page as a casualty — turning every ordinary
+	// navigation into a reported crash.
+	test('does not let a later tick undo the clean flag', () => {
+		const wd = new FreezeWatchdog({})
+		wd.start()
+		const own = Object.keys(window.localStorage).find(k => k.startsWith('unbounded.watchdog.'))!
+
+		window.dispatchEvent(new Event('pagehide'))
+		fireTick(TICK_MS)
+		fireTick(TICK_MS)
+
+		expect(JSON.parse(window.localStorage.getItem(own)!).c).toBe(true)
+		wd.stop()
+	})
+
+	// A back/forward-cache restore makes the page a live donor again. Leaving it
+	// stopped would keep pagehide's clean flag in place forever, so a later kill
+	// would go unreported — trading a false positive for a false negative on the one
+	// case this path exists to catch.
+	test('resumes beating after a back/forward-cache restore', () => {
+		const wd = new FreezeWatchdog({})
+		wd.start()
+		const own = Object.keys(window.localStorage).find(k => k.startsWith('unbounded.watchdog.'))!
+
+		window.dispatchEvent(new Event('pagehide'))
+		expect(JSON.parse(window.localStorage.getItem(own)!).c).toBe(true)
+
+		// Frozen in the cache for ten minutes, then restored.
+		advance(10 * 60 * 1000)
+		window.dispatchEvent(new Event('pageshow'))
+
+		// Beating again, and no longer flagged as cleanly exited.
+		expect(JSON.parse(window.localStorage.getItem(own)!).c).toBe(false)
+		const beforeTick = JSON.parse(window.localStorage.getItem(own)!).b
+		fireTick(TICK_MS)
+		expect(JSON.parse(window.localStorage.getItem(own)!).b).toBeGreaterThan(beforeTick)
+		wd.stop()
+	})
+
+	// Ten minutes of wall clock passed while the page sat frozen in the cache, but
+	// nothing was wrong. An un-reset baseline would turn that whole interval into a
+	// fabricated freeze the instant the page came back.
+	test('does not report a freeze for time spent in the back/forward cache', () => {
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		window.dispatchEvent(new Event('pagehide'))
+		advance(10 * 60 * 1000)
+		window.dispatchEvent(new Event('pageshow'))
+
+		for (let i = 0; i < 5; i++) fireTick(TICK_MS)
+
+		expect(reports).toEqual([])
+		wd.stop()
+	})
+
+	// Of the two ways to be wrong about a malformed record, inventing a casualty is
+	// far cheaper than silently dropping one — so the clean-exit check is strict.
+	// The string "false" is truthy, and treating it as clean would suppress a real
+	// death report.
+	test('does not treat a truthy non-boolean clean flag as a clean exit', () => {
+		writeCrumb({
+			t: 'deadtab',
+			b: now - DEAD_TAB_MS - 60_000,
+			s: now - DEAD_TAB_MS - 600_000,
+			c: 'false',
+			h: 'false',
+			p: 'false',
+			l: null,
+			n: null,
+		})
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].kind).toBe('page_died')
+		// And the same strictness applies to the report fields, so a non-boolean does
+		// not mislabel the report it is meant to explain.
+		expect(reports[0].hidden).toBe(false)
+		expect(reports[0].sharing).toBe(false)
 		wd.stop()
 	})
 

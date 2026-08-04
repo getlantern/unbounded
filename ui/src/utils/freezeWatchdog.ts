@@ -264,6 +264,9 @@ export class FreezeWatchdog {
 	private readonly storageKey: string
 
 	private timer: ReturnType<typeof setInterval> | undefined
+	// Whether start() has run. Distinct from `timer`, which is legitimately absent
+	// while the page sits in the back/forward cache.
+	private started = false
 	private observer: PerformanceObserver | undefined
 	private lastTickAt = Date.now()
 	// hiddenSinceLastTick makes the visibility gate correct across a full
@@ -290,7 +293,11 @@ export class FreezeWatchdog {
 	// start begins watching and reports anything left behind by a previous page
 	// life. Safe to call twice; the second call is ignored.
 	start(): void {
-		if (this.timer) return
+		// Guarded on `started` rather than on `timer`, because the timer is legitimately
+		// absent between pagehide and pageshow. Keying on the timer would let a second
+		// start() in that window re-run the breadcrumb sweep.
+		if (this.started) return
+		this.started = true
 
 		// Sweep first, so a death is reported even if this page life is short.
 		this.recoverBreadcrumbs()
@@ -301,24 +308,41 @@ export class FreezeWatchdog {
 		// Safari, and treating a normal navigation as a death would drown the real
 		// signal in false positives.
 		window.addEventListener('pagehide', this.onPageHide)
+		window.addEventListener('pageshow', this.onPageShow)
 
-		this.lastTickAt = Date.now()
-		this.writeBreadcrumb(false)
-		this.timer = setInterval(this.tick, tickMs)
+		this.armTimer()
 	}
 
 	stop(): void {
-		if (this.timer) {
-			clearInterval(this.timer)
-			this.timer = undefined
-		}
+		this.started = false
+		this.clearTimer()
 		this.observer?.disconnect()
 		this.observer = undefined
 		document.removeEventListener('visibilitychange', this.onVisibilityChange)
 		window.removeEventListener('pagehide', this.onPageHide)
+		window.removeEventListener('pageshow', this.onPageShow)
 		// An explicit stop is a clean exit; leaving the record un-flagged would
 		// make the next load report this tab as dead.
 		safeStorage.remove(this.storageKey)
+	}
+
+	// armTimer starts beating and resets the baselines the first tick will compare
+	// against. Resetting them is not optional: wall-clock time advances while a page
+	// sits frozen in the back/forward cache, and a stale lastTickAt turns that entire
+	// interval into a fabricated freeze the moment the page is restored.
+	private armTimer(): void {
+		this.lastTickAt = Date.now()
+		this.punctualTicks = 0
+		this.hiddenSinceLastTick = false
+		this.writeBreadcrumb(false)
+		this.timer = setInterval(this.tick, tickMs)
+	}
+
+	private clearTimer(): void {
+		if (this.timer) {
+			clearInterval(this.timer)
+			this.timer = undefined
+		}
 	}
 
 	// snapshot exposes current state for manual inspection from the console. The
@@ -386,6 +410,28 @@ export class FreezeWatchdog {
 		// Mark the exit clean so the next load does not mistake this navigation for
 		// a death. This is the one write that must not be skipped.
 		this.writeBreadcrumb(true)
+		// Then stop beating. A tick that runs after this point would rewrite the
+		// record with c:false and resurrect a cleanly-closed page as a casualty —
+		// the exact false positive that would make every ordinary navigation look
+		// like a crash.
+		//
+		// Not a one-way shutdown: pagehide is not necessarily terminal. The
+		// back/forward cache fires it, freezes the page, and may restore it later,
+		// which is what onPageShow re-arms for.
+		this.clearTimer()
+	}
+
+	// onPageShow resumes after a back/forward-cache restore.
+	//
+	// Re-arming is required, not merely tidy. A restored page is a live donor again,
+	// and leaving it stopped would mean it beats no more breadcrumbs — so if it is
+	// later killed, the record still carries pagehide's clean flag and the death goes
+	// unreported. That is the failure this whole path exists to catch, so a naive
+	// "stop the timer on pagehide" would trade one false positive for a false
+	// negative on the case that matters most.
+	private onPageShow = (): void => {
+		if (!this.started || this.timer) return
+		this.armTimer()
 	}
 
 	private tick = (): void => {
@@ -568,7 +614,13 @@ export class FreezeWatchdog {
 				safeStorage.remove(key)
 				continue
 			}
-			if (crumb.c) {
+			// Strictly === true, not truthy. A corrupt or hand-edited value like the
+			// string "false" is truthy, and treating it as a clean exit *suppresses* a
+			// real death report. Of the two ways to be wrong about a malformed record,
+			// inventing a casualty is far cheaper than silently dropping one: this
+			// whole path exists because deaths were invisible, and an anomalous record
+			// from a tab that never said goodbye is worth surfacing anyway.
+			if (crumb.c === true) {
 				// Clean exit. Nothing to report, and nothing to keep.
 				safeStorage.remove(key)
 				continue
@@ -593,7 +645,9 @@ export class FreezeWatchdog {
 				goStaleMs: null,
 				goTicks: null,
 				clockSkewMs: null,
-				hidden: !!crumb.h,
+				// === true rather than truthy, for the same reason as crumb.c above: a
+				// non-boolean would otherwise mislabel the report it is meant to explain.
+				hidden: crumb.h === true,
 				recovered: false,
 				// From the breadcrumb, not from this page life. The long task the dead
 				// tab recorded is the whole reason it was recorded — it is the only
@@ -604,7 +658,7 @@ export class FreezeWatchdog {
 				// carry anything. A wrong type here would reach console and the beacon.
 				longestTaskMs: typeof crumb.l === 'number' ? crumb.l : null,
 				longestTaskName: typeof crumb.n === 'string' ? crumb.n.slice(0, maxTaskNameLen) : null,
-				sharing: !!crumb.p,
+				sharing: crumb.p === true,
 			})
 		}
 	}
