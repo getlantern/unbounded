@@ -114,8 +114,20 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
 	if !ok {
-		recordRefusal(refusedMissingSubprotocols)
-		slog.Debug("Refused WebSocket connection, missing subprotocols", peerAttrs(r)...)
+		// ParseSubprotocolsRequestWithCountry returns !ok for an absent header,
+		// a wrong element count, or a magic-cookie mismatch. Reporting all three
+		// as "missing" would point an investigation at the wrong caller, so
+		// split on whether the client sent anything at all.
+		//
+		// The element count is logged; the values are not. They are
+		// client-controlled and unbounded in size, and one of them is a session
+		// identifier.
+		reason, msg := refusedMissingSubprotocols, "Refused WebSocket connection, missing subprotocols"
+		if len(subprotocols) > 0 {
+			reason, msg = refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols"
+		}
+		recordRefusal(reason)
+		slog.Debug(msg, append(peerAttrs(r), "subprotocol_count", len(subprotocols))...)
 		return
 	}
 
@@ -385,9 +397,9 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 			// decremented exactly once around the handler, whereas the legacy
 			// global nClients decrements in the conn's Close(). nClients is now
 			// only used for the log lines.
-			eachRefusal(func(reason string, count int64) {
+			eachRefusal(func(reason refusalReason, count int64) {
 				o.ObserveInt64(refusedCounter, count,
-					metric.WithAttributes(attribute.String("reason", reason)))
+					metric.WithAttributes(attribute.String("reason", string(reason))))
 			})
 
 			eachCountryStats(func(cc string, clients, ingressBytes int64) {

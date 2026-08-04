@@ -9,14 +9,15 @@ import (
 func resetRefusals(t *testing.T) {
 	t.Helper()
 	refusalsMx.Lock()
-	refusals = map[string]*int64{}
+	refusals = map[refusalReason]*int64{}
 	refusalsMx.Unlock()
 }
 
-func collectRefusals(t *testing.T) map[string]int64 {
-	t.Helper()
-	out := map[string]int64{}
-	eachRefusal(func(reason string, count int64) { out[reason] = count })
+// Deliberately takes no *testing.T: it is called from the observer goroutine in
+// TestRecordRefusal_NoLostCountsUnderConcurrency, and nothing here needs t.
+func collectRefusals() map[refusalReason]int64 {
+	out := map[refusalReason]int64{}
+	eachRefusal(func(reason refusalReason, count int64) { out[reason] = count })
 	return out
 }
 
@@ -28,15 +29,15 @@ func TestRecordRefusal_IsMonotonicAcrossObservations(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		recordRefusal(refusedMissingSubprotocols)
 	}
-	if got := collectRefusals(t)[refusedMissingSubprotocols]; got != 3 {
+	if got := collectRefusals()[refusedMissingSubprotocols]; got != 3 {
 		t.Fatalf("after 3 refusals: got %d, want 3", got)
 	}
 	// A second observation must report the same total, not zero.
-	if got := collectRefusals(t)[refusedMissingSubprotocols]; got != 3 {
+	if got := collectRefusals()[refusedMissingSubprotocols]; got != 3 {
 		t.Fatalf("observing drained the tally: got %d, want 3", got)
 	}
 	recordRefusal(refusedMissingSubprotocols)
-	if got := collectRefusals(t)[refusedMissingSubprotocols]; got != 4 {
+	if got := collectRefusals()[refusedMissingSubprotocols]; got != 4 {
 		t.Fatalf("after a 4th refusal: got %d, want 4", got)
 	}
 }
@@ -48,8 +49,8 @@ func TestRecordRefusal_SeparatesReasons(t *testing.T) {
 	recordRefusal(refusedBadProtocolVersion)
 	recordRefusal(refusedMissingCSID)
 
-	got := collectRefusals(t)
-	for reason, want := range map[string]int64{
+	got := collectRefusals()
+	for reason, want := range map[refusalReason]int64{
 		refusedMissingSubprotocols: 1,
 		refusedBadProtocolVersion:  2,
 		refusedMissingCSID:         1,
@@ -81,7 +82,7 @@ func TestRecordRefusal_NoLostCountsUnderConcurrency(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				collectRefusals(t)
+				collectRefusals()
 			}
 		}
 	}()
@@ -100,7 +101,7 @@ func TestRecordRefusal_NoLostCountsUnderConcurrency(t *testing.T) {
 	close(stop)
 	obsWg.Wait()
 
-	if got := collectRefusals(t)[refusedMissingSubprotocols]; got != writers*per {
+	if got := collectRefusals()[refusedMissingSubprotocols]; got != writers*per {
 		t.Fatalf("counted %d, want %d", got, writers*per)
 	}
 }
@@ -156,4 +157,38 @@ func TestPeerAttrs_HandlesMissingHeaders(t *testing.T) {
 	if _, present := kv["user_agent"]; !present {
 		t.Error("user_agent key must be present even when the header is absent")
 	}
+}
+
+// The split between "absent" and "malformed" is the whole point of the second
+// reason: they implicate different callers, and conflating them sent the original
+// investigation of ~10 refusals/second toward the wrong hypothesis. Pin that the
+// two constants are distinct and tallied separately, so a future refactor can't
+// quietly collapse them back into one.
+func TestRefusalReasons_AbsentAndMalformedAreDistinct(t *testing.T) {
+	if refusedMissingSubprotocols == refusedMalformedSubprotocols {
+		t.Fatal("absent and malformed must be distinct reasons")
+	}
+
+	resetRefusals(t)
+	recordRefusal(refusedMissingSubprotocols)
+	recordRefusal(refusedMalformedSubprotocols)
+	recordRefusal(refusedMalformedSubprotocols)
+
+	got := collectRefusals()
+	if got[refusedMissingSubprotocols] != 1 {
+		t.Errorf("%s = %d, want 1", refusedMissingSubprotocols, got[refusedMissingSubprotocols])
+	}
+	if got[refusedMalformedSubprotocols] != 2 {
+		t.Errorf("%s = %d, want 2", refusedMalformedSubprotocols, got[refusedMalformedSubprotocols])
+	}
+}
+
+// recordRefusal takes a refusalReason, not a string, so request-derived data
+// cannot reach a metric label without an explicit conversion that a reviewer
+// would see. This compiles only while that holds.
+func TestRecordRefusal_TakesTypedReason(t *testing.T) {
+	var f func(refusalReason) = recordRefusal
+	_ = f
+	// A bare string must not be assignable to the parameter type; if someone
+	// widens it back to string, the line above stops compiling.
 }
