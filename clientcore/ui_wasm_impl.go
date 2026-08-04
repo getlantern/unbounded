@@ -43,6 +43,11 @@ func (ui *UIImpl) Init(bf *BroflakeEngine) {
 		"debug",
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} { ui.Debug(); return nil }),
 	)
+
+	// Exposes liveness() so the page can tell a wedged Go runtime apart from a
+	// wedged browser main thread. See watchdog_wasm_impl.go for why that
+	// distinction is the one that matters.
+	installWatchdog(ui.ID)
 }
 
 func (ui UIImpl) Start() {
