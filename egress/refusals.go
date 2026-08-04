@@ -2,6 +2,7 @@ package egress
 
 import (
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -93,8 +94,37 @@ func eachRefusal(f func(reason refusalReason, count int64)) {
 // point at real clients failing the handshake.
 func peerAttrs(r *http.Request) []any {
 	return []any{
+		// RemoteAddr is synthesized by net/http from the accepted socket, not
+		// taken from the request, so it needs no bounding.
 		"remote_addr", r.RemoteAddr,
-		"forwarded_for", r.Header.Get("X-Forwarded-For"),
-		"user_agent", r.Header.Get("User-Agent"),
+		"forwarded_for", truncateHeader(r.Header.Get("X-Forwarded-For")),
+		"user_agent", truncateHeader(r.Header.Get("User-Agent")),
 	}
+}
+
+// maxLoggedHeaderLen bounds each client-controlled header value written to the
+// log. 256 bytes comfortably fits a real User-Agent and a long X-Forwarded-For
+// proxy chain, so honest values pass through untouched.
+const maxLoggedHeaderLen = 256
+
+// truncateHeader bounds a client-controlled header value before it reaches the
+// log.
+//
+// Both headers this is applied to are entirely attacker-chosen and effectively
+// unbounded in size. Writing them verbatim on a path that is currently refusing
+// ~10 connections per second turns a large header into sustained disk pressure on
+// the egress host — a client sending a 100 KB User-Agent at that rate writes
+// ~1 MB/s of DEBUG logs. This is the same hazard as letting an unbounded header
+// become a metric label, just spent on disk instead of cardinality.
+//
+// Truncation is byte-based for speed, then ToValidUTF8 drops any rune left
+// half-copied, so a multi-byte value cannot emit invalid UTF-8 into the log and
+// break ingestion downstream. The marker matters: a silently shortened value
+// would be indistinguishable from a genuinely short one, and the whole point of
+// logging these is to identify the caller.
+func truncateHeader(v string) string {
+	if len(v) <= maxLoggedHeaderLen {
+		return v
+	}
+	return strings.ToValidUTF8(v[:maxLoggedHeaderLen], "") + "…(truncated)"
 }

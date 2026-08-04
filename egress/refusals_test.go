@@ -2,8 +2,10 @@ package egress
 
 import (
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 )
 
 func resetRefusals(t *testing.T) {
@@ -191,4 +193,38 @@ func TestRecordRefusal_TakesTypedReason(t *testing.T) {
 	_ = f
 	// A bare string must not be assignable to the parameter type; if someone
 	// widens it back to string, the line above stops compiling.
+}
+
+// Both headers peerAttrs logs are entirely client-controlled and unbounded in
+// size. On a path refusing ~10 connections/second, writing them verbatim turns a
+// large header into sustained disk pressure, so they must be bounded — while
+// honest values pass through untouched, or the log stops identifying the caller.
+func TestTruncateHeader(t *testing.T) {
+	if got := truncateHeader(""); got != "" {
+		t.Errorf("empty: got %q", got)
+	}
+	short := "Mozilla/5.0 (compatible; some-monitor/1.0)"
+	if got := truncateHeader(short); got != short {
+		t.Errorf("short value was altered: got %q, want %q", got, short)
+	}
+	atLimit := strings.Repeat("a", maxLoggedHeaderLen)
+	if got := truncateHeader(atLimit); got != atLimit {
+		t.Error("a value exactly at the limit must pass through unchanged")
+	}
+
+	over := strings.Repeat("a", maxLoggedHeaderLen+500)
+	got := truncateHeader(over)
+	if len(got) >= len(over) {
+		t.Fatalf("oversized value not bounded: got %d bytes", len(got))
+	}
+	if !strings.HasSuffix(got, "…(truncated)") {
+		t.Error("truncation must be marked, or a shortened value is indistinguishable from a short one")
+	}
+
+	// A multi-byte value truncated mid-rune must not emit invalid UTF-8, which
+	// would break log ingestion downstream.
+	multi := strings.Repeat("日", maxLoggedHeaderLen) // 3 bytes per rune
+	if got := truncateHeader(multi); !utf8.ValidString(got) {
+		t.Error("truncation produced invalid UTF-8")
+	}
 }
