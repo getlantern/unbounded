@@ -24,6 +24,18 @@ on:
       - 'go.sum'
       - '.github/workflows/release-egress.yml'
 
+  # Manual trigger. The push trigger above is the normal path, but it leaves no
+  # way to retry: on 2026-08-03 it silently did not fire on a merge that touched
+  # this very file, and with no dispatch there was no way to re-run it or to cut a
+  # release on demand. It also means the bump-PR path added in #377 cannot be
+  # exercised without manufacturing a qualifying merge.
+  #
+  # Dispatch runs ignore the path filter, so this always runs the version job. It
+  # is safe to run repeatedly: if version.go already matches the latest release it
+  # opens (or refreshes) the bump PR and releases nothing, and if version.go is
+  # ahead it publishes that version. Neither path force-pushes to main.
+  workflow_dispatch:
+
 # Serialize so two back-to-back merges can't race on the version bump.
 # cancel-in-progress: false — we want every merge to produce a release,
 # not to let a later merge skip the earlier one's artifacts.
