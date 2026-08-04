@@ -48,6 +48,11 @@ var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
 var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
+// refusedCounter tallies connections turned away before a session span exists.
+// A monotonic Counter, not an UpDownCounter: it is a cumulative tally meant to be
+// rate()'d, unlike the concurrency gauges above.
+var refusedCounter metric.Int64ObservableCounter
+
 // tracer emits one span per WebSocket session. Sessions are the unit an
 // operator actually asks about ("did this consumer get served?"), and a span
 // per session carries the consumer session ID without the unbounded-cardinality
@@ -109,7 +114,23 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
 	if !ok {
-		slog.Debug("Refused WebSocket connection, missing subprotocols")
+		// ParseSubprotocolsRequestWithCountry returns !ok for an absent header,
+		// a wrong element count, or a magic-cookie mismatch. Reporting all three
+		// as "missing" would point an investigation at the wrong caller, so
+		// split on whether the client sent anything at all.
+		//
+		// The element count is logged; the values are not. They are
+		// client-controlled and unbounded in size, and one of them is a session
+		// identifier.
+		// Test the RAW header, not the filtered list: "Sec-WebSocket-Protocol: ,"
+		// filters down to zero values, so keying off the filtered slice reported a
+		// client that clearly sent something as though it had sent nothing.
+		reason, msg := refusedMissingSubprotocols, "Refused WebSocket connection, missing subprotocols"
+		if len(rawSubprotocols) > 0 {
+			reason, msg = refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols"
+		}
+		recordRefusal(reason)
+		slog.Debug(msg, append(peerAttrs(r), "subprotocol_count", len(subprotocols))...)
 		return
 	}
 
@@ -119,7 +140,9 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	if !common.IsValidProtocolVersion(versionHeader) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
-		slog.Debug("Refused WebSocket connection, bad protocol version")
+		recordRefusal(refusedBadProtocolVersion)
+		slog.Debug("Refused WebSocket connection, bad protocol version",
+			append(peerAttrs(r), "version", truncateForLog(version))...)
 		return
 	}
 
@@ -129,7 +152,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// https://github.com/getlantern/broflake/issues/45
 
 	if consumerSessionID == "" {
-		slog.Debug("Refused WebSocket connection, missing consumer session ID")
+		recordRefusal(refusedMissingCSID)
+		slog.Debug("Refused WebSocket connection, missing consumer session ID", peerAttrs(r)...)
 		return
 	}
 
@@ -344,6 +368,12 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return nil, err
 	}
 
+	refusedCounter, err = m.Int64ObservableCounter("refused-websockets")
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
 			q := atomic.LoadUint64(&nQUICConnections)
@@ -371,6 +401,11 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 			// decremented exactly once around the handler, whereas the legacy
 			// global nClients decrements in the conn's Close(). nClients is now
 			// only used for the log lines.
+			eachRefusal(func(reason refusalReason, count int64) {
+				o.ObserveInt64(refusedCounter, count,
+					metric.WithAttributes(attribute.String("reason", string(reason))))
+			})
+
 			eachCountryStats(func(cc string, clients, ingressBytes int64) {
 				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
 				o.ObserveInt64(nClientsCounter, clients, attrs)
@@ -382,6 +417,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		nQUICConnectionsCounter,
 		nQUICStreamsCounter,
 		nIngressBytesCounter,
+		refusedCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)
