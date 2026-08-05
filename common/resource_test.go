@@ -140,10 +140,10 @@ func TestParseSubprotocolsRequest_RejectsWrongArity(t *testing.T) {
 	}
 }
 
-// HasSubprotocolsMagicCookie answers "is this peer speaking our protocol at all",
+// SubprotocolsContainMagicCookie answers "is this peer speaking our protocol at all",
 // independent of whether it got the rest right. The egress uses it to decide both
 // which refusal to report and what is safe to log, so both halves matter.
-func TestHasSubprotocolsMagicCookie(t *testing.T) {
+func TestSubprotocolsContainMagicCookie(t *testing.T) {
 	for name, tc := range map[string]struct {
 		in   []string
 		want bool
@@ -157,16 +157,19 @@ func TestHasSubprotocolsMagicCookie(t *testing.T) {
 		"response form (cookie alone)": {NewSubprotocolsResponse(), true},
 		"foreign single token":         {[]string{"chat"}, false},
 		"foreign multi token":          {[]string{"graphql-ws", "mqtt"}, false},
-		// Order matters: the cookie has to lead. A list containing it elsewhere is
-		// not this protocol, and must not be treated as one.
-		"cookie not first": {[]string{"csid", NewSubprotocolsResponse()[0]}, false},
-		"empty first":      {[]string{"", NewSubprotocolsResponse()[0]}, false},
+		// Position deliberately does NOT matter here, unlike in the parser. This
+		// question is "might a session ID be in there", and a misordered list from a
+		// skewed client carries one just the same. Answering it positionally leaked
+		// exactly that value.
+		"cookie not first": {[]string{"csid", NewSubprotocolsResponse()[0]}, true},
+		"cookie last":      {[]string{"a", "b", NewSubprotocolsResponse()[0]}, true},
+		"empty first":      {[]string{"", NewSubprotocolsResponse()[0]}, true},
 		// Case-sensitive: the cookie is a byte-for-byte constant, not a token to
 		// normalize.
 		"wrong case": {[]string{"UN80UND3D", "csid", "v2.3.5"}, false},
 	} {
-		if got := HasSubprotocolsMagicCookie(tc.in); got != tc.want {
-			t.Errorf("%s: HasSubprotocolsMagicCookie(%q) = %v, want %v", name, tc.in, got, tc.want)
+		if got := SubprotocolsContainMagicCookie(tc.in); got != tc.want {
+			t.Errorf("%s: SubprotocolsContainMagicCookie(%q) = %v, want %v", name, tc.in, got, tc.want)
 		}
 	}
 }
@@ -174,8 +177,10 @@ func TestHasSubprotocolsMagicCookie(t *testing.T) {
 // Anything the parser accepts must also be recognized as our protocol. If these
 // disagreed, a refusal could be labeled "foreign" for a peer that in fact speaks
 // this protocol correctly — which is the exact misattribution the label exists to
-// prevent.
-func TestHasSubprotocolsMagicCookie_AgreesWithParser(t *testing.T) {
+// prevent. Note the converse does not hold, on purpose: this check is deliberately
+// broader than the parser, because "might contain a session ID" must not be a
+// narrower question than "parses".
+func TestSubprotocolsContainMagicCookie_AgreesWithParser(t *testing.T) {
 	for _, in := range [][]string{
 		NewSubprotocolsRequest("csid", "v2.3.5"),
 		NewSubprotocolsRequestWithCountry("csid", "v2.3.5", "CN"),
@@ -184,7 +189,7 @@ func TestHasSubprotocolsMagicCookie_AgreesWithParser(t *testing.T) {
 		if _, _, _, ok := ParseSubprotocolsRequestWithCountry(in); !ok {
 			t.Fatalf("precondition: parser rejected %q", in)
 		}
-		if !HasSubprotocolsMagicCookie(in) {
+		if !SubprotocolsContainMagicCookie(in) {
 			t.Errorf("parser accepted %q but cookie check rejected it", in)
 		}
 	}

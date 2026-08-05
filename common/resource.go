@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	// "errors"
 	"net"
+	"slices"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -226,22 +227,36 @@ func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool)
 	return csid, version, ok
 }
 
-// HasSubprotocolsMagicCookie reports whether s opens with the magic cookie, i.e.
-// whether the peer is speaking this protocol at all — independent of whether it got
-// the rest of the handshake right.
+// SubprotocolsContainMagicCookie reports whether the cookie appears anywhere in s,
+// i.e. whether the peer looks like it was trying to speak this protocol at all —
+// independent of whether it got position, arity, or anything else right.
 //
-// Exported so the egress can separate "our client, wrong shape" from "not our
-// protocol" when a handshake is refused. Conflating those two sent an investigation
-// of ~9 refusals/second down the wrong path for over a week: the refusals looked
-// like broken donors when the arity said something else entirely was calling.
+// Deliberately "anywhere" rather than "in the leading position", even though the
+// parser requires it to lead. The two questions are different and only one of them
+// is about parsing:
 //
-// It also decides what is safe to log. A peer that fails this check cannot have
-// supplied a consumer session ID, because it is not following the format that has
-// one — so its values carry no identifier and can be recorded to identify the
-// caller. A peer that passes may well have a real session ID among its values, so
-// those stay unlogged.
-func HasSubprotocolsMagicCookie(s []string) bool {
-	return len(s) > 0 && s[0] == subprotocolsMagicCookie
+//   - can this be parsed as our protocol?  -> the cookie must LEAD (see
+//     ParseSubprotocolsRequestWithCountry)
+//   - might these values contain a consumer session ID?  -> the cookie appearing
+//     ANYWHERE is enough to suspect so
+//
+// The second question is the one this answers, because it gates what reaches the
+// log. A first version checked the leading position for both and so claimed a
+// property it did not have: a client that built the list in the wrong order, say
+// [csid, cookie, version], fails a leading-position check while carrying a real
+// session ID — precisely the value withheld on purpose. Widening to "anywhere" is
+// what makes the claim below actually true.
+//
+// A peer that fails this check cannot have supplied a consumer session ID: it shows
+// no sign of following the format that carries one, so its values are safe to record
+// in order to identify the caller. A peer that passes may well have a real session
+// ID among its values, however garbled the rest, so those stay unlogged.
+//
+// The false-positive cost is negligible in the other direction: the cookie is a
+// nonce-like constant, so unrelated software containing it by coincidence is not a
+// realistic concern, and the consequence would only be declining to log values.
+func SubprotocolsContainMagicCookie(s []string) bool {
+	return slices.Contains(s, subprotocolsMagicCookie)
 }
 
 // ParseSubprotocolsRequestWithCountry additionally returns the consumer country

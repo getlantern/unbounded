@@ -299,10 +299,17 @@ func TestClassifySubprotocolRefusal(t *testing.T) {
 			raw: []string{"graphql-ws,mqtt"}, parsed: []string{"graphql-ws", "mqtt"},
 			wantReason: refusedForeignSubprotocols, wantLog: true,
 		},
-		// Right tokens, wrong order: the cookie must lead, or it is not our protocol.
+		// Wrong order. The parser requires the cookie to lead, so this does not parse
+		// — but it is still recognizably our software getting it wrong, and it can
+		// still carry a real CSID. So: malformed, and values withheld. Classifying it
+		// foreign (as a leading-position check does) would log that CSID.
 		"cookie not first": {
 			raw: []string{"csid," + cookie}, parsed: []string{"csid", cookie},
-			wantReason: refusedForeignSubprotocols, wantLog: true,
+			wantReason: refusedMalformedSubprotocols, wantLog: false,
+		},
+		"cookie last": {
+			raw: []string{"a,b," + cookie}, parsed: []string{"a", "b", cookie},
+			wantReason: refusedMalformedSubprotocols, wantLog: false,
 		},
 	} {
 		reason, msg, logValues := classifySubprotocolRefusal(tc.raw, tc.parsed)
@@ -327,12 +334,19 @@ func TestClassifySubprotocolRefusal_NeverLogsValuesWhenCookieMatched(t *testing.
 	cookie := common.NewSubprotocolsResponse()[0]
 	realCSID := "9f8c1e2a-secret-session-id"
 
-	// Every arity that fails to parse while still carrying the cookie.
+	// Every shape that fails to parse while still carrying the cookie somewhere —
+	// including the misordered ones, which a leading-position check misses. Those are
+	// the cases that leaked: the CSID sits right next to a cookie that is present but
+	// not first.
 	for _, parsed := range [][]string{
 		{cookie},
 		{cookie, realCSID},
 		{cookie, realCSID, "v2.3.5", "CN", "surplus"},
 		{cookie, realCSID, "v2.3.5", "CN", "surplus", "more"},
+		{realCSID, cookie},           // cookie second
+		{realCSID, cookie, "v2.3.5"}, // right tokens, wrong order
+		{"v2.3.5", realCSID, cookie}, // cookie last
+		{"", cookie, realCSID},       // empty leading token
 	} {
 		reason, _, logValues := classifySubprotocolRefusal([]string{"raw"}, parsed)
 		if logValues {
