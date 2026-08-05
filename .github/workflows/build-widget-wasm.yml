@@ -61,18 +61,19 @@ on:
 permissions:
   contents: read
 
-# Serialize publishes so two merges cannot race on the gh-pages ref. Without this
-# the second push loses to a non-fast-forward and the newer wasm is the one dropped.
-concurrency:
-  group: publish-widget-wasm
-  cancel-in-progress: false
-
 jobs:
   build-wasm:
     name: go build js/wasm
     runs-on: ubuntu-latest
     steps:
+      # persist-credentials: false because this job never pushes. checkout
+      # otherwise leaves the token in .git/config, and both this job and `test`
+      # below execute PR-authored code — a test or build directive added by a pull
+      # request could read it out. Read-only on fork PRs, but there is no reason
+      # for it to be readable at all here.
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -93,6 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-go@v5
         with:
@@ -116,7 +119,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write # push the built wasm to gh-pages
+    # Job-level, not workflow-level. Only this job touches a shared ref, and a
+    # workflow-level group with cancel-in-progress:false would queue every
+    # build+test run repo-wide behind every other one — so a PR pushed three times
+    # would sit waiting on its own earlier runs for no reason.
+    concurrency:
+      group: publish-widget-wasm
+      cancel-in-progress: false
     steps:
+      # Credentials are persisted here, unlike the jobs above: this is the one job
+      # that pushes, and `git push origin` needs the token checkout leaves in the
+      # local git config.
       - uses: actions/checkout@v5
 
       - uses: actions/setup-go@v5
@@ -166,8 +179,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git fetch --depth=1 origin gh-pages
-          git worktree add /tmp/ghp origin/gh-pages
+          # Name the destination ref explicitly. `git fetch origin gh-pages` alone
+          # lands in FETCH_HEAD, and the opportunistic remote-tracking update only
+          # fires for refs matching the configured remote.origin.fetch refspec —
+          # which actions/checkout narrows to the branch it checked out. So
+          # refs/remotes/origin/gh-pages would never exist and the worktree add
+          # below would fail with "invalid reference".
+          git fetch --depth=1 origin gh-pages:refs/remotes/origin/gh-pages
+          # --detach so HEAD is a bare commit rather than a new local gh-pages
+          # branch: `git worktree add <path> <name>` treats a name that exists only
+          # as a remote-tracking ref as --track -b, which would make the push below
+          # depend on branch tracking config rather than the explicit refspec.
+          git worktree add --detach /tmp/ghp origin/gh-pages
           cp "$RUNNER_TEMP/widget.wasm" /tmp/ghp/widget.wasm
           cd /tmp/ghp
 
