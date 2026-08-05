@@ -31,12 +31,13 @@ type refusalReason string
 const (
 	// refusedMissingSubprotocols: no Sec-Websocket-Protocol header at all.
 	refusedMissingSubprotocols refusalReason = "missing_subprotocols"
-	// refusedMalformedSubprotocols: the magic cookie matched but the element count
-	// did not. This is *our* protocol with the wrong shape, so it implicates a
-	// broflake client — a version skew, or a caller that built the list by hand.
+	// refusedMalformedSubprotocols: the magic cookie appears somewhere in the list
+	// but the list does not parse — wrong arity, or the cookie not in the leading
+	// position. This is *our* protocol with the wrong shape, so it implicates a
+	// broflake client: a version skew, a hand-built list, or misordered tokens.
 	refusedMalformedSubprotocols refusalReason = "malformed_subprotocols"
-	// refusedForeignSubprotocols: the header was present and the magic cookie did
-	// not match, so the peer is not speaking this protocol at all.
+	// refusedForeignSubprotocols: the header was present and the magic cookie appears
+	// nowhere in it, so the peer shows no sign of speaking this protocol at all.
 	//
 	// Split out from "malformed" because the two point at completely different
 	// owners and the distinction is expensive to get wrong. For ten days the egress
@@ -96,8 +97,11 @@ func eachRefusal(f func(reason refusalReason, count int64)) {
 // applies, and whether the peer's values are safe to record.
 //
 // A function rather than inline branches in handleWebsocket so the safety property
-// below is testable directly. The property is easy to state and easy to break by
-// accident: values may be logged *only* when the magic cookie did not match.
+// below is testable directly. The property is easy to state and was in fact broken
+// on the first attempt: values may be logged *only* when the magic cookie appears
+// nowhere in the list. Checking the leading position instead — the same test the
+// parser uses — leaks a real consumer session ID from any client that merely
+// misordered its tokens.
 //
 // raw is the unsplit header lines and parsed is the comma-split, whitespace-trimmed
 // list. Absence is judged on raw because "Sec-WebSocket-Protocol: ," parses to zero
@@ -106,14 +110,18 @@ func classifySubprotocolRefusal(raw, parsed []string) (reason refusalReason, msg
 	switch {
 	case len(raw) == 0:
 		return refusedMissingSubprotocols, "Refused WebSocket connection, missing subprotocols", false
-	case common.HasSubprotocolsMagicCookie(parsed):
-		// Our protocol, wrong shape. A peer that got the cookie right is plausibly a
-		// real client, so one of its values is plausibly a real consumer session ID.
+	case common.SubprotocolsContainMagicCookie(parsed):
+		// Our protocol, wrong shape — a version skew, a hand-built list, or tokens in
+		// the wrong order. The cookie appearing *anywhere* is what qualifies, not the
+		// cookie leading: a misordered list is still our software getting it wrong,
+		// and it can still carry a real consumer session ID. Checking only the leading
+		// position here would classify that client as foreign and log its CSID, which
+		// is the one value deliberately withheld.
 		return refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols", false
 	default:
-		// Not our protocol. Recording the values is what identifies the caller, and
-		// it is safe precisely because the cookie did not match: a peer not following
-		// the format cannot have supplied the session ID that format carries.
+		// Not our protocol. Recording the values is what identifies the caller, and it
+		// is safe precisely because the cookie is absent: a peer showing no sign of
+		// following the format cannot have supplied the session ID that format carries.
 		return refusedForeignSubprotocols, "Refused WebSocket connection, foreign subprotocols", true
 	}
 }
