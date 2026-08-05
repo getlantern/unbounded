@@ -24,6 +24,27 @@
 // Deliberately not OpenTelemetry: the otel Go SDK was found to abuse the call
 // stack in ways mobile Safari does not tolerate, so widget-side telemetry stays
 // primitive on both sides of the boundary.
+//
+// Runs on other people's sites. The widget is embedded by third parties with a
+// cross-origin script tag, not an iframe:
+//
+//	<script defer src="https://embed.lantern.io/static/js/main.js"></script>
+//
+// A cross-origin script executes in the *embedder's* origin, so everything below
+// happens on their page, not ours. Two consequences worth knowing before changing
+// any of it:
+//
+//   - localStorage, window.__unboundedWatchdog and console output all belong to the
+//     embedding site. Breadcrumbs therefore recover per-site, which is correct — a
+//     freeze on site X is evidence about site X — but it also means this writes keys
+//     into storage we do not own. Hence the narrow prefix, the 24h expiry, the cap
+//     on retained records, and deleting each record as it is read: the footprint on
+//     a host we are a guest on should stay small and self-cleaning.
+//   - FreezeReport carries `url`, which on an embedding site is that site's URL.
+//     Harmless while the only sinks are the local console and a window global, but
+//     enabling REACT_APP_FREEZE_BEACON_URL would start sending us the addresses of
+//     pages that embed the widget. That is a deliberate decision about third-party
+//     data, not a config toggle, which is part of why the beacon ships disabled.
 
 // tickMs is how often the watchdog samples. Frequent enough that an 8s freeze is
 // caught by a wide margin, cheap enough to be irrelevant: one Date.now(), one

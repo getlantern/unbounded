@@ -214,8 +214,12 @@ jobs:
           # CNAME is the one file whose absence breaks DNS for embed.lantern.io
           # rather than merely breaking the page. It reaches the branch only because
           # it sits in ui/public/, which is easy to disturb without noticing.
-          if [ "$(cat "$b/CNAME")" != "embed.lantern.io" ]; then
-            echo "CNAME missing or wrong: $(cat "$b/CNAME" 2>&1)" >&2
+          # Read once, capturing either the contents or cat's error as the value, so
+          # the comparison below is the only guard. || true because a bare
+          # cname=$(cat missing) aborts under set -e before the friendlier message.
+          cname=$(cat "$b/CNAME" 2>&1 || true)
+          if [ "$cname" != "embed.lantern.io" ]; then
+            echo "CNAME missing or wrong: $cname" >&2
             exit 1
           fi
 
