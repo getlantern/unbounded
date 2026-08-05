@@ -139,3 +139,53 @@ func TestParseSubprotocolsRequest_RejectsWrongArity(t *testing.T) {
 		}
 	}
 }
+
+// HasSubprotocolsMagicCookie answers "is this peer speaking our protocol at all",
+// independent of whether it got the rest right. The egress uses it to decide both
+// which refusal to report and what is safe to log, so both halves matter.
+func TestHasSubprotocolsMagicCookie(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   []string
+		want bool
+	}{
+		"nil":                     {nil, false},
+		"empty":                   {[]string{}, false},
+		"valid 3-element request": {NewSubprotocolsRequest("csid", "v2.3.5"), true},
+		"valid 4-element request": {NewSubprotocolsRequestWithCountry("csid", "v2.3.5", "CN"), true},
+		// The server's own response format. Exactly one element, which is the shape
+		// the live refusals have, so this case is load-bearing rather than academic.
+		"response form (cookie alone)": {NewSubprotocolsResponse(), true},
+		"foreign single token":         {[]string{"chat"}, false},
+		"foreign multi token":          {[]string{"graphql-ws", "mqtt"}, false},
+		// Order matters: the cookie has to lead. A list containing it elsewhere is
+		// not this protocol, and must not be treated as one.
+		"cookie not first": {[]string{"csid", NewSubprotocolsResponse()[0]}, false},
+		"empty first":      {[]string{"", NewSubprotocolsResponse()[0]}, false},
+		// Case-sensitive: the cookie is a byte-for-byte constant, not a token to
+		// normalize.
+		"wrong case": {[]string{"UN80UND3D", "csid", "v2.3.5"}, false},
+	} {
+		if got := HasSubprotocolsMagicCookie(tc.in); got != tc.want {
+			t.Errorf("%s: HasSubprotocolsMagicCookie(%q) = %v, want %v", name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// Anything the parser accepts must also be recognized as our protocol. If these
+// disagreed, a refusal could be labeled "foreign" for a peer that in fact speaks
+// this protocol correctly — which is the exact misattribution the label exists to
+// prevent.
+func TestHasSubprotocolsMagicCookie_AgreesWithParser(t *testing.T) {
+	for _, in := range [][]string{
+		NewSubprotocolsRequest("csid", "v2.3.5"),
+		NewSubprotocolsRequestWithCountry("csid", "v2.3.5", "CN"),
+		NewSubprotocolsRequestWithCountry("csid", "v2.3.5", ""),
+	} {
+		if _, _, _, ok := ParseSubprotocolsRequestWithCountry(in); !ok {
+			t.Fatalf("precondition: parser rejected %q", in)
+		}
+		if !HasSubprotocolsMagicCookie(in) {
+			t.Errorf("parser accepted %q but cookie check rejected it", in)
+		}
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/getlantern/broflake/common"
 )
 
 func resetRefusals(t *testing.T) {
@@ -248,6 +250,96 @@ func TestTruncateForLog_NormalizesShortInvalidUTF8(t *testing.T) {
 	for _, ok := range []string{"", "curl/8.4.0", "日本語"} {
 		if got := truncateForLog(ok); got != ok {
 			t.Errorf("valid value altered: truncateForLog(%q) = %q", ok, got)
+		}
+	}
+}
+
+// The three subprotocol refusals have three different owners, and collapsing them
+// is what made ~9 refusals/second unactionable for ten days: "missing" reads as
+// "not a broflake client", "malformed" reads as "a broken donor", and the evidence
+// was equally consistent with both.
+func TestClassifySubprotocolRefusal(t *testing.T) {
+	cookie := common.NewSubprotocolsResponse()[0] // the magic cookie, whatever it is
+
+	for name, tc := range map[string]struct {
+		raw        []string
+		parsed     []string
+		wantReason refusalReason
+		wantLog    bool
+	}{
+		"absent header": {
+			raw: nil, parsed: nil,
+			wantReason: refusedMissingSubprotocols, wantLog: false,
+		},
+		// Present but empty: the header was plainly sent, so it must not be reported
+		// as absent even though it parses to zero values.
+		"present but empty": {
+			raw: []string{","}, parsed: nil,
+			wantReason: refusedForeignSubprotocols, wantLog: true,
+		},
+		// Our protocol, wrong arity — the shape the live refusals actually have.
+		"cookie alone": {
+			raw: []string{cookie}, parsed: []string{cookie},
+			wantReason: refusedMalformedSubprotocols, wantLog: false,
+		},
+		"cookie plus one": {
+			raw: []string{cookie + ",csid"}, parsed: []string{cookie, "csid"},
+			wantReason: refusedMalformedSubprotocols, wantLog: false,
+		},
+		"cookie plus too many": {
+			raw:        []string{"x"},
+			parsed:     []string{cookie, "csid", "v2.3.5", "CN", "extra"},
+			wantReason: refusedMalformedSubprotocols, wantLog: false,
+		},
+		"foreign single token": {
+			raw: []string{"chat"}, parsed: []string{"chat"},
+			wantReason: refusedForeignSubprotocols, wantLog: true,
+		},
+		"foreign multi token": {
+			raw: []string{"graphql-ws,mqtt"}, parsed: []string{"graphql-ws", "mqtt"},
+			wantReason: refusedForeignSubprotocols, wantLog: true,
+		},
+		// Right tokens, wrong order: the cookie must lead, or it is not our protocol.
+		"cookie not first": {
+			raw: []string{"csid," + cookie}, parsed: []string{"csid", cookie},
+			wantReason: refusedForeignSubprotocols, wantLog: true,
+		},
+	} {
+		reason, msg, logValues := classifySubprotocolRefusal(tc.raw, tc.parsed)
+		if reason != tc.wantReason {
+			t.Errorf("%s: reason = %q, want %q", name, reason, tc.wantReason)
+		}
+		if logValues != tc.wantLog {
+			t.Errorf("%s: logValues = %v, want %v", name, logValues, tc.wantLog)
+		}
+		if msg == "" {
+			t.Errorf("%s: empty message", name)
+		}
+	}
+}
+
+// The safety property, stated as its own test because it is the reason the values
+// are logged at all: a peer that got the magic cookie right is plausibly a real
+// client, so one of its values is plausibly a real consumer session ID. Values may
+// be recorded only when the cookie did NOT match, which is precisely when the peer
+// cannot have supplied one.
+func TestClassifySubprotocolRefusal_NeverLogsValuesWhenCookieMatched(t *testing.T) {
+	cookie := common.NewSubprotocolsResponse()[0]
+	realCSID := "9f8c1e2a-secret-session-id"
+
+	// Every arity that fails to parse while still carrying the cookie.
+	for _, parsed := range [][]string{
+		{cookie},
+		{cookie, realCSID},
+		{cookie, realCSID, "v2.3.5", "CN", "surplus"},
+		{cookie, realCSID, "v2.3.5", "CN", "surplus", "more"},
+	} {
+		reason, _, logValues := classifySubprotocolRefusal([]string{"raw"}, parsed)
+		if logValues {
+			t.Errorf("would log values for a cookie-matching peer: %v", parsed)
+		}
+		if reason != refusedMalformedSubprotocols {
+			t.Errorf("parsed=%v reason = %q, want %q", parsed, reason, refusedMalformedSubprotocols)
 		}
 	}
 }

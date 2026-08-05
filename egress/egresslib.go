@@ -114,23 +114,27 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
 	if !ok {
-		// ParseSubprotocolsRequestWithCountry returns !ok for an absent header,
-		// a wrong element count, or a magic-cookie mismatch. Reporting all three
-		// as "missing" would point an investigation at the wrong caller, so
-		// split on whether the client sent anything at all.
+		// ParseSubprotocolsRequestWithCountry returns !ok for three different
+		// situations with three different owners, so they are reported separately.
+		// Collapsing them is not a cosmetic loss: the egress refused ~9
+		// connections/second for ten days, and the single "missing subprotocols"
+		// label was consistent with every competing explanation, so it identified
+		// nobody.
 		//
-		// The element count is logged; the values are not. They are
-		// client-controlled and unbounded in size, and one of them is a session
-		// identifier.
-		// Test the RAW header, not the filtered list: "Sec-WebSocket-Protocol: ,"
-		// filters down to zero values, so keying off the filtered slice reported a
-		// client that clearly sent something as though it had sent nothing.
-		reason, msg := refusedMissingSubprotocols, "Refused WebSocket connection, missing subprotocols"
-		if len(rawSubprotocols) > 0 {
-			reason, msg = refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols"
+		// Test the RAW header for absence, not the filtered list:
+		// "Sec-WebSocket-Protocol: ," filters down to zero values, so keying off the
+		// filtered slice reported a client that clearly sent something as though it
+		// had sent nothing.
+		reason, msg, logValues := classifySubprotocolRefusal(rawSubprotocols, subprotocols)
+		attrs := append(peerAttrs(r), "subprotocol_count", len(subprotocols))
+		if logValues {
+			// Bounded even though the cookie mismatch means no session ID is present:
+			// these are still unbounded, peer-chosen bytes headed for disk.
+			attrs = append(attrs, "subprotocol_values", truncateForLog(strings.Join(subprotocols, "|")))
 		}
+
 		recordRefusal(reason)
-		slog.Debug(msg, append(peerAttrs(r), "subprotocol_count", len(subprotocols))...)
+		slog.Debug(msg, attrs...)
 		return
 	}
 
