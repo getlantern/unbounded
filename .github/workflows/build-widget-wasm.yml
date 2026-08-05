@@ -21,11 +21,25 @@ name: Build widget (wasm)
 # widget, so a change that compiles and unit-tests clean can still ship a broken
 # widget to every donor. Worth closing before relying on this too heavily.
 #
-# Only widget.wasm is written. The gh-pages branch also serves index.html,
-# storage.html, popup.html and static/ for embedders, and `gh-pages -d build`
-# replaces the whole branch — so the page half stays a deliberate, separate deploy.
-# It could not move here anyway: ui/.env.production is gitignored, so a CI page
-# build would bake in undefined REACT_APP_* values.
+# Publishes BOTH halves of embed.lantern.io: widget.wasm and the page that loads it.
+#
+# It began as wasm-only, which turned out to be worse than useless for the thing it
+# was added for. unbounded.lantern.io is a separate Next.js site that pulls the
+# widget in via <script src="https://embed.lantern.io/static/js/main.js">, so the
+# page JS ships from this branch too. Automating only the binary left #383's freeze
+# watchdog with no path to production at all, and left a trap: `yarn deploy` (the
+# manual page deploy) pushes the committed ui/public/widget.wasm, which would have
+# silently reverted the automated binary to a months-old build.
+#
+# Both are published from one job so they cannot disagree, and widget.wasm is
+# written from the Go build *after* the page files are copied — so whatever stale
+# binary ui/public/ happens to hold is always overwritten rather than shipped.
+#
+# The page build config comes from ui/.env.production.example, which is tracked and
+# byte-identical to the gitignored ui/.env.production. Nothing in it is secret: every
+# REACT_APP_* value is compiled into a world-readable bundle by definition, and the
+# one token-shaped key (STRAPI_API_TOKEN) is read only by scripts/translate.js, not
+# by the build.
 #
 # Build only, no `go vet`: vetting under wasm tags currently reports four
 # pre-existing findings in clientcore (user.go lostcancel x2, unreachable code in
@@ -44,6 +58,7 @@ on:
       - 'common/**'
       - 'cmd/**'
       - 'netstate/**'
+      - 'ui/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/build-widget-wasm.yml'
@@ -53,6 +68,7 @@ on:
       - 'common/**'
       - 'cmd/**'
       - 'netstate/**'
+      - 'ui/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/build-widget-wasm.yml'
@@ -109,7 +125,7 @@ jobs:
         run: go test ./clientcore/... ./common/...
 
   publish:
-    name: publish widget.wasm to gh-pages
+    name: publish widget + page to gh-pages
     # Both gates must pass. A publish that only required compilation would put a
     # binary in front of every donor on the strength of the type checker alone.
     needs: [build-wasm, test]
@@ -167,6 +183,62 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/setup-node@v4
+        with:
+          # Not the newest: react-scripts 5 is unmaintained and its webpack/openssl
+          # assumptions get less reliable the further ahead of it Node runs.
+          node-version: '20'
+          cache: yarn
+          cache-dependency-path: ui/yarn.lock
+
+      # ui/.env.production is gitignored, but ui/.env.production.example is tracked
+      # and byte-identical to it, so the tracked file is the source of truth here.
+      # Copying rather than duplicating the values into this workflow keeps one place
+      # to change them and no chance of CI and a local build drifting apart.
+      - name: Build the widget page
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          cp .env.production.example .env.production
+          yarn install --frozen-lockfile
+          yarn build:web
+
+      # Same reasoning as the wasm check: a page build can "succeed" and still emit
+      # something that would break every embedder, and publishing it takes the widget
+      # down until the next merge.
+      - name: Verify the page build
+        run: |
+          set -euo pipefail
+          b=ui/build
+
+          # CNAME is the one file whose absence breaks DNS for embed.lantern.io
+          # rather than merely breaking the page. It reaches the branch only because
+          # it sits in ui/public/, which is easy to disturb without noticing.
+          # Read once, capturing either the contents or cat's error as the value, so
+          # the comparison below is the only guard. || true because a bare
+          # cname=$(cat missing) aborts under set -e before the friendlier message.
+          cname=$(cat "$b/CNAME" 2>&1 || true)
+          if [ "$cname" != "embed.lantern.io" ]; then
+            echo "CNAME missing or wrong: $cname" >&2
+            exit 1
+          fi
+
+          # The entry point unbounded.lantern.io loads by absolute URL. Its name is
+          # pinned by ui/scripts/build.js (static/js/[name].js, no content hash), so
+          # the path is stable and worth asserting rather than globbing.
+          js=$b/static/js/main.js
+          size=$(stat -c%s "$js")
+          echo "main.js=$size bytes"
+          # A real bundle is ~800KB. Anything this far under is a broken build.
+          if [ "$size" -lt 300000 ]; then
+            echo "main.js implausibly small: $size bytes" >&2
+            exit 1
+          fi
+
+          for f in index.html storage.html popup.html offscreen.html asset-manifest.json; do
+            [ -s "$b/$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
+          done
+
       # Separate worktree rather than a branch switch, so the built artifact in
       # RUNNER_TEMP is untouched and the checked-out source stays available.
       - name: Publish to gh-pages
@@ -191,20 +263,33 @@ jobs:
           # as a remote-tracking ref as --track -b, which would make the push below
           # depend on branch tracking config rather than the explicit refspec.
           git worktree add --detach /tmp/ghp origin/gh-pages
-          cp "$RUNNER_TEMP/widget.wasm" /tmp/ghp/widget.wasm
-          cd /tmp/ghp
 
-          # Byte-identical rebuilds are common — most merges here touch Go code that
-          # does not change the emitted module. Committing anyway would add a 12MB
-          # blob to history per merge and grow the repo without bound.
-          if git diff --quiet -- widget.wasm; then
-            echo "widget.wasm unchanged; nothing to publish"
+          # --delete so renamed or dropped assets do not accumulate forever; the
+          # branch should mirror the build, which is what `gh-pages -d build` did.
+          # ui/build/ holds exactly the branch's file set, CNAME included, so this
+          # does not strand anything the page needs.
+          rsync -a --delete --exclude '.git' ui/build/ /tmp/ghp/
+
+          # AFTER the page copy, deliberately. ui/build/widget.wasm is whatever
+          # ui/public/ happened to contain — a committed binary that has been months
+          # stale before — so the freshly built one always wins. This is what makes
+          # the two artifacts unable to disagree.
+          cp "$RUNNER_TEMP/widget.wasm" /tmp/ghp/widget.wasm
+
+          cd /tmp/ghp
+          git add -A
+
+          # Most merges do not change either artifact. Committing regardless would add
+          # a ~12MB blob per merge and grow the repo without bound.
+          if git diff --cached --quiet; then
+            echo "no change to widget.wasm or the page; nothing to publish"
             exit 0
           fi
 
-          git add widget.wasm
-          git commit -m "widget.wasm: build from $COMMIT_SHA"
+          echo "publishing:"
+          git diff --cached --stat | tail -20
+          git commit -m "widget: build from $COMMIT_SHA"
           # Push to the ref explicitly. The worktree is on a detached HEAD from
           # origin/gh-pages, so HEAD:gh-pages is what advances the branch.
           git push origin HEAD:gh-pages
-          echo "published widget.wasm from $COMMIT_SHA"
+          echo "published widget + page from $COMMIT_SHA"
