@@ -226,6 +226,24 @@ func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool)
 	return csid, version, ok
 }
 
+// HasSubprotocolsMagicCookie reports whether s opens with the magic cookie, i.e.
+// whether the peer is speaking this protocol at all — independent of whether it got
+// the rest of the handshake right.
+//
+// Exported so the egress can separate "our client, wrong shape" from "not our
+// protocol" when a handshake is refused. Conflating those two sent an investigation
+// of ~9 refusals/second down the wrong path for over a week: the refusals looked
+// like broken donors when the arity said something else entirely was calling.
+//
+// It also decides what is safe to log. A peer that fails this check cannot have
+// supplied a consumer session ID, because it is not following the format that has
+// one — so its values carry no identifier and can be recorded to identify the
+// caller. A peer that passes may well have a real session ID among its values, so
+// those stay unlogged.
+func HasSubprotocolsMagicCookie(s []string) bool {
+	return len(s) > 0 && s[0] == subprotocolsMagicCookie
+}
+
 // ParseSubprotocolsRequestWithCountry additionally returns the consumer country
 // when the peer supplied one; country is "" for the 3-element form.
 func ParseSubprotocolsRequestWithCountry(s []string) (csid, version, country string, ok bool) {
