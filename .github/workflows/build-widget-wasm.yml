@@ -7,9 +7,25 @@ name: Build widget (wasm)
 # landed in clientcore without wasm build tags and broke `GOOS=js GOARCH=wasm
 # go build ./cmd` on main, undetected.
 #
-# This job exists so that failure mode cannot recur silently. It only compiles;
-# it deliberately does not regenerate or commit widget.wasm, since publishing a
-# binary is a release decision, not a CI side effect.
+# The build job exists so that failure mode cannot recur silently.
+#
+# It now also publishes. Until 2026-08-05 widget.wasm reached embed.lantern.io only
+# via someone running `yarn deploy` by hand, and the consequence was a live widget
+# four months stale: the binary served on 2026-08-03 predated the Go liveness
+# heartbeat by half a day and predated its own source by far longer. A release step
+# that only happens when a human remembers is a release step that does not happen.
+#
+# Publishing is gated on the wasm build AND the native unit tests, so "it reached
+# users" implies "it compiled for the target and its packages passed". That is a
+# real gate but not a complete one — there is no functional or browser test of the
+# widget, so a change that compiles and unit-tests clean can still ship a broken
+# widget to every donor. Worth closing before relying on this too heavily.
+#
+# Only widget.wasm is written. The gh-pages branch also serves index.html,
+# storage.html, popup.html and static/ for embedders, and `gh-pages -d build`
+# replaces the whole branch — so the page half stays a deliberate, separate deploy.
+# It could not move here anyway: ui/.env.production is gitignored, so a CI page
+# build would bake in undefined REACT_APP_* values.
 #
 # Build only, no `go vet`: vetting under wasm tags currently reports four
 # pre-existing findings in clientcore (user.go lostcancel x2, unreachable code in
@@ -41,8 +57,15 @@ on:
       - 'go.sum'
       - '.github/workflows/build-widget-wasm.yml'
 
+# Read-only by default. Only the publish job widens this, and only for itself.
 permissions:
   contents: read
+
+# Serialize publishes so two merges cannot race on the gh-pages ref. Without this
+# the second push loses to a non-fast-forward and the newer wasm is the one dropped.
+concurrency:
+  group: publish-widget-wasm
+  cancel-in-progress: false
 
 jobs:
   build-wasm:
@@ -64,3 +87,101 @@ jobs:
         # compiles. -o /dev/null keeps the artifact out of the workspace so it
         # can't be mistaken for something publishable.
         run: go build -ldflags "-s -w" -o /dev/null ./cmd
+
+  test:
+    name: go test (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Native, not js/wasm: there is no wasm test runner here, and these packages
+      # are the ones the widget is built from. Running them is what lets the publish
+      # below claim more than "it compiled".
+      - name: Test packages the widget is built from
+        run: go test ./clientcore/... ./common/...
+
+  publish:
+    name: publish widget.wasm to gh-pages
+    # Both gates must pass. A publish that only required compilation would put a
+    # binary in front of every donor on the strength of the type checker alone.
+    needs: [build-wasm, test]
+    # Merges only. A PR must never be able to publish — it would let any fork's
+    # branch write to the branch users are served from.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the built wasm to gh-pages
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Real output path this time, unlike build-wasm above. Same flags as
+      # cmd/build_web.sh so what ships matches what a local build produces.
+      - name: Build widget.wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go build -ldflags "-s -w" -o "$RUNNER_TEMP/widget.wasm" ./cmd
+
+      # Sanity-check the artifact before it can replace a live one. A zero-byte or
+      # truncated file would still "build" if the toolchain failed strangely, and
+      # publishing one takes every donor offline until the next merge.
+      - name: Verify the artifact looks like a wasm module
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/widget.wasm"
+          size=$(stat -c%s "$f")
+          echo "size=$size"
+          # The live binary is ~12MB. Anything under 1MB is not a broflake widget.
+          if [ "$size" -lt 1000000 ]; then
+            echo "artifact implausibly small: $size bytes" >&2
+            exit 1
+          fi
+          # Wasm magic number: 0x00 'a' 's' 'm'
+          magic=$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')
+          echo "magic=$magic"
+          if [ "$magic" != "0061736d" ]; then
+            echo "artifact is not a wasm module (magic $magic)" >&2
+            exit 1
+          fi
+
+      # Separate worktree rather than a branch switch, so the built artifact in
+      # RUNNER_TEMP is untouched and the checked-out source stays available.
+      - name: Publish to gh-pages
+        env:
+          # Only ever the resolved SHA of the pushed commit — never a ref name,
+          # branch, or message — so nothing attacker-controlled reaches the shell.
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch --depth=1 origin gh-pages
+          git worktree add /tmp/ghp origin/gh-pages
+          cp "$RUNNER_TEMP/widget.wasm" /tmp/ghp/widget.wasm
+          cd /tmp/ghp
+
+          # Byte-identical rebuilds are common — most merges here touch Go code that
+          # does not change the emitted module. Committing anyway would add a 12MB
+          # blob to history per merge and grow the repo without bound.
+          if git diff --quiet -- widget.wasm; then
+            echo "widget.wasm unchanged; nothing to publish"
+            exit 0
+          fi
+
+          git add widget.wasm
+          git commit -m "widget.wasm: build from $COMMIT_SHA"
+          # Push to the ref explicitly. The worktree is on a detached HEAD from
+          # origin/gh-pages, so HEAD:gh-pages is what advances the branch.
+          git push origin HEAD:gh-pages
+          echo "published widget.wasm from $COMMIT_SHA"
