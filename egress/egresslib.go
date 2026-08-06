@@ -133,6 +133,25 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			attrs = append(attrs, "subprotocol_values", truncateForLog(strings.Join(subprotocols, "|")))
 		}
 
+		// A status only for the legacy client, because it is the only one of these
+		// where a specific remedy exists and a real operator is plausibly watching.
+		// These nine hosts have been retrying roughly once a second for months, and
+		// from the outside the client looks healthy the whole time: websocket.Dial
+		// returns an error, the client backs off and tries again, and that is
+		// indistinguishable from ordinary transient network trouble. Nothing says the
+		// handshake itself is obsolete. A status code is the only channel we have to
+		// whoever runs them.
+		//
+		// 426 rather than the 418 used above for a version-header mismatch: 426 is the
+		// registered status for "you must upgrade to talk to me", so it reads correctly
+		// in a log without knowing this codebase, and keeping the two distinct means a
+		// refusal's status alone says which check rejected it.
+		if reason == refusedLegacyTeamClient {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			w.Write([]byte("426 upgrade required: this client predates the current " +
+				"handshake and cannot be served; please update unbounded\n"))
+		}
+
 		recordRefusal(reason)
 		slog.Debug(msg, attrs...)
 		return
