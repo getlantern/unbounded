@@ -239,7 +239,7 @@ than shipping.
    1. Install a simple server e.g. `npm install -g serve` (or your lightweight http server of choice)
    2. Serve the build dir e.g. `cd build && serve -s -l 3000` and visit [http://localhost:3000](http://localhost:3000)
 
-7. To deploy to Github pages: nothing to do — merging to `main` publishes. See the
+7. To deploy to GitHub Pages: nothing to do — merging to `main` publishes. See the
    warning under [UI quickstart for devs](#ui-quickstart-for-devs) before reaching for
    `yarn deploy`, which regresses the published `widget.wasm`.
 
