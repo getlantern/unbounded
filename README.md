@@ -188,9 +188,32 @@ Development:
 1. Copy the example env: `cp .env.development.example .env.development`
 2. Start the dev server: `yarn dev:web` and open [http://localhost:3000](http://localhost:3000) to view it in the browser.
 
-Production:
-1. Copy the example env: `cp .env.production.example .env.production`
-2. Build and deploy prod bundle to Github page: `yarn deploy`
+Production: **you don't deploy by hand.** Merging to `main` publishes both `widget.wasm`
+and the page bundle to the `gh-pages` branch (and from there to embed.lantern.io) via
+`.github/workflows/build-widget-wasm.yml`, gated on the js/wasm build and the Go unit
+tests. That covers unbounded.lantern.io and every third-party embedder at once, since
+they all load `https://embed.lantern.io/static/js/main.js` by absolute URL.
+
+> [!WARNING]
+> **Do not run `yarn deploy`.** Its `predeploy` runs `build:web`, which does *not*
+> run `cmd/build_web.sh` — so it publishes the committed `ui/public/widget.wasm`,
+> which is a prebuilt binary that goes stale as soon as any Go code changes. Running
+> it silently reverts the automatically published wasm to whatever that file holds
+> while the page JS moves forward, leaving the two halves mismatched. If you need a
+> one-off manual publish, build the wasm first (`cd cmd && ./build_web.sh`) so
+> `ui/public/widget.wasm` is current.
+
+Before pushing UI changes, build the way CI does:
+
+```bash
+CI=true yarn build:web
+```
+
+`react-scripts` turns ESLint **warnings into errors** when `CI` is set, and GitHub
+Actions sets it automatically — so a plain `yarn build:web` can print warnings,
+succeed locally, and still fail the publish. Note the failure is safe: the publish
+job verifies the build before it touches `gh-pages`, so a broken build stops rather
+than shipping.
 
 #### UI deep dive for devs
 
@@ -216,7 +239,9 @@ Production:
    1. Install a simple server e.g. `npm install -g serve` (or your lightweight http server of choice)
    2. Serve the build dir e.g. `cd build && serve -s -l 3000` and visit [http://localhost:3000](http://localhost:3000)
 
-7. To deploy to Github pages: `yarn deploy`
+7. To deploy to GitHub Pages: nothing to do — merging to `main` publishes. See the
+   warning under [UI quickstart for devs](#ui-quickstart-for-devs) before reaching for
+   `yarn deploy`, which regresses the published `widget.wasm`.
 
 8. Coming soon to a repo near you: `yarn test`
 
