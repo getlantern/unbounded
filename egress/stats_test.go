@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/getlantern/geo"
 )
 
 // resetStats isolates tests from each other and from any package-level state
@@ -67,10 +69,28 @@ func TestStatsFor_UnknownLiteralRoutesToUnknownBucket(t *testing.T) {
 	}
 }
 
+// withNoLookup pins donorGeo to geo.NoLookup for the duration of a test.
+//
+// These tests need an *unresolvable* peer, and they used to get one for free
+// because donorGeo stayed at its init value: GEODB was never set, so initDonorGeo
+// returned early and nothing ever replaced it. Since geolocation now defaults on,
+// any test that constructs a listener installs a real lookup, and once its 4MB
+// download completes mid-suite these assertions start seeing real countries —
+// 8.8.8.8 resolves to US. That made the suite depend on whether a network fetch
+// finished in time, which showed up as -race-only failures because -race is slow
+// enough for it to land.
+func withNoLookup(t *testing.T) {
+	t.Helper()
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+	setDonorGeo(geo.NoLookup{})
+}
+
 // Whatever donorCountry produces for an unresolvable peer must survive a round
 // trip through statsFor and eachCountryStats as exactly one series.
 func TestEachCountryStats_UnknownEmittedExactlyOnce(t *testing.T) {
 	resetStats(t)
+	withNoLookup(t)
 	s := statsFor(donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443}))
 	atomic.AddInt64(&s.clients, 1)
 	atomic.AddInt64(&s.ingressBytes, 42)
@@ -212,6 +232,11 @@ func TestDonorGeoAccessors(t *testing.T) {
 	orig := lookupDonorGeo()
 	t.Cleanup(func() { setDonorGeo(orig) })
 
+	// Install NoLookup rather than assuming the package still holds it. init seeds
+	// it, but geolocation now defaults on, so any earlier test that built a listener
+	// has replaced it with a real one.
+	setDonorGeo(geo.NoLookup{})
+
 	if lookupDonorGeo() == nil {
 		t.Fatal("lookupDonorGeo returned nil; init should seed geo.NoLookup")
 	}
@@ -279,6 +304,7 @@ func TestDBNameFromURL(t *testing.T) {
 // With no GEODB configured the lookup is geo.NoLookup, whose CountryCode returns
 // "". That must surface as unknownCountry, never as an empty label.
 func TestDonorCountry_DefaultsToUnknown(t *testing.T) {
+	withNoLookup(t)
 	for _, addr := range []net.Addr{
 		&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443},
 		&net.TCPAddr{}, // no IP
