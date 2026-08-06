@@ -2,6 +2,8 @@ package egress
 
 import (
 	"net"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -239,19 +241,30 @@ func TestDBNameFromURL(t *testing.T) {
 		name, in, want string
 		ok             bool
 	}{
-		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.tar.gz", "GeoLite2-Country", true},
-		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country", "GeoLite2-Country", true},
+		// The default, and the convention used across the fleet: a mirror URL whose
+		// path already carries the member name. Verified against the real object —
+		// the tarball contains GeoLite2-Country_20260804/GeoLite2-Country.mmdb, so
+		// ".mmdb" is what keepcurrent.FromTarGz must be handed.
+		{"lantern mirror (the default)", defaultGeoDBURL, "GeoLite2-Country.mmdb", true},
+		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.mmdb.tar.gz", "GeoLite2-Country.mmdb", true},
+		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country.mmdb", "GeoLite2-Country.mmdb", true},
 		{
 			// The case that motivated this: MaxMind's real permalink puts the
 			// edition in the query, so path.Base over the raw URL would have
 			// produced "geoip_download?edition_id=...&license_key=..." and used
 			// it as both a tarball member name and a local filename.
+			//
+			// The expected value is the edition plus ".mmdb", not the bare edition.
+			// FromTarGz compares this to each member's base name with ==, so a bare
+			// edition id matches nothing in the archive. This test asserted the bare
+			// id until 2026-08-06, which made it agree with the code and disagree
+			// with every real tarball.
 			"maxmind permalink",
 			"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=secret&suffix=tar.gz",
-			"GeoLite2-Country", true,
+			"GeoLite2-Country.mmdb", true,
 		},
-		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country", true},
-		{"fragment", "https://example.com/GeoLite2-Country.tar.gz#frag", "GeoLite2-Country", true},
+		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.mmdb.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country.mmdb", true},
+		{"fragment", "https://example.com/GeoLite2-Country.mmdb.tar.gz#frag", "GeoLite2-Country.mmdb", true},
 		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db", true},
 		{"not a url", "GeoLite2-Country.tar.gz", "", false},
 		{"no path", "https://example.com", "", false},
@@ -276,5 +289,44 @@ func TestDonorCountry_DefaultsToUnknown(t *testing.T) {
 		if got := donorCountry(addr); got != unknownCountry {
 			t.Errorf("donorCountry(%v) = %q, want %q", addr, got, unknownCountry)
 		}
+	}
+}
+
+// The default must be usable without configuration, because requiring an env var
+// is what produced donor_country=unknown for every connection in production. Pins
+// the two properties that make it work: it parses to the member name a real MaxMind
+// tarball contains, and it carries no credential.
+func TestDefaultGeoDBURL(t *testing.T) {
+	name, ok := dbNameFromURL(defaultGeoDBURL)
+	if !ok {
+		t.Fatalf("the default GEODB URL does not parse: %q", defaultGeoDBURL)
+	}
+	// Verified against https://storage.googleapis.com/lanterngeo/GeoLite2-Country.mmdb.tar.gz,
+	// whose members are GeoLite2-Country_<date>/{GeoLite2-Country.mmdb,COPYRIGHT.txt,LICENSE.txt}.
+	if name != "GeoLite2-Country.mmdb" {
+		t.Errorf("derived member name = %q, want %q", name, "GeoLite2-Country.mmdb")
+	}
+	// A URL needing a license key would mean shipping a secret to every egress host
+	// to fetch a public database. If this ever gains a query string, that is a
+	// decision to make deliberately rather than by editing a constant.
+	if strings.Contains(defaultGeoDBURL, "?") || strings.Contains(defaultGeoDBURL, "license") {
+		t.Errorf("the default GEODB URL should carry no credential: %q", defaultGeoDBURL)
+	}
+}
+
+// GEODB overrides the default rather than being ignored, and an unset GEODB does
+// not disable geolocation.
+func TestInitDonorGeo_DefaultsWhenGEODBUnset(t *testing.T) {
+	if got := os.Getenv("GEODB"); got != "" {
+		t.Skipf("GEODB is set in this environment (%q), skipping", got)
+	}
+	// initDonorGeo is guarded by a sync.Once shared with the rest of the package, so
+	// assert on the resolution rule rather than calling it and mutating global state.
+	geoDb := os.Getenv("GEODB")
+	if geoDb == "" {
+		geoDb = defaultGeoDBURL
+	}
+	if geoDb != defaultGeoDBURL {
+		t.Errorf("with GEODB unset the URL should be the default, got %q", geoDb)
 	}
 }

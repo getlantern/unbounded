@@ -57,15 +57,44 @@ func lookupDonorGeo() geo.CountryLookup {
 // and swap donorGeo out from under live connections.
 var initDonorGeoOnce sync.Once
 
-// initDonorGeo configures donorGeo from the GEODB environment variable, which
-// should be a URL to a gzipped MaxMind tarball. Mirrors netstated's
-// configuration (see netstate/d/netstated.go) so operators have one convention
-// to learn rather than two. Safe to call repeatedly; only the first call acts.
+// defaultGeoDBURL is Lantern's own mirror of the MaxMind country database, and
+// the same source the rest of the fleet reads.
+//
+// Deliberately a default rather than required configuration. The first version of
+// this required GEODB to be set, and the result was that it never was: the egress
+// logged "GEODB not specified" on every start and reported donor_country=unknown
+// for every connection, which on a dashboard reads as "all our traffic comes from
+// nowhere" rather than "this is switched off". Telemetry that needs an env var to
+// exist is telemetry that does not exist.
+//
+// This is the URL lantern-cloud's maxmind package uses (see its cityURL/asnURL
+// constants), for two reasons worth keeping:
+//
+//   - No credential. MaxMind's own download endpoint needs a license key in the
+//     query string, so pointing at it would mean distributing a secret to every
+//     egress host to fetch a public geolocation database. The mirror is a plain
+//     public object — verified anonymously readable — so there is nothing to leak
+//     and nothing to rotate.
+//   - One source of truth. Country codes attributed here now agree with the ones
+//     lantern-cloud attributes; two independently-sourced databases would disagree
+//     at the edges and quietly make cross-system comparisons wrong.
+//
+// The Country edition rather than City: it is a third the size and the egress only
+// ever reads CountryCode.
+const defaultGeoDBURL = "https://storage.googleapis.com/lanterngeo/GeoLite2-Country.mmdb.tar.gz"
+
+// initDonorGeo configures donorGeo from the GEODB environment variable, falling
+// back to defaultGeoDBURL. GEODB should be a URL to a gzipped MaxMind tarball.
+// Mirrors netstated's configuration (see netstate/d/netstated.go) so operators have
+// one convention to learn rather than two. Safe to call repeatedly; only the first
+// call acts.
 //
 // This intentionally does not block on geolookup.Ready(): the database download
 // can take a while, and until it lands CountryCode returns "" and connections
 // are labelled unknownCountry. Refusing to serve donors while a telemetry
-// database downloads would be the wrong trade.
+// database downloads would be the wrong trade — and it is also why defaulting this
+// on is safe, since a host that cannot reach the mirror degrades to exactly the
+// behavior it had before rather than failing to serve.
 func initDonorGeo() {
 	initDonorGeoOnce.Do(initDonorGeoLocked)
 }
@@ -73,8 +102,7 @@ func initDonorGeo() {
 func initDonorGeoLocked() {
 	geoDb := os.Getenv("GEODB")
 	if geoDb == "" {
-		slog.Debug("GEODB not specified, egress metrics will not carry donor country")
-		return
+		geoDb = defaultGeoDBURL
 	}
 
 	nameInTarball, ok := dbNameFromURL(geoDb)
@@ -114,9 +142,18 @@ func dbNameFromURL(geoDb string) (string, bool) {
 
 	// Fall back to the edition_id query parameter, which is how the MaxMind
 	// permalink names the database when the path cannot.
+	//
+	// The ".mmdb" is not decoration. keepcurrent.FromTarGz compares this against
+	// each tar member's base name with ==, and a MaxMind tarball contains
+	// "GeoLite2-Country_20260804/GeoLite2-Country.mmdb" — so a bare edition id
+	// matches nothing, walks the whole archive and fails at EOF. The first version
+	// of this returned the bare id and could therefore never have worked on the one
+	// URL form the fallback exists to support. It went unnoticed because the
+	// convention here and in netstated is a mirror URL ending in ".mmdb.tar.gz",
+	// where the path already carries the suffix and this branch never runs.
 	base := path.Base(u.Path)
 	if editionID := u.Query().Get("edition_id"); editionID != "" {
-		base = editionID
+		base = editionID + ".mmdb"
 	}
 
 	name := strings.TrimSuffix(base, ".tar.gz")
