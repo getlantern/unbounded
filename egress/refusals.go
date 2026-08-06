@@ -63,6 +63,8 @@ const (
 )
 
 // legacyTeamIDPrefix is what pre-2025-08-22 clients put in Sec-Websocket-Protocol.
+// (Go's canonical casing, matching common.SubprotocolsHeader; RFC 6455 spells it
+// Sec-WebSocket-Protocol. See that constant for why the difference matters.)
 //
 // Introduced in 0658b1f ("send teamId from consumer -> egress via websocket protocol
 // header", 2025-04-10) as common.TeamIdPrefix, and removed from common in 6561021

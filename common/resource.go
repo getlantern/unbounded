@@ -17,6 +17,17 @@ const (
 )
 
 const (
+	// SubprotocolsHeader is spelled in Go's canonical MIME form, NOT the RFC 6455
+	// form, and the difference is load-bearing. RFC 6455 writes the header as
+	// "Sec-WebSocket-Protocol" (capital S in Socket); textproto.CanonicalMIMEHeaderKey
+	// capitalizes only the first letter after each hyphen, yielding
+	// "Sec-Websocket-Protocol".
+	//
+	// The egress indexes the header map directly with this constant
+	// (r.Header[common.SubprotocolsHeader]), and http.Header keys are stored
+	// canonicalized — so "correcting" this to the RFC spelling would make every lookup
+	// return nothing, and every connection would be refused as though the client had
+	// sent no subprotocols at all. Silently, and for all clients.
 	SubprotocolsHeader      = "Sec-Websocket-Protocol"
 	subprotocolsMagicCookie = "un80und3d"
 )
