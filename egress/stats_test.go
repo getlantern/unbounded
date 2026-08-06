@@ -2,9 +2,12 @@ package egress
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/getlantern/geo"
 )
 
 // resetStats isolates tests from each other and from any package-level state
@@ -66,10 +69,28 @@ func TestStatsFor_UnknownLiteralRoutesToUnknownBucket(t *testing.T) {
 	}
 }
 
+// withNoLookup pins donorGeo to geo.NoLookup for the duration of a test.
+//
+// These tests need an *unresolvable* peer, and they used to get one for free
+// because donorGeo stayed at its init value: GEODB was never set, so initDonorGeo
+// returned early and nothing ever replaced it. Since geolocation now defaults on,
+// any test that constructs a listener installs a real lookup, and once its 4MB
+// download completes mid-suite these assertions start seeing real countries —
+// 8.8.8.8 resolves to US. That made the suite depend on whether a network fetch
+// finished in time, which showed up as -race-only failures because -race is slow
+// enough for it to land.
+func withNoLookup(t *testing.T) {
+	t.Helper()
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+	setDonorGeo(geo.NoLookup{})
+}
+
 // Whatever donorCountry produces for an unresolvable peer must survive a round
 // trip through statsFor and eachCountryStats as exactly one series.
 func TestEachCountryStats_UnknownEmittedExactlyOnce(t *testing.T) {
 	resetStats(t)
+	withNoLookup(t)
 	s := statsFor(donorCountry(&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443}))
 	atomic.AddInt64(&s.clients, 1)
 	atomic.AddInt64(&s.ingressBytes, 42)
@@ -211,6 +232,11 @@ func TestDonorGeoAccessors(t *testing.T) {
 	orig := lookupDonorGeo()
 	t.Cleanup(func() { setDonorGeo(orig) })
 
+	// Install NoLookup rather than assuming the package still holds it. init seeds
+	// it, but geolocation now defaults on, so any earlier test that built a listener
+	// has replaced it with a real one.
+	setDonorGeo(geo.NoLookup{})
+
 	if lookupDonorGeo() == nil {
 		t.Fatal("lookupDonorGeo returned nil; init should seed geo.NoLookup")
 	}
@@ -239,19 +265,30 @@ func TestDBNameFromURL(t *testing.T) {
 		name, in, want string
 		ok             bool
 	}{
-		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.tar.gz", "GeoLite2-Country", true},
-		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country", "GeoLite2-Country", true},
+		// The default, and the convention used across the fleet: a mirror URL whose
+		// path already carries the member name. Verified against the real object —
+		// the tarball contains GeoLite2-Country_20260804/GeoLite2-Country.mmdb, so
+		// ".mmdb" is what keepcurrent.FromTarGz must be handed.
+		{"lantern mirror (the default)", defaultGeoDBURL, "GeoLite2-Country.mmdb", true},
+		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.mmdb.tar.gz", "GeoLite2-Country.mmdb", true},
+		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country.mmdb", "GeoLite2-Country.mmdb", true},
 		{
 			// The case that motivated this: MaxMind's real permalink puts the
 			// edition in the query, so path.Base over the raw URL would have
 			// produced "geoip_download?edition_id=...&license_key=..." and used
 			// it as both a tarball member name and a local filename.
+			//
+			// The expected value is the edition plus ".mmdb", not the bare edition.
+			// FromTarGz compares this to each member's base name with ==, so a bare
+			// edition id matches nothing in the archive. This test asserted the bare
+			// id until 2026-08-06, which made it agree with the code and disagree
+			// with every real tarball.
 			"maxmind permalink",
 			"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=secret&suffix=tar.gz",
-			"GeoLite2-Country", true,
+			"GeoLite2-Country.mmdb", true,
 		},
-		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country", true},
-		{"fragment", "https://example.com/GeoLite2-Country.tar.gz#frag", "GeoLite2-Country", true},
+		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.mmdb.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country.mmdb", true},
+		{"fragment", "https://example.com/GeoLite2-Country.mmdb.tar.gz#frag", "GeoLite2-Country.mmdb", true},
 		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db", true},
 		{"not a url", "GeoLite2-Country.tar.gz", "", false},
 		{"no path", "https://example.com", "", false},
@@ -267,6 +304,7 @@ func TestDBNameFromURL(t *testing.T) {
 // With no GEODB configured the lookup is geo.NoLookup, whose CountryCode returns
 // "". That must surface as unknownCountry, never as an empty label.
 func TestDonorCountry_DefaultsToUnknown(t *testing.T) {
+	withNoLookup(t)
 	for _, addr := range []net.Addr{
 		&net.TCPAddr{IP: net.ParseIP("8.8.8.8"), Port: 443},
 		&net.TCPAddr{}, // no IP
@@ -277,4 +315,61 @@ func TestDonorCountry_DefaultsToUnknown(t *testing.T) {
 			t.Errorf("donorCountry(%v) = %q, want %q", addr, got, unknownCountry)
 		}
 	}
+}
+
+// The default must be usable without configuration, because requiring an env var
+// is what produced donor_country=unknown for every connection in production. Pins
+// the two properties that make it work: it parses to the member name a real MaxMind
+// tarball contains, and it carries no credential.
+func TestDefaultGeoDBURL(t *testing.T) {
+	name, ok := dbNameFromURL(defaultGeoDBURL)
+	if !ok {
+		t.Fatalf("the default GEODB URL does not parse: %q", defaultGeoDBURL)
+	}
+	// Verified against https://storage.googleapis.com/lanterngeo/GeoLite2-Country.mmdb.tar.gz,
+	// whose members are GeoLite2-Country_<date>/{GeoLite2-Country.mmdb,COPYRIGHT.txt,LICENSE.txt}.
+	if name != "GeoLite2-Country.mmdb" {
+		t.Errorf("derived member name = %q, want %q", name, "GeoLite2-Country.mmdb")
+	}
+	// A URL needing a license key would mean shipping a secret to every egress host
+	// to fetch a public database. If this ever gains a query string, that is a
+	// decision to make deliberately rather than by editing a constant.
+	if strings.Contains(defaultGeoDBURL, "?") || strings.Contains(defaultGeoDBURL, "license") {
+		t.Errorf("the default GEODB URL should carry no credential: %q", defaultGeoDBURL)
+	}
+}
+
+// Exercises the production resolution rule, not a copy of it. The first version of
+// this test re-implemented the same conditional and asserted on its own result,
+// which passes whether or not initDonorGeoLocked still has the fallback — coverage
+// in appearance only.
+//
+// t.Setenv rather than reading the ambient value: it restores on cleanup and makes
+// the unset case reachable even on a machine where GEODB happens to be set, which
+// the earlier version could only skip.
+func TestResolveGeoDBURL(t *testing.T) {
+	t.Run("unset falls back to the default", func(t *testing.T) {
+		t.Setenv("GEODB", "")
+		if got := resolveGeoDBURL(); got != defaultGeoDBURL {
+			t.Errorf("resolveGeoDBURL() = %q, want the default %q", got, defaultGeoDBURL)
+		}
+	})
+
+	t.Run("set overrides the default", func(t *testing.T) {
+		const custom = "https://mirror.example.com/GeoLite2-Country.mmdb.tar.gz"
+		t.Setenv("GEODB", custom)
+		if got := resolveGeoDBURL(); got != custom {
+			t.Errorf("resolveGeoDBURL() = %q, want the configured %q", got, custom)
+		}
+	})
+
+	// An operator's override must survive the same derivation the default does,
+	// otherwise setting GEODB would silently fall back to unknownCountry.
+	t.Run("an override still yields a usable member name", func(t *testing.T) {
+		t.Setenv("GEODB", "https://mirror.example.com/GeoLite2-Country.mmdb.tar.gz")
+		name, ok := dbNameFromURL(resolveGeoDBURL())
+		if !ok || name != "GeoLite2-Country.mmdb" {
+			t.Errorf("dbNameFromURL(override) = (%q, %v), want (%q, true)", name, ok, "GeoLite2-Country.mmdb")
+		}
+	})
 }
