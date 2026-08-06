@@ -2,6 +2,9 @@ package egress
 
 import (
 	"net"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -372,4 +375,64 @@ func TestResolveGeoDBURL(t *testing.T) {
 			t.Errorf("dbNameFromURL(override) = (%q, %v), want (%q, true)", name, ok, "GeoLite2-Country.mmdb")
 		}
 	})
+}
+
+// dbNameFromURL feeds two sinks: a tar member name, and filepath.Join(os.TempDir(),
+// name) — a path this process writes as root, per the egress systemd unit. The
+// edition_id branch takes its value verbatim from a query string, so a traversal
+// there escapes the directory it is joined to and becomes an arbitrary root-owned
+// write. The earlier check compared against "", ".", "/" and ".." exactly, which a
+// traversal walks straight past because it needs separators.
+func TestDBNameFromURL_RejectsPathTraversal(t *testing.T) {
+	const base = "https://download.maxmind.com/app/geoip_download?suffix=tar.gz&edition_id="
+	for name, editionID := range map[string]string{
+		"absolute path":      "/etc/shadow",
+		"relative traversal": "../../etc/cron.d/evil",
+		"single traversal":   "../x",
+		"dot dot":            "..",
+		"single dot":         ".",
+		"bare separator":     "/",
+		"trailing separator": "GeoLite2-Country/",
+		"embedded separator": "a/b",
+		"windows separator":  `..\..\x`,
+		"nested traversal":   "GeoLite2-Country/../../../etc/passwd",
+	} {
+		got, ok := dbNameFromURL(base + url.QueryEscape(editionID))
+		if ok {
+			// A basename is the contract; anything that could leave TempDir is not one.
+			if strings.ContainsAny(got, `/\`) || got == "." || got == ".." {
+				t.Errorf("%s (edition_id=%q): returned %q, which is not a plain filename", name, editionID, got)
+				continue
+			}
+			// path.Base may legitimately reduce a traversal to a safe leaf
+			// ("a/b" -> "b.mmdb"); that is fine, as long as it cannot escape.
+			joined := filepath.Join(os.TempDir(), got)
+			if !strings.HasPrefix(filepath.Clean(joined), filepath.Clean(os.TempDir())+string(filepath.Separator)) {
+				t.Errorf("%s (edition_id=%q): %q joins to %q, outside TempDir", name, editionID, got, joined)
+			}
+			continue
+		}
+		// Rejected outright is also a correct outcome.
+	}
+}
+
+// Every accepted value, from any URL shape, must be safe to join onto a directory.
+// Stated as its own test because it is the property the callers actually rely on.
+func TestDBNameFromURL_AlwaysYieldsAContainedPath(t *testing.T) {
+	for _, in := range []string{
+		defaultGeoDBURL,
+		"https://example.com/dbs/GeoLite2-Country.mmdb.tar.gz",
+		"https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-Country&license_key=k&suffix=tar.gz",
+		"https://download.maxmind.com/app/geoip_download?edition_id=" + url.QueryEscape("../../evil") + "&suffix=tar.gz",
+		"https://cdn.example.com/GeoLite2-Country.mmdb.tar.gz?X-Amz-Signature=deadbeef",
+	} {
+		got, ok := dbNameFromURL(in)
+		if !ok {
+			continue
+		}
+		joined := filepath.Clean(filepath.Join(os.TempDir(), got))
+		if !strings.HasPrefix(joined, filepath.Clean(os.TempDir())+string(filepath.Separator)) {
+			t.Errorf("dbNameFromURL(%q) = %q, which joins outside TempDir: %q", in, got, joined)
+		}
+	}
 }

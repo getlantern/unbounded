@@ -182,12 +182,25 @@ func dbNameFromURL(geoDb string) (string, bool) {
 	// where the path already carries the suffix and this branch never runs.
 	base := path.Base(u.Path)
 	if editionID := u.Query().Get("edition_id"); editionID != "" {
-		base = editionID + ".mmdb"
+		// path.Base on the edition id too, not just on the URL path. The path branch
+		// above is sanitized by construction and this one was not, which is the whole
+		// asymmetry: edition_id is taken verbatim from a query string.
+		base = path.Base(editionID) + ".mmdb"
 	}
 
 	name := strings.TrimSuffix(base, ".tar.gz")
-	switch name {
-	case "", ".", "/", "..":
+
+	// The return value must be a plain filename, and this is the one place that can
+	// promise it. Callers use it two ways: as a tar member name, and joined onto
+	// os.TempDir() as a path this process writes — as root, per the egress unit. A
+	// value like "../../etc/cron.d/evil.mmdb" survives filepath.Join by escaping the
+	// directory it was joined to, so the guarantee has to be "no separators at all"
+	// rather than "not literally dot-dot".
+	//
+	// The previous check compared against "", ".", "/" and ".." exactly, which a
+	// traversal walks straight past: it needs separators, and separators were what
+	// went unchecked.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return "", false
 	}
 	return name, true
