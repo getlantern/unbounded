@@ -100,11 +100,23 @@ func initDonorGeo() {
 	initDonorGeoOnce.Do(initDonorGeoLocked)
 }
 
-func initDonorGeoLocked() {
-	geoDb := os.Getenv("GEODB")
-	if geoDb == "" {
-		geoDb = defaultGeoDBURL
+// resolveGeoDBURL returns the database URL to use: GEODB when set, otherwise
+// defaultGeoDBURL.
+//
+// A named function rather than two lines inside initDonorGeoLocked so the rule is
+// reachable from a test. initDonorGeo is guarded by a sync.Once and kicks off a real
+// download, so it cannot be called from a test to check which URL it picked — and
+// the first attempt at covering this instead re-implemented the same conditional in
+// the test, which passes whether or not the production fallback exists.
+func resolveGeoDBURL() string {
+	if u := os.Getenv("GEODB"); u != "" {
+		return u
 	}
+	return defaultGeoDBURL
+}
+
+func initDonorGeoLocked() {
+	geoDb := resolveGeoDBURL()
 
 	nameInTarball, ok := dbNameFromURL(geoDb)
 	if !ok {

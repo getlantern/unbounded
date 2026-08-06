@@ -2,7 +2,6 @@ package egress
 
 import (
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -314,19 +313,37 @@ func TestDefaultGeoDBURL(t *testing.T) {
 	}
 }
 
-// GEODB overrides the default rather than being ignored, and an unset GEODB does
-// not disable geolocation.
-func TestInitDonorGeo_DefaultsWhenGEODBUnset(t *testing.T) {
-	if got := os.Getenv("GEODB"); got != "" {
-		t.Skipf("GEODB is set in this environment (%q), skipping", got)
-	}
-	// initDonorGeo is guarded by a sync.Once shared with the rest of the package, so
-	// assert on the resolution rule rather than calling it and mutating global state.
-	geoDb := os.Getenv("GEODB")
-	if geoDb == "" {
-		geoDb = defaultGeoDBURL
-	}
-	if geoDb != defaultGeoDBURL {
-		t.Errorf("with GEODB unset the URL should be the default, got %q", geoDb)
-	}
+// Exercises the production resolution rule, not a copy of it. The first version of
+// this test re-implemented the same conditional and asserted on its own result,
+// which passes whether or not initDonorGeoLocked still has the fallback — coverage
+// in appearance only.
+//
+// t.Setenv rather than reading the ambient value: it restores on cleanup and makes
+// the unset case reachable even on a machine where GEODB happens to be set, which
+// the earlier version could only skip.
+func TestResolveGeoDBURL(t *testing.T) {
+	t.Run("unset falls back to the default", func(t *testing.T) {
+		t.Setenv("GEODB", "")
+		if got := resolveGeoDBURL(); got != defaultGeoDBURL {
+			t.Errorf("resolveGeoDBURL() = %q, want the default %q", got, defaultGeoDBURL)
+		}
+	})
+
+	t.Run("set overrides the default", func(t *testing.T) {
+		const custom = "https://mirror.example.com/GeoLite2-Country.mmdb.tar.gz"
+		t.Setenv("GEODB", custom)
+		if got := resolveGeoDBURL(); got != custom {
+			t.Errorf("resolveGeoDBURL() = %q, want the configured %q", got, custom)
+		}
+	})
+
+	// An operator's override must survive the same derivation the default does,
+	// otherwise setting GEODB would silently fall back to unknownCountry.
+	t.Run("an override still yields a usable member name", func(t *testing.T) {
+		t.Setenv("GEODB", "https://mirror.example.com/GeoLite2-Country.mmdb.tar.gz")
+		name, ok := dbNameFromURL(resolveGeoDBURL())
+		if !ok || name != "GeoLite2-Country.mmdb" {
+			t.Errorf("dbNameFromURL(override) = (%q, %v), want (%q, true)", name, ok, "GeoLite2-Country.mmdb")
+		}
+	})
 }
