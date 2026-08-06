@@ -1,13 +1,11 @@
 package egress
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -120,27 +118,42 @@ func initDonorGeoLocked() {
 
 	nameInTarball, ok := dbNameFromURL(geoDb)
 	if !ok {
-		slog.Debug(fmt.Sprintf("Cannot derive a database name from GEODB %q, donor country will be %q", geoDb, unknownCountry))
+		slog.Debug("Cannot derive a database name from GEODB, donor country will be unknown",
+			"geodb", geoDb, "donor_country", unknownCountry)
 		return
 	}
-	// An absolute cache path, not the bare member name. geo.FromWeb persists the
-	// database to this path so a restart does not re-download, but a relative path is
-	// resolved against the process's working directory — and the egress unit sets no
-	// WorkingDirectory and runs as root, so CWD is "/". Passing nameInTarball would
-	// drop an 8.7MB /GeoLite2-Country.mmdb at the filesystem root of every egress
-	// host, and write a copy into the source tree on every `go test ./egress/...`.
-	// Both observed; the second is how it was caught.
+	// No on-disk cache — the empty filePath. geo.FromWeb treats "" as "do not
+	// persist", skipping both its ToFile sink and the InitFrom that would read the
+	// file back.
 	//
-	// TempDir rather than a user cache dir: it is writable without depending on HOME,
-	// which systemd does not necessarily set. Losing the cache to /tmp cleanup only
-	// costs one 4MB download on the next start.
+	// Caching this was a mistake in three escalating ways, and removing the file
+	// removes all of them rather than guarding each:
 	//
-	// netstated has the same relative-path shape (netstate/d/netstated.go) and so the
-	// same latent behavior; it just has not been bitten because its GEODB is unset in
-	// most deployments.
-	cachePath := filepath.Join(os.TempDir(), nameInTarball)
-	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, cachePath, geo.CountryCode))
-	slog.Debug(fmt.Sprintf("Using %v to geolocate donors, cached at %v", geoDb, cachePath))
+	//   - The path was originally the bare member name, i.e. relative to the working
+	//     directory. The egress unit sets no WorkingDirectory and runs as root, so
+	//     that meant an 8.7MB /GeoLite2-Country.mmdb at the filesystem root; it also
+	//     wrote into the source tree on every `go test ./egress/...`.
+	//   - Rewriting it as filepath.Join(os.TempDir(), name) fixed the location and
+	//     created a worse problem. keepcurrent's file sink chmods what it writes to
+	//     0666, so the cache became a world-writable file at a predictable path in a
+	//     world-writable directory: any local user could rewrite it and choose what
+	//     country every donor is attributed to.
+	//   - Worse still, geo.FromWeb reads that path back *synchronously* before
+	//     returning (InitFrom -> syncOnce -> os.Open). A local user who pre-creates
+	//     the path as a FIFO with no writer blocks os.Open forever, so initDonorGeo
+	//     never returns, so NewListener never returns, and the egress never serves.
+	//     A local unprivileged DoS on a root service, to save one download.
+	//
+	// What the cache bought was skipping a 4MB fetch on restart. The egress is a
+	// long-running process whose restarts are deploys, and initDonorGeo already
+	// declines to block on Ready(), so the cost of dropping it is a few seconds of
+	// donor_country=unknown after a restart — a telemetry label, not correctness.
+	//
+	// netstated passes a relative path here too (netstate/d/netstated.go) and so has
+	// the first problem latent; noted rather than changed, since its GEODB is unset
+	// in most deployments and it is a separate service to test.
+	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, "", geo.CountryCode))
+	slog.Debug("Using GEODB to geolocate donors (no on-disk cache)", "geodb", geoDb, "member", nameInTarball)
 }
 
 // dbNameFromURL derives the MaxMind member filename (also used as the local
@@ -182,13 +195,38 @@ func dbNameFromURL(geoDb string) (string, bool) {
 	// where the path already carries the suffix and this branch never runs.
 	base := path.Base(u.Path)
 	if editionID := u.Query().Get("edition_id"); editionID != "" {
-		base = editionID + ".mmdb"
+		// path.Base on the edition id too, not just on the URL path. The path branch
+		// above is sanitized by construction and this one was not, which is the whole
+		// asymmetry: edition_id is taken verbatim from a query string.
+		base = path.Base(editionID)
 	}
 
 	name := strings.TrimSuffix(base, ".tar.gz")
-	switch name {
-	case "", ".", "/", "..":
+
+	// The return value must be a plain filename, and this is the one place that can
+	// promise it. Callers use it two ways: as a tar member name, and joined onto
+	// os.TempDir() as a path this process writes — as root, per the egress unit. A
+	// value like "../../etc/cron.d/evil.mmdb" survives filepath.Join by escaping the
+	// directory it was joined to, so the guarantee has to be "no separators at all"
+	// rather than "not literally dot-dot".
+	//
+	// The previous check compared against "", ".", "/" and ".." exactly, which a
+	// traversal walks straight past: it needs separators, and separators were what
+	// went unchecked.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return "", false
+	}
+
+	// Every MaxMind tarball member ends in ".mmdb", and keepcurrent.FromTarGz matches
+	// the member's base name with ==, so a name without the suffix matches nothing:
+	// it walks the whole archive, fails at EOF, and geolocation degrades silently to
+	// unknownCountry. Append it once here rather than per-branch, which is what the
+	// first attempt did — that fixed only the edition_id form and left the plain
+	// ".tar.gz" path form, MaxMind's own naming, still broken. Lantern's mirror is
+	// ".mmdb.tar.gz" so the suffix is already present and this is a no-op for the
+	// default.
+	if !strings.HasSuffix(name, ".mmdb") {
+		name += ".mmdb"
 	}
 	return name, true
 }
