@@ -48,9 +48,44 @@ const (
 	// the question that actually decides who to go talk to, from the metric alone,
 	// with no need to log anything a peer sent.
 	refusedForeignSubprotocols refusalReason = "foreign_subprotocols"
-	refusedBadProtocolVersion  refusalReason = "bad_protocol_version"
-	refusedMissingCSID         refusalReason = "missing_consumer_session_id"
+	// refusedLegacyTeamClient: a recognized *ex*-broflake client. It sends the team
+	// identifier that clients built before 2025-08-22 put in this header, which is
+	// where the cookie now goes. Split out from "foreign" because the cause is known
+	// and the remedy is specific — those operators need to upgrade — whereas
+	// "foreign" means we genuinely do not know who is calling.
+	//
+	// This accounted for every refusal on unbounded-us when it was added: ~9/s from
+	// 9 fixed hosts, unbroken since at least 2026-07-26 and in fact since the
+	// handshake changed under them nearly a year earlier.
+	refusedLegacyTeamClient   refusalReason = "legacy_team_client"
+	refusedBadProtocolVersion refusalReason = "bad_protocol_version"
+	refusedMissingCSID        refusalReason = "missing_consumer_session_id"
 )
+
+// legacyTeamIDPrefix is what pre-2025-08-22 clients put in Sec-Websocket-Protocol.
+//
+// Introduced in 0658b1f ("send teamId from consumer -> egress via websocket protocol
+// header", 2025-04-10) as common.TeamIdPrefix, and removed from common in 6561021
+// when the team mechanism moved to the QUIC layer. Redeclared here rather than
+// restored to common on purpose: nothing in this repo should *emit* it again, and a
+// private constant in the one place that still recognizes it says so.
+//
+// Those clients cannot be served, which is why this only labels them. They predate
+// both the consumer session ID (db39eb2, 2025-07-17) and QUIC connection migration
+// (7c86b73, 2025-08-06), and the csid exists *as* the migration key. Synthesizing one
+// to let them in would register connection state that nothing can ever migrate to,
+// and hold it through the migration window on every disconnect — spending resources
+// on sessions that cannot resume, to pretend a client speaks a protocol it does not.
+const legacyTeamIDPrefix = "unbounded-team:"
+
+// isLegacyTeamClient reports whether the peer is a recognized pre-handshake client.
+//
+// Prefix rather than equality: the identifier after the colon is the team, and while
+// every observed client sends the hardcoded "no_team" placeholder from 0658b1f, a
+// build that actually set one would be the same client with the same problem.
+func isLegacyTeamClient(parsed []string) bool {
+	return len(parsed) == 1 && strings.HasPrefix(parsed[0], legacyTeamIDPrefix)
+}
 
 var (
 	refusalsMx sync.Mutex
@@ -118,6 +153,14 @@ func classifySubprotocolRefusal(raw, parsed []string) (reason refusalReason, msg
 		// position here would classify that client as foreign and log its CSID, which
 		// is the one value deliberately withheld.
 		return refusedMalformedSubprotocols, "Refused WebSocket connection, malformed subprotocols", false
+	case isLegacyTeamClient(parsed):
+		// After the cookie check, not before. This is a subset of the foreign case and
+		// cannot overlap the cookie case today — a lone "unbounded-team:..." token is
+		// not the cookie, and a csid needs a second element — but the cookie check is
+		// the privacy guard, so it wins unconditionally rather than by coincidence.
+		// Ordering it first would make the guarantee depend on isLegacyTeamClient
+		// staying narrow, which is not a property to leave to a future edit.
+		return refusedLegacyTeamClient, "Refused WebSocket connection, legacy team client", true
 	default:
 		// Not our protocol. Recording the values is what identifies the caller, and it
 		// is safe precisely because the cookie is absent: a peer showing no sign of

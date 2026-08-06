@@ -357,3 +357,70 @@ func TestClassifySubprotocolRefusal_NeverLogsValuesWhenCookieMatched(t *testing.
 		}
 	}
 }
+
+// The legacy team client is the known cause of every refusal observed on
+// unbounded-us: pre-2025-08-22 builds put a team identifier in the header that now
+// carries the magic cookie. It gets its own label because the remedy is specific —
+// those operators must upgrade — while "foreign" means we do not know who is calling.
+func TestClassifySubprotocolRefusal_LegacyTeamClient(t *testing.T) {
+	// Exactly what production sends, from 0658b1f's hardcoded placeholder.
+	reason, msg, logValues := classifySubprotocolRefusal(
+		[]string{"unbounded-team:no_team"}, []string{"unbounded-team:no_team"})
+	if reason != refusedLegacyTeamClient {
+		t.Errorf("reason = %q, want %q", reason, refusedLegacyTeamClient)
+	}
+	if !logValues {
+		t.Error("values must be loggable: no cookie means no session ID to leak")
+	}
+	if msg == "" {
+		t.Error("empty message")
+	}
+
+	// A build that actually set a team is the same client with the same problem, so
+	// the match is on the prefix rather than the placeholder.
+	if r, _, _ := classifySubprotocolRefusal(
+		[]string{"unbounded-team:acme"}, []string{"unbounded-team:acme"}); r != refusedLegacyTeamClient {
+		t.Errorf("a real team id should still classify as legacy, got %q", r)
+	}
+}
+
+// The label must stay narrow: anything that merely mentions the prefix, or pairs it
+// with other tokens, is not the legacy client and should not be reported as one — the
+// point of the label is that it names a known cause.
+func TestIsLegacyTeamClient_StaysNarrow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   []string
+		want bool
+	}{
+		"exact placeholder":  {[]string{"unbounded-team:no_team"}, true},
+		"real team":          {[]string{"unbounded-team:x"}, true},
+		"empty team":         {[]string{"unbounded-team:"}, true},
+		"nil":                {nil, false},
+		"prefix absent":      {[]string{"chat"}, false},
+		"prefix not leading": {[]string{"chat", "unbounded-team:x"}, false},
+		"extra token":        {[]string{"unbounded-team:x", "extra"}, false},
+		// Substring rather than prefix: not the legacy client.
+		"prefix embedded": {[]string{"x-unbounded-team:x"}, false},
+	} {
+		if got := isLegacyTeamClient(tc.in); got != tc.want {
+			t.Errorf("%s: isLegacyTeamClient(%q) = %v, want %v", name, tc.in, got, tc.want)
+		}
+	}
+}
+
+// The cookie check must win over the legacy check. It cannot overlap today, but the
+// cookie check is the privacy guard and the guarantee should not rest on
+// isLegacyTeamClient happening to stay narrow.
+func TestClassifySubprotocolRefusal_CookieBeatsLegacy(t *testing.T) {
+	cookie := common.NewSubprotocolsResponse()[0]
+	realCSID := "9f8c1e2a-secret-session-id"
+
+	reason, _, logValues := classifySubprotocolRefusal(
+		[]string{"raw"}, []string{"unbounded-team:x", cookie, realCSID})
+	if reason != refusedMalformedSubprotocols {
+		t.Errorf("reason = %q, want %q", reason, refusedMalformedSubprotocols)
+	}
+	if logValues {
+		t.Error("a cookie-carrying list must never have its values logged, legacy prefix or not")
+	}
+}
