@@ -298,3 +298,28 @@ func TestConsumerInfoNil_IgnoresCountry(t *testing.T) {
 		t.Error("a ConsumerInfo with a SessionID must not be Nil()")
 	}
 }
+
+// Codes meaning "no country" must decline rather than become a label. The egress
+// records unresolvable traffic as the literal "unknown", so accepting ZZ would split
+// one concept across two labels.
+func TestNormalizeCountry_DeclinesNonCountryCodes(t *testing.T) {
+	for _, in := range []string{"ZZ", "zz", "Zz", "AA", "aa"} {
+		if got := normalizeCountry(in); got != "" {
+			t.Errorf("normalizeCountry(%q) = %q, want \"\" — user-assigned codes are not countries", in, got)
+		}
+		// And the emitted form must be the 3-element one, indistinguishable from a
+		// consumer that declined outright.
+		if got := NewSubprotocolsRequestWithCountry("csid", "v2.3.7", in); len(got) != 3 {
+			t.Errorf("country %q produced %d elements, want 3: %v", in, len(got), got)
+		}
+	}
+
+	// Codes our own geolocation can emit must survive. MaxMind uses XK for Kosovo,
+	// which is not an official ISO assignment — an allowlist would discard it and lose
+	// real signal, which is why this is a denylist of non-countries instead.
+	for _, in := range []string{"XK", "CN", "IR", "RU", "US", "GB"} {
+		if got := normalizeCountry(in); got != in {
+			t.Errorf("normalizeCountry(%q) = %q, want it preserved", in, got)
+		}
+	}
+}

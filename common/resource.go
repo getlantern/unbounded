@@ -347,6 +347,27 @@ func normalizeCountry(country string) string {
 			return ""
 		}
 	}
+
+	// Codes that mean "no country" are declined rather than passed through, because
+	// they collide with the receiver's own label for that: the egress records
+	// unresolvable traffic as the literal "unknown", so accepting ZZ would put two
+	// different labels on the same concept and split it across a dashboard. ZZ and AA
+	// are ISO-3166-1 user-assigned, i.e. defined by the standard as not designating a
+	// country, and ZZ conventionally means unknown.
+	//
+	// Deliberately not a full ISO-3166-1 alpha-2 allowlist, which is the obvious next
+	// step and the wrong one. It would need maintaining as assignments change, and it
+	// would reject codes our own geolocation emits — MaxMind uses XK for Kosovo, which
+	// is not an official ISO assignment, so an allowlist would discard real signal
+	// from the donor side while adding none. More fundamentally, this value is
+	// self-reported and unverifiable: a consumer in one country can claim another, so
+	// membership checking tidies the label space without making the data truer. The
+	// space is already bounded at 26*26, which is what actually matters for
+	// cardinality.
+	switch string(out) {
+	case "ZZ", "AA":
+		return ""
+	}
 	return string(out)
 }
 
