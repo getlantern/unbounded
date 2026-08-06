@@ -72,7 +72,16 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			defer cancel()
 
 			dialOpts := &websocket.DialOptions{
-				Subprotocols: common.NewSubprotocolsRequest(consumerInfoMsg.SessionID, common.Version),
+				// The 4-element form when the consumer disclosed a country, the
+				// 3-element form when it did not — NewSubprotocolsRequestWithCountry
+				// decides, so this call site does not branch.
+				//
+				// Safe to emit now: an egress older than v2.3.5 requires exactly 3
+				// elements and would refuse 4, so #375 deliberately shipped the parser
+				// first and left this call site on the 3-element form. The fleet is a
+				// single host and it runs v2.3.7.
+				Subprotocols: common.NewSubprotocolsRequestWithCountry(
+					consumerInfoMsg.SessionID, common.Version, consumerInfoMsg.Country),
 			}
 			slog.
 				// Log only a short prefix of the CSID — enough to correlate

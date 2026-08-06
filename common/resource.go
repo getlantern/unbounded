@@ -73,8 +73,18 @@ type ConsumerInfo struct {
 	Addr      net.IP
 	Tag       string
 	SessionID string
+	// Country is the consumer's self-declared ISO-3166-1 alpha-2 country, or "" if
+	// it chose not to say. Copied from the OfferMsg by the producer and forwarded to
+	// the egress at WebSocket dial time, which is the only way the egress can learn
+	// it: the consumer sits behind the donor's data channel, so the egress only ever
+	// observes the *donor's* address.
+	Country string
 }
 
+// Nil deliberately ignores Country. A ConsumerInfo carrying nothing but a country
+// describes no consumer, and jit_egress_consumer keys "has a consumer claimed this
+// slot" on this method — treating a stray country as an occupied slot would wedge
+// the slot waiting for a session that does not exist.
 func (ci ConsumerInfo) Nil() bool {
 	return ci.Addr == nil && ci.Tag == "" && ci.SessionID == ""
 }
@@ -96,6 +106,16 @@ type GenesisMsg struct {
 type OfferMsg struct {
 	SDP webrtc.SessionDescription
 	Tag string
+	// Country is the consumer's self-declared ISO-3166-1 alpha-2 country, or "" to
+	// decline. Consumer-supplied rather than derived: the producer could geolocate
+	// the address it already extracts from the remote ICE candidates, but that makes
+	// the disclosure implicit and unrefusable, whereas a field the consumer fills in
+	// is a choice it can decline by leaving empty.
+	//
+	// Wire-compatible in both directions because this is JSON: an old consumer omits
+	// the field and a new producer reads "", while an old producer ignores a field a
+	// new consumer sends.
+	Country string
 }
 
 // NB: in the last segment of our signaling handshake, the consumer sends the producer an ICEMsg,
@@ -221,6 +241,12 @@ func NewSubprotocolsRequest(csid, version string) []string {
 // the donor is small — but it is not zero, and an empty country is always a
 // valid choice. Pass a country only when the consumer has consented to it.
 func NewSubprotocolsRequestWithCountry(csid, version, country string) []string {
+	// Normalize before emitting, with the same function the parser applies. Two
+	// reasons: a lowercase "cn" reaches the egress as "CN" rather than being
+	// discarded there, and anything that is not a country code at all collapses to ""
+	// and takes the 3-element path instead of putting a value on the wire that the
+	// receiver is guaranteed to throw away.
+	country = normalizeCountry(country)
 	if country == "" {
 		return NewSubprotocolsRequest(csid, version)
 	}

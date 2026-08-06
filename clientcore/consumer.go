@@ -289,7 +289,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionClosed := input[5].(chan struct{})
 			slog.Debug("Consumer state 2...")
 
-			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag})
+			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag, Country: options.ConsumerCountry})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
