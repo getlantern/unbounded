@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -110,8 +111,24 @@ func initDonorGeoLocked() {
 		slog.Debug(fmt.Sprintf("Cannot derive a database name from GEODB %q, donor country will be %q", geoDb, unknownCountry))
 		return
 	}
-	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, nameInTarball, geo.CountryCode))
-	slog.Debug(fmt.Sprintf("Using %v to geolocate donors", geoDb))
+	// An absolute cache path, not the bare member name. geo.FromWeb persists the
+	// database to this path so a restart does not re-download, but a relative path is
+	// resolved against the process's working directory — and the egress unit sets no
+	// WorkingDirectory and runs as root, so CWD is "/". Passing nameInTarball would
+	// drop an 8.7MB /GeoLite2-Country.mmdb at the filesystem root of every egress
+	// host, and write a copy into the source tree on every `go test ./egress/...`.
+	// Both observed; the second is how it was caught.
+	//
+	// TempDir rather than a user cache dir: it is writable without depending on HOME,
+	// which systemd does not necessarily set. Losing the cache to /tmp cleanup only
+	// costs one 4MB download on the next start.
+	//
+	// netstated has the same relative-path shape (netstate/d/netstated.go) and so the
+	// same latent behavior; it just has not been bitten because its GEODB is unset in
+	// most deployments.
+	cachePath := filepath.Join(os.TempDir(), nameInTarball)
+	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, cachePath, geo.CountryCode))
+	slog.Debug(fmt.Sprintf("Using %v to geolocate donors, cached at %v", geoDb, cachePath))
 }
 
 // dbNameFromURL derives the MaxMind member filename (also used as the local
