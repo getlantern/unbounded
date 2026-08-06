@@ -377,12 +377,15 @@ func TestResolveGeoDBURL(t *testing.T) {
 	})
 }
 
-// dbNameFromURL feeds two sinks: a tar member name, and filepath.Join(os.TempDir(),
-// name) — a path this process writes as root, per the egress systemd unit. The
-// edition_id branch takes its value verbatim from a query string, so a traversal
-// there escapes the directory it is joined to and becomes an arbitrary root-owned
-// write. The earlier check compared against "", ".", "/" and ".." exactly, which a
-// traversal walks straight past because it needs separators.
+// dbNameFromURL must return a plain filename. Nothing joins it to a directory any
+// more — the on-disk cache was removed, so today it is only a tar member name — but
+// the guarantee is kept deliberately. It was a root-owned write sink for exactly one
+// commit, the edition_id branch takes its value verbatim from a query string, and
+// anyone re-adding a cache path would reasonably assume this function returns
+// something safe to join.
+//
+// The earlier check compared against "", ".", "/" and ".." exactly, which a traversal
+// walks straight past because it needs separators.
 func TestDBNameFromURL_RejectsPathTraversal(t *testing.T) {
 	const base = "https://download.maxmind.com/app/geoip_download?suffix=tar.gz&edition_id="
 	for name, editionID := range map[string]string{
@@ -417,7 +420,9 @@ func TestDBNameFromURL_RejectsPathTraversal(t *testing.T) {
 }
 
 // Every accepted value, from any URL shape, must be safe to join onto a directory.
-// Stated as its own test because it is the property the callers actually rely on.
+// Stated as a property rather than a list of payloads so a future change to the
+// derivation cannot reintroduce a traversal, whether or not a caller currently joins
+// the result to a path.
 func TestDBNameFromURL_AlwaysYieldsAContainedPath(t *testing.T) {
 	for _, in := range []string{
 		defaultGeoDBURL,
