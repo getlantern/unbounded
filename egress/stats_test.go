@@ -274,6 +274,12 @@ func TestDBNameFromURL(t *testing.T) {
 		// ".mmdb" is what keepcurrent.FromTarGz must be handed.
 		{"lantern mirror (the default)", defaultGeoDBURL, "GeoLite2-Country.mmdb", true},
 		{"plain tarball", "https://example.com/dbs/GeoLite2-Country.mmdb.tar.gz", "GeoLite2-Country.mmdb", true},
+		// MaxMind's own tarball naming: the path carries no ".mmdb", but the member
+		// inside does. Deriving "GeoLite2-Country" matches nothing and degrades
+		// silently to unknownCountry, which is what the first .mmdb fix missed by
+		// appending in the edition_id branch only.
+		{"maxmind-style path without .mmdb", "https://example.com/dbs/GeoLite2-Country.tar.gz", "GeoLite2-Country.mmdb", true},
+		{"city edition without .mmdb", "https://example.com/GeoLite2-City.tar.gz", "GeoLite2-City.mmdb", true},
 		{"no suffix in path", "https://example.com/dbs/GeoLite2-Country.mmdb", "GeoLite2-Country.mmdb", true},
 		{
 			// The case that motivated this: MaxMind's real permalink puts the
@@ -292,7 +298,9 @@ func TestDBNameFromURL(t *testing.T) {
 		},
 		{"signed url with query", "https://cdn.example.com/GeoLite2-Country.mmdb.tar.gz?X-Amz-Signature=deadbeef", "GeoLite2-Country.mmdb", true},
 		{"fragment", "https://example.com/GeoLite2-Country.mmdb.tar.gz#frag", "GeoLite2-Country.mmdb", true},
-		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db", true},
+		// TrimSuffix rather than ReplaceAll: the mid-string ".tar.gz" survives. The
+		// ".mmdb" on the end is the universal append, which does not disturb that.
+		{"suffix mid-string preserved", "https://example.com/my.tar.gz.db.tar.gz", "my.tar.gz.db.mmdb", true},
 		{"not a url", "GeoLite2-Country.tar.gz", "", false},
 		{"no path", "https://example.com", "", false},
 		{"root path", "https://example.com/", "", false},

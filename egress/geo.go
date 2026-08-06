@@ -1,7 +1,6 @@
 package egress
 
 import (
-	"fmt"
 	"log/slog"
 	"net"
 	"net/url"
@@ -119,7 +118,8 @@ func initDonorGeoLocked() {
 
 	nameInTarball, ok := dbNameFromURL(geoDb)
 	if !ok {
-		slog.Debug(fmt.Sprintf("Cannot derive a database name from GEODB %q, donor country will be %q", geoDb, unknownCountry))
+		slog.Debug("Cannot derive a database name from GEODB, donor country will be unknown",
+			"geodb", geoDb, "donor_country", unknownCountry)
 		return
 	}
 	// No on-disk cache — the empty filePath. geo.FromWeb treats "" as "do not
@@ -153,7 +153,7 @@ func initDonorGeoLocked() {
 	// the first problem latent; noted rather than changed, since its GEODB is unset
 	// in most deployments and it is a separate service to test.
 	setDonorGeo(geo.FromWeb(geoDb, nameInTarball, 24*time.Hour, "", geo.CountryCode))
-	slog.Debug(fmt.Sprintf("Using %v to geolocate donors (no on-disk cache)", geoDb))
+	slog.Debug("Using GEODB to geolocate donors (no on-disk cache)", "geodb", geoDb, "member", nameInTarball)
 }
 
 // dbNameFromURL derives the MaxMind member filename (also used as the local
@@ -198,7 +198,7 @@ func dbNameFromURL(geoDb string) (string, bool) {
 		// path.Base on the edition id too, not just on the URL path. The path branch
 		// above is sanitized by construction and this one was not, which is the whole
 		// asymmetry: edition_id is taken verbatim from a query string.
-		base = path.Base(editionID) + ".mmdb"
+		base = path.Base(editionID)
 	}
 
 	name := strings.TrimSuffix(base, ".tar.gz")
@@ -215,6 +215,18 @@ func dbNameFromURL(geoDb string) (string, bool) {
 	// went unchecked.
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
 		return "", false
+	}
+
+	// Every MaxMind tarball member ends in ".mmdb", and keepcurrent.FromTarGz matches
+	// the member's base name with ==, so a name without the suffix matches nothing:
+	// it walks the whole archive, fails at EOF, and geolocation degrades silently to
+	// unknownCountry. Append it once here rather than per-branch, which is what the
+	// first attempt did — that fixed only the edition_id form and left the plain
+	// ".tar.gz" path form, MaxMind's own naming, still broken. Lantern's mirror is
+	// ".mmdb.tar.gz" so the suffix is already present and this is a no-op for the
+	// default.
+	if !strings.HasSuffix(name, ".mmdb") {
+		name += ".mmdb"
 	}
 	return name, true
 }
