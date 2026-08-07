@@ -26,6 +26,20 @@ type WebRTCOptions struct {
 	Patience          time.Duration
 	ErrorBackoff      time.Duration
 	ConsumerSessionID string
+	// ConsumerCountry is an optional ISO-3166-1 alpha-2 country the consumer
+	// discloses so the egress can attribute traffic to the region it is actually
+	// serving. Consumer-side only, like ConsumerSessionID above.
+	//
+	// Empty is a valid and complete choice: it emits the same 3-element subprotocol
+	// list as every release before this one, so a consumer that declines is
+	// byte-identical on the wire to one that predates the field.
+	//
+	// Note this travels consumer -> donor -> egress, so the donor can read it. That
+	// discloses nothing the donor does not already have: producer.go extracts the
+	// consumer's public address from the remote ICE candidates and the widget
+	// geolocates it for the UI globe. The marginal disclosure is to the *egress*,
+	// which otherwise cannot know.
+	ConsumerCountry string
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
@@ -43,6 +57,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		STUNBatch:         DefaultSTUNBatchFunc,
 		STUNBatchSize:     5,
 		Tag:               "",
+		ConsumerCountry:   "",
 		HTTPClient:        &http.Client{},
 		Patience:          500 * time.Millisecond,
 		ErrorBackoff:      5 * time.Second,

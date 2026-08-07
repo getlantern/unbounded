@@ -576,7 +576,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Announce the new connectivity situation for this slot
 			com.tx <- IPCMsg{
 				IpcType: ConsumerInfoIPC,
-				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID},
+				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID, Country: offer.Country},
 			}
 
 			// Inbound from datachannel (consumer → widget) and outbound
