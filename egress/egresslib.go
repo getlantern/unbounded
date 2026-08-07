@@ -280,7 +280,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	// Resolved once per session, never per packet: this is a database lookup and
 	// the read path is hot.
-	donorCC := donorCountry(tcpAddr)
+	//
+	// donorGeoAddr, not tcpAddr: behind Caddy the transport peer is always loopback,
+	// which geolocates to nothing. tcpAddr stays the transport address for wspconn and
+	// netstate below, where loopback is the right answer.
+	donorCC := donorCountry(donorGeoAddr(r, tcpAddr))
 	stats := statsFor(donorCC)
 	span.SetAttributes(attribute.String(attrDonorCountry, donorCC))
 

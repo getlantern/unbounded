@@ -2,6 +2,8 @@ package egress
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -447,5 +449,94 @@ func TestDBNameFromURL_AlwaysYieldsAContainedPath(t *testing.T) {
 		if !strings.HasPrefix(joined, filepath.Clean(os.TempDir())+string(filepath.Separator)) {
 			t.Errorf("dbNameFromURL(%q) = %q, which joins outside TempDir: %q", in, got, joined)
 		}
+	}
+}
+
+// donor_country read "unknown" for 100% of sessions even with the database loaded,
+// because the lookup used r.RemoteAddr — which behind Caddy is always loopback. These
+// pin that the forwarded address is used instead.
+func TestForwardedDonorIP(t *testing.T) {
+	req := func(xff string) *http.Request {
+		r := httptest.NewRequest("GET", "/ws", nil)
+		r.RemoteAddr = "[::1]:54321"
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	for name, tc := range map[string]struct {
+		xff  string
+		want string // "" means nil
+	}{
+		"single entry":        {"203.0.113.7", "203.0.113.7"},
+		"with port":           {"203.0.113.7:443", "203.0.113.7"},
+		"ipv6":                {"2001:db8::1", "2001:db8::1"},
+		"ipv6 bracketed port": {"[2001:db8::1]:443", "2001:db8::1"},
+		"spaces":              {"  203.0.113.7  ", "203.0.113.7"},
+		"absent":              {"", ""},
+		"garbage":             {"not-an-ip", ""},
+		"empty entries":       {" , , ", ""},
+		// The security-relevant case. Caddy appends the peer it observed, so a donor
+		// that sends its own X-Forwarded-For puts a spoofed value on the LEFT and the
+		// real address ends up on the right. Reading the left would let any donor
+		// choose the country it is reported as.
+		"spoofed left, real right":    {"1.2.3.4, 203.0.113.7", "203.0.113.7"},
+		"multiple spoofs":             {"9.9.9.9, 8.8.8.8, 203.0.113.7", "203.0.113.7"},
+		"trailing garbage falls back": {"203.0.113.7, not-an-ip", "203.0.113.7"},
+	} {
+		got := forwardedDonorIP(req(tc.xff))
+		if tc.want == "" {
+			if got != nil {
+				t.Errorf("%s: forwardedDonorIP(%q) = %v, want nil", name, tc.xff, got)
+			}
+			continue
+		}
+		if got == nil || !got.Equal(net.ParseIP(tc.want)) {
+			t.Errorf("%s: forwardedDonorIP(%q) = %v, want %s", name, tc.xff, got, tc.want)
+		}
+	}
+}
+
+// The transport address must keep being used when no proxy supplied one, so a
+// deployment without Caddy in front is unaffected.
+func TestDonorGeoAddr_FallsBackToTransport(t *testing.T) {
+	transport := &net.TCPAddr{IP: net.ParseIP("198.51.100.9"), Port: 9001}
+
+	r := httptest.NewRequest("GET", "/ws", nil)
+	if got := donorGeoAddr(r, transport); got != transport {
+		t.Errorf("with no X-Forwarded-For, got %v, want the transport addr %v", got, transport)
+	}
+
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	got := donorGeoAddr(r, transport)
+	tcp, ok := got.(*net.TCPAddr)
+	if !ok || !tcp.IP.Equal(net.ParseIP("203.0.113.7")) {
+		t.Errorf("with X-Forwarded-For set, got %v, want 203.0.113.7", got)
+	}
+}
+
+// End to end through the real lookup: a loopback peer must yield unknown while the
+// forwarded address resolves. This is the exact shape of the production bug.
+func TestDonorGeoAddr_LoopbackPeerWithForwardedDonor(t *testing.T) {
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+	setDonorGeo(stubCountryLookup{cc: "CN"})
+
+	loopback := &net.TCPAddr{IP: net.ParseIP("::1"), Port: 54321}
+
+	// Without the forwarded header the stub still answers, so use NoLookup to show
+	// that a real database would find nothing for loopback.
+	setDonorGeo(geo.NoLookup{})
+	if got := donorCountry(loopback); got != unknownCountry {
+		t.Errorf("loopback with a real lookup = %q, want %q", got, unknownCountry)
+	}
+
+	setDonorGeo(stubCountryLookup{cc: "CN"})
+	r := httptest.NewRequest("GET", "/ws", nil)
+	r.RemoteAddr = "[::1]:54321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+	if got := donorCountry(donorGeoAddr(r, loopback)); got != "CN" {
+		t.Errorf("forwarded donor = %q, want CN — the forwarded address was not used", got)
 	}
 }
