@@ -179,7 +179,11 @@ func TestHandleFreezeReport_ThrottlingDoesNotAffectTheCounter(t *testing.T) {
 
 // The response body must stay empty. sendBeacon ignores it, so bytes spent here are
 // bytes spent for nobody — and a 4xx would teach a broken widget to retry.
-func TestHandleFreezeReport_AlwaysEmpty204(t *testing.T) {
+//
+// Named for POSTs specifically rather than "always", because this only ever POSTs and
+// non-POST answers 405 (TestHandleFreezeReport_PostOnly). A test named for a blanket
+// claim it does not actually exercise is how such a claim goes unchallenged.
+func TestHandleFreezeReport_EveryPostGetsEmpty204(t *testing.T) {
 	resetFreezeReports(t)
 	for _, body := range []string{validReport(freezePageDied), `garbage`} {
 		w := postFreeze(t, body)

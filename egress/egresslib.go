@@ -398,7 +398,9 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return errors.Join(errMetrics, errTracing)
 	}
 
-	// Geolocation is optional; without GEODB every series is labelled "unknown".
+	// Geolocation is on by default; GEODB only overrides which database is used.
+	// It is observability, never a gate on serving traffic — a failure here labels
+	// series "unknown" and changes nothing else.
 	initDonorGeo()
 
 	m := otel.Meter("github.com/getlantern/broflake/egress")

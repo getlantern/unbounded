@@ -2,12 +2,12 @@ package common
 
 import (
 	"encoding/json"
-	"slices"
-
-	"github.com/pion/webrtc/v4"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pion/webrtc/v4"
 )
 
 // The 3-element form is what every release before the consumer-country field
