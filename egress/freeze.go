@@ -119,10 +119,16 @@ type freezeReport struct {
 
 // handleFreezeReport ingests one beacon.
 //
-// Always answers 204 with an empty body. navigator.sendBeacon ignores the response
-// entirely, so there is nothing to say and no reason to spend bytes saying it — and
-// returning 4xx for a malformed report would only teach a broken widget to retry.
-// Rejection is recorded as freezeInvalid instead.
+// Every POST gets an empty 204, whether the report was valid, malformed, or
+// oversized. navigator.sendBeacon ignores the response entirely, so there is nothing
+// to say and no reason to spend bytes saying it — and returning 4xx for a malformed
+// report would only teach a broken widget to retry. Rejection is recorded as
+// freezeInvalid instead.
+//
+// A non-POST gets 405 with an Allow header, which is the one deliberate exception.
+// sendBeacon only ever POSTs, so a GET here is not a report at all — it is something
+// else probing the endpoint, and answering it accurately costs nothing and cannot
+// reach a widget.
 func (l proxyListener) handleFreezeReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)

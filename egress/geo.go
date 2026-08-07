@@ -21,11 +21,15 @@ import (
 // to "no traffic".
 const unknownCountry = "unknown"
 
-// donorGeo resolves the country of a connecting donor. It defaults to
-// geo.NoLookup, whose CountryCode always returns "", so the egress runs
-// unchanged when GEODB is unset — every series is simply labelled
-// unknownCountry. Geolocation is observability, never a gate on serving
-// traffic.
+// donorGeo resolves the country of a connecting donor. Its zero value is
+// geo.NoLookup, whose CountryCode always returns "", so every series is labelled
+// unknownCountry until initDonorGeo replaces it — which it does on every start,
+// falling back to defaultGeoDBURL when GEODB is unset. An unset GEODB therefore
+// selects the default database rather than disabling geolocation; NoLookup
+// survives only when the URL yields no usable database name, and in tests that
+// install it deliberately.
+//
+// Geolocation is observability, never a gate on serving traffic.
 //
 // Held in an atomic pointer rather than a plain package variable. initDonorGeo's
 // sync.Once already makes the write happen once, before the first listener serves
@@ -119,7 +123,10 @@ func initDonorGeoLocked() {
 
 	nameInTarball, ok := dbNameFromURL(geoDb)
 	if !ok {
-		slog.Debug("Cannot derive a database name from GEODB, donor country will be unknown",
+		// "geo DB URL" rather than "GEODB": this URL is the default unless the env
+		// var overrides it, so naming the variable would send whoever reads this
+		// looking for a misconfiguration that may not exist.
+		slog.Debug("Cannot derive a database name from the geo DB URL, donor country will be unknown",
 			"geodb", geoDb, "donor_country", unknownCountry)
 		return
 	}
