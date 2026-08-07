@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/getlantern/broflake/common"
@@ -422,5 +423,149 @@ func TestClassifySubprotocolRefusal_CookieBeatsLegacy(t *testing.T) {
 	}
 	if logValues {
 		t.Error("a cookie-carrying list must never have its values logged, legacy prefix or not")
+	}
+}
+
+func resetRefusalLogs(t *testing.T) {
+	t.Helper()
+	refusalLogMx.Lock()
+	refusalLogs = map[refusalReason]*refusalLogState{}
+	refusalLogMx.Unlock()
+}
+
+// The first occurrence of a reason must log immediately. A condition nobody has
+// seen before is exactly the one nobody is watching a dashboard for, so waiting an
+// interval to mention it is the wrong default.
+func TestShouldLogRefusal_FirstOccurrenceAlwaysLogs(t *testing.T) {
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	for _, reason := range []refusalReason{
+		refusedLegacyTeamClient, refusedForeignSubprotocols, refusedMissingCSID,
+	} {
+		shouldLog, suppressed := shouldLogRefusal(reason, t0)
+		if !shouldLog {
+			t.Errorf("%s: first occurrence did not log", reason)
+		}
+		if suppressed != 0 {
+			t.Errorf("%s: first occurrence reported %d suppressed, want 0", reason, suppressed)
+		}
+	}
+}
+
+// The point of the change: a flood collapses to one line per interval. At the
+// observed ~9/s this is the difference between 96% of the journal and a rounding
+// error.
+func TestShouldLogRefusal_ThrottlesAFlood(t *testing.T) {
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	logged := 0
+	// Five minutes of refusals at 9/s, stepping the clock rather than sleeping.
+	for i := 0; i < 5*60*9; i++ {
+		now := t0.Add(time.Duration(i) * (time.Second / 9))
+		if shouldLog, _ := shouldLogRefusal(refusedLegacyTeamClient, now); shouldLog {
+			logged++
+		}
+	}
+	// One immediately, then one per minute across five minutes.
+	if logged < 4 || logged > 7 {
+		t.Errorf("logged %d lines for 2700 refusals over 5 minutes, want ~5", logged)
+	}
+}
+
+// A throttled line must say how much it stands for, or it understates a flood by
+// three orders of magnitude and reads like an isolated event.
+func TestShouldLogRefusal_ReportsSuppressedCount(t *testing.T) {
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	shouldLogRefusal(refusedLegacyTeamClient, t0) // first, logs
+	const hidden = 500
+	for i := 0; i < hidden; i++ {
+		if shouldLog, _ := shouldLogRefusal(refusedLegacyTeamClient, t0.Add(time.Second)); shouldLog {
+			t.Fatal("logged inside the interval")
+		}
+	}
+
+	shouldLog, suppressed := shouldLogRefusal(refusedLegacyTeamClient, t0.Add(refusalLogInterval))
+	if !shouldLog {
+		t.Fatal("did not log after the interval elapsed")
+	}
+	if suppressed != hidden {
+		t.Errorf("suppressed = %d, want %d", suppressed, hidden)
+	}
+
+	// The backlog resets, so the next line does not double-count it.
+	for i := 0; i < 3; i++ {
+		shouldLogRefusal(refusedLegacyTeamClient, t0.Add(refusalLogInterval+time.Second))
+	}
+	_, suppressed = shouldLogRefusal(refusedLegacyTeamClient, t0.Add(2*refusalLogInterval))
+	if suppressed != 3 {
+		t.Errorf("second window reported %d suppressed, want 3 — backlog did not reset", suppressed)
+	}
+}
+
+// Throttling is per-reason. A flood of one reason must not silence a different one,
+// which is the whole reason this is keyed rather than global.
+func TestShouldLogRefusal_PerReason(t *testing.T) {
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	shouldLogRefusal(refusedLegacyTeamClient, t0)
+	for i := 0; i < 1000; i++ {
+		shouldLogRefusal(refusedLegacyTeamClient, t0.Add(time.Second))
+	}
+
+	// A different reason, seen for the first time mid-flood, still logs.
+	if shouldLog, _ := shouldLogRefusal(refusedBadProtocolVersion, t0.Add(time.Second)); !shouldLog {
+		t.Error("a flood of one reason silenced the first occurrence of another")
+	}
+}
+
+// The counter is the record and must stay exact regardless of what the log does.
+// Throttling the log while also dropping counts would trade one blind spot for
+// another.
+func TestShouldLogRefusal_DoesNotAffectTheCounter(t *testing.T) {
+	resetRefusals(t)
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	const n = 1000
+	for i := 0; i < n; i++ {
+		recordRefusal(refusedLegacyTeamClient)
+		shouldLogRefusal(refusedLegacyTeamClient, t0.Add(time.Second))
+	}
+	if got := collectRefusals()[refusedLegacyTeamClient]; got != n {
+		t.Errorf("counter = %d, want %d — throttling must not drop counts", got, n)
+	}
+}
+
+// Refusals arrive concurrently from the HTTP handler, so the throttle state is
+// shared mutable state on a hot path.
+func TestShouldLogRefusal_Concurrent(t *testing.T) {
+	resetRefusalLogs(t)
+	t0 := time.Now()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 500; j++ {
+				shouldLogRefusal(refusedLegacyTeamClient, t0.Add(time.Second))
+			}
+		}()
+	}
+	wg.Wait()
+
+	// 4000 concurrent attempts: the first creates the entry and logs, the other 3999
+	// are suppressed and must all be counted. The probe is offset by the same second
+	// the goroutines used, since that is when the entry's window started — probing at
+	// t0+interval would land inside the window and suppress instead of reporting.
+	const want = 8*500 - 1
+	_, suppressed := shouldLogRefusal(refusedLegacyTeamClient, t0.Add(time.Second+refusalLogInterval))
+	if suppressed != want {
+		t.Errorf("suppressed = %d, want %d — a concurrent increment was lost", suppressed, want)
 	}
 }

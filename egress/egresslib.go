@@ -153,7 +153,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		recordRefusal(reason)
-		slog.Debug(msg, attrs...)
+		// The counter is the record; the log is a sample. See refusalLogInterval —
+		// these lines were 96% of the journal on unbounded-us.
+		if shouldLog, suppressed := shouldLogRefusal(reason, time.Now()); shouldLog {
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			slog.Debug(msg, attrs...)
+		}
 		return
 	}
 
@@ -164,8 +171,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		recordRefusal(refusedBadProtocolVersion)
-		slog.Debug("Refused WebSocket connection, bad protocol version",
-			append(peerAttrs(r), "version", truncateForLog(version))...)
+		if shouldLog, suppressed := shouldLogRefusal(refusedBadProtocolVersion, time.Now()); shouldLog {
+			attrs := append(peerAttrs(r), "version", truncateForLog(version))
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			slog.Debug("Refused WebSocket connection, bad protocol version", attrs...)
+		}
 		return
 	}
 
@@ -176,7 +188,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	if consumerSessionID == "" {
 		recordRefusal(refusedMissingCSID)
-		slog.Debug("Refused WebSocket connection, missing consumer session ID", peerAttrs(r)...)
+		if shouldLog, suppressed := shouldLogRefusal(refusedMissingCSID, time.Now()); shouldLog {
+			attrs := peerAttrs(r)
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			slog.Debug("Refused WebSocket connection, missing consumer session ID", attrs...)
+		}
 		return
 	}
 
