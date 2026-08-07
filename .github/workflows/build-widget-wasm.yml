@@ -15,8 +15,8 @@ name: Build widget (wasm)
 # heartbeat by half a day and predated its own source by far longer. A release step
 # that only happens when a human remembers is a release step that does not happen.
 #
-# Publishing is gated on the wasm build AND the native unit tests, so "it reached
-# users" implies "it compiled for the target and its packages passed". That is a
+# Publishing is gated on the wasm build AND the full native test suite, so "it reached
+# users" implies "it compiled for the target and every package passed". That is a
 # real gate but not a complete one — there is no functional or browser test of the
 # widget, so a change that compiles and unit-tests clean can still ship a broken
 # widget to every donor. Worth closing before relying on this too heavily.
@@ -59,6 +59,8 @@ on:
       - 'cmd/**'
       - 'netstate/**'
       - 'ui/**'
+      - 'egress/**'
+      - 'freddie/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/build-widget-wasm.yml'
@@ -69,6 +71,8 @@ on:
       - 'cmd/**'
       - 'netstate/**'
       - 'ui/**'
+      - 'egress/**'
+      - 'freddie/**'
       - 'go.mod'
       - 'go.sum'
       - '.github/workflows/build-widget-wasm.yml'
@@ -118,11 +122,25 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Native, not js/wasm: there is no wasm test runner here, and these packages
-      # are the ones the widget is built from. Running them is what lets the publish
-      # below claim more than "it compiled".
-      - name: Test packages the widget is built from
-        run: go test ./clientcore/... ./common/...
+      # Every package, not just the ones the widget is built from. The narrower list
+      # meant the egress was never tested here at all: its paths did not trigger this
+      # workflow, and even when another path did, the command excluded it. 42 tests
+      # across five egress files had never run in CI, and #385, #387, #395, #397 and
+      # #399 all merged on local verification alone.
+      #
+      # The whole suite runs in about six seconds with -race, so the narrower list was
+      # not buying anything.
+      #
+      # -race because it earns its runtime here. Three separate concurrency and
+      # ordering bugs this cycle were caught only by -race locally — a geo test suite
+      # that depended on a network download completing, and two lost-update paths in
+      # the refusal and teardown tallies. Without it CI would have been green on all
+      # three.
+      #
+      # Native rather than js/wasm: there is no wasm test runner, and the build job
+      # above already covers that target compiling.
+      - name: Test
+        run: go test -race ./...
 
   publish:
     name: publish widget + page to gh-pages
