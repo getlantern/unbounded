@@ -3,6 +3,7 @@ package egress
 import (
 	"log/slog"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -229,6 +230,63 @@ func dbNameFromURL(geoDb string) (string, bool) {
 		name += ".mmdb"
 	}
 	return name, true
+}
+
+// forwardedDonorIP returns the donor's real address from X-Forwarded-For, or nil if
+// the header is absent or unusable.
+//
+// Needed because r.RemoteAddr is not the donor. Caddy terminates TLS on :443 and
+// reverse-proxies to localhost:9001, so every RemoteAddr the egress sees is loopback
+// with an ephemeral port — which geolocates to nothing. That is the whole reason
+// donor_country read "unknown" for 100% of sessions even after the database was
+// loading correctly: #375 built the lookup against an address that can never resolve.
+// peerAttrs has said so in a comment since #381; the geo path just never read it.
+//
+// Takes the LAST entry, not the first, and the difference is security-relevant.
+// Caddy *appends* the immediate peer to any X-Forwarded-For the client already sent,
+// so a donor that sends "X-Forwarded-For: 1.2.3.4" produces "1.2.3.4, <real ip>".
+// The leftmost entry is therefore attacker-chosen and the rightmost is the one Caddy
+// observed. Reading the left would let any donor pick the country it is reported as —
+// bounded harm for a telemetry label, but wrong data for free, and the correct rule
+// costs nothing.
+//
+// Falls back to nil rather than guessing, so a deployment without a proxy in front
+// keeps using RemoteAddr, which is correct there.
+func forwardedDonorIP(r *http.Request) net.IP {
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return nil
+	}
+
+	parts := strings.Split(xff, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		host := strings.TrimSpace(parts[i])
+		if host == "" {
+			continue
+		}
+		// Tolerate a port, and IPv6 in brackets, which some proxies emit.
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if ip := net.ParseIP(host); ip != nil {
+			return ip
+		}
+	}
+	return nil
+}
+
+// donorGeoAddr returns the address to geolocate: the forwarded donor address when a
+// proxy supplied one, otherwise the transport peer.
+//
+// Deliberately separate from the address the connection itself uses. wspconn and the
+// netstate AddrRemote want the *transport* peer, which behind Caddy is loopback and is
+// the correct answer for them — only geolocation wants the originating address.
+func donorGeoAddr(r *http.Request, transport net.Addr) net.Addr {
+	if ip := forwardedDonorIP(r); ip != nil {
+		return &net.TCPAddr{IP: ip}
+	}
+	return transport
 }
 
 // donorCountry returns the ISO country code for a donor address, or
