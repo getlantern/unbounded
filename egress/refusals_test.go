@@ -13,9 +13,7 @@ import (
 
 func resetRefusals(t *testing.T) {
 	t.Helper()
-	refusalsMx.Lock()
-	refusals = map[refusalReason]*int64{}
-	refusalsMx.Unlock()
+	refusals = newLabeledTally()
 }
 
 // Deliberately takes no *testing.T: it is called from the observer goroutine in
