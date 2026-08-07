@@ -1,6 +1,11 @@
 package egress
 
 import (
+	"bytes"
+	"os"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -84,6 +89,10 @@ func TestRecordTeardown_NoLostCountsUnderConcurrency(t *testing.T) {
 				return
 			default:
 				collectTeardowns()
+				// Yield rather than spinning flat out. A bare default branch pegs a
+				// core for the whole test, which under -race slows every other test
+				// sharing the machine.
+				runtime.Gosched()
 			}
 		}
 	}()
@@ -125,5 +134,53 @@ func TestLabeledTally_IsolatesInstances(t *testing.T) {
 	// A label used in one tally must not appear in the other.
 	if _, crossed := collectTeardowns()[teardownReason(refusedLegacyTeamClient)]; crossed {
 		t.Error("a refusal label leaked into the teardown tally")
+	}
+}
+
+// Every instrument the otel callback observes must also be declared in the
+// RegisterCallback instrument list. The SDK silently ignores observations for
+// anything absent from it, so an omission produces a metric that is registered,
+// incremented, observed — and never exported, which is indistinguishable from the
+// event never happening. teardownCounter shipped missing from that list in review.
+//
+// Asserted by reading the source rather than by standing up an SDK, because the
+// failure is a mismatch between two lists in one function and that is exactly what a
+// cheap structural check catches.
+func TestMetricCallback_ObservesOnlyDeclaredInstruments(t *testing.T) {
+	src, err := os.ReadFile("egresslib.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const marker = "_, err = m.RegisterCallback("
+	i := bytes.Index(src, []byte(marker))
+	if i < 0 {
+		t.Fatal("could not find the RegisterCallback call; this test needs updating")
+	}
+	block := string(src[i:])
+	end := strings.Index(block, "\n\tif err != nil {")
+	if end < 0 {
+		t.Fatal("could not find the end of the RegisterCallback call")
+	}
+	block = block[:end]
+
+	observed := map[string]bool{}
+	for _, m := range regexp.MustCompile(`o\.ObserveInt64\(\s*(\w+)`).FindAllStringSubmatch(block, -1) {
+		observed[m[1]] = true
+	}
+	if len(observed) == 0 {
+		t.Fatal("found no ObserveInt64 calls; this test needs updating")
+	}
+
+	declared := map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^\t\t(\w+Counter),?$`).FindAllStringSubmatch(block, -1) {
+		declared[m[1]] = true
+	}
+
+	for name := range observed {
+		if !declared[name] {
+			t.Errorf("%s is observed but not declared in the RegisterCallback instrument list — "+
+				"its observations will be silently dropped", name)
+		}
 	}
 }

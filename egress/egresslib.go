@@ -479,6 +479,11 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		nQUICStreamsCounter,
 		nIngressBytesCounter,
 		refusedCounter,
+		// Every instrument the callback observes must be declared here. The SDK
+		// ignores observations for anything absent from this list, so omitting one
+		// produces a metric that is registered, incremented, observed — and never
+		// exported. Silent, and indistinguishable from "the event never happened".
+		teardownCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)
