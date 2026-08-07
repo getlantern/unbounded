@@ -2,6 +2,7 @@ package egress
 
 import (
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -13,9 +14,7 @@ import (
 
 func resetRefusals(t *testing.T) {
 	t.Helper()
-	refusalsMx.Lock()
-	refusals = map[refusalReason]*int64{}
-	refusalsMx.Unlock()
+	refusals = newLabeledTally()
 }
 
 // Deliberately takes no *testing.T: it is called from the observer goroutine in
@@ -88,6 +87,9 @@ func TestRecordRefusal_NoLostCountsUnderConcurrency(t *testing.T) {
 				return
 			default:
 				collectRefusals()
+				// Yield rather than spinning flat out; see the note in
+				// teardowns_test.go.
+				runtime.Gosched()
 			}
 		}
 	}()

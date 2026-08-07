@@ -53,6 +53,11 @@ var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 // rate()'d, unlike the concurrency gauges above.
 var refusedCounter metric.Int64ObservableCounter
 
+// teardownCounter tallies ended sessions by reason. Monotonic, and deliberately a
+// metric rather than only a span attribute: session spans are sampled at 1%, which
+// is fine for inspecting one session and useless for counting rare ones.
+var teardownCounter metric.Int64ObservableCounter
+
 // tracer emits one span per WebSocket session. Sessions are the unit an
 // operator actually asks about ("did this consumer get served?"), and a span
 // per session carries the consumer session ID without the unbounded-cardinality
@@ -220,17 +225,21 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	var sessionBytes int64
 	var sessionStreams int64
 	var keepaliveFailed atomic.Bool
-	teardownReason := "websocket_closed"
+	teardown := teardownWebSocketClosed
 	defer func() {
 		// A wedged peer is distinguishable from a disconnected one only by an
 		// unanswered keepalive, so let that outrank the generic close reason.
 		if keepaliveFailed.Load() {
-			teardownReason = "keepalive_timeout"
+			teardown = teardownKeepaliveTimeout
 		}
+		// Count it as well as recording it on the span. The span is sampled at 1%, so
+		// it answers "what happened in this session" but cannot answer "how often does
+		// this happen" — which is the question a detector asks.
+		recordTeardown(teardown)
 		span.SetAttributes(
 			attribute.Int64(attrIngressBytes, atomic.LoadInt64(&sessionBytes)),
 			attribute.Int64(attrQUICStreams, atomic.LoadInt64(&sessionStreams)),
-			attribute.String(attrTeardownReason, teardownReason),
+			attribute.String(attrTeardownReason, string(teardown)),
 		)
 		// A session that moved no bytes is the failure mode worth finding, so
 		// mark it on the span rather than leaving every session status Unset.
@@ -250,7 +259,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
-		teardownReason = "websocket_accept_failed"
+		teardown = teardownAcceptFailed
 		span.RecordError(err)
 		slog.Debug("Error accepting WebSocket connection", "error", err)
 		return
@@ -263,7 +272,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// and its goroutines. Pre-existing on main; closing it here since this
 		// branch is being touched anyway.
 		c.CloseNow()
-		teardownReason = "peer_addr_unresolvable"
+		teardown = teardownPeerAddrBad
 		span.RecordError(err)
 		slog.Debug("Error resolving TCPAddr", "error", err)
 		return
@@ -294,7 +303,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 
 	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
-		teardownReason = "create_or_migrate_failed"
+		teardown = teardownMigrateFailed
 		span.RecordError(err)
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
@@ -415,6 +424,12 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return nil, err
 	}
 
+	teardownCounter, err = m.Int64ObservableCounter("session-teardowns")
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
 			q := atomic.LoadUint64(&nQUICConnections)
@@ -447,6 +462,11 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 					metric.WithAttributes(attribute.String("reason", string(reason))))
 			})
 
+			eachTeardown(func(reason teardownReason, count int64) {
+				o.ObserveInt64(teardownCounter, count,
+					metric.WithAttributes(attribute.String("reason", string(reason))))
+			})
+
 			eachCountryStats(func(cc string, clients, ingressBytes int64) {
 				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
 				o.ObserveInt64(nClientsCounter, clients, attrs)
@@ -459,6 +479,11 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		nQUICStreamsCounter,
 		nIngressBytesCounter,
 		refusedCounter,
+		// Every instrument the callback observes must be declared here. The SDK
+		// ignores observations for anything absent from this list, so omitting one
+		// produces a metric that is registered, incremented, observed — and never
+		// exported. Silent, and indistinguishable from "the event never happened".
+		teardownCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)

@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/broflake/common"
@@ -90,45 +89,22 @@ func isLegacyTeamClient(parsed []string) bool {
 	return len(parsed) == 1 && strings.HasPrefix(parsed[0], legacyTeamIDPrefix)
 }
 
-var (
-	refusalsMx sync.Mutex
-	// refusals is keyed by the constants above only. Entries are never removed:
-	// the set is small and fixed, and a reason that stops occurring should keep
-	// reporting its running total rather than vanishing from the series.
-	refusals = map[refusalReason]*int64{}
-)
+// refusals is keyed by the constants above only. See labeledTally for why entries
+// are never pruned.
+var refusals = newLabeledTally()
 
 // recordRefusal counts one refused connection. Monotonic on purpose: this is a
 // tally, not a gauge, so consumers can rate() it. Contrast ingress-bytes, which
 // the otel callback drains each interval because it measures throughput.
 func recordRefusal(reason refusalReason) {
-	refusalsMx.Lock()
-	c, ok := refusals[reason]
-	if !ok {
-		c = new(int64)
-		refusals[reason] = c
-	}
-	refusalsMx.Unlock()
-	atomic.AddInt64(c, 1)
+	refusals.add(string(reason))
 }
 
-// eachRefusal reports every reason seen so far. Snapshots under the lock so the
-// otel callback never holds refusalsMx while observing.
+// eachRefusal reports every reason seen so far.
 func eachRefusal(f func(reason refusalReason, count int64)) {
-	type row struct {
-		reason refusalReason
-		c      *int64
-	}
-	refusalsMx.Lock()
-	rows := make([]row, 0, len(refusals))
-	for reason, c := range refusals {
-		rows = append(rows, row{reason, c})
-	}
-	refusalsMx.Unlock()
-
-	for _, r := range rows {
-		f(r.reason, atomic.LoadInt64(r.c))
-	}
+	refusals.each(func(label string, count int64) {
+		f(refusalReason(label), count)
+	})
 }
 
 // refusalLogInterval bounds how often any single refusal reason may emit a log
