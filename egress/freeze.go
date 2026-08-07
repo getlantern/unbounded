@@ -133,7 +133,15 @@ func (l proxyListener) handleFreezeReport(w http.ResponseWriter, r *http.Request
 	// Cap before reading. sendBeacon sends text/plain for a string body, so the
 	// content type is not checked — it is not a signal worth acting on and browsers
 	// vary.
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxFreezeReportBytes))
+	//
+	// nil rather than w, deliberately. Given a real ResponseWriter, MaxBytesReader
+	// calls requestTooLarge() on exceed, which sets closeAfterReply and adds
+	// "Connection: close" — so an oversized report would get a different response than
+	// a normal one and drop the connection, for a request whose response nobody reads.
+	// It does not write a 413 (requestTooLarge only sets flags), so the 204 survives
+	// either way; passing nil just removes a side effect that buys nothing here. The
+	// read still fails on exceed, which is the part this needs.
+	body, err := io.ReadAll(http.MaxBytesReader(nil, r.Body, maxFreezeReportBytes))
 	if err != nil {
 		recordFreezeReport(freezeInvalid)
 		l.logFreezeReport(freezeInvalid, nil, r, "oversized or unreadable freeze report")

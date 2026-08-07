@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -199,5 +201,51 @@ func TestHandleFreezeReport_ToleratesUnknownFields(t *testing.T) {
 	postFreeze(t, body)
 	if got := collectFreezeReports()[freezePageDied]; got != 1 {
 		t.Errorf("a report with unknown fields was rejected: %v", collectFreezeReports())
+	}
+}
+
+// MaxBytesReader must be handed nil, not the ResponseWriter.
+//
+// Given a real one it calls requestTooLarge() on exceed, which sets closeAfterReply and
+// adds "Connection: close" — so an oversized report would get a different response than
+// a normal one and drop the connection, for a request whose response nobody reads.
+//
+// Asserted by reading the source, because the behavior is genuinely untestable from this
+// package. requestTooLarge() is an *unexported* method of net/http, so the interface
+// MaxBytesReader probes for can only be satisfied by a type in net/http; a same-named
+// method on a test type here does not satisfy it. My first attempt at this test did
+// exactly that and passed with either nil or w, proving nothing. Same approach as
+// TestMetricCallback_ObservesOnlyDeclaredInstruments: when the failure is a wrong
+// argument in one call, check the call.
+func TestHandleFreezeReport_MaxBytesReaderGetsNil(t *testing.T) {
+	src, err := os.ReadFile("freeze.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := regexp.MustCompile(`http\.MaxBytesReader\(\s*(\w+)`).FindAllStringSubmatch(string(src), -1)
+	if len(calls) == 0 {
+		t.Fatal("no MaxBytesReader call found; this test needs updating")
+	}
+	for _, c := range calls {
+		if c[1] != "nil" {
+			t.Errorf("MaxBytesReader called with %q, want nil — a real ResponseWriter lets an "+
+				"oversized body add Connection: close and drop the connection", c[1])
+		}
+	}
+}
+
+// The oversized path must still produce the documented empty 204 and be counted.
+func TestHandleFreezeReport_OversizedIsCountedAndQuiet(t *testing.T) {
+	resetFreezeReports(t)
+	huge := `{"kind":"page_died","url":"` + strings.Repeat("A", maxFreezeReportBytes*2) + `"}`
+	w := postFreeze(t, huge)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status %d, want 204", w.Code)
+	}
+	if w.Body.Len() != 0 {
+		t.Errorf("body = %q, want empty", w.Body.String())
+	}
+	if got := collectFreezeReports()[freezeInvalid]; got != 1 {
+		t.Errorf("counted %v, want one invalid", collectFreezeReports())
 	}
 }
