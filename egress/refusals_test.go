@@ -430,9 +430,7 @@ func TestClassifySubprotocolRefusal_CookieBeatsLegacy(t *testing.T) {
 
 func resetRefusalLogs(t *testing.T) {
 	t.Helper()
-	refusalLogMx.Lock()
-	refusalLogs = map[refusalReason]*refusalLogState{}
-	refusalLogMx.Unlock()
+	refusalLogs = newLogThrottle(refusalLogInterval)
 }
 
 // The first occurrence of a reason must log immediately. A condition nobody has

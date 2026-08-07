@@ -58,6 +58,11 @@ var refusedCounter metric.Int64ObservableCounter
 // is fine for inspecting one session and useless for counting rare ones.
 var teardownCounter metric.Int64ObservableCounter
 
+// freezeReportCounter tallies freeze reports beaconed by the page-side watchdog,
+// labelled by diagnosis. The counterpart to session-teardowns: that one says a donor
+// stopped answering, this one says why.
+var freezeReportCounter metric.Int64ObservableCounter
+
 // tracer emits one span per WebSocket session. Sessions are the unit an
 // operator actually asks about ("did this consumer get served?"), and a span
 // per session carries the consumer session ID without the unbounded-cardinality
@@ -434,6 +439,12 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		return nil, err
 	}
 
+	freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports")
+	if err != nil {
+		closeFuncMetric(ctx)
+		return nil, err
+	}
+
 	_, err = m.RegisterCallback(
 		func(ctx context.Context, o metric.Observer) error {
 			q := atomic.LoadUint64(&nQUICConnections)
@@ -471,6 +482,14 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 					metric.WithAttributes(attribute.String("reason", string(reason))))
 			})
 
+			// kind only. url, userAgent and longestTaskName are peer-chosen and
+			// unbounded; any of them here would be unbounded cardinality controlled
+			// by a stranger.
+			eachFreezeReport(func(kind freezeKind, count int64) {
+				o.ObserveInt64(freezeReportCounter, count,
+					metric.WithAttributes(attribute.String("kind", string(kind))))
+			})
+
 			eachCountryStats(func(cc string, clients, ingressBytes int64) {
 				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
 				o.ObserveInt64(nClientsCounter, clients, attrs)
@@ -488,6 +507,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		// produces a metric that is registered, incremented, observed — and never
 		// exported. Silent, and indistinguishable from "the event never happened".
 		teardownCounter,
+		freezeReportCounter,
 	)
 	if err != nil {
 		closeFuncMetric(ctx)
@@ -525,6 +545,8 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	// above already cover the only useful signals (concurrent ws/quic/streams,
 	// ingress bytes); per-request HTTP metrics on a single upgrade endpoint
 	// add no information.
+	mux.HandleFunc(freezeReportPath, l.handleFreezeReport)
+
 	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws",
 		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider())))
 
