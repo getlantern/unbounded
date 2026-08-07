@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -128,6 +129,67 @@ func eachRefusal(f func(reason refusalReason, count int64)) {
 	for _, r := range rows {
 		f(r.reason, atomic.LoadInt64(r.c))
 	}
+}
+
+// refusalLogInterval bounds how often any single refusal reason may emit a log
+// line. The metric is unaffected and stays exact — this only samples the log.
+//
+// Needed because the log and the counter want opposite things from a high-rate
+// event. Once v2.3.7 named the legacy team clients, the cause was known and the
+// per-refusal line stopped carrying new information, but it kept costing: at ~9
+// refusals/second those lines were 5,326 of 5,551 journal entries over ten minutes
+// on unbounded-us — 96% — which made journalctl useless for reading anything else.
+// Three separate greps for unrelated startup lines came back empty because the
+// signal was buried, which is how this was noticed.
+//
+// A minute is short enough that a changing peer set shows up promptly and long
+// enough to cut roughly 540 lines to one. Deliberately per-reason rather than
+// special-cased to the legacy clients: missing_subprotocols flooded exactly the same
+// way before v2.3.5 reclassified it, so the next high-rate reason should not need
+// this written again.
+const refusalLogInterval = time.Minute
+
+type refusalLogState struct {
+	lastLogged time.Time
+	suppressed int64
+}
+
+var (
+	refusalLogMx sync.Mutex
+	refusalLogs  = map[refusalReason]*refusalLogState{}
+)
+
+// shouldLogRefusal reports whether this refusal should be logged, and how many of
+// the same reason went unlogged since the last one that was.
+//
+// The first occurrence of a reason always logs, so a condition that has never been
+// seen is visible immediately rather than up to an interval later — which matters
+// most for the reasons that are rare, since those are the ones nobody is watching a
+// dashboard for.
+//
+// now is a parameter rather than read inside so the behavior is testable without
+// sleeping.
+func shouldLogRefusal(reason refusalReason, now time.Time) (shouldLog bool, suppressed int64) {
+	refusalLogMx.Lock()
+	defer refusalLogMx.Unlock()
+
+	st, seen := refusalLogs[reason]
+	if !seen {
+		refusalLogs[reason] = &refusalLogState{lastLogged: now}
+		return true, 0
+	}
+	if now.Sub(st.lastLogged) < refusalLogInterval {
+		st.suppressed++
+		return false, 0
+	}
+
+	// Report the backlog on the line that breaks the silence, so a single log entry
+	// says how much it stands for. Without it a throttled line understates a flood by
+	// three orders of magnitude and reads like an isolated event.
+	suppressed = st.suppressed
+	st.suppressed = 0
+	st.lastLogged = now
+	return true, suppressed
 }
 
 // classifySubprotocolRefusal decides which of the three subprotocol refusals
