@@ -1,7 +1,6 @@
 package egress
 
 import (
-	"bytes"
 	"os"
 	"regexp"
 	"runtime"
@@ -144,37 +143,29 @@ func TestLabeledTally_IsolatesInstances(t *testing.T) {
 // event never happening. teardownCounter shipped missing from that list in review.
 //
 // Asserted by reading the source rather than by standing up an SDK, because the
-// failure is a mismatch between two lists in one function and that is exactly what a
-// cheap structural check catches.
+// failure is a mismatch between two lists and that is exactly what a cheap structural
+// check catches.
+//
+// The two lists now live in separate functions in metrics.go — observeMetrics does the
+// observing, initMetrics does the declaring — which makes the check more valuable than
+// when they were adjacent inside NewListener, not less: nothing puts them on the same
+// screen any more.
 func TestMetricCallback_ObservesOnlyDeclaredInstruments(t *testing.T) {
-	src, err := os.ReadFile("egresslib.go")
+	src, err := os.ReadFile("metrics.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	const marker = "_, err = m.RegisterCallback("
-	i := bytes.Index(src, []byte(marker))
-	if i < 0 {
-		t.Fatal("could not find the RegisterCallback call; this test needs updating")
-	}
-	block := string(src[i:])
-	end := strings.Index(block, "\n\tif err != nil {")
-	if end < 0 {
-		t.Fatal("could not find the end of the RegisterCallback call")
-	}
-	block = block[:end]
-
-	observed := map[string]bool{}
-	for _, m := range regexp.MustCompile(`o\.ObserveInt64\(\s*(\w+)`).FindAllStringSubmatch(block, -1) {
-		observed[m[1]] = true
-	}
+	observed := namesIn(t, string(src),
+		"func observeMetrics(", "\n}", `o\.ObserveInt64\(\s*(\w+)`)
 	if len(observed) == 0 {
-		t.Fatal("found no ObserveInt64 calls; this test needs updating")
+		t.Fatal("found no ObserveInt64 calls in observeMetrics; this test needs updating")
 	}
 
-	declared := map[string]bool{}
-	for _, m := range regexp.MustCompile(`(?m)^\t\t(\w+Counter),?$`).FindAllStringSubmatch(block, -1) {
-		declared[m[1]] = true
+	declared := namesIn(t, string(src),
+		"m.RegisterCallback(", "\n\t); err != nil {", `(?m)^\t\t(\w+Counter),?$`)
+	if len(declared) == 0 {
+		t.Fatal("found no instruments in the RegisterCallback list; this test needs updating")
 	}
 
 	for name := range observed {
@@ -183,4 +174,36 @@ func TestMetricCallback_ObservesOnlyDeclaredInstruments(t *testing.T) {
 				"its observations will be silently dropped", name)
 		}
 	}
+
+	// The reverse is not an error the SDK punishes, but it is always a mistake: an
+	// instrument declared and never observed exports nothing, so it is either dead
+	// weight or a missing observation.
+	for name := range declared {
+		if !observed[name] {
+			t.Errorf("%s is declared in the RegisterCallback instrument list but never observed — "+
+				"it will export no data at all", name)
+		}
+	}
+}
+
+// namesIn pulls identifiers matching pat out of the source between the first
+// occurrence of start and the next occurrence of end after it.
+func namesIn(t *testing.T, src, start, end, pat string) map[string]bool {
+	t.Helper()
+	i := strings.Index(src, start)
+	if i < 0 {
+		t.Fatalf("could not find %q; this test needs updating", start)
+	}
+	block := src[i:]
+	j := strings.Index(block, end)
+	if j < 0 {
+		t.Fatalf("could not find %q after %q; this test needs updating", end, start)
+	}
+	block = block[:j]
+
+	found := map[string]bool{}
+	for _, m := range regexp.MustCompile(pat).FindAllStringSubmatch(block, -1) {
+		found[m[1]] = true
+	}
+	return found
 }
