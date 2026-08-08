@@ -104,9 +104,14 @@ func startMetrics(ctx context.Context) (func(context.Context) error, error) {
 	}
 	metricsRefs++
 
-	var once sync.Once
+	var (
+		once sync.Once
+		// Held outside the closure so every call returns the same answer. Declaring
+		// it inside would mean the first call reports a failed flush and every
+		// later one reports success, which is a worse contract than either.
+		err error
+	)
 	return func(ctx context.Context) error {
-		var err error
 		once.Do(func() {
 			metricsMu.Lock()
 			defer metricsMu.Unlock()

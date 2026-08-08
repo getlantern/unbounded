@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// resetMetricsState puts the package-global refcount back so one test's listeners
-// cannot leak into the next. The real initMetrics is never called here — these tests
-// exercise the refcounting, and standing up an OTLP exporter would make them depend
-// on a collector being reachable.
+// withStubbedMetrics swaps in a stub initializer and resets the package-global
+// refcount so one test's listeners cannot leak into the next. The real initMetrics is
+// never called here — these tests exercise the refcounting, and standing up an OTLP
+// exporter would make them depend on a collector being reachable.
 func withStubbedMetrics(t *testing.T) *stubMetrics {
 	t.Helper()
 	stub := &stubMetrics{}
@@ -33,10 +33,11 @@ func withStubbedMetrics(t *testing.T) *stubMetrics {
 }
 
 type stubMetrics struct {
-	mu        sync.Mutex
-	inits     int
-	shutdowns int
-	initErr   error
+	mu          sync.Mutex
+	inits       int
+	shutdowns   int
+	initErr     error
+	shutdownErr error
 }
 
 func (s *stubMetrics) init(context.Context) (func(context.Context) error, error) {
@@ -50,7 +51,7 @@ func (s *stubMetrics) init(context.Context) (func(context.Context) error, error)
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		s.shutdowns++
-		return nil
+		return s.shutdownErr
 	}, nil
 }
 
@@ -220,5 +221,31 @@ func TestStartMetrics_ConcurrentStartStop(t *testing.T) {
 	}
 	if inits == 0 {
 		t.Error("never initialized")
+	}
+}
+
+// A failed shutdown means the provider could not flush and whatever it buffered is
+// gone. Reporting that on the first close and silently succeeding on every later one
+// is a worse contract than either always or never reporting it — and the caller has
+// no way to tell which call it is holding.
+func TestStartMetrics_ReleaseReturnsTheSameErrorEveryTime(t *testing.T) {
+	stub := withStubbedMetrics(t)
+	sentinel := errors.New("flush failed")
+	stub.shutdownErr = sentinel
+
+	stop, err := startMetrics(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := stop(context.Background()); !errors.Is(err, sentinel) {
+			t.Errorf("close %d returned %v, want %v", i, err, sentinel)
+		}
+	}
+
+	// The shutdown itself must still only have run once.
+	if _, shutdowns := stub.counts(); shutdowns != 1 {
+		t.Errorf("shut down %d times, want 1", shutdowns)
 	}
 }

@@ -85,7 +85,17 @@ func (l proxyListener) Close() error {
 	err := l.Listener.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	l.closeMetrics(ctx)
+
+	// Logged rather than returned, and definitely rather than discarded as it was.
+	// A failed shutdown means the provider could not flush, so whatever it had
+	// buffered is gone — worth knowing, since the symptom is otherwise a metric
+	// that simply stops with no explanation. But it is not a reason to tell the
+	// caller that closing the listener failed: telemetry is observability, never a
+	// gate, and conflating the two would have a lost flush look like a lost socket.
+	if metricsErr := l.closeMetrics(ctx); metricsErr != nil {
+		slog.Warn("Metrics shutdown failed; buffered telemetry was likely dropped",
+			"error", metricsErr)
+	}
 	return err
 }
 
