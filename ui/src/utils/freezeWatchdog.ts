@@ -41,10 +41,18 @@
 //     on retained records, and deleting each record as it is read: the footprint on
 //     a host we are a guest on should stay small and self-cleaning.
 //   - FreezeReport carries `url`, which on an embedding site is that site's URL.
-//     Harmless while the only sinks are the local console and a window global, but
-//     enabling REACT_APP_FREEZE_BEACON_URL would start sending us the addresses of
-//     pages that embed the widget. That is a deliberate decision about third-party
-//     data, not a config toggle, which is part of why the beacon ships disabled.
+//     REACT_APP_FREEZE_BEACON_URL is now set in production, so we do receive the
+//     addresses of pages that embed the widget. That was a deliberate decision about
+//     third-party data rather than an incidental config change: the URL is the field
+//     that says *which page froze*, which is what makes a report actionable at all,
+//     and it is the same field that tells us who embeds the widget. Both follow from
+//     collecting it; neither is an accident.
+//
+//     What bounds it: the egress truncates the URL before logging, never promotes it
+//     to a metric label (only `kind` becomes one), and throttles the log. So the URL
+//     lands in a DEBUG line on the egress host, not in a queryable index of embedders.
+//     Anyone widening that — a url label, a longer retention — is making the
+//     third-party-data decision again, and should say so.
 
 // tickMs is how often the watchdog samples. Frequent enough that an 8s freeze is
 // caught by a wide margin, cheap enough to be irrelevant: one Date.now(), one
@@ -689,9 +697,13 @@ export class FreezeWatchdog {
 //
 // console.warn is unconditional and deliberately first: it is the only sink that
 // works with no infrastructure, and someone staring at a misbehaving tab is the
-// most likely reader. The beacon is opt-in via REACT_APP_FREEZE_BEACON_URL —
-// there is no ingest endpoint for widget telemetry today, so wiring it now makes
-// turning it on a config change rather than a code change.
+// most likely reader. It also stays the durable record when the beacon fails —
+// sendBeacon reports nothing back, so a dropped report is invisible from here.
+//
+// The beacon is opt-in via REACT_APP_FREEZE_BEACON_URL, which production points at
+// the egress's POST /freeze. Unset — as in any local build — the watchdog still
+// diagnoses freezes and still reports them to the console and the window global;
+// only the network hop is skipped.
 export const defaultReport = (report: FreezeReport): void => {
 	const detail = report.recovered
 		? `recovered after ${report.gapMs}ms`
