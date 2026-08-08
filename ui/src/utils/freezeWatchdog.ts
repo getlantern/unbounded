@@ -690,9 +690,31 @@ export class FreezeWatchdog {
 				safeStorage.remove(key)
 				continue
 			}
+
+			// Age is computed once and every decision below reads it, because each of
+			// those decisions is a comparison against it and three separate
+			// subtractions invite exactly one of them to disagree.
+			const ageMs = now - crumb.b
+
+			// A record stamped in the future is undecidable. The wall clock can move
+			// backwards between write and read — an NTP correction, a VM restore, a
+			// dual-boot machine, a user setting it by hand — and this runs on other
+			// people's computers, so that is a matter of time rather than a
+			// hypothetical.
+			//
+			// Dropped rather than kept, because keeping it is the one outcome with no
+			// exit: a negative age is below deadTabMs, so it reads as a live tab and is
+			// left in place, and it is also below storageTtlMs, so it never expires. The
+			// record would sit in an embedder's localStorage indefinitely — precisely
+			// the footprint this file promises not to leave on a host it is a guest on.
+			if (ageMs < 0) {
+				safeStorage.remove(key)
+				continue
+			}
+
 			// Expire before deciding: a week-old death is not news, and reporting it
 			// on every load would bury current problems.
-			if (now - crumb.b > storageTtlMs) {
+			if (ageMs > storageTtlMs) {
 				safeStorage.remove(key)
 				continue
 			}
@@ -707,12 +729,12 @@ export class FreezeWatchdog {
 				safeStorage.remove(key)
 				continue
 			}
-			if (now - crumb.b <= deadTabMs) {
+			if (ageMs <= deadTabMs) {
 				// Still beating recently, so this is a live tab in another window.
 				// Leave its record alone — it owns that key.
 				continue
 			}
-			if (now - crumb.b > maxDeadTabAgeMs) {
+			if (ageMs > maxDeadTabAgeMs) {
 				// Too old to mean anything. See maxDeadTabAgeMs: past this point a
 				// dead tab and a sleeping machine are the same record, and the
 				// sleeping machine is the likelier one by far. Dropped rather than

@@ -643,6 +643,25 @@ describe('breadcrumb recovery', () => {
 	// the two are indistinguishable from here. The first five real page_died reports
 	// were 6.2 to 15.3 hours old — every one an overnight suspend, every one reported
 	// as a casualty. Without a ceiling this kind means "someone shut their laptop".
+	// The wall clock moves backwards on real machines — NTP corrections, VM
+	// restores, dual-boot, a user setting it by hand — and this runs on other
+	// people's computers. A future-dated record is the one case with no exit: a
+	// negative age reads as a live tab so it is left in place, and it is also below
+	// the retention window so it never expires. It would sit in an embedder's
+	// localStorage forever.
+	test('drops a future-dated breadcrumb instead of keeping it forever', () => {
+		const future = now + 60 * 60 * 1000 // clock moved back an hour since the write
+		window.localStorage.setItem(KEY, JSON.stringify({b: future, c: false}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toEqual([])
+		expect(window.localStorage.getItem(KEY)).toBeNull()
+		wd.stop()
+	})
+
 	test('ignores a breadcrumb too old to distinguish death from suspend', () => {
 		const stale = now - 6 * 60 * 60 * 1000 // 6h, the shortest real false positive
 		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false}))
