@@ -18,12 +18,10 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	otelcodes "go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/getlantern/broflake/common"
-	"github.com/getlantern/telemetry"
 )
 
 // TODO: rate limiters and fancy settings and such:
@@ -43,25 +41,9 @@ var nQUICStreams uint64
 // nQUICConnections is the number of open QUIC connections
 var nQUICConnections uint64
 
-var nClientsCounter metric.Int64ObservableUpDownCounter
-var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
-var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
-var nIngressBytesCounter metric.Int64ObservableUpDownCounter
-
-// refusedCounter tallies connections turned away before a session span exists.
-// A monotonic Counter, not an UpDownCounter: it is a cumulative tally meant to be
-// rate()'d, unlike the concurrency gauges above.
-var refusedCounter metric.Int64ObservableCounter
-
-// teardownCounter tallies ended sessions by reason. Monotonic, and deliberately a
-// metric rather than only a span attribute: session spans are sampled at 1%, which
-// is fine for inspecting one session and useless for counting rare ones.
-var teardownCounter metric.Int64ObservableCounter
-
-// freezeReportCounter tallies freeze reports beaconed by the page-side watchdog,
-// labelled by diagnosis. The counterpart to session-teardowns: that one says a donor
-// stopped answering, this one says why.
-var freezeReportCounter metric.Int64ObservableCounter
+// The metric instruments, their otel callback and the provider lifecycle live in
+// metrics.go. They are process-scoped, not per-listener, which is the whole point
+// of them being over there.
 
 // tracer emits one span per WebSocket session. Sessions are the unit an
 // operator actually asks about ("did this consumer get served?"), and a span
@@ -103,7 +85,17 @@ func (l proxyListener) Close() error {
 	err := l.Listener.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	l.closeMetrics(ctx)
+
+	// Logged rather than returned, and definitely rather than discarded as it was.
+	// A failed shutdown means the provider could not flush, so whatever it had
+	// buffered is gone — worth knowing, since the symptom is otherwise a metric
+	// that simply stops with no explanation. But it is not a reason to tell the
+	// caller that closing the listener failed: telemetry is observability, never a
+	// gate, and conflating the two would have a lost flush look like a lost socket.
+	if metricsErr := l.closeMetrics(ctx); metricsErr != nil {
+		slog.Warn("Metrics shutdown failed; buffered telemetry was likely dropped",
+			"error", metricsErr)
+	}
 	return err
 }
 
@@ -381,140 +373,19 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
-	closeFuncMetrics := telemetry.EnableOTELMetrics(ctx)
-
-	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
-	// metrics rather than instead of them: the counters answer "is the fleet
-	// carrying traffic", the spans answer "did this particular consumer session
-	// get served", and neither substitutes for the other.
-	closeFuncTracing := telemetry.EnableOTELTracing(ctx)
-
-	// Shut both down together on listener close. Dropping the tracing shutdown
-	// would leak the provider and discard whatever spans were still buffered,
-	// which on a low-traffic egress could be most of them.
-	closeFuncMetric := func(ctx context.Context) error {
-		errMetrics := closeFuncMetrics(ctx)
-		errTracing := closeFuncTracing(ctx)
-		return errors.Join(errMetrics, errTracing)
+	// Instruments and the otel callback are installed once for the process, not once
+	// per listener; see metrics.go for what calling this twice used to do. What comes
+	// back is this listener's release function, not a global off switch — it shuts
+	// telemetry down only when the last listener closes.
+	closeFuncMetric, err := startMetrics(ctx)
+	if err != nil {
+		return nil, err
 	}
 
 	// Geolocation is on by default; GEODB only overrides which database is used.
 	// It is observability, never a gate on serving traffic — a failure here labels
 	// series "unknown" and changes nothing else.
 	initDonorGeo()
-
-	m := otel.Meter("github.com/getlantern/broflake/egress")
-	var err error
-	nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICConnectionsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-connections")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nQUICStreamsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-streams")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	refusedCounter, err = m.Int64ObservableCounter("refused-websockets")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	teardownCounter, err = m.Int64ObservableCounter("session-teardowns")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	_, err = m.RegisterCallback(
-		func(ctx context.Context, o metric.Observer) error {
-			q := atomic.LoadUint64(&nQUICConnections)
-			o.ObserveInt64(nQUICConnectionsCounter, int64(q))
-
-			s := atomic.LoadUint64(&nQUICStreams)
-			o.ObserveInt64(nQUICStreamsCounter, int64(s))
-
-			// concurrent-websockets and ingress-bytes are now reported per donor
-			// country rather than as a single unlabelled series. Totals are
-			// preserved: summing across the country dimension gives the same
-			// number the unlabelled series carried, so queries that don't group
-			// by country are unaffected. Anything that reduced with max/latest
-			// instead of sum needs a spaceAggregation of sum to stay correct.
-			//
-			// CAUTION when summing: these datapoints also carry a `via` resource
-			// attribute identifying the telemetry collector that forwarded them
-			// (ops-0/1/2), and the same datapoint arrives once per collector. The
-			// egress is a single instance — instance.id has exactly one value,
-			// unbounded-us-linode-nj.iantem.io — so summing across `via` triples
-			// the real figure. Sum across donor_country, but filter or average
-			// across `via`.
-			//
-			// Note these counts come from per-session counters incremented and
-			// decremented exactly once around the handler, whereas the legacy
-			// global nClients decrements in the conn's Close(). nClients is now
-			// only used for the log lines.
-			eachRefusal(func(reason refusalReason, count int64) {
-				o.ObserveInt64(refusedCounter, count,
-					metric.WithAttributes(attribute.String("reason", string(reason))))
-			})
-
-			eachTeardown(func(reason teardownReason, count int64) {
-				o.ObserveInt64(teardownCounter, count,
-					metric.WithAttributes(attribute.String("reason", string(reason))))
-			})
-
-			// kind only. url, userAgent and longestTaskName are peer-chosen and
-			// unbounded; any of them here would be unbounded cardinality controlled
-			// by a stranger.
-			eachFreezeReport(func(kind freezeKind, count int64) {
-				o.ObserveInt64(freezeReportCounter, count,
-					metric.WithAttributes(attribute.String("kind", string(kind))))
-			})
-
-			eachCountryStats(func(cc string, clients, ingressBytes int64) {
-				attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
-				o.ObserveInt64(nClientsCounter, clients, attrs)
-				o.ObserveInt64(nIngressBytesCounter, ingressBytes, attrs)
-			})
-			return nil
-		},
-		nClientsCounter,
-		nQUICConnectionsCounter,
-		nQUICStreamsCounter,
-		nIngressBytesCounter,
-		refusedCounter,
-		// Every instrument the callback observes must be declared here. The SDK
-		// ignores observations for anything absent from this list, so omitting one
-		// produces a metric that is registered, incremented, observed — and never
-		// exported. Silent, and indistinguishable from "the event never happened".
-		teardownCounter,
-		freezeReportCounter,
-	)
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
 
 	cm := &connectionManager{
 		connections:     make(map[string]*connectionRecord),
