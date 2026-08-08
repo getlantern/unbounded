@@ -71,6 +71,24 @@ const freezeMs = 8000
 // near freezeMs would report healthy background tabs as casualties.
 const deadTabMs = 5 * 60 * 1000
 
+// maxDeadTabAgeMs is the upper bound on that window, and exists because the lower
+// bound alone was wrong in production. The first five real page_died reports had
+// breadcrumbs 6.2, 9.3, 11.0, 11.0 and 15.3 hours old — closed laptops and
+// overnight suspends, reported as casualties every one.
+//
+// Past some age a stale breadcrumb stops carrying information. A tab that died and
+// a machine that slept look identical from the next page load, and the longer the
+// gap the more certainly it is the latter. Reporting them anyway does not merely
+// add noise, it inverts the signal: the benign case is far more common, so
+// page_died came to mean "someone shut their laptop".
+//
+// Half an hour keeps the case the kind exists for — a crash the user notices and
+// reloads from — and drops the case we cannot distinguish. It does mean a genuine
+// death nobody returns to for an hour is missed. That is the right trade here: a
+// missed report costs one data point, while a false one costs trust in the metric,
+// and this whole path exists because deaths were invisible *and worth finding*.
+const maxDeadTabAgeMs = 30 * 60 * 1000
+
 const storagePrefix = 'unbounded.watchdog.'
 // Bounds on the breadcrumb sweep. Records are normally deleted as they are read,
 // so these only matter when something goes wrong repeatedly and nobody reloads.
@@ -125,12 +143,27 @@ export type FreezeKind =
 	// fine, so the Go scheduler is wedged — a deadlock, or a goroutine looping
 	// without yielding.
 	| 'go_scheduler_wedged'
-	// Our timer was starved while Go kept ticking. Not a full block; something
-	// monopolized the task queue ahead of us.
+	// NO LONGER PRODUCED. Retained because it is a wire value: widgets built before
+	// 2026-08-08 still send it and the egress still counts it, so removing it from
+	// this union would only hide that.
+	//
+	// It meant "our timer was starved while Go kept ticking", and was specified as a
+	// distinct failure. It is not one. Go/wasm and JS share a thread, so a block deep
+	// enough to miss our tick also stalls Go's heartbeat — which makes this
+	// combination proof the thread was *alive* and merely not scheduling us. There is
+	// no row for it in the truth table in watchdog_wasm_impl.go, and there never
+	// should have been a kind for it here.
+	//
+	// In production it was the most common report and meant nothing: 16 of the first
+	// 29, all from an offscreen document whose timers the browser was throttling
+	// while Go stayed current to within a second.
 	| 'js_starved'
 	// Reconstructed at startup from a breadcrumb: a previous page life stopped
 	// beating and never fired pagehide. Unlike the three above, this one was never
 	// survived — see `recovered`.
+	//
+	// Bounded at both ends: too recent and it is a live tab in another window, too
+	// old and it is a machine that slept. See deadTabMs and maxDeadTabAgeMs.
 	| 'page_died'
 
 export interface FreezeReport {
@@ -490,12 +523,30 @@ export class FreezeWatchdog {
 		// neither builds nor keeps the streak.
 		this.punctualTicks = trustworthy && !jsStarved ? this.punctualTicks + 1 : 0
 
-		// jsStarved is direct evidence from our own gap and needs no corroboration.
-		// A Go-only verdict does: see minPunctualTicks.
-		const actionable = jsStarved || (goStalled && this.punctualTicks >= minPunctualTicks)
+		// Every live verdict requires Go to have stalled too. That is not caution, it
+		// is what the shared-thread model permits: Go/wasm and JS run on one thread
+		// (see the truth table in watchdog_wasm_impl.go), so a thread blocked long
+		// enough to miss our tick necessarily stalls Go's one-second heartbeat with
+		// it. A starved timer beside a current heartbeat therefore proves the thread
+		// was alive and simply not scheduling us — which is a browser throttling
+		// timers, not a freeze.
+		//
+		// This is the question `hidden` was meant to answer and could not. The widget
+		// overwhelmingly runs inside an offscreen document, where visibilityState
+		// reports 'visible' while timers are throttled exactly as in a background tab,
+		// so the visibility gate above passes. Of the first 29 real reports, 26 came
+		// from that context and 16 were this false positive — gaps of 42s to 17min
+		// against a Go heartbeat current to within a second.
+		//
+		// The cost is that a build whose wasm publishes no heartbeat gets no live
+		// detection at all, since there is then nothing to corroborate with. That is
+		// the honest outcome rather than a regression: without the heartbeat a gap is
+		// genuinely uninterpretable, and guessing is what produced the noise. page_died
+		// still works there, and it is the severe case.
+		const actionable = goStalled && (jsStarved || this.punctualTicks >= minPunctualTicks)
 
 		if (trustworthy && actionable) {
-			this.report(this.classify(jsStarved, goStalled), {
+			this.report(this.classify(jsStarved), {
 				gapMs,
 				goStaleMs,
 				goTicks: live?.goTicks ?? null,
@@ -511,10 +562,12 @@ export class FreezeWatchdog {
 		this.writeBreadcrumb(false)
 	}
 
-	private classify(jsStarved: boolean, goStalled: boolean): FreezeKind {
-		if (jsStarved && goStalled) return 'main_thread_blocked'
-		if (goStalled) return 'go_scheduler_wedged'
-		return 'js_starved'
+	// Only reached when goStalled, which tick() now requires. The two remaining
+	// verdicts are the two the shared-thread truth table actually distinguishes:
+	// our timer stalled with Go's (the thread), or ours kept time while Go's did not
+	// (the runtime).
+	private classify(jsStarved: boolean): FreezeKind {
+		return jsStarved ? 'main_thread_blocked' : 'go_scheduler_wedged'
 	}
 
 	// report takes every piece of evidence explicitly rather than reading any of it
@@ -657,6 +710,14 @@ export class FreezeWatchdog {
 			if (now - crumb.b <= deadTabMs) {
 				// Still beating recently, so this is a live tab in another window.
 				// Leave its record alone — it owns that key.
+				continue
+			}
+			if (now - crumb.b > maxDeadTabAgeMs) {
+				// Too old to mean anything. See maxDeadTabAgeMs: past this point a
+				// dead tab and a sleeping machine are the same record, and the
+				// sleeping machine is the likelier one by far. Dropped rather than
+				// kept, since no later load will find it any more decipherable.
+				safeStorage.remove(key)
 				continue
 			}
 			crumbs.push(crumb)

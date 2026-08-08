@@ -58,6 +58,48 @@ const capture = () => {
 	return {reports, onReport: (r: FreezeReport) => reports.push(r)}
 }
 
+// stalled returns a liveness() whose heartbeat stopped at the moment it was built.
+//
+// Most tests below need one because a live verdict now requires Go to have stalled
+// too. That is not incidental scaffolding: Go/wasm and JS share a thread, so a
+// starved timer beside a *current* heartbeat proves the thread was alive and merely
+// unscheduled — a throttled timer, not a freeze. Tests that used a bare JS gap were
+// asserting on the most common false positive in production.
+// sharedThread models the real relationship rather than a permanent wedge: Go's
+// heartbeat advances whenever the thread runs, so it is stale by exactly the gap
+// the JS timer just observed. A block stalls both and a recovery clears both.
+//
+// Use this for transient blocks. stalled() below never recovers, which is a wedged
+// runtime — a different failure, and using it for a transient block makes calm
+// intervals report go_scheduler_wedged, correctly.
+const sharedThread = () => {
+	let lastRan = now
+	return () => {
+		const wasAt = lastRan
+		// Reading this means our timer fired, so the thread is running now and Go's
+		// ticker runs with it.
+		lastRan = now
+		return {
+			goTicks: 42,
+			goLastTickMs: wasAt,
+			goStartedMs: wasAt - 60_000,
+			goIntervalMs: 1000,
+			goNowMs: now,
+		}
+	}
+}
+
+const stalled = () => {
+	const stoppedAt = now
+	return () => ({
+		goTicks: 42,
+		goLastTickMs: stoppedAt,
+		goStartedMs: stoppedAt - 60_000,
+		goIntervalMs: 1000,
+		goNowMs: stoppedAt,
+	})
+}
+
 // A healthy page must stay silent. This is the test that matters most in
 // practice: a watchdog that cries freeze during normal operation gets muted, and
 // then reports nothing when a real freeze happens.
@@ -182,7 +224,17 @@ test('does not blame Go on the punctual tick right after a block', () => {
 
 // Our timer was starved while Go kept ticking: not a full block, something
 // monopolized the task queue ahead of us.
-test('classifies a starved timer with a live Go heartbeat as js_starved', () => {
+// The single most important case, and the one this watchdog got wrong in
+// production: our timer starved while Go's heartbeat stayed current.
+//
+// That combination cannot be a freeze. The two share a thread, so a block deep
+// enough to miss our tick stalls Go's heartbeat with it — a current heartbeat is
+// therefore positive evidence the thread was running and simply not scheduling us,
+// which is what browsers do to background and offscreen documents.
+//
+// It used to report 'js_starved' here. In the field that was 16 of the first 29
+// reports, every one from an offscreen document being throttled.
+test('does not report a starved timer while Go keeps ticking', () => {
 	const {reports, onReport} = capture()
 	const wd = new FreezeWatchdog({
 		// goLastTickMs tracks the current clock, i.e. Go never stopped.
@@ -199,8 +251,11 @@ test('classifies a starved timer with a live Go heartbeat as js_starved', () => 
 
 	fireTick(FREEZE_MS + 4000)
 
-	expect(reports).toHaveLength(1)
-	expect(reports[0].kind).toBe('js_starved')
+	expect(reports).toEqual([])
+
+	// Even at throttling scale — 15 minutes is typical for an offscreen document.
+	fireTick(15 * 60 * 1000)
+	expect(reports).toEqual([])
 	wd.stop()
 })
 
@@ -239,27 +294,34 @@ test('does not report a gap spanning a hide/show cycle', () => {
 	expect(reports).toEqual([])
 
 	// ...and the very next real freeze is still caught, i.e. the gate suppresses
-	// one interval rather than latching off.
-	fireTick(FREEZE_MS + 4000)
-	expect(reports).toHaveLength(1)
-	expect(reports[0].kind).toBe('js_starved')
+	// one interval rather than latching off. A real freeze means Go stalled too.
 	wd.stop()
+
+	const second = capture()
+	const wd2 = new FreezeWatchdog({liveness: stalled(), onReport: second.onReport})
+	wd2.start()
+	fireTick(FREEZE_MS + 4000)
+	expect(second.reports).toHaveLength(1)
+	expect(second.reports[0].kind).toBe('main_thread_blocked')
+	wd2.stop()
 })
 
-// The deployed widget.wasm predates the Go heartbeat, so liveness() being absent
-// is the live configuration, not a hypothetical. JS-side detection must still work.
-test('detects a freeze with no liveness() available', () => {
+// Without a heartbeat there is nothing to corroborate a gap with, so a gap is
+// uninterpretable: a blocked thread and a throttled timer look identical. Staying
+// silent is the honest answer, and guessing is what produced the production noise.
+//
+// This used to report 'js_starved', justified by the deployed widget.wasm predating
+// the heartbeat. That justification has expired — the wasm was republished with it
+// on 2026-08-07 and every field report since carries go_stale_ms. page_died still
+// works without liveness, and it is the severe case.
+test('stays silent on a gap it cannot corroborate', () => {
 	const {reports, onReport} = capture()
 	const wd = new FreezeWatchdog({onReport})
 	wd.start()
 
 	fireTick(FREEZE_MS + 4000)
 
-	expect(reports).toHaveLength(1)
-	expect(reports[0].kind).toBe('js_starved')
-	// Nulls rather than zeros: a missing heartbeat must not read as "Go is fine".
-	expect(reports[0].goStaleMs).toBeNull()
-	expect(reports[0].goTicks).toBeNull()
+	expect(reports).toEqual([])
 	wd.stop()
 })
 
@@ -275,9 +337,10 @@ test('survives liveness() throwing', () => {
 	})
 	wd.start()
 
+	// The guarantee is that the watchdog survives; a throwing boundary yields no
+	// snapshot, so like any uncorroborated gap it produces no verdict.
 	expect(() => fireTick(FREEZE_MS + 4000)).not.toThrow()
-	expect(reports).toHaveLength(1)
-	expect(reports[0].goStaleMs).toBeNull()
+	expect(reports).toEqual([])
 	wd.stop()
 })
 
@@ -294,8 +357,11 @@ test('ignores a liveness object missing required fields', () => {
 
 	fireTick(FREEZE_MS + 4000)
 
-	expect(reports).toHaveLength(1)
-	expect(reports[0].goStaleMs).toBeNull()
+	// Treated as no snapshot at all rather than as a stalled runtime, so there is
+	// nothing to corroborate the gap and nothing is reported. The failure mode this
+	// guards against is the opposite one: reading NaN as a stalled heartbeat would
+	// turn every shape change into a flood of invented freezes.
+	expect(reports).toEqual([])
 	wd.stop()
 })
 
@@ -347,11 +413,10 @@ test('rejects non-finite numbers in a liveness snapshot', () => {
 
 	fireTick(FREEZE_MS + 4000)
 
-	expect(reports).toHaveLength(1)
-	// Treated as no snapshot at all, not as a stalled Go runtime.
-	expect(reports[0].kind).toBe('js_starved')
-	expect(reports[0].goStaleMs).toBeNull()
-	expect(reports[0].clockSkewMs).toBeNull()
+	// Treated as no snapshot at all, not as a stalled Go runtime — so no verdict.
+	// Reading Infinity as a stalled heartbeat would manufacture freezes out of a
+	// malformed field.
+	expect(reports).toEqual([])
 	wd.stop()
 })
 
@@ -421,14 +486,14 @@ test('does not let a throttled kind suppress a different kind', () => {
 // episodes, and collapsing them would hide that a page is freezing repeatedly.
 test('reports separate episodes separated by more than the suppression window', () => {
 	const {reports, onReport} = capture()
-	const wd = new FreezeWatchdog({onReport})
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
 	wd.start()
 
 	fireTick(FREEZE_MS + 1000)
 	for (let i = 0; i < 40; i++) fireTick(TICK_MS) // 80s of calm
 	fireTick(FREEZE_MS + 1000)
 
-	expect(reports.map(r => r.kind)).toEqual(['js_starved', 'js_starved'])
+	expect(reports.map(r => r.kind)).toEqual(['main_thread_blocked', 'main_thread_blocked'])
 	wd.stop()
 })
 
@@ -574,6 +639,40 @@ describe('breadcrumb recovery', () => {
 
 	// A week-old death is not news, and reporting it on every load would bury
 	// current problems.
+	// A breadcrumb far in the past is a machine that slept, not a tab that died, and
+	// the two are indistinguishable from here. The first five real page_died reports
+	// were 6.2 to 15.3 hours old — every one an overnight suspend, every one reported
+	// as a casualty. Without a ceiling this kind means "someone shut their laptop".
+	test('ignores a breadcrumb too old to distinguish death from suspend', () => {
+		const stale = now - 6 * 60 * 60 * 1000 // 6h, the shortest real false positive
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toEqual([])
+		// Dropped rather than kept: no later load will find it any more decipherable,
+		// and leaving it would re-litigate the same undecidable record every startup.
+		expect(window.localStorage.getItem(KEY)).toBeNull()
+		wd.stop()
+	})
+
+	// The ceiling must not swallow the case the kind exists for.
+	test('still reports a death recent enough to be a crash', () => {
+		const stale = now - 10 * 60 * 1000 // 10m: past deadTabMs, well inside the ceiling
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].kind).toBe('page_died')
+		expect(reports[0].recovered).toBe(false)
+		wd.stop()
+	})
+
 	test('expires records older than the retention window', () => {
 		writeCrumb({t: 'deadtab', b: now - 48 * 60 * 60 * 1000, s: now - 49 * 60 * 60 * 1000, c: false, h: false, p: false, l: null, n: null})
 
@@ -701,7 +800,7 @@ describe('breadcrumb recovery', () => {
 
 		try {
 			const {reports, onReport} = capture()
-			const wd = new FreezeWatchdog({onReport})
+			const wd = new FreezeWatchdog({liveness: stalled(), onReport})
 			expect(() => wd.start()).not.toThrow()
 			expect(() => fireTick(FREEZE_MS + 4000)).not.toThrow()
 
@@ -732,7 +831,7 @@ test('bounds retained reports', () => {
 // there guards against.
 test('start is idempotent', () => {
 	const {reports, onReport} = capture()
-	const wd = new FreezeWatchdog({onReport})
+	const wd = new FreezeWatchdog({liveness: stalled(), onReport})
 	wd.start()
 	wd.start()
 
