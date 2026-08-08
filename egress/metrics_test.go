@@ -15,19 +15,24 @@ func withStubbedMetrics(t *testing.T) *stubMetrics {
 	t.Helper()
 	stub := &stubMetrics{}
 
+	// initMetricsFn is swapped under metricsMu, the same lock startMetrics holds
+	// while reading it. Unsynchronized, this is a write to a package global racing
+	// a read — it does not fire today only because Go resumes t.Parallel() tests
+	// after the sequential ones finish, and the tests that reach startMetrics are
+	// sequential. Adding t.Parallel() to any of them would turn that into a real
+	// race with no other warning, which is too quiet a tripwire to leave armed.
+	metricsMu.Lock()
 	realInit := initMetricsFn
 	initMetricsFn = stub.init
-
-	metricsMu.Lock()
 	prevRefs, prevShutdown := metricsRefs, metricsShutdown
 	metricsRefs, metricsShutdown = 0, nil
 	metricsMu.Unlock()
 
 	t.Cleanup(func() {
-		initMetricsFn = realInit
 		metricsMu.Lock()
+		defer metricsMu.Unlock()
+		initMetricsFn = realInit
 		metricsRefs, metricsShutdown = prevRefs, prevShutdown
-		metricsMu.Unlock()
 	})
 	return stub
 }
