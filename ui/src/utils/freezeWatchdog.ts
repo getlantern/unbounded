@@ -697,8 +697,9 @@ export class FreezeWatchdog {
 //
 // console.warn is unconditional and deliberately first: it is the only sink that
 // works with no infrastructure, and someone staring at a misbehaving tab is the
-// most likely reader. It also stays the durable record when the beacon fails —
-// sendBeacon reports nothing back, so a dropped report is invisible from here.
+// most likely reader. It also stays the durable record when the beacon fails:
+// sendBeacon returns only whether the browser queued the payload, never whether it
+// arrived, so anything that goes wrong after queueing is invisible from here.
 //
 // The beacon is opt-in via REACT_APP_FREEZE_BEACON_URL, which production points at
 // the egress's POST /freeze. Unset — as in any local build — the watchdog still
@@ -713,7 +714,16 @@ export const defaultReport = (report: FreezeReport): void => {
 	const url = process.env.REACT_APP_FREEZE_BEACON_URL
 	if (!url) return
 	try {
-		navigator.sendBeacon?.(url, JSON.stringify(report))
+		// The one failure the browser will tell us about. sendBeacon returns false
+		// when it declines to queue at all — typically the payload exceeding its
+		// limit — and that is the only signal we get, since it reports nothing about
+		// what happens afterwards. Discarding it would make the single detectable
+		// drop as silent as the undetectable ones, which is the failure mode this
+		// whole path exists to avoid.
+		const queued = navigator.sendBeacon?.(url, JSON.stringify(report))
+		if (queued === false) {
+			console.warn('[unbounded watchdog] beacon not queued; report kept to console only')
+		}
 	} catch {
 		// A failed beacon must never surface to the user; the console line above
 		// is the durable record.

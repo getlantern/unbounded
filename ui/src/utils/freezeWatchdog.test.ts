@@ -1,4 +1,4 @@
-import {FreezeReport, FreezeWatchdog} from './freezeWatchdog'
+import {defaultReport, FreezeReport, FreezeWatchdog} from './freezeWatchdog'
 
 // These mirror the constants in freezeWatchdog.ts. Duplicated rather than
 // exported: the thresholds are an implementation choice, and a test that imported
@@ -740,4 +740,99 @@ test('start is idempotent', () => {
 
 	expect(reports).toHaveLength(1)
 	wd.stop()
+})
+
+// defaultReport is the sink used when no onReport is supplied, which is every
+// production install. Its beacon half had no coverage until the boolean below
+// started being read.
+describe('defaultReport beacon', () => {
+	const realBeacon = navigator.sendBeacon
+	const realUrl = process.env.REACT_APP_FREEZE_BEACON_URL
+	let warn: jest.SpyInstance
+
+	const report: FreezeReport = {
+		kind: 'js_starved',
+		detectedAt: now,
+		recovered: true,
+		gapMs: 9000,
+		goStaleMs: null,
+		goTicks: null,
+		clockSkewMs: null,
+		longestTaskMs: null,
+		longestTaskName: null,
+		hidden: false,
+		sharing: false,
+		url: 'https://example.test/',
+		userAgent: 'test',
+	}
+
+	const setBeacon = (fn: unknown) =>
+		Object.defineProperty(navigator, 'sendBeacon', {value: fn, configurable: true})
+
+	beforeEach(() => {
+		warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+		process.env.REACT_APP_FREEZE_BEACON_URL = 'https://egress.test/freeze'
+	})
+
+	afterEach(() => {
+		warn.mockRestore()
+		setBeacon(realBeacon)
+		if (realUrl === undefined) delete process.env.REACT_APP_FREEZE_BEACON_URL
+		else process.env.REACT_APP_FREEZE_BEACON_URL = realUrl
+	})
+
+	// The report line always goes to the console; the beacon is the second sink.
+	const beaconWarnings = () =>
+		warn.mock.calls.filter(c => String(c[0]).includes('beacon not queued'))
+
+	test('sends to the configured URL', () => {
+		const sent: unknown[] = []
+		setBeacon((url: string, body: string) => {
+			sent.push([url, body])
+			return true
+		})
+
+		defaultReport(report)
+
+		expect(sent).toHaveLength(1)
+		const [url, body] = sent[0] as [string, string]
+		expect(url).toBe('https://egress.test/freeze')
+		expect(JSON.parse(body).kind).toBe('js_starved')
+		expect(beaconWarnings()).toHaveLength(0)
+	})
+
+	// false means the browser declined to queue at all — the only delivery failure
+	// it will ever tell us about, so it must not be swallowed.
+	test('warns when the browser declines to queue', () => {
+		setBeacon(() => false)
+
+		defaultReport(report)
+
+		expect(beaconWarnings()).toHaveLength(1)
+	})
+
+	// Absent sendBeacon yields undefined through the optional call. That is "no
+	// beacon support", not "refused", and must not be reported as a drop — the
+	// same strict-comparison trap as the recovered breadcrumb flags.
+	test('stays quiet when sendBeacon is unavailable', () => {
+		setBeacon(undefined)
+
+		expect(() => defaultReport(report)).not.toThrow()
+		expect(beaconWarnings()).toHaveLength(0)
+	})
+
+	// Unset URL is the local-build case: still diagnosed, still logged, not sent.
+	test('does not beacon when no URL is configured', () => {
+		delete process.env.REACT_APP_FREEZE_BEACON_URL
+		let called = false
+		setBeacon(() => {
+			called = true
+			return true
+		})
+
+		defaultReport(report)
+
+		expect(called).toBe(false)
+		expect(beaconWarnings()).toHaveLength(0)
+	})
 })
