@@ -259,6 +259,59 @@ test('does not report a starved timer while Go keeps ticking', () => {
 	wd.stop()
 })
 
+// The third false-positive class, and the one no clock comparison can catch. When a
+// laptop sleeps or Chrome parks a backgrounded page, our timer and Go's heartbeat
+// stop together and resume together — which is precisely the fingerprint of a real
+// main-thread block. Only the magnitude separates them.
+//
+// Modeled on the field data: 48 of 59 sampled reports were 13-17 minute gaps with
+// gap and goStale within ~1.5s of each other, against 11 real blocks of 10-45s.
+test('does not report a gap that parked the whole context', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// 15 minutes, the median of the suspended cluster. sharedThread stalls Go by the
+	// same gap, so this is indistinguishable from a block except by size.
+	fireTick(15 * 60 * 1000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
+// ...and the ceiling must not swallow a real block, which is the whole point of
+// putting it in the empty band between the two populations rather than near either.
+test('still reports a block short enough to be one', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// 45s: the longest real block observed in the field, well under the 2min ceiling.
+	fireTick(45_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	wd.stop()
+})
+
+// Chrome fires 'freeze' when it parks a backgrounded page outright. Such a page runs
+// nothing at all, so the gap is meaningless — but by the time we tick again it is
+// thawed and looks entirely normal, which is why the event has to be latched.
+test('does not report a gap spanning a Page Lifecycle freeze', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	document.dispatchEvent(new Event('freeze'))
+	// Deliberately under maxBlockMs, so this proves the freeze gate rather than the
+	// size ceiling — the two guards are independent and browsers without Page
+	// Lifecycle rely on the ceiling alone.
+	fireTick(30_000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the

@@ -65,6 +65,32 @@ const tickMs = 2000
 // point is to catch what a user would call a freeze, not every long frame.
 const freezeMs = 8000
 
+// maxBlockMs is the longest gap still worth calling a block rather than a parked
+// process, and it closes the last of the three false-positive classes this
+// watchdog shipped with.
+//
+// The other two were asymmetric — one clock stopped and the other did not — so
+// comparing them separated signal from noise. This one is symmetric: when a laptop
+// sleeps, or Chrome freezes a backgrounded page, the whole context stops, so our
+// timer and Go's heartbeat stall together and resume together. That is exactly the
+// fingerprint of a genuine main-thread block, and no comparison between the two can
+// tell them apart. Only the magnitude can.
+//
+// Measured over six hours, the split was clean and bimodal: 11 gaps between 10.5s
+// and 45.2s, then 48 clustered at 13-17 minutes with gap and goStale within ~1.5s
+// of each other. Nothing in between. The upper cluster is not a thread blocked for
+// a quarter of an hour, which is not a thing that happens and recovers; it is a
+// process that was not running.
+//
+// Two minutes sits in the empty band — 2.6x above the longest observed real block,
+// 6x below the shortest observed suspension — deliberately not tight against either
+// edge, because a threshold fitted to one day of data is how the donor-wedge alert
+// ended up firing twice on ordinary variation.
+//
+// A page genuinely wedged for longer than this is missed. It is also, from here,
+// indistinguishable from a closed lid.
+const maxBlockMs = 2 * 60 * 1000
+
 // deadTabMs is how stale a breadcrumb must be before startup calls that tab dead.
 // Much larger than freezeMs on purpose: a *live* tab in another window that has
 // been backgrounded is throttled to roughly one timer per minute, so anything
@@ -336,6 +362,11 @@ export class FreezeWatchdog {
 	// alone would miss it: the tab is visible again by then, but the gap it
 	// produced was throttling, not a freeze.
 	private hiddenSinceLastTick = false
+	// frozenSinceLastTick is the same idea for the Page Lifecycle 'freeze' event,
+	// which fires when the browser parks a backgrounded page outright. Unlike being
+	// hidden, a frozen page runs nothing at all — including Go — so the gap it
+	// produces is invisible to every other check here. See maxBlockMs.
+	private frozenSinceLastTick = false
 	private longestTaskMs: number | null = null
 	private longestTaskName: string | null = null
 	// Consecutive on-time ticks, i.e. how much evidence we have that the thread is
@@ -366,6 +397,11 @@ export class FreezeWatchdog {
 
 		this.observeLongTasks()
 		document.addEventListener('visibilitychange', this.onVisibilityChange)
+		// Page Lifecycle. Not universally supported — Chrome fires these, Safari and
+		// Firefox largely do not — which is why maxBlockMs backstops it rather than
+		// this being the only guard.
+		document.addEventListener('freeze', this.onFreeze)
+		document.addEventListener('resume', this.onResume)
 		// pagehide rather than unload: unload does not fire reliably on mobile
 		// Safari, and treating a normal navigation as a death would drown the real
 		// signal in false positives.
@@ -381,6 +417,8 @@ export class FreezeWatchdog {
 		this.observer?.disconnect()
 		this.observer = undefined
 		document.removeEventListener('visibilitychange', this.onVisibilityChange)
+		document.removeEventListener('freeze', this.onFreeze)
+		document.removeEventListener('resume', this.onResume)
 		window.removeEventListener('pagehide', this.onPageHide)
 		window.removeEventListener('pageshow', this.onPageShow)
 		// An explicit stop is a clean exit; leaving the record un-flagged would
@@ -468,6 +506,22 @@ export class FreezeWatchdog {
 		if (document.visibilityState !== 'visible') this.hiddenSinceLastTick = true
 	}
 
+	// A frozen page is not running, so the gap across a freeze is the browser parking
+	// us rather than anything failing. Latched the same way as the visibility gate,
+	// because by the time we tick again the page is thawed and nothing else says it
+	// ever stopped.
+	private onFreeze = (): void => {
+		this.frozenSinceLastTick = true
+	}
+
+	// 'resume' carries no gap information on its own — the next tick measures it —
+	// but the baseline has to be reset here, or that tick reports the whole frozen
+	// stretch as one enormous gap.
+	private onResume = (): void => {
+		this.lastTickAt = Date.now()
+		this.punctualTicks = 0
+	}
+
 	private onPageHide = (): void => {
 		// Mark the exit clean so the next load does not mistake this navigation for
 		// a death. This is the one write that must not be skipped.
@@ -505,7 +559,22 @@ export class FreezeWatchdog {
 		// A tab that was hidden at any point since the last tick had its timers
 		// throttled, so its gap says nothing about freezing. Reset the baselines
 		// and wait for a clean interval rather than reporting throttling as a bug.
-		const trustworthy = !hidden && !this.hiddenSinceLastTick
+		//
+		// A gap spanning a Page Lifecycle freeze is the same story with a stronger
+		// cause: the page was not running at all, so nothing about the interval is
+		// evidence of anything. Latched at the event because by tick time the page is
+		// thawed and looks entirely normal.
+		const frozen = this.frozenSinceLastTick
+		this.frozenSinceLastTick = false
+
+		// gapMs beyond maxBlockMs is a parked process, not a blocked thread. This has
+		// to be judged on magnitude alone: when the whole context stops, our clock and
+		// Go's stop together, which is byte-for-byte the fingerprint of a real block.
+		// It is the backstop for every case the freeze event misses — OS sleep, and
+		// browsers that do not implement Page Lifecycle at all.
+		const parked = gapMs > maxBlockMs
+
+		const trustworthy = !hidden && !this.hiddenSinceLastTick && !frozen && !parked
 		this.hiddenSinceLastTick = false
 
 		const live = this.readLiveness()
