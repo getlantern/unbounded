@@ -433,9 +433,22 @@ export class FreezeWatchdog {
 	private armTimer(): void {
 		this.lastTickAt = Date.now()
 		this.punctualTicks = 0
-		this.hiddenSinceLastTick = false
+		this.clearIntervalLatches()
 		this.writeBreadcrumb(false)
 		this.timer = setInterval(this.tick, tickMs)
+	}
+
+	// clearIntervalLatches drops both "something happened since the last tick" flags.
+	//
+	// They exist as a pair and must be cleared as a pair, which is exactly what went
+	// wrong when the freeze latch was added: hiddenSinceLastTick was already reset in
+	// three places and the new flag only in one, so it survived a stop/start cycle and
+	// a pageshow, and poisoned the first interval afterwards. Both reviewers found a
+	// different symptom of it. A single method is the cheapest way to stop the next
+	// latch from diverging the same way.
+	private clearIntervalLatches(): void {
+		this.hiddenSinceLastTick = false
+		this.frozenSinceLastTick = false
 	}
 
 	private clearTimer(): void {
@@ -520,6 +533,16 @@ export class FreezeWatchdog {
 	private onResume = (): void => {
 		this.lastTickAt = Date.now()
 		this.punctualTicks = 0
+		// And drop the freeze latch, because resetting the baseline above has already
+		// dealt with the frozen stretch: the next gap is measured from now, so it does
+		// not span the freeze and there is nothing left to discount. Keeping the latch
+		// set would suppress one legitimate interval — and the interval right after a
+		// thaw is a plausible place for a real block, since a resuming page often has
+		// catch-up work to do.
+		//
+		// The latch still protects the freeze-without-resume case: nothing clears it
+		// until either this handler or the next tick runs.
+		this.clearIntervalLatches()
 	}
 
 	private onPageHide = (): void => {
@@ -564,8 +587,11 @@ export class FreezeWatchdog {
 		// cause: the page was not running at all, so nothing about the interval is
 		// evidence of anything. Latched at the event because by tick time the page is
 		// thawed and looks entirely normal.
+		// Snapshot both latches, then clear both together. Reading one inline and
+		// assigning the other separately is what allowed them to drift apart.
 		const frozen = this.frozenSinceLastTick
-		this.frozenSinceLastTick = false
+		const hiddenSince = this.hiddenSinceLastTick
+		this.clearIntervalLatches()
 
 		// gapMs beyond maxBlockMs is a parked process, not a blocked thread. This has
 		// to be judged on magnitude alone: when the whole context stops, our clock and
@@ -574,8 +600,7 @@ export class FreezeWatchdog {
 		// browsers that do not implement Page Lifecycle at all.
 		const parked = gapMs > maxBlockMs
 
-		const trustworthy = !hidden && !this.hiddenSinceLastTick && !frozen && !parked
-		this.hiddenSinceLastTick = false
+		const trustworthy = !hidden && !hiddenSince && !frozen && !parked
 
 		const live = this.readLiveness()
 		// Go stamps goLastTickMs with Date.now() from inside wasm specifically so it

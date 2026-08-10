@@ -312,6 +312,54 @@ test('does not report a gap spanning a Page Lifecycle freeze', () => {
 	wd.stop()
 })
 
+// CodeRabbit's finding on #411: onResume resets the timing baseline, so the next gap
+// no longer spans the freeze — but the latch stayed set and suppressed that interval
+// anyway. The tick right after a thaw is a plausible place for a real block, since a
+// resuming page often has catch-up work.
+test('reports a block in the first interval after a resume', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	document.dispatchEvent(new Event('freeze'))
+	advance(10 * 60 * 1000) // frozen for ten minutes
+	document.dispatchEvent(new Event('resume'))
+
+	// A genuine block, measured entirely after the resume reset the baseline.
+	fireTick(20_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	// And the gap is the post-resume interval, not the frozen stretch.
+	expect(reports[0].gapMs).toBeLessThan(60_000)
+	wd.stop()
+})
+
+// Copilot's finding on the same PR, and the same root cause seen from the other side:
+// the latch was cleared only in tick(), so a re-arm between a freeze and the next tick
+// carried it into the following interval. armTimer() already reset the sibling latch.
+//
+// Driven through pagehide/pageshow on ONE instance, which is the path that actually
+// occurs: the watchdog is a per-page singleton, so a fresh object cannot carry stale
+// state and a test that built one would pass no matter what the code did.
+test('does not carry the freeze latch across a re-arm', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// Frozen, then cached and restored before any tick consumes the latch.
+	document.dispatchEvent(new Event('freeze'))
+	window.dispatchEvent(new Event('pagehide'))
+	advance(10 * 60 * 1000)
+	window.dispatchEvent(new Event('pageshow'))
+
+	fireTick(20_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	wd.stop()
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the
