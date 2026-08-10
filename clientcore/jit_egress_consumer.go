@@ -26,9 +26,11 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			// downstream table that resources are available, and that they should begin offering connectivity
 			// opportunities. The differing syntax is just to help humans grok the system behavior.
 			allUponReq := common.Endpoint{Host: "$", Distance: 1}
-			com.tx <- IPCMsg{
+			if !sendCtx(ctx, com.tx, IPCMsg{
 				IpcType: PathAssertionIPC,
 				Data:    common.PathAssertion{Allow: []common.Endpoint{allUponReq}},
+			}) {
+				return 0, input
 			}
 
 			// Now we wait for a ConsumerInfo IPC message from the corresponding downstream worker indicating
@@ -46,9 +48,11 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 						// assertion, as a means to signal to downstream workers that there's no connectivity
 						// opportunity while also disambiguating from a nil path assertion. It's wacky and
 						// should be cleaned up here: https://github.com/getlantern/engineering/issues/2402
-						com.tx <- IPCMsg{
+						if !sendCtx(ctx, com.tx, IPCMsg{
 							IpcType: PathAssertionIPC,
 							Data:    common.PathAssertion{Allow: []common.Endpoint{allUponReq}, JITUnavailable: true},
+						}) {
+							return 0, input
 						}
 						consumerInfoMsg = msg.Data.(common.ConsumerInfo)
 						break waitforconsumerloop
@@ -96,7 +100,9 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				slog.Debug("Couldn't connect to egress server", "addr", options.Addr, "error", err)
 
 				// We're resetting this slot, so send a nil path assertion
-				com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+				if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
+					return 0, []interface{}{}
+				}
 
 				<-time.After(options.ErrorBackoff)
 				return 0, []interface{}{}
@@ -225,7 +231,9 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			}
 
 			// We're resetting this slot, so send a nil path assertion
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
+				return 0, []interface{}{}
+			}
 			return 0, []interface{}{}
 		}),
 	})

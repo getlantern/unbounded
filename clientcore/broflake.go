@@ -23,6 +23,10 @@ type BroflakeEngine struct {
 	netstateStop      chan struct{}
 	ctx               context.Context
 	cancel            context.CancelFunc
+	// stopGrace bounds how long stop() waits for workers before cancelling the
+	// engine ctx anyway. Per-engine rather than a package var so tests can shorten
+	// it without racing a concurrent stop().
+	stopGrace time.Duration
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -36,6 +40,7 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 		tag:               tag,
 		netstateHeartbeat: time.Minute,
 		netstateStop:      make(chan struct{}),
+		stopGrace:         defaultStopGrace,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -77,16 +82,34 @@ func (b *BroflakeEngine) start() {
 	}
 }
 
+// defaultStopGrace bounds how long stop() waits for workers to exit before
+// cancelling the engine ctx regardless. Generous enough for a worker to finish a
+// state (the longest state timeout is NATFailTimeout, 5s).
+const defaultStopGrace = 10 * time.Second
+
 func (b *BroflakeEngine) stop() {
 	b.cTable.Stop()
 	b.pTable.Stop()
 
 	go func() {
-		b.wg.Wait()
+		// Prefer cancelling the engine ctx only after workers exit: some worker states
+		// block on com.tx sends, and stopping the routers earlier can strand a worker on
+		// a full buffer. But that wait must be bounded — a worker parked in an unguarded
+		// com.tx send never returns, and without a deadline wg.Wait() would hold the
+		// engine ctx, and therefore the bus, both routers and every other worker, for the
+		// lifetime of the process. Every re-create then leaks a whole stack.
+		waited := make(chan struct{})
+		go func() {
+			b.wg.Wait()
+			close(waited)
+		}()
+		select {
+		case <-waited:
+		case <-time.After(b.stopGrace):
+			slog.Debug("Broflake stop: workers did not exit before deadline, cancelling anyway",
+				"grace", b.stopGrace)
+		}
 
-		// Cancel the engine ctx only after workers exit. Some worker states block on com.tx
-		// sends, and stopping routers earlier can strand a worker on a full buffer and hang
-		// wg.Wait.
 		b.cancel()
 
 		if b.netstated != "" {
