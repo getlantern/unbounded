@@ -110,6 +110,25 @@ func TestSendCtxAbandonsOnCancel(t *testing.T) {
 	}
 }
 
+// TestSendCtxRefusesAfterCancel pins the deterministic case. With a cancelled ctx
+// and room in the buffer both select cases are ready, and select would pick
+// pseudo-randomly — so cancellation has to be checked first or a stopping worker
+// can still enqueue control-plane messages.
+func TestSendCtxRefusesAfterCancel(t *testing.T) {
+	ch := make(chan IPCMsg, 8) // room to spare, so the send case is always ready
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for i := 0; i < 100; i++ {
+		if sendCtx(ctx, ch, IPCMsg{}) {
+			t.Fatalf("sendCtx sent on attempt %d despite a cancelled ctx", i)
+		}
+	}
+	if len(ch) != 0 {
+		t.Fatalf("sendCtx enqueued %d messages after cancellation", len(ch))
+	}
+}
+
 // TestWorkerFSMStopReleasesWorkerOnUndrainedSend is the regression test for the
 // leak: a worker parked in a control-plane send with nothing draining tx must
 // still exit when Stop() cancels it.

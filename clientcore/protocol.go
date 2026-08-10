@@ -97,6 +97,14 @@ func closeWorkerResource(input []any) {
 // On false the caller must return without clearing its input, so the FSM's exit
 // path can still close any resource that input carries.
 func sendCtx(ctx context.Context, ch chan<- IPCMsg, msg IPCMsg) bool {
+	// Check cancellation before the select. When both cases are ready — a cancelled
+	// ctx and a buffer with room — select picks pseudo-randomly, so without this an
+	// already-cancelled worker could still enqueue a control-plane message during
+	// teardown.
+	if ctx.Err() != nil {
+		return false
+	}
+
 	select {
 	case ch <- msg:
 		return true
