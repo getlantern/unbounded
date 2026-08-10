@@ -29,10 +29,17 @@ type WorkerFSM struct {
 
 // Construct a new WorkerFSM
 func NewWorkerFSM(wg *sync.WaitGroup, states []FSMstate) *WorkerFSM {
+	// ctx/cancel are initialized here, not at the top of Start()'s goroutine, so a
+	// Stop() that beats the goroutine still cancels instead of reading a nil
+	// cancel and no-op'ing (or panicking). Same reasoning as NewQUICLayer — do not
+	// move this write back into the goroutine.
+	ctx, cancel := context.WithCancel(context.Background())
 	fsm := WorkerFSM{
-		com:   newIpcChan(workerBufferSz),
-		state: states,
-		wg:    wg,
+		com:    newIpcChan(workerBufferSz),
+		state:  states,
+		wg:     wg,
+		ctx:    ctx,
+		cancel: cancel,
 	}
 
 	return &fsm
@@ -50,7 +57,6 @@ func (fsm *WorkerFSM) Start() {
 			}
 		}()
 		slog.Debug("Starting WorkerFSM...")
-		fsm.ctx, fsm.cancel = context.WithCancel(context.Background())
 
 		for {
 			select {
@@ -78,8 +84,34 @@ func closeWorkerResource(input []any) {
 	}
 }
 
+// sendCtx sends msg on ch, abandoning the send if ctx is cancelled first, and
+// reports whether the send happened.
+//
+// Control-plane messages must go through this rather than a bare `ch <- msg`. A
+// bare send on a full buffer whose drain has already been torn down never returns,
+// so the state never returns, the FSM never reaches its ctx.Done() check, and its
+// wg.Done() never runs — which blocks BroflakeEngine.stop() and strands the whole
+// stack. Data-plane sends are deliberately different: they use a non-blocking send
+// with a default case, dropping chunks rather than waiting.
+//
+// On false the caller must return without clearing its input, so the FSM's exit
+// path can still close any resource that input carries.
+func sendCtx(ctx context.Context, ch chan<- IPCMsg, msg IPCMsg) bool {
+	select {
+	case ch <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 // Stop this WorkerFSM (takes effect upon returning from the currently executing state)
 func (fsm *WorkerFSM) Stop() {
+	// Guard the struct-literal case: a WorkerFSM not built via NewWorkerFSM has a
+	// nil cancel, and calling it panics.
+	if fsm.cancel == nil {
+		return
+	}
 	fsm.cancel()
 }
 

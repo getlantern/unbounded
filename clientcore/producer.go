@@ -132,7 +132,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// We find out by sending an ConnectivityCheckIPC message, which asks the process responsible
 			// for path assertions to send a message reflecting the current state of our path assertion.
 			// If yes, we can proceed right now! If no, just wait for the next non-nil path assertion message...
-			com.tx <- IPCMsg{IpcType: ConnectivityCheckIPC}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConnectivityCheckIPC}) {
+				return 0, input
+			}
 
 			for {
 				select {
@@ -574,9 +576,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Producer state 5...")
 
 			// Announce the new connectivity situation for this slot
-			com.tx <- IPCMsg{
+			if !sendCtx(ctx, com.tx, IPCMsg{
 				IpcType: ConsumerInfoIPC,
 				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID, Country: offer.Country},
+			}) {
+				return 0, input
 			}
 
 			// Inbound from datachannel (consumer → widget) and outbound
@@ -674,7 +678,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			peerConnection.Close() // TODO: there's an err we should handle here
 
 			// We've reset this slot, so announce the nil connectivity situation
-			com.tx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}) {
+				return 0, input
+			}
 			return 0, []interface{}{}
 		}),
 	})

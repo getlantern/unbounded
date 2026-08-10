@@ -50,7 +50,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Consumer state 0, constructing RTCPeerConnection...")
 
 			// We're resetting this slot, so send a nil path assertion IPC message
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
+				return 0, input
+			}
 
 			// Populate the STUN cache if necessary
 			if scache.size() == 0 {
@@ -556,7 +558,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
 			allowAll := []common.Endpoint{{Host: "*", Distance: 1}}
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}) {
+				return 0, input
+			}
 
 			// Inbound from datachannel (widget → us) and outbound
 			// (us → widget) counters. One-second summaries follow so
