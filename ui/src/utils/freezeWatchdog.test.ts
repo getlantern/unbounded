@@ -259,6 +259,133 @@ test('does not report a starved timer while Go keeps ticking', () => {
 	wd.stop()
 })
 
+// The third false-positive class, and the one no clock comparison can catch. When a
+// laptop sleeps or Chrome parks a backgrounded page, our timer and Go's heartbeat
+// stop together and resume together — which is precisely the fingerprint of a real
+// main-thread block. Only the magnitude separates them.
+//
+// Modeled on the field data: 48 of 59 sampled reports were 13-17 minute gaps with
+// gap and goStale within ~1.5s of each other, against 11 real blocks of 10-45s.
+test('does not report a gap that parked the whole context', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// 15 minutes, the median of the suspended cluster. sharedThread stalls Go by the
+	// same gap, so this is indistinguishable from a block except by size.
+	fireTick(15 * 60 * 1000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
+// ...and the ceiling must not swallow a real block, which is the whole point of
+// putting it in the empty band between the two populations rather than near either.
+test('still reports a block short enough to be one', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// 45s: the longest real block observed in the field, well under the 2min ceiling.
+	fireTick(45_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	wd.stop()
+})
+
+// Chrome fires 'freeze' when it parks a backgrounded page outright. Such a page runs
+// nothing at all, so the gap is meaningless — but by the time we tick again it is
+// thawed and looks entirely normal, which is why the event has to be latched.
+test('does not report a gap spanning a Page Lifecycle freeze', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	document.dispatchEvent(new Event('freeze'))
+	// Deliberately under maxBlockMs, so this proves the freeze gate rather than the
+	// size ceiling — the two guards are independent and browsers without Page
+	// Lifecycle rely on the ceiling alone.
+	fireTick(30_000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
+// CodeRabbit's finding on #411: onResume resets the timing baseline, so the next gap
+// no longer spans the freeze — but the latch stayed set and suppressed that interval
+// anyway. The tick right after a thaw is a plausible place for a real block, since a
+// resuming page often has catch-up work.
+test('reports a block in the first interval after a resume', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	document.dispatchEvent(new Event('freeze'))
+	advance(10 * 60 * 1000) // frozen for ten minutes
+	document.dispatchEvent(new Event('resume'))
+
+	// A genuine block, measured entirely after the resume reset the baseline.
+	fireTick(20_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	// And the gap is the post-resume interval, not the frozen stretch.
+	expect(reports[0].gapMs).toBeLessThan(60_000)
+	wd.stop()
+})
+
+// Copilot's finding on the same PR, and the same root cause seen from the other side:
+// the latch was cleared only in tick(), so a re-arm between a freeze and the next tick
+// carried it into the following interval. armTimer() already reset the sibling latch.
+//
+// Driven through pagehide/pageshow on ONE instance, which is the path that actually
+// occurs: the watchdog is a per-page singleton, so a fresh object cannot carry stale
+// state and a test that built one would pass no matter what the code did.
+test('does not carry the freeze latch across a re-arm', () => {
+	const {reports, onReport} = capture()
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// Frozen, then cached and restored before any tick consumes the latch.
+	document.dispatchEvent(new Event('freeze'))
+	window.dispatchEvent(new Event('pagehide'))
+	advance(10 * 60 * 1000)
+	window.dispatchEvent(new Event('pageshow'))
+
+	fireTick(20_000)
+
+	expect(reports).toHaveLength(1)
+	expect(reports[0].kind).toBe('main_thread_blocked')
+	wd.stop()
+})
+
+// Copilot's round-2 finding, and a bug that predates this PR: onVisibilityChange only
+// latches on the transition *to* hidden, so an interval that BEGINS hidden started with
+// a false latch and had its throttled gap judged as if the tab were visible throughout.
+//
+// Reachable from every caller of the reset: start() on a background tab, a bfcache
+// restore into one, and a Page Lifecycle resume, which commonly resumes still-hidden.
+// Fixed by seeding the latch from current visibility rather than clearing it.
+test('does not report a throttled gap when the interval began hidden', () => {
+	const {reports, onReport} = capture()
+	visibility = 'hidden'
+
+	// Arms while already hidden, so nothing ever fires visibilitychange.
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// A minute of throttling, then the user comes back. Under maxBlockMs, so this
+	// proves the visibility seeding rather than the size ceiling.
+	advance(60_000)
+	visibility = 'visible'
+	document.dispatchEvent(new Event('visibilitychange'))
+	fireTick(2000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the
