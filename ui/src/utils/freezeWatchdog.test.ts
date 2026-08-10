@@ -360,6 +360,32 @@ test('does not carry the freeze latch across a re-arm', () => {
 	wd.stop()
 })
 
+// Copilot's round-2 finding, and a bug that predates this PR: onVisibilityChange only
+// latches on the transition *to* hidden, so an interval that BEGINS hidden started with
+// a false latch and had its throttled gap judged as if the tab were visible throughout.
+//
+// Reachable from every caller of the reset: start() on a background tab, a bfcache
+// restore into one, and a Page Lifecycle resume, which commonly resumes still-hidden.
+// Fixed by seeding the latch from current visibility rather than clearing it.
+test('does not report a throttled gap when the interval began hidden', () => {
+	const {reports, onReport} = capture()
+	visibility = 'hidden'
+
+	// Arms while already hidden, so nothing ever fires visibilitychange.
+	const wd = new FreezeWatchdog({liveness: sharedThread(), onReport})
+	wd.start()
+
+	// A minute of throttling, then the user comes back. Under maxBlockMs, so this
+	// proves the visibility seeding rather than the size ceiling.
+	advance(60_000)
+	visibility = 'visible'
+	document.dispatchEvent(new Event('visibilitychange'))
+	fireTick(2000)
+
+	expect(reports).toEqual([])
+	wd.stop()
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the

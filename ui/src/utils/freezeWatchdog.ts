@@ -433,21 +433,27 @@ export class FreezeWatchdog {
 	private armTimer(): void {
 		this.lastTickAt = Date.now()
 		this.punctualTicks = 0
-		this.clearIntervalLatches()
+		this.resetIntervalLatches()
 		this.writeBreadcrumb(false)
 		this.timer = setInterval(this.tick, tickMs)
 	}
 
-	// clearIntervalLatches drops both "something happened since the last tick" flags.
+	// resetIntervalLatches re-seeds both "something happened since the last tick" flags
+	// for the interval starting now.
 	//
-	// They exist as a pair and must be cleared as a pair, which is exactly what went
+	// They exist as a pair and must be maintained as a pair, which is exactly what went
 	// wrong when the freeze latch was added: hiddenSinceLastTick was already reset in
-	// three places and the new flag only in one, so it survived a stop/start cycle and
-	// a pageshow, and poisoned the first interval afterwards. Both reviewers found a
-	// different symptom of it. A single method is the cheapest way to stop the next
-	// latch from diverging the same way.
-	private clearIntervalLatches(): void {
-		this.hiddenSinceLastTick = false
+	// three places and the new flag only in one, so it survived a re-arm and poisoned
+	// the interval afterwards.
+	//
+	// Note it SEEDS rather than clears. onVisibilityChange only latches on the
+	// transition *to* hidden, so a page that is already hidden when an interval begins
+	// would otherwise start with a false latch and have its throttled gap judged as if
+	// the tab had been visible throughout. That is reachable from every caller: start()
+	// on a background tab, a bfcache restore into one, and a Page Lifecycle resume,
+	// which commonly resumes still-hidden.
+	private resetIntervalLatches(): void {
+		this.hiddenSinceLastTick = document.visibilityState !== 'visible'
 		this.frozenSinceLastTick = false
 	}
 
@@ -542,7 +548,7 @@ export class FreezeWatchdog {
 		//
 		// The latch still protects the freeze-without-resume case: nothing clears it
 		// until either this handler or the next tick runs.
-		this.clearIntervalLatches()
+		this.resetIntervalLatches()
 	}
 
 	private onPageHide = (): void => {
@@ -591,7 +597,7 @@ export class FreezeWatchdog {
 		// assigning the other separately is what allowed them to drift apart.
 		const frozen = this.frozenSinceLastTick
 		const hiddenSince = this.hiddenSinceLastTick
-		this.clearIntervalLatches()
+		this.resetIntervalLatches()
 
 		// gapMs beyond maxBlockMs is a parked process, not a blocked thread. This has
 		// to be judged on magnitude alone: when the whole context stops, our clock and
