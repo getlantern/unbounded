@@ -868,17 +868,26 @@ describe('breadcrumb recovery', () => {
 	})
 
 	// Same discipline as every other recovered field: the record can carry anything,
-	// including from a version that predates this field entirely.
-	test('does not trust the type of a recovered build id', () => {
+	// including from a version that predates this field entirely. Whitespace-only and
+	// padded values are included because the live path normalizes them and the
+	// recovered path used only to slice — so the two disagreed on identical input.
+	test.each([
+		['wrong type', {nope: 1}, null],
+		['absent', undefined, null],
+		['empty', '', null],
+		['whitespace only', '   ', null],
+		['padded', '  abc123  ', 'abc123'],
+		['over-long', 'x'.repeat(200), 'x'.repeat(64)],
+	])('normalizes a recovered build id (%s)', (_name, stored, want) => {
 		const stale = now - 10 * 60 * 1000
-		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: {nope: 1}}))
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: stored}))
 
 		const {reports, onReport} = capture()
 		const wd = new FreezeWatchdog({onReport})
 		wd.start()
 
 		expect(reports).toHaveLength(1)
-		expect(reports[0].build).toBeNull()
+		expect(reports[0].build).toEqual(want)
 		wd.stop()
 	})
 

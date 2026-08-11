@@ -132,15 +132,27 @@ const maxTaskNameLen = 128
 // that freezes in a loop must not turn its own diagnostics into the leak.
 const maxReports = 20
 
+// normalizeBuildId bounds a build identifier and collapses "no useful value" to null.
+//
+// Shared by the two paths that produce one — the compiled-in value below, and a value
+// read back from a breadcrumb — because they were inconsistent when written separately:
+// the live path trimmed and mapped empty to null while the recovered path only sliced,
+// so a whitespace-only value from a corrupted record would have reached the log as
+// whitespace. Recovered values are never trusted for type or content anywhere else in
+// this file and should not be here either.
+const normalizeBuildId = (v: unknown): string | null =>
+	typeof v === 'string' ? v.trim().slice(0, maxBuildIdLen) || null : null
+
+// maxBuildIdLen bounds it. A commit SHA is 40 characters; this only truncates something
+// that was never one. The value is compiled into a world-readable bundle so it is not a
+// secret, but it reaches the server as peer-supplied bytes like every other field, and
+// bounding it at the source keeps an over-long value from being the server's problem.
+const maxBuildIdLen = 64
+
 // buildId is the commit the widget page was published from, baked in at build time by
 // the publish workflow. Read once at module load rather than per report: it cannot
 // change during a page life, and that is exactly the property that makes it useful.
-//
-// Trimmed and length-capped here as well as on the egress. The value is compiled into
-// a world-readable bundle so it is not a secret, but it arrives at the server as
-// peer-supplied bytes like everything else in a report, and bounding it at the source
-// keeps an over-long value from being something only the server notices.
-const buildId: string | null = (process.env.REACT_APP_BUILD || '').trim().slice(0, 64) || null
+const buildId: string | null = normalizeBuildId(process.env.REACT_APP_BUILD)
 
 // repeatSuppressMs throttles repeats of a kind already reported.
 //
@@ -234,9 +246,15 @@ export interface FreezeReport {
 	sharing: boolean
 	url: string
 	userAgent: string
-	// build identifies the bundle that produced this report — the commit the widget
-	// page was published from, injected at build time. null in a local build, where
-	// the answer is "whatever is on your disk".
+	// build identifies the bundle that produced this report. Three possible values, and
+	// all three are informative:
+	//
+	//   - a commit SHA, injected by the publish workflow. The normal production case.
+	//   - "dev", from ui/.env.development.example, so a report from someone's laptop is
+	//     recognisable as one rather than looking like a mystery client.
+	//   - null, when nothing was set at build time — which after this field ships is
+	//     every widget published before it, i.e. "old client". That is a fact worth
+	//     reporting, not missing data.
 	//
 	// Added because its absence cost a real diagnosis. Donor pages are long-lived and
 	// keep running whatever bundle they loaded with, so after a watchdog fix ships the
@@ -901,7 +919,7 @@ export class FreezeWatchdog {
 				// *different* one — so reading buildId here would label every death
 				// with the version that found it rather than the version that died,
 				// and blame each fix for the failures it was shipped to fix.
-				build: typeof crumb.v === 'string' ? crumb.v.slice(0, 64) : null,
+				build: normalizeBuildId(crumb.v),
 			})
 		}
 	}
