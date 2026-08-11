@@ -132,6 +132,16 @@ const maxTaskNameLen = 128
 // that freezes in a loop must not turn its own diagnostics into the leak.
 const maxReports = 20
 
+// buildId is the commit the widget page was published from, baked in at build time by
+// the publish workflow. Read once at module load rather than per report: it cannot
+// change during a page life, and that is exactly the property that makes it useful.
+//
+// Trimmed and length-capped here as well as on the egress. The value is compiled into
+// a world-readable bundle so it is not a secret, but it arrives at the server as
+// peer-supplied bytes like everything else in a report, and bounding it at the source
+// keeps an over-long value from being something only the server notices.
+const buildId: string | null = (process.env.REACT_APP_BUILD || '').trim().slice(0, 64) || null
+
 // repeatSuppressMs throttles repeats of a kind already reported.
 //
 // A wedged Go runtime is a *standing* condition, not an event: goLastTickMs stays
@@ -224,6 +234,18 @@ export interface FreezeReport {
 	sharing: boolean
 	url: string
 	userAgent: string
+	// build identifies the bundle that produced this report — the commit the widget
+	// page was published from, injected at build time. null in a local build, where
+	// the answer is "whatever is on your disk".
+	//
+	// Added because its absence cost a real diagnosis. Donor pages are long-lived and
+	// keep running whatever bundle they loaded with, so after a watchdog fix ships the
+	// fleet contains several versions at once for days. When reports kept arriving that
+	// the newest code could not possibly produce — gaps past a ceiling that rejects
+	// them — there was no way to tell an old client from broken logic except by
+	// watching whether the rate decayed over 48 hours. It was old clients. With this
+	// field it is one query instead of an afternoon.
+	build: string | null
 }
 
 // Breadcrumb is the localStorage record. Field names are short because this is
@@ -237,6 +259,7 @@ interface Breadcrumb {
 	p: boolean // sharing at last beat
 	l: number | null // longest task ms
 	n: string | null // longest task name
+	v: string | null // build id of the bundle that wrote this
 }
 
 // Liveness mirrors the object returned by Go's liveness(). Field names are a
@@ -656,6 +679,7 @@ export class FreezeWatchdog {
 				longestTaskMs: this.longestTaskMs,
 				longestTaskName: this.longestTaskName,
 				sharing: this.sharing(),
+				build: buildId,
 			})
 		}
 
@@ -755,6 +779,7 @@ export class FreezeWatchdog {
 			p: this.sharing(),
 			l: this.longestTaskMs,
 			n: this.longestTaskName,
+			v: buildId,
 		}
 		safeStorage.write(this.storageKey, JSON.stringify(crumb))
 	}
@@ -871,6 +896,12 @@ export class FreezeWatchdog {
 				longestTaskMs: typeof crumb.l === 'number' ? crumb.l : null,
 				longestTaskName: typeof crumb.n === 'string' ? crumb.n.slice(0, maxTaskNameLen) : null,
 				sharing: crumb.p === true,
+				// From the record, not from this page life. A death is recovered by
+				// whatever bundle loads next, which after a widget deploy is a
+				// *different* one — so reading buildId here would label every death
+				// with the version that found it rather than the version that died,
+				// and blame each fix for the failures it was shipped to fix.
+				build: typeof crumb.v === 'string' ? crumb.v.slice(0, 64) : null,
 			})
 		}
 	}

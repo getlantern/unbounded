@@ -1,7 +1,9 @@
 package egress
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -251,5 +253,65 @@ func TestHandleFreezeReport_OversizedIsCountedAndQuiet(t *testing.T) {
 	}
 	if got := collectFreezeReports()[freezeInvalid]; got != 1 {
 		t.Errorf("counted %v, want one invalid", collectFreezeReports())
+	}
+}
+
+// The build id is the field that makes "an old client is still reporting" answerable.
+// It has to survive parsing and reach the log, and it must never become a metric label:
+// it is peer-supplied, so as a label it is cardinality controlled by a stranger.
+func TestHandleFreezeReport_CarriesTheBuildID(t *testing.T) {
+	resetFreezeReports(t)
+	freezeReportLogs = newLogThrottle(freezeReportLogInterval)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	body, err := json.Marshal(freezeReport{
+		Kind: freezeMainThreadBlocked, Recovered: true, GapMs: 12000,
+		URL: "https://example.org/page", UserAgent: "Mozilla/5.0",
+		Build: "0d5f6ac1234567890abcdef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := postFreeze(t, string(body)); w.Code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204", w.Code)
+	}
+
+	if got := buf.String(); !strings.Contains(got, "page_build=0d5f6ac1234567890abcdef") {
+		t.Errorf("build id missing from the log line: %s", got)
+	}
+
+	// And it stays out of the labels. Only kind is ever a label.
+	for label := range collectFreezeReports() {
+		if label != freezeMainThreadBlocked {
+			t.Errorf("unexpected metric label %q — build must never become one", label)
+		}
+	}
+}
+
+// An over-long build id is peer-supplied bytes headed for disk like any other field.
+func TestHandleFreezeReport_TruncatesTheBuildID(t *testing.T) {
+	resetFreezeReports(t)
+	freezeReportLogs = newLogThrottle(freezeReportLogInterval)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	body, err := json.Marshal(freezeReport{
+		Kind: freezeJSStarved, Recovered: true, GapMs: 9000,
+		Build: strings.Repeat("a", 4096),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postFreeze(t, string(body))
+
+	if got := buf.String(); !strings.Contains(got, truncationMarker) {
+		t.Errorf("an oversized build id reached the log untruncated: %s", got[:min(len(got), 400)])
 	}
 }

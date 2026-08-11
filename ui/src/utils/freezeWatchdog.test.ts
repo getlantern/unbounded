@@ -819,6 +819,38 @@ describe('breadcrumb recovery', () => {
 		wd.stop()
 	})
 
+	// A death is recovered by whatever bundle loads NEXT, which after a widget deploy
+	// is a different one. Reading the live buildId here would label every death with
+	// the version that found it rather than the version that died — blaming each fix
+	// for the failures it shipped to fix, which is worse than having no field at all.
+	test('attributes a death to the bundle that died', () => {
+		const stale = now - 10 * 60 * 1000
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: 'oldbuild123'}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].build).toBe('oldbuild123')
+		wd.stop()
+	})
+
+	// Same discipline as every other recovered field: the record can carry anything,
+	// including from a version that predates this field entirely.
+	test('does not trust the type of a recovered build id', () => {
+		const stale = now - 10 * 60 * 1000
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: {nope: 1}}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].build).toBeNull()
+		wd.stop()
+	})
+
 	test('expires records older than the retention window', () => {
 		writeCrumb({t: 'deadtab', b: now - 48 * 60 * 60 * 1000, s: now - 49 * 60 * 60 * 1000, c: false, h: false, p: false, l: null, n: null})
 
@@ -1009,6 +1041,7 @@ describe('defaultReport beacon', () => {
 		sharing: false,
 		url: 'https://example.test/',
 		userAgent: 'test',
+		build: 'testbuild',
 	}
 
 	const setBeacon = (fn: unknown) =>
