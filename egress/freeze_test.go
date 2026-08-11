@@ -315,3 +315,38 @@ func TestHandleFreezeReport_TruncatesTheBuildID(t *testing.T) {
 		t.Errorf("an oversized build id reached the log untruncated: %s", got[:min(len(got), 400)])
 	}
 }
+
+// A null or absent build must be accepted, not bucketed as invalid.
+//
+// Both are normal: the UI sends null from a local build and from a page_died recovered
+// off a breadcrumb written before the field existed, and absent is every widget
+// published before it. Rejecting either would discard exactly the reports the field was
+// added to identify — old clients.
+//
+// Pinned because it is counter-intuitive enough to have been reported as a bug twice in
+// review. encoding/json documents null into a non-pointer as a no-op ("Unmarshal sets
+// that value to nil if it is a pointer, interface, map, or slice; otherwise Unmarshal
+// leaves the value unchanged"), so a string field lands on "" and needs no pointer. The
+// suggested fix was *string, which would add a nil check at every read for no behavior
+// change. This test is here so the next person to have that intuition sees it disproved
+// rather than acting on it.
+func TestHandleFreezeReport_AcceptsNullAndAbsentBuild(t *testing.T) {
+	for _, body := range []string{
+		`{"kind":"main_thread_blocked","gapMs":12000,"build":null}`,
+		`{"kind":"main_thread_blocked","gapMs":12000}`,
+		`{"kind":"main_thread_blocked","gapMs":12000,"build":""}`,
+	} {
+		resetFreezeReports(t)
+		if got := postFreeze(t, body).Code; got != http.StatusNoContent {
+			t.Errorf("%s: status %d, want 204", body, got)
+		}
+		got := collectFreezeReports()
+		if got[freezeMainThreadBlocked] != 1 {
+			t.Errorf("%s: counted %v, want one main_thread_blocked", body, got)
+		}
+		if got[freezeInvalid] != 0 {
+			t.Errorf("%s: bucketed as invalid — a null or missing build is an OLD CLIENT, "+
+				"which is the case this field exists to surface", body)
+		}
+	}
+}

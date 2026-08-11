@@ -386,6 +386,37 @@ test('does not report a throttled gap when the interval began hidden', () => {
 	wd.stop()
 })
 
+// The live path, which the recovered-breadcrumb tests above do not exercise. buildId is
+// read once at module load — the property that makes it trustworthy, since it cannot
+// change during a page life — so setting it requires re-importing the module.
+test('stamps a live report with the build it was compiled with', () => {
+	const prev = process.env.REACT_APP_BUILD
+	process.env.REACT_APP_BUILD = 'livebuild456'
+	jest.resetModules()
+
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const fresh = require('./freezeWatchdog')
+		const reports: any[] = []
+		const wd = new fresh.FreezeWatchdog({
+			liveness: sharedThread(),
+			onReport: (r: any) => reports.push(r),
+		})
+		wd.start()
+
+		fireTick(20_000)
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].kind).toBe('main_thread_blocked')
+		expect(reports[0].build).toBe('livebuild456')
+		wd.stop()
+	} finally {
+		if (prev === undefined) delete process.env.REACT_APP_BUILD
+		else process.env.REACT_APP_BUILD = prev
+		jest.resetModules()
+	}
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the
