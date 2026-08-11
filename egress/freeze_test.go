@@ -1,7 +1,9 @@
 package egress
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -251,5 +253,100 @@ func TestHandleFreezeReport_OversizedIsCountedAndQuiet(t *testing.T) {
 	}
 	if got := collectFreezeReports()[freezeInvalid]; got != 1 {
 		t.Errorf("counted %v, want one invalid", collectFreezeReports())
+	}
+}
+
+// The build id is the field that makes "an old client is still reporting" answerable.
+// It has to survive parsing and reach the log, and it must never become a metric label:
+// it is peer-supplied, so as a label it is cardinality controlled by a stranger.
+func TestHandleFreezeReport_CarriesTheBuildID(t *testing.T) {
+	resetFreezeReports(t)
+	freezeReportLogs = newLogThrottle(freezeReportLogInterval)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	body, err := json.Marshal(freezeReport{
+		Kind: freezeMainThreadBlocked, Recovered: true, GapMs: 12000,
+		URL: "https://example.org/page", UserAgent: "Mozilla/5.0",
+		Build: "0d5f6ac1234567890abcdef",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := postFreeze(t, string(body)); w.Code != http.StatusNoContent {
+		t.Fatalf("status %d, want 204", w.Code)
+	}
+
+	if got := buf.String(); !strings.Contains(got, "page_build=0d5f6ac1234567890abcdef") {
+		t.Errorf("build id missing from the log line: %s", got)
+	}
+
+	// And it stays out of the labels. Only kind is ever a label.
+	for label := range collectFreezeReports() {
+		if label != freezeMainThreadBlocked {
+			t.Errorf("unexpected metric label %q — build must never become one", label)
+		}
+	}
+}
+
+// An over-long build id is peer-supplied bytes headed for disk like any other field.
+func TestHandleFreezeReport_TruncatesTheBuildID(t *testing.T) {
+	resetFreezeReports(t)
+	freezeReportLogs = newLogThrottle(freezeReportLogInterval)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	body, err := json.Marshal(freezeReport{
+		Kind: freezeJSStarved, Recovered: true, GapMs: 9000,
+		Build: strings.Repeat("a", 4096),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	postFreeze(t, string(body))
+
+	if got := buf.String(); !strings.Contains(got, truncationMarker) {
+		t.Errorf("an oversized build id reached the log untruncated: %s", got[:min(len(got), 400)])
+	}
+}
+
+// A null or absent build must be accepted, not bucketed as invalid.
+//
+// Both are normal: the UI sends null from a local build and from a page_died recovered
+// off a breadcrumb written before the field existed, and absent is every widget
+// published before it. Rejecting either would discard exactly the reports the field was
+// added to identify — old clients.
+//
+// Pinned because it is counter-intuitive enough to have been reported as a bug twice in
+// review. encoding/json documents null into a non-pointer as a no-op ("Unmarshal sets
+// that value to nil if it is a pointer, interface, map, or slice; otherwise Unmarshal
+// leaves the value unchanged"), so a string field lands on "" and needs no pointer. The
+// suggested fix was *string, which would add a nil check at every read for no behavior
+// change. This test is here so the next person to have that intuition sees it disproved
+// rather than acting on it.
+func TestHandleFreezeReport_AcceptsNullAndAbsentBuild(t *testing.T) {
+	for _, body := range []string{
+		`{"kind":"main_thread_blocked","gapMs":12000,"build":null}`,
+		`{"kind":"main_thread_blocked","gapMs":12000}`,
+		`{"kind":"main_thread_blocked","gapMs":12000,"build":""}`,
+	} {
+		resetFreezeReports(t)
+		if got := postFreeze(t, body).Code; got != http.StatusNoContent {
+			t.Errorf("%s: status %d, want 204", body, got)
+		}
+		got := collectFreezeReports()
+		if got[freezeMainThreadBlocked] != 1 {
+			t.Errorf("%s: counted %v, want one main_thread_blocked", body, got)
+		}
+		if got[freezeInvalid] != 0 {
+			t.Errorf("%s: bucketed as invalid — a null or missing build is an OLD CLIENT, "+
+				"which is the case this field exists to surface", body)
+		}
 	}
 }

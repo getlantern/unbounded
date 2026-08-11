@@ -115,6 +115,18 @@ type freezeReport struct {
 	// and never becomes a label.
 	URL       string `json:"url"`
 	UserAgent string `json:"userAgent"`
+	// Build is the commit the reporting widget bundle was published from.
+	//
+	// Donor pages are long-lived and keep running whatever bundle they loaded with,
+	// so after a widget fix ships the fleet runs several versions for days. Without
+	// this, a report the newest code cannot produce is indistinguishable from a bug
+	// in that code — the only way to tell was watching whether the rate decayed over
+	// 48 hours. It did, but that is an afternoon to answer a question this field
+	// answers in one grep.
+	//
+	// Logged, never a label: it is peer-supplied like everything else here, so as a
+	// metric label it would be cardinality controlled by a stranger. See the header.
+	Build string `json:"build"`
 }
 
 // handleFreezeReport ingests one beacon.
@@ -186,6 +198,10 @@ func (l proxyListener) logFreezeReport(kind freezeKind, report *freezeReport, r 
 			// froze, and the reason the payload carries it at all.
 			"page_url", truncateForLog(report.URL),
 			"page_user_agent", truncateForLog(report.UserAgent),
+			// Empty for a local build, and for any widget published before this
+			// field existed — which is most of the fleet for the first few days
+			// after it ships, and itself the answer to "is this an old client".
+			"page_build", truncateForLog(report.Build),
 			// recovered separates a freeze the page survived from one it did not.
 			// Only page_died is unrecovered, and it is the severe case: a hiccup
 			// annoys a user, a death silently removes a donor from the network.

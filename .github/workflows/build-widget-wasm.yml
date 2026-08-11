@@ -219,7 +219,16 @@ jobs:
           set -euo pipefail
           cp .env.production.example .env.production
           yarn install --frozen-lockfile
-          yarn build:web
+          # Stamp the bundle with the commit it was built from. CRA lets a shell
+          # REACT_APP_* override .env.production, so this wins over the placeholder
+          # in the tracked example file without editing it.
+          #
+          # It matters because donor pages are long-lived: they keep running whatever
+          # bundle they loaded with, so for days after a widget fix the fleet runs
+          # several versions at once. Freeze reports carry this value, which is what
+          # makes "an old client is still reporting" distinguishable from "the new code
+          # is broken" — previously that took 48 hours of watching a decay curve.
+          REACT_APP_BUILD="${{ github.sha }}" yarn build:web
 
       # Same reasoning as the wasm check: a page build can "succeed" and still emit
       # something that would break every embedder, and publishing it takes the widget

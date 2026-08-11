@@ -386,6 +386,37 @@ test('does not report a throttled gap when the interval began hidden', () => {
 	wd.stop()
 })
 
+// The live path, which the recovered-breadcrumb tests above do not exercise. buildId is
+// read once at module load — the property that makes it trustworthy, since it cannot
+// change during a page life — so setting it requires re-importing the module.
+test('stamps a live report with the build it was compiled with', () => {
+	const prev = process.env.REACT_APP_BUILD
+	process.env.REACT_APP_BUILD = 'livebuild456'
+	jest.resetModules()
+
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
+		const fresh = require('./freezeWatchdog')
+		const reports: any[] = []
+		const wd = new fresh.FreezeWatchdog({
+			liveness: sharedThread(),
+			onReport: (r: any) => reports.push(r),
+		})
+		wd.start()
+
+		fireTick(20_000)
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].kind).toBe('main_thread_blocked')
+		expect(reports[0].build).toBe('livebuild456')
+		wd.stop()
+	} finally {
+		if (prev === undefined) delete process.env.REACT_APP_BUILD
+		else process.env.REACT_APP_BUILD = prev
+		jest.resetModules()
+	}
+})
+
 // Background tabs have their timers throttled to roughly one per minute, so a
 // hidden tab produces gaps far beyond FREEZE_MS while being perfectly healthy.
 // Reporting those would make the signal useless — most donor tabs sit in the
@@ -819,6 +850,47 @@ describe('breadcrumb recovery', () => {
 		wd.stop()
 	})
 
+	// A death is recovered by whatever bundle loads NEXT, which after a widget deploy
+	// is a different one. Reading the live buildId here would label every death with
+	// the version that found it rather than the version that died — blaming each fix
+	// for the failures it shipped to fix, which is worse than having no field at all.
+	test('attributes a death to the bundle that died', () => {
+		const stale = now - 10 * 60 * 1000
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: 'oldbuild123'}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].build).toBe('oldbuild123')
+		wd.stop()
+	})
+
+	// Same discipline as every other recovered field: the record can carry anything,
+	// including from a version that predates this field entirely. Whitespace-only and
+	// padded values are included because the live path normalizes them and the
+	// recovered path used only to slice — so the two disagreed on identical input.
+	test.each([
+		['wrong type', {nope: 1}, null],
+		['absent', undefined, null],
+		['empty', '', null],
+		['whitespace only', '   ', null],
+		['padded', '  abc123  ', 'abc123'],
+		['over-long', 'x'.repeat(200), 'x'.repeat(64)],
+	])('normalizes a recovered build id (%s)', (_name, stored, want) => {
+		const stale = now - 10 * 60 * 1000
+		window.localStorage.setItem(KEY, JSON.stringify({b: stale, c: false, v: stored}))
+
+		const {reports, onReport} = capture()
+		const wd = new FreezeWatchdog({onReport})
+		wd.start()
+
+		expect(reports).toHaveLength(1)
+		expect(reports[0].build).toEqual(want)
+		wd.stop()
+	})
+
 	test('expires records older than the retention window', () => {
 		writeCrumb({t: 'deadtab', b: now - 48 * 60 * 60 * 1000, s: now - 49 * 60 * 60 * 1000, c: false, h: false, p: false, l: null, n: null})
 
@@ -1009,6 +1081,7 @@ describe('defaultReport beacon', () => {
 		sharing: false,
 		url: 'https://example.test/',
 		userAgent: 'test',
+		build: 'testbuild',
 	}
 
 	const setBeacon = (fn: unknown) =>

@@ -132,6 +132,28 @@ const maxTaskNameLen = 128
 // that freezes in a loop must not turn its own diagnostics into the leak.
 const maxReports = 20
 
+// normalizeBuildId bounds a build identifier and collapses "no useful value" to null.
+//
+// Shared by the two paths that produce one — the compiled-in value below, and a value
+// read back from a breadcrumb — because they were inconsistent when written separately:
+// the live path trimmed and mapped empty to null while the recovered path only sliced,
+// so a whitespace-only value from a corrupted record would have reached the log as
+// whitespace. Recovered values are never trusted for type or content anywhere else in
+// this file and should not be here either.
+const normalizeBuildId = (v: unknown): string | null =>
+	typeof v === 'string' ? v.trim().slice(0, maxBuildIdLen) || null : null
+
+// maxBuildIdLen bounds it. A commit SHA is 40 characters; this only truncates something
+// that was never one. The value is compiled into a world-readable bundle so it is not a
+// secret, but it reaches the server as peer-supplied bytes like every other field, and
+// bounding it at the source keeps an over-long value from being the server's problem.
+const maxBuildIdLen = 64
+
+// buildId is the commit the widget page was published from, baked in at build time by
+// the publish workflow. Read once at module load rather than per report: it cannot
+// change during a page life, and that is exactly the property that makes it useful.
+const buildId: string | null = normalizeBuildId(process.env.REACT_APP_BUILD)
+
 // repeatSuppressMs throttles repeats of a kind already reported.
 //
 // A wedged Go runtime is a *standing* condition, not an event: goLastTickMs stays
@@ -224,6 +246,24 @@ export interface FreezeReport {
 	sharing: boolean
 	url: string
 	userAgent: string
+	// build identifies the bundle that produced this report. Three possible values, and
+	// all three are informative:
+	//
+	//   - a commit SHA, injected by the publish workflow. The normal production case.
+	//   - "dev", from ui/.env.development.example, so a report from someone's laptop is
+	//     recognisable as one rather than looking like a mystery client.
+	//   - null, when nothing was set at build time — which after this field ships is
+	//     every widget published before it, i.e. "old client". That is a fact worth
+	//     reporting, not missing data.
+	//
+	// Added because its absence cost a real diagnosis. Donor pages are long-lived and
+	// keep running whatever bundle they loaded with, so after a watchdog fix ships the
+	// fleet contains several versions at once for days. When reports kept arriving that
+	// the newest code could not possibly produce — gaps past a ceiling that rejects
+	// them — there was no way to tell an old client from broken logic except by
+	// watching whether the rate decayed over 48 hours. It was old clients. With this
+	// field it is one query instead of an afternoon.
+	build: string | null
 }
 
 // Breadcrumb is the localStorage record. Field names are short because this is
@@ -237,6 +277,7 @@ interface Breadcrumb {
 	p: boolean // sharing at last beat
 	l: number | null // longest task ms
 	n: string | null // longest task name
+	v: string | null // build id of the bundle that wrote this
 }
 
 // Liveness mirrors the object returned by Go's liveness(). Field names are a
@@ -656,6 +697,7 @@ export class FreezeWatchdog {
 				longestTaskMs: this.longestTaskMs,
 				longestTaskName: this.longestTaskName,
 				sharing: this.sharing(),
+				build: buildId,
 			})
 		}
 
@@ -755,6 +797,7 @@ export class FreezeWatchdog {
 			p: this.sharing(),
 			l: this.longestTaskMs,
 			n: this.longestTaskName,
+			v: buildId,
 		}
 		safeStorage.write(this.storageKey, JSON.stringify(crumb))
 	}
@@ -871,6 +914,12 @@ export class FreezeWatchdog {
 				longestTaskMs: typeof crumb.l === 'number' ? crumb.l : null,
 				longestTaskName: typeof crumb.n === 'string' ? crumb.n.slice(0, maxTaskNameLen) : null,
 				sharing: crumb.p === true,
+				// From the record, not from this page life. A death is recovered by
+				// whatever bundle loads next, which after a widget deploy is a
+				// *different* one — so reading buildId here would label every death
+				// with the version that found it rather than the version that died,
+				// and blame each fix for the failures it was shipped to fix.
+				build: normalizeBuildId(crumb.v),
 			})
 		}
 	}
