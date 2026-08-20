@@ -49,12 +49,17 @@ COPY --from=build /usr/local/bin/widget /usr/local/bin/widget
 # or consumers never establish a path through the egress; the browser build tolerates
 # the port-less form. Production is wss://unbounded.iantem.io:443.
 # The binary is debug-by-default for local/dev runs; the container opts into the
-# quieter INFO level. Connection deltas and the resolved-config summary are logged
-# at INFO, so this stays useful without the per-worker debug chatter. Override with
-# -e LOG_LEVEL=debug|warn|error.
+# quieter INFO level. Connection deltas, the resolved-config summary, and the
+# periodic stats line are all logged at INFO, so this stays useful without the
+# per-worker debug chatter. Override with -e LOG_LEVEL=debug|warn|error.
+#
+# STATS_INTERVAL controls how often the widget logs its aggregate stats
+# (peers seen/connected, bytes relayed, connection counts, per-connection
+# averages). Any Go duration string; defaults to 60s. Set e.g. -e STATS_INTERVAL=5m.
 ENV FREDDIE=https://freddie.iantem.io \
     EGRESS=wss://unbounded.iantem.io:443 \
-    LOG_LEVEL=info
+    LOG_LEVEL=info \
+    STATS_INTERVAL=60s
 
 # The widget needs no ports, privileges, or writable filesystem — run unprivileged.
 RUN adduser -D -H widget

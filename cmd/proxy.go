@@ -71,6 +71,7 @@ func runLocalProxy(port string, bfconn *clientcore.BroflakeConn) {
 	}
 
 	addr := fmt.Sprintf("%v:%v", ip, port)
+	slog.Info("local proxy address", "addr", addr, "proxy_mode", proxyMode)
 
 	switch proxyMode {
 	case "socks5":

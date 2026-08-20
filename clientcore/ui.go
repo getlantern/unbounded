@@ -103,6 +103,7 @@ func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) 
 		case ChunkIPC:
 			size := len(msg.Data.([]byte))
 			atomic.AddInt64(&bytesPerSec, int64(size))
+			statBytesToPeers.Add(uint64(size))
 			ui.OnDownstreamChunk(size, int(msg.Wid))
 		}
 	}
@@ -111,6 +112,11 @@ func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) 
 func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
+		case ChunkIPC:
+			// Upload direction (peer -> widget -> egress). Accounted here for the
+			// aggregate Stats() snapshot; DownstreamUIHandler accounts the download
+			// direction. See stats.go for the direction convention.
+			statBytesFromPeers.Add(uint64(len(msg.Data.([]byte))))
 		case ConsumerInfoIPC:
 			ci := msg.Data.(common.ConsumerInfo)
 
@@ -118,6 +124,12 @@ func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 			state := 1
 			if ci.Nil() {
 				state = -1
+			}
+
+			if state == 1 {
+				recordPeerConnect(ci.Addr)
+			} else {
+				recordPeerDisconnect()
 			}
 
 			ui.OnConsumerConnectionChange(state, int(msg.Wid), ci.Addr)

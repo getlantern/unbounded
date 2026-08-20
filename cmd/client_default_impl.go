@@ -4,6 +4,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"log/slog"
 	"net"
@@ -11,10 +12,15 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/getlantern/broflake/clientcore"
 	"github.com/getlantern/broflake/common"
 )
+
+// defaultStatsInterval is how often the widget logs its aggregate stats when
+// STATS_INTERVAL is unset.
+const defaultStatsInterval = 60 * time.Second
 
 var (
 	clientType = "desktop" // Must be "desktop" or "widget"
@@ -120,11 +126,79 @@ func main() {
 		}()
 	}
 
+	if clientType == "widget" {
+		go logWidgetStats(statsInterval())
+	}
+
 	if clientType == "desktop" {
+		slog.Info("running local proxy")
 		runLocalProxy(proxyPort, bfconn)
 	}
 
 	select {}
+}
+
+// statsInterval resolves the widget stats logging cadence from STATS_INTERVAL
+// (any Go duration string, e.g. "30s", "5m"). An unset, unparseable, or
+// non-positive value falls back to defaultStatsInterval.
+func statsInterval() time.Duration {
+	v := strings.TrimSpace(os.Getenv("STATS_INTERVAL"))
+	if v == "" {
+		return defaultStatsInterval
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		slog.Warn("ignoring invalid STATS_INTERVAL, using default", "value", v, "default", defaultStatsInterval)
+		return defaultStatsInterval
+	}
+	return d
+}
+
+// logWidgetStats periodically logs a snapshot of the engine's lifetime counters:
+// peers seen / currently connected, total bytes relayed in each direction,
+// incoming (peer) and outgoing (egress) connection counts, and the average
+// bytes relayed per peer connection. Runs until the process exits.
+func logWidgetStats(interval time.Duration) {
+	slog.Info("widget stats logging enabled", "interval", interval)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s := clientcore.Stats()
+		total := s.BytesToPeers + s.BytesFromPeers
+
+		// "per connection" is per peer connection — the widget's unit of service.
+		var avgTo, avgFrom uint64
+		if s.IncomingConns > 0 {
+			avgTo = s.BytesToPeers / s.IncomingConns
+			avgFrom = s.BytesFromPeers / s.IncomingConns
+		}
+
+		slog.Info("widget stats",
+			"peers_seen", s.PeersSeen,
+			"peers_connected", s.PeersConnected,
+			"conns_in", s.IncomingConns,
+			"conns_out", s.OutgoingConns,
+			"to_peers", humanBytes(s.BytesToPeers),
+			"from_peers", humanBytes(s.BytesFromPeers),
+			"total", humanBytes(total),
+			"avg_to_peer_per_conn", humanBytes(avgTo),
+			"avg_from_peer_per_conn", humanBytes(avgFrom),
+		)
+	}
+}
+
+// humanBytes renders a byte count as a human-readable string (e.g. "1.5 MiB").
+func humanBytes(b uint64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 // addrString renders a consumer IP for logging, tolerating the nil addr that a
