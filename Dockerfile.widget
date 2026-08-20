@@ -18,17 +18,30 @@
 # Turn the debug firehose back on:
 #   podman run --rm -e LOG_LEVEL=debug unbounded-widget
 #
+# Build a different arch than the host (e.g. amd64 on an arm64 Mac):
+#   podman build --platform linux/amd64 -f Dockerfile.widget -t unbounded-widget .
+#
 # (Both `podman` and `docker` accept these commands unchanged.)
 
-FROM golang:1.24-alpine AS build
+# The build stage is pinned to the *host* arch ($BUILDPLATFORM) and cross-compiles
+# to the requested target with GOOS/GOARCH. This deliberately avoids running an
+# emulated (QEMU) Go toolchain for a foreign --platform: an amd64 Go binary under
+# QEMU on an arm64 host reliably SIGSEGVs inside the runtime's netpoll during
+# `go mod download`. Because the widget is pure Go (CGO_ENABLED=0), native
+# cross-compilation is both correct and faster than emulation.
+FROM --platform=$BUILDPLATFORM golang:1.24-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /usr/src/app
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 COPY . .
 # clientType=widget selects the volunteer/uncensored peer role at link time — the
-# same ldflag cmd/build.sh sets. All deps are pure Go, so CGO_ENABLED=0 yields a
-# static binary (and we drop build.sh's -race, which is for local debugging only).
-RUN CGO_ENABLED=0 go build -ldflags "-s -w -X 'main.clientType=widget'" \
+# same ldflag cmd/build.sh sets. CGO_ENABLED=0 yields a static binary (and we drop
+# build.sh's -race, which is for local debugging only). TARGETOS/TARGETARCH are
+# supplied automatically by the builder from --platform (default: the host).
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags "-s -w -X 'main.clientType=widget'" \
     -o /usr/local/bin/widget ./cmd
 
 FROM alpine:3.20
