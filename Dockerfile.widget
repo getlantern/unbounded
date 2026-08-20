@@ -43,12 +43,17 @@ COPY --from=build /usr/local/bin/widget /usr/local/bin/widget
 # (cmd/client_default_impl.go), so `-e FREDDIE=... -e EGRESS=...` at run time wins.
 # The discovery/egress endpoint paths (/v1/signal, /ws) are already the native
 # defaults and match production, so they need no env override.
+#
+# EGRESS carries an explicit :443 — unlike the ui/.env.production.example value,
+# which omits it. The native widget's websocket dialer needs the port spelled out
+# or consumers never establish a path through the egress; the browser build tolerates
+# the port-less form. Production is wss://unbounded.iantem.io:443.
 # The binary is debug-by-default for local/dev runs; the container opts into the
 # quieter INFO level. Connection deltas and the resolved-config summary are logged
 # at INFO, so this stays useful without the per-worker debug chatter. Override with
 # -e LOG_LEVEL=debug|warn|error.
 ENV FREDDIE=https://freddie.iantem.io \
-    EGRESS=wss://unbounded.iantem.io \
+    EGRESS=wss://unbounded.iantem.io:443 \
     LOG_LEVEL=info
 
 # The widget needs no ports, privileges, or writable filesystem — run unprivileged.
