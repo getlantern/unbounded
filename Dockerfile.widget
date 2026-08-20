@@ -1,0 +1,58 @@
+# Builds and runs the headless, native Unbounded "widget" — a volunteer /
+# uncensored peer that lends its IP to the swarm. No browser and no local proxy:
+# for ClientType "widget" the engine just relays for consumers and blocks forever
+# (see cmd/client_default_impl.go).
+#
+# Build (from the repo root):
+#   podman build -f Dockerfile.widget -t unbounded-widget .
+#
+# Run against Lantern's production swarm (the built-in defaults):
+#   podman run --rm unbounded-widget
+#
+# Run against your own swarm (override either or both):
+#   podman run --rm \
+#     -e FREDDIE=https://freddie.example \
+#     -e EGRESS=wss://egress.example \
+#     unbounded-widget
+#
+# Turn the debug firehose back on:
+#   podman run --rm -e LOG_LEVEL=debug unbounded-widget
+#
+# (Both `podman` and `docker` accept these commands unchanged.)
+
+FROM golang:1.24-alpine AS build
+WORKDIR /usr/src/app
+COPY go.mod go.sum ./
+RUN go mod download && go mod verify
+COPY . .
+# clientType=widget selects the volunteer/uncensored peer role at link time — the
+# same ldflag cmd/build.sh sets. All deps are pure Go, so CGO_ENABLED=0 yields a
+# static binary (and we drop build.sh's -race, which is for local debugging only).
+RUN CGO_ENABLED=0 go build -ldflags "-s -w -X 'main.clientType=widget'" \
+    -o /usr/local/bin/widget ./cmd
+
+FROM alpine:3.20
+# TLS roots are needed for https discovery, wss egress, and the runtime STUN-list
+# fetch from GitHub (clientcore.DefaultSTUNBatchFunc).
+RUN apk add --no-cache ca-certificates
+COPY --from=build /usr/local/bin/widget /usr/local/bin/widget
+
+# Defaults point at Lantern's production swarm, taken from
+# ui/.env.production.example (REACT_APP_DISCOVERY_SRV / REACT_APP_EGRESS_ADDR).
+# The native binary applies an env var only when it is non-empty
+# (cmd/client_default_impl.go), so `-e FREDDIE=... -e EGRESS=...` at run time wins.
+# The discovery/egress endpoint paths (/v1/signal, /ws) are already the native
+# defaults and match production, so they need no env override.
+# The binary is debug-by-default for local/dev runs; the container opts into the
+# quieter INFO level. Connection deltas and the resolved-config summary are logged
+# at INFO, so this stays useful without the per-worker debug chatter. Override with
+# -e LOG_LEVEL=debug|warn|error.
+ENV FREDDIE=https://freddie.iantem.io \
+    EGRESS=wss://unbounded.iantem.io \
+    LOG_LEVEL=info
+
+# The widget needs no ports, privileges, or writable filesystem — run unprivileged.
+RUN adduser -D -H widget
+USER widget
+
+ENTRYPOINT ["/usr/local/bin/widget"]
