@@ -141,11 +141,17 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	// get served", and neither substitutes for the other.
 	closeFuncTracing := telemetry.EnableOTELTracing(ctx)
 
-	// Shut both down together. Dropping the tracing shutdown would leak the
-	// provider and discard whatever spans were still buffered, which on a
-	// low-traffic egress could be most of them.
+	// Logs complete the set. The counters say how often something happened;
+	// the log lines carry the peer-supplied detail that says which page or
+	// which client, and until now that detail reached one host's journal and
+	// nowhere queryable. Exported at Info and above only — see otellogs.go.
+	closeFuncLogs := enableOTELLogs(ctx)
+
+	// Shut all three down together. Dropping any one would leak its provider
+	// and discard whatever was still buffered, which on a low-traffic egress
+	// could be most of it.
 	shutdown := func(ctx context.Context) error {
-		return errors.Join(closeFuncMetrics(ctx), closeFuncTracing(ctx))
+		return errors.Join(closeFuncMetrics(ctx), closeFuncTracing(ctx), closeFuncLogs(ctx))
 	}
 
 	m := otel.Meter("github.com/getlantern/broflake/egress")

@@ -223,5 +223,8 @@ func (l proxyListener) logFreezeReport(kind freezeKind, report *freezeReport, r 
 		}
 	}
 
-	slog.Debug(msg, attrs...)
+	// Info, not Debug: this line is the entire point of the ingest, and only
+	// Info and above is exported off the host. Safe at Info because the
+	// throttle above bounds it to one line per kind per interval.
+	slog.Info(msg, attrs...)
 }
