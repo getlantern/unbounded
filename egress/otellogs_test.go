@@ -15,6 +15,10 @@ type recordingHandler struct {
 	records *[]slog.Record
 	attrs   []slog.Attr
 	groups  []string
+	// seenGroups captures the group chain in force when a record arrived, so a
+	// WithGroup that fails to reach a leg is observable rather than merely
+	// assumed.
+	seenGroups *[][]string
 }
 
 func (h recordingHandler) Enabled(_ context.Context, l slog.Level) bool { return l >= h.level }
@@ -24,15 +28,20 @@ func (h recordingHandler) Handle(_ context.Context, r slog.Record) error {
 		r.AddAttrs(a)
 	}
 	*h.records = append(*h.records, r)
+	if h.seenGroups != nil {
+		*h.seenGroups = append(*h.seenGroups, append([]string{}, h.groups...))
+	}
 	return nil
 }
 
 func (h recordingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return recordingHandler{h.level, h.records, append(append([]slog.Attr{}, h.attrs...), attrs...), h.groups}
+	h.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return h
 }
 
 func (h recordingHandler) WithGroup(name string) slog.Handler {
-	return recordingHandler{h.level, h.records, h.attrs, append(append([]string{}, h.groups...), name)}
+	h.groups = append(append([]string{}, h.groups...), name)
+	return h
 }
 
 func newTee(t *testing.T) (*teeHandler, *[]slog.Record, *[]slog.Record) {
@@ -137,10 +146,29 @@ func TestTeeHandler_WithAttrsReachesBothLegs(t *testing.T) {
 		}
 	}
 
-	h2, local2, remote2 := newTee(t)
-	slog.New(h2).WithGroup("peer").Info("grouped")
-	if len(*local2) != 1 || len(*remote2) != 1 {
-		t.Errorf("WithGroup dropped a leg: local=%d remote=%d", len(*local2), len(*remote2))
+}
+
+// WithGroup has to reach both legs too, and "both legs got a record" does not
+// show that — a WithGroup that returned the unwrapped remote handler would pass
+// such a check. Assert the group chain each leg actually saw.
+func TestTeeHandler_WithGroupReachesBothLegs(t *testing.T) {
+	localGroups, remoteGroups := &[][]string{}, &[][]string{}
+	h := &teeHandler{
+		local:  recordingHandler{level: slog.LevelDebug, records: &[]slog.Record{}, seenGroups: localGroups},
+		remote: recordingHandler{level: slog.LevelDebug, records: &[]slog.Record{}, seenGroups: remoteGroups},
+	}
+
+	slog.New(h).WithGroup("peer").WithGroup("tls").Info("grouped")
+
+	want := []string{"peer", "tls"}
+	for name, seen := range map[string]*[][]string{"local": localGroups, "remote": remoteGroups} {
+		if len(*seen) != 1 {
+			t.Fatalf("%s leg recorded %d records, want 1", name, len(*seen))
+		}
+		got := (*seen)[0]
+		if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+			t.Errorf("%s leg saw groups %v, want %v", name, got, want)
+		}
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
-	otellogglobal "go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
@@ -64,10 +63,20 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
+	// Resource is left to the SDK, which defaults to resource.Default() and so
+	// picks up OTEL_SERVICE_NAME / OTEL_RESOURCE_ATTRIBUTES. That is the same
+	// path sdkmetric.NewMeterProvider takes in telemetry.EnableOTELMetrics, so
+	// logs land under the same service.name as the metrics already do.
 	lp := sdklog.NewLoggerProvider(
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
 	)
-	otellogglobal.SetLoggerProvider(lp)
+
+	// Deliberately not registered as the process-global provider. The bridge
+	// below is wired to lp explicitly, so nothing needs the global — and
+	// setting it would leave it pointing at a stopped provider after shutdown.
+	// The SDK delegates pre-registration loggers exactly once, so that state is
+	// not recoverable: anything reaching for the global logger afterwards
+	// silently no-ops.
 
 	// Wrap whatever the binary installed rather than replacing it — each
 	// egress/cmd main sets a stderr TextHandler at Debug, and that is still

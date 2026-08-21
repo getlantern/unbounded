@@ -350,3 +350,40 @@ func TestHandleFreezeReport_AcceptsNullAndAbsentBuild(t *testing.T) {
 		}
 	}
 }
+
+// page_url is now exported off the host, and the widget fills it from
+// window.location.href — so it arrives carrying whatever was in the reader's
+// address bar. Only the part that identifies the page should survive.
+func TestSanitizeReportURL(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain url is untouched", "https://news.example/article/123", "https://news.example/article/123"},
+		{"query string is dropped", "https://news.example/a?token=secret&q=how+to+vpn", "https://news.example/a"},
+		{"fragment is dropped", "https://news.example/a#section-2", "https://news.example/a"},
+		{"credentials are dropped", "https://user:pw@news.example/a", "https://news.example/a"},
+		{"everything at once", "https://u:p@news.example/a?token=s#f", "https://news.example/a"},
+		{"bare query marker is dropped", "https://news.example/a?", "https://news.example/a"},
+		{"empty stays empty", "", ""},
+		{"unparseable yields nothing", "://not a url", ""},
+		{"relative yields nothing (no host to trust)", "/just/a/path?token=s", ""},
+		{"port is kept — it identifies the embed", "http://localhost:3000/demo", "http://localhost:3000/demo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeReportURL(tc.in); got != tc.want {
+				t.Errorf("sanitizeReportURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// The sanitizer has to actually be on the path the log line takes, not merely
+// exist. A regression that logged report.URL directly would pass the unit test
+// above and still export the query string.
+func TestLogFreezeReport_DoesNotLogTheQueryString(t *testing.T) {
+	src, err := os.ReadFile("freeze.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(src), `"page_url", truncateForLog(sanitizeReportURL(report.URL))`) {
+		t.Error("page_url is not being passed through sanitizeReportURL; the query string would be exported")
+	}
+}
