@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -196,7 +197,7 @@ func (l proxyListener) logFreezeReport(kind freezeKind, report *freezeReport, r 
 		attrs = append(attrs,
 			// The embedder URL, truncated. This is the field that says which page
 			// froze, and the reason the payload carries it at all.
-			"page_url", truncateForLog(report.URL),
+			"page_url", truncateForLog(sanitizeReportURL(report.URL)),
 			"page_user_agent", truncateForLog(report.UserAgent),
 			// Empty for a local build, and for any widget published before this
 			// field existed — which is most of the fleet for the first few days
@@ -223,5 +224,37 @@ func (l proxyListener) logFreezeReport(kind freezeKind, report *freezeReport, r 
 		}
 	}
 
-	slog.Debug(msg, attrs...)
+	// Info, not Debug: this line is the entire point of the ingest, and only
+	// Info and above is exported off the host. Safe at Info because the
+	// throttle above bounds it to one line per kind per interval.
+	slog.Info(msg, attrs...)
+}
+
+// sanitizeReportURL keeps the part of a reported URL that says which page froze
+// — scheme, host, path — and discards the query, the fragment, and any
+// userinfo.
+//
+// The widget fills this from window.location.href, so the raw value carries
+// whatever the reader had in the address bar: search terms, session tokens in a
+// query string, the occasional https://user:pass@host. None of that helps
+// identify a frozen page, and this line now leaves the host rather than sitting
+// in a local journal, so it is worth not collecting.
+//
+// An unparseable or host-less value yields the empty string. The whole field is
+// peer-supplied, and with no structure to rely on there is no way to tell where
+// the sensitive part of it starts.
+func sanitizeReportURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	u.User = nil
+	return u.String()
 }

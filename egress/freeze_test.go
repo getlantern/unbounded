@@ -350,3 +350,57 @@ func TestHandleFreezeReport_AcceptsNullAndAbsentBuild(t *testing.T) {
 		}
 	}
 }
+
+// page_url is now exported off the host, and the widget fills it from
+// window.location.href — so it arrives carrying whatever was in the reader's
+// address bar. Only the part that identifies the page should survive.
+func TestSanitizeReportURL(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain url is untouched", "https://news.example/article/123", "https://news.example/article/123"},
+		{"query string is dropped", "https://news.example/a?token=secret&q=how+to+vpn", "https://news.example/a"},
+		{"fragment is dropped", "https://news.example/a#section-2", "https://news.example/a"},
+		{"credentials are dropped", "https://user:pw@news.example/a", "https://news.example/a"},
+		{"everything at once", "https://u:p@news.example/a?token=s#f", "https://news.example/a"},
+		{"bare query marker is dropped", "https://news.example/a?", "https://news.example/a"},
+		{"empty stays empty", "", ""},
+		{"unparseable yields nothing", "://not a url", ""},
+		{"relative yields nothing (no host to trust)", "/just/a/path?token=s", ""},
+		{"port is kept — it identifies the embed", "http://localhost:3000/demo", "http://localhost:3000/demo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeReportURL(tc.in); got != tc.want {
+				t.Errorf("sanitizeReportURL(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// End to end through the real log path with a URL carrying a session token, a
+// search term and a fragment. Asserting on emitted output rather than on the
+// source, so a regression that logged report.URL directly is caught by what
+// actually leaves the process.
+func TestLogFreezeReport_ExportsThePathButNotTheQueryString(t *testing.T) {
+	resetFreezeReports(t)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	report := &freezeReport{
+		Kind: freezeMainThreadBlocked,
+		URL:  "https://news.example/article/42?session=SECRET-TOKEN&q=how+to+vpn#reader-comments",
+	}
+	req := httptest.NewRequest(http.MethodPost, freezeReportPath, nil)
+	proxyListener{}.logFreezeReport(freezeMainThreadBlocked, report, req, "Freeze report from widget")
+
+	out := buf.String()
+	if !strings.Contains(out, "https://news.example/article/42") {
+		t.Errorf("the part identifying the page is missing from the log line: %q", out)
+	}
+	for _, leaked := range []string{"SECRET-TOKEN", "session=", "how+to+vpn", "reader-comments"} {
+		if strings.Contains(out, leaked) {
+			t.Errorf("log line leaked %q, which now leaves the host: %q", leaked, out)
+		}
+	}
+}

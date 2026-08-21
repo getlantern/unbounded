@@ -161,7 +161,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			if suppressed > 0 {
 				attrs = append(attrs, "suppressed_since_last", suppressed)
 			}
-			slog.Debug(msg, attrs...)
+			// Info so it leaves the host. This is the sample that identifies a
+			// refused population — remote_addr, user_agent and the raw
+			// subprotocol values — and the throttle above is what makes it
+			// safe at an exported level.
+			slog.Info(msg, attrs...)
 		}
 		return
 	}
@@ -178,7 +182,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			if suppressed > 0 {
 				attrs = append(attrs, "suppressed_since_last", suppressed)
 			}
-			slog.Debug("Refused WebSocket connection, bad protocol version", attrs...)
+			slog.Info("Refused WebSocket connection, bad protocol version", attrs...)
 		}
 		return
 	}
@@ -195,7 +199,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 			if suppressed > 0 {
 				attrs = append(attrs, "suppressed_since_last", suppressed)
 			}
-			slog.Debug("Refused WebSocket connection, missing consumer session ID", attrs...)
+			slog.Info("Refused WebSocket connection, missing consumer session ID", attrs...)
 		}
 		return
 	}
