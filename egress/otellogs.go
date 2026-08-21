@@ -166,9 +166,10 @@ func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 		firstErr = h.local.Handle(ctx, r)
 	}
 	if h.remoteEnabled(ctx, r.Level) {
-		// Clone because a Handler is allowed to retain or mutate the record's
-		// attrs, and the local handler has already been handed this one.
-		if err := h.remote.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+		// redactForExport builds a fresh record, which also covers the reason
+		// this used to call r.Clone(): the local handler has already been given
+		// the original, and a Handler may retain or mutate what it receives.
+		if err := h.remote.Handle(ctx, redactForExport(r)); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -181,4 +182,38 @@ func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{local: h.local.WithGroup(name), remote: h.remote.WithGroup(name)}
+}
+
+// exportRedactedKeys are attributes stripped from the copy that leaves the host.
+//
+// Donor IP addresses are not recorded centrally. The refusal lines exist so an
+// operator can identify a misbehaving peer, and that is worth having in the
+// journal on the box — but remote_addr and forwarded_for are the addresses of
+// people running circumvention software, and aggregating those into a queryable
+// store with a retention period is a different proposition from a local journal
+// someone has to hold root to read.
+//
+// user_agent and the raw subprotocol values are kept: they distinguish client
+// populations, which is what makes a refusal spike actionable, and they identify
+// a build rather than a person.
+//
+// Matching is on the record's own attribute keys. Nothing adds these through
+// slog.With today — peerAttrs is spread into the call site — so there is no
+// handler-held copy to miss. A future caller that used With would bypass this,
+// which is what TestTeeHandler_RedactionCannotBeBypassedByWith pins.
+var exportRedactedKeys = map[string]struct{}{
+	"remote_addr":   {},
+	"forwarded_for": {},
+}
+
+// redactForExport returns a copy of r with the redacted attributes removed.
+func redactForExport(r slog.Record) slog.Record {
+	out := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		if _, drop := exportRedactedKeys[a.Key]; !drop {
+			out.AddAttrs(a)
+		}
+		return true
+	})
+	return out
 }
