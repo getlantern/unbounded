@@ -48,7 +48,7 @@ var producerStateNames = map[int]string{
 }
 
 // formatCandidates renders ICE candidates compactly for logging, e.g.
-// "srflx/udp 203.0.113.7:54321". Host-type candidates carry local addresses.
+// "srflx/udp 203.0.113.7:54321".
 func formatCandidates(cands []webrtc.ICECandidate) []string {
 	out := make([]string, 0, len(cands))
 	for _, c := range cands {
@@ -121,6 +121,14 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 		curLocalCand  []webrtc.ICECandidate
 	)
 
+	// Latest ICE / peer-connection state for the attempt in flight. The pion event
+	// callbacks run on their own goroutines, so these are atomics read by the FSM
+	// goroutine when it needs to explain a timeout. They let us tell a genuine NAT
+	// failure (ICE never left "checking", or reached "failed") apart from a slow
+	// but successful handshake (ICE "connected" but the datachannel just hadn't
+	// finished DTLS/SCTP when the NATFailTimeout fired).
+	var curICEState, curPCState atomic.Value
+
 	// plog returns a logger tagged with the state name plus the peer and session
 	// once they are known for the current attempt.
 	plog := func(state int) *slog.Logger {
@@ -143,6 +151,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// peer/session/candidate context so stale values never leak onto this
 			// attempt's log lines.
 			curPeer, curSession, curRemoteCand, curLocalCand = nil, "", nil, nil
+			curICEState.Store("new")
+			curPCState.Store("new")
 			logger := plog(pInit)
 
 			// Populate the STUN cache if necessary
@@ -215,6 +225,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Ditto, but for connection state changes
 			connectionChange := make(chan webrtc.PeerConnectionState, 16)
 			peerConnection.OnConnectionStateChange(func(s webrtc.PeerConnectionState) {
+				curPCState.Store(s.String())
 				plog(pAwaitConn).Debug("peer connection state change", "conn_state", s.String())
 				connectionChange <- s
 			})
@@ -224,6 +235,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// attempt — but invaluable when diagnosing why traversal fails, which is
 			// exactly the case this logging pass is meant to serve.
 			peerConnection.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+				curICEState.Store(s.String())
 				plog(pAwaitConn).Debug("ICE connection state change", "ice_state", s.String())
 			})
 
@@ -672,9 +684,32 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					consumerSessionID,
 				}
 			case <-time.After(options.NATFailTimeout):
+				// The timer fired before the datachannel opened. That chain is
+				// ICE -> DTLS -> SCTP -> datachannel, so a bare "timeout" conflates
+				// very different failures. Use the last ICE/peer-connection state to
+				// classify what actually went wrong.
+				iceState, _ := curICEState.Load().(string)
+				pcState, _ := curPCState.Load().(string)
+
+				reason := "nat-traversal-timeout"
+				detail := "ICE did not complete before the timeout: peer likely unreachable via STUN (symmetric NAT / CGNAT on either end, and we have no TURN), or the timeout is too short for checks to finish"
+				switch iceState {
+				case "connected", "completed":
+					// ICE actually succeeded; the datachannel just wasn't up yet.
+					// This is NOT a NAT problem — the timeout is too short for the
+					// DTLS/SCTP handshake (covert-dtls mimicry adds latency).
+					reason = "handshake-timeout"
+					detail = "ICE connectivity succeeded but the datachannel had not opened when the timeout fired (DTLS/SCTP slower than NATFailTimeout); a longer timeout would likely let this connection through"
+				case "failed":
+					reason = "ice-failed"
+					detail = "ICE exhausted all candidate pairs without finding a working path to the peer; no TURN fallback exists"
+				}
+
 				logger.Info("connection attempt failed",
-					"reason", "nat-traversal-timeout",
-					"detail", "no connectivity within the NAT-traversal timeout; suspect UDP hole-punching / firewall on the widget's path",
+					"reason", reason,
+					"detail", detail,
+					"ice_state", iceState,
+					"conn_state", pcState,
 					"timeout", options.NATFailTimeout,
 					"remote_candidates", formatCandidates(curRemoteCand),
 					"local_candidates", formatCandidates(curLocalCand),

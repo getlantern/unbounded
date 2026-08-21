@@ -87,6 +87,18 @@ func main() {
 		rtcOpt.DiscoverySrv = freddie
 	}
 
+	// NAT_FAIL_TIMEOUT bounds how long a producer waits for a WebRTC connection to
+	// come up before abandoning the attempt. The default (5s) frequently cuts ICE
+	// off while it is still in the "checking" state, so expose it as a knob for
+	// diagnosing/curing premature timeouts without a rebuild. Any Go duration.
+	if v := strings.TrimSpace(os.Getenv("NAT_FAIL_TIMEOUT")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			rtcOpt.NATFailTimeout = d
+		} else {
+			slog.Warn("ignoring invalid NAT_FAIL_TIMEOUT", "value", v, "default", rtcOpt.NATFailTimeout)
+		}
+	}
+
 	egOpt := clientcore.NewDefaultEgressOptions()
 
 	if egress != "" {
@@ -104,6 +116,7 @@ func main() {
 	cfg := []any{
 		"discovery", rtcOpt.DiscoverySrv + rtcOpt.Endpoint,
 		"egress", egOpt.Addr + egOpt.Endpoint,
+		"nat_fail_timeout", rtcOpt.NATFailTimeout,
 		"netstated", orNone(netstated),
 		"tag", orNone(tag),
 		"pprof", orNone(pprof),
