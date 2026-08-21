@@ -8,9 +8,10 @@ import (
 
 // Aggregate, always-on lifetime counters for the local Broflake engine. These
 // are the numbers a headless widget wants to report periodically: how much it
-// has relayed and for whom. They are deliberately cheap — a handful of atomic
-// adds on the data-plane chunk path, in the same spirit as the per-second
-// bytesPerSec counter DownstreamUIHandler already maintains unconditionally.
+// has relayed, for whom, and how its WebRTC session attempts turned out. They are
+// deliberately cheap — a handful of atomic adds on the data-plane chunk path, in
+// the same spirit as the per-second bytesPerSec counter DownstreamUIHandler
+// already maintains unconditionally.
 //
 // Like the BROFLAKE_STATS counters in user.go, these are process-global rather
 // than per-engine: broflake runs exactly one engine per process, so global
@@ -26,17 +27,25 @@ import (
 var (
 	statBytesToPeers   atomic.Uint64
 	statBytesFromPeers atomic.Uint64
-	statIncomingConns  atomic.Uint64 // consumer/peer connections established (cumulative)
-	statOutgoingConns  atomic.Uint64 // egress websocket dials established (cumulative)
+	statEgressDials    atomic.Uint64 // egress websocket dials established (cumulative)
 	statPeersConnected atomic.Int64  // currently-connected peers (gauge)
 
 	peersSeenMu sync.Mutex
 	peersSeen   = make(map[string]struct{}) // distinct peer addresses observed
+
+	// outcomeCounts tallies the terminal outcome of every WebRTC session attempt,
+	// keyed by "success" or a failure reason (the same reason string carried on the
+	// "connection attempt failed" log line). Attempts still in flight are not yet
+	// counted, so the tallies always sum to concluded attempts.
+	outcomeMu     sync.Mutex
+	outcomeCounts = make(map[string]uint64)
 )
+
+// OutcomeSuccess is the outcome key recorded when a session fully establishes.
+const OutcomeSuccess = "success"
 
 // recordPeerConnect accounts for a newly-connected consumer/peer.
 func recordPeerConnect(addr net.IP) {
-	statIncomingConns.Add(1)
 	statPeersConnected.Add(1)
 	if addr != nil {
 		peersSeenMu.Lock()
@@ -50,15 +59,38 @@ func recordPeerDisconnect() {
 	statPeersConnected.Add(-1)
 }
 
+// recordOutcome tallies the terminal outcome of one WebRTC session attempt:
+// OutcomeSuccess for a fully-established datachannel, otherwise the failure reason.
+func recordOutcome(outcome string) {
+	outcomeMu.Lock()
+	outcomeCounts[outcome]++
+	outcomeMu.Unlock()
+}
+
 // StatsSnapshot is an atomic-free copy of the engine's lifetime counters.
 type StatsSnapshot struct {
-	BytesToPeers   uint64 // download relayed toward peers (egress -> peer)
-	BytesFromPeers uint64 // upload relayed toward egress (peer -> egress)
-	IncomingConns  uint64 // peer connections established (cumulative)
-	OutgoingConns  uint64 // egress connections dialed (cumulative)
-	PeersConnected int64  // peers currently connected (gauge, never negative)
-	PeersSeen      int    // distinct peer addresses observed
+	BytesToPeers   uint64            // download relayed toward peers (egress -> peer)
+	BytesFromPeers uint64            // upload relayed toward egress (peer -> egress)
+	EgressDials    uint64            // egress connections dialed (cumulative)
+	ActivePeers    int64             // peers currently connected (gauge, never negative)
+	DistinctPeers  int               // distinct peer addresses served (lifetime)
+	Outcomes       map[string]uint64 // session-attempt outcomes by "success"/reason
 }
+
+// Attempts is the number of concluded WebRTC session attempts (successes + failures).
+func (s StatsSnapshot) Attempts() uint64 {
+	var n uint64
+	for _, c := range s.Outcomes {
+		n += c
+	}
+	return n
+}
+
+// Succeeded is the number of attempts that fully established a datachannel.
+func (s StatsSnapshot) Succeeded() uint64 { return s.Outcomes[OutcomeSuccess] }
+
+// Failed is the number of attempts that ended in some failure reason.
+func (s StatsSnapshot) Failed() uint64 { return s.Attempts() - s.Succeeded() }
 
 // Stats returns a consistent-enough snapshot of the engine's lifetime counters.
 // The reads are individually atomic but not mutually atomic; for periodic
@@ -75,12 +107,19 @@ func Stats() StatsSnapshot {
 	seen := len(peersSeen)
 	peersSeenMu.Unlock()
 
+	outcomeMu.Lock()
+	outcomes := make(map[string]uint64, len(outcomeCounts))
+	for k, v := range outcomeCounts {
+		outcomes[k] = v
+	}
+	outcomeMu.Unlock()
+
 	return StatsSnapshot{
 		BytesToPeers:   statBytesToPeers.Load(),
 		BytesFromPeers: statBytesFromPeers.Load(),
-		IncomingConns:  statIncomingConns.Load(),
-		OutgoingConns:  statOutgoingConns.Load(),
-		PeersConnected: connected,
-		PeersSeen:      seen,
+		EgressDials:    statEgressDials.Load(),
+		ActivePeers:    connected,
+		DistinctPeers:  seen,
+		Outcomes:       outcomes,
 	}
 }

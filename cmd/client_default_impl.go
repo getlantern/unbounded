@@ -12,6 +12,7 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -181,9 +182,9 @@ func statsInterval() time.Duration {
 }
 
 // logWidgetStats periodically logs a snapshot of the engine's lifetime counters:
-// peers seen / currently connected, total bytes relayed in each direction,
-// incoming (peer) and outgoing (egress) connection counts, and the average
-// bytes relayed per peer connection. Runs until the process exits.
+// WebRTC session-attempt outcomes (total, succeeded, and failures by reason),
+// currently-active and distinct peers served, total bytes relayed each way, and
+// the average bytes relayed per successful session. Runs until the process exits.
 func logWidgetStats(interval time.Duration) {
 	slog.Info("widget stats logging enabled", "interval", interval)
 	ticker := time.NewTicker(interval)
@@ -191,26 +192,53 @@ func logWidgetStats(interval time.Duration) {
 	for range ticker.C {
 		s := clientcore.Stats()
 		total := s.BytesToPeers + s.BytesFromPeers
+		succeeded := s.Succeeded()
 
-		// "per connection" is per peer connection — the widget's unit of service.
+		// Averages are per successful session — the widget's unit of service.
 		var avgTo, avgFrom uint64
-		if s.IncomingConns > 0 {
-			avgTo = s.BytesToPeers / s.IncomingConns
-			avgFrom = s.BytesFromPeers / s.IncomingConns
+		if succeeded > 0 {
+			avgTo = s.BytesToPeers / succeeded
+			avgFrom = s.BytesFromPeers / succeeded
 		}
 
 		slog.Info("widget stats",
-			"peers_seen", s.PeersSeen,
-			"peers_connected", s.PeersConnected,
-			"conns_in", s.IncomingConns,
-			"conns_out", s.OutgoingConns,
+			"attempts", s.Attempts(),
+			"succeeded", succeeded,
+			"failed", s.Failed(),
+			"failures", failuresByReason(s.Outcomes),
+			"active_peers", s.ActivePeers,
+			"distinct_peers", s.DistinctPeers,
+			"egress_dials", s.EgressDials,
 			"to_peers", humanBytes(s.BytesToPeers),
 			"from_peers", humanBytes(s.BytesFromPeers),
 			"total", humanBytes(total),
-			"avg_to_peer_per_conn", humanBytes(avgTo),
-			"avg_from_peer_per_conn", humanBytes(avgFrom),
+			"avg_to_peer", humanBytes(avgTo),
+			"avg_from_peer", humanBytes(avgFrom),
 		)
 	}
+}
+
+// failuresByReason renders the non-success outcome tallies as a compact, sorted,
+// stable string like "nat-traversal-timeout=6 ice-failed=1", or "(none)".
+func failuresByReason(outcomes map[string]uint64) string {
+	reasons := make([]string, 0, len(outcomes))
+	for r := range outcomes {
+		if r != clientcore.OutcomeSuccess {
+			reasons = append(reasons, r)
+		}
+	}
+	if len(reasons) == 0 {
+		return "(none)"
+	}
+	sort.Strings(reasons)
+	var b strings.Builder
+	for i, r := range reasons {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		fmt.Fprintf(&b, "%s=%d", r, outcomes[r])
+	}
+	return b.String()
 }
 
 // logNATCheck probes this host's NAT mapping behavior at startup and logs the

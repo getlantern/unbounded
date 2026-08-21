@@ -461,6 +461,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			if !hasNonHostCandidate {
+				recordOutcome("no-local-non-host-candidates")
 				logger.Info("connection attempt failed",
 					"reason", "no-local-non-host-candidates",
 					"detail", "our STUN cohort yielded only host candidates (likely blocked or unresponsive)",
@@ -569,6 +570,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// alive to receive our answer SDP, but subsequently either A) died before they were able
 				// to complete ICE gathering and send a list of candidates, or B) took so long to perform
 				// ICE gathering that Freddie's TTL for this step expired.
+				recordOutcome("no-remote-candidates")
 				logger.Info("connection attempt failed",
 					"reason", "no-remote-candidates",
 					"detail", "partner accepted our answer but sent no ICE candidates (died or timed out during ICE gathering)",
@@ -637,6 +639,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// us ICE candidates unless they contained at least one non-host type candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
 			if !remoteHasNonHostCandidate {
+				recordOutcome("remote-only-host-candidates")
 				logger.Info("connection attempt failed",
 					"reason", "remote-only-host-candidates",
 					"detail", "partner sent only host-type ICE candidates (their STUN likely failed)",
@@ -691,6 +694,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// A single combined budget was killing attempts whose ICE was still
 			// "checking", and mislabeling slow-but-successful handshakes as NAT failures.
 			fail := func(reason, detail string, budget time.Duration) (int, []interface{}) {
+				recordOutcome(reason)
 				iceState, _ := curICEState.Load().(string)
 				pcState, _ := curPCState.Load().(string)
 				attrs := []any{
@@ -758,6 +762,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 						"remote_candidates", formatCandidates(curRemoteCand),
 						"local_candidates", formatCandidates(curLocalCand),
 					)
+					recordOutcome(OutcomeSuccess)
 					logger.Info("WebRTC connection established", attrs...)
 					return 5, []interface{}{
 						peerConnection,

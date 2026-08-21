@@ -108,7 +108,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				return 0, []interface{}{}
 			}
 
-			statOutgoingConns.Add(1)
+			statEgressDials.Add(1)
 			return 1, []interface{}{c}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
