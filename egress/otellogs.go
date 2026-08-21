@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -53,7 +54,15 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// Same shape as telemetry.EnableOTELTracing returning a no-op when its
 	// sampler variables are absent: absent configuration means the feature is
 	// off, not misconfigured.
-	if !otlpLogsConfigured() {
+	endpointVar, endpoint := otlpLogsEndpoint()
+	if endpointVar == "" {
+		// Warn rather than returning quietly. Whether export is on is not
+		// otherwise observable: the answer lives in the absence of logs in the
+		// collector, which is indistinguishable from a healthy egress that
+		// simply had nothing to say. Someone deploying this needs to be able
+		// to confirm it from the journal.
+		slog.Warn("Log export disabled: no OTLP logs endpoint configured",
+			"checked", strings.Join(otlpLogsEndpointVars, ", "))
 		return func(context.Context) error { return nil }
 	}
 
@@ -81,6 +90,11 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// Wrap whatever the binary installed rather than replacing it — each
 	// egress/cmd main sets a stderr TextHandler at Debug, and that is still
 	// the only place the high-volume lines are readable.
+	// Logged before the handler is swapped, so it appears on stderr whether or
+	// not the exporter itself turns out to work.
+	slog.Info("Log export enabled",
+		"endpoint", endpoint, "from", endpointVar, "min_level", otelLogLevel)
+
 	local := slog.Default().Handler()
 	remote := otelslog.NewHandler("github.com/getlantern/broflake/egress",
 		otelslog.WithLoggerProvider(lp))
@@ -106,19 +120,27 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 // hold up process exit.
 const logShutdownTimeout = 5 * time.Second
 
-// otlpLogsConfigured reports whether an OTLP endpoint is configured for logs.
-// Checks the signal-specific variable first, matching OTEL's own precedence,
-// then the shared one.
-func otlpLogsConfigured() bool {
-	for _, k := range []string{
-		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-		"OTEL_EXPORTER_OTLP_ENDPOINT",
-	} {
-		if os.Getenv(k) != "" {
-			return true
+// otlpLogsEndpointVars are the variables that can supply a logs endpoint, in
+// OTEL's own precedence order: signal-specific first, then shared.
+//
+// Deliberately not the metrics or traces variables. A host that sets only
+// OTEL_EXPORTER_OTLP_METRICS_ENDPOINT has a collector, but says nothing about
+// where logs should go — otlploghttp would fall back to localhost:4318 and
+// queue records for something that is not there.
+var otlpLogsEndpointVars = []string{
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+}
+
+// otlpLogsEndpoint returns the variable that supplied a logs endpoint and its
+// value, or two empty strings when none is configured.
+func otlpLogsEndpoint() (name, value string) {
+	for _, k := range otlpLogsEndpointVars {
+		if v := os.Getenv(k); v != "" {
+			return k, v
 		}
 	}
-	return false
+	return "", ""
 }
 
 // teeHandler writes each record to both destinations. Not a general-purpose

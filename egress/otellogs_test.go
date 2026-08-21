@@ -229,7 +229,7 @@ func TestTeeHandler_LocalLegStillFormatsNormally(t *testing.T) {
 // every Info record, and blocks on shutdown flushing to nothing — which hung
 // NewListener's own shutdown test for the full 600s timeout and would do the
 // same to a production egress on a host with no collector.
-func TestOTLPLogsConfigured_RequiresAnEndpoint(t *testing.T) {
+func TestOTLPLogsEndpoint_RequiresALogsEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name, generic, logs string
 		want                bool
@@ -243,8 +243,9 @@ func TestOTLPLogsConfigured_RequiresAnEndpoint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", tc.generic)
 			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", tc.logs)
-			if got := otlpLogsConfigured(); got != tc.want {
-				t.Errorf("otlpLogsConfigured() = %v, want %v", got, tc.want)
+			name, _ := otlpLogsEndpoint()
+			if got := name != ""; got != tc.want {
+				t.Errorf("otlpLogsEndpoint() name = %q (configured=%v), want configured=%v", name, got, tc.want)
 			}
 		})
 	}
@@ -273,5 +274,61 @@ func TestEnableOTELLogs_NoEndpointLeavesLoggingUntouched(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown blocked with no exporter configured")
+	}
+}
+
+// Whether export is on must be visible on stderr. Otherwise the only evidence
+// is the absence of logs in the collector, which looks identical to a healthy
+// egress that had nothing to say — so a misconfigured deploy is unfalsifiable.
+func TestEnableOTELLogs_SaysWhyItIsDisabled(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	_ = enableOTELLogs(context.Background())
+
+	out := buf.String()
+	if !strings.Contains(out, "Log export disabled") {
+		t.Errorf("no line explaining that export is off: %q", out)
+	}
+	// Naming the variables it looked at is the actionable part — otherwise the
+	// operator knows it is off but not what to set.
+	for _, v := range otlpLogsEndpointVars {
+		if !strings.Contains(out, v) {
+			t.Errorf("the disabled line does not name %s, so it is not actionable: %q", v, out)
+		}
+	}
+}
+
+// A metrics-only collector configuration must not be mistaken for a logs
+// endpoint. otlploghttp would fall back to localhost:4318 and queue records for
+// something that is not listening.
+func TestOTLPLogsEndpoint_IgnoresTheMetricsEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
+
+	if name, _ := otlpLogsEndpoint(); name != "" {
+		t.Errorf("treated %s as a logs endpoint", name)
+	}
+}
+
+// And when one is configured, the enabled line has to say so, with the source
+// variable — that is what makes a deploy verifiable from the journal.
+func TestOTLPLogsEndpoint_ReportsWhichVariableSuppliedIt(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://shared:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_ENDPOINT" || val != "http://shared:4318" {
+		t.Errorf("got (%q, %q), want the shared variable", name, val)
+	}
+
+	// Signal-specific wins, matching OTEL's precedence.
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://logs:4318/v1/logs")
+	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" || val != "http://logs:4318/v1/logs" {
+		t.Errorf("got (%q, %q), want the logs-specific variable to win", name, val)
 	}
 }
