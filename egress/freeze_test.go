@@ -375,15 +375,32 @@ func TestSanitizeReportURL(t *testing.T) {
 	}
 }
 
-// The sanitizer has to actually be on the path the log line takes, not merely
-// exist. A regression that logged report.URL directly would pass the unit test
-// above and still export the query string.
-func TestLogFreezeReport_DoesNotLogTheQueryString(t *testing.T) {
-	src, err := os.ReadFile("freeze.go")
-	if err != nil {
-		t.Fatal(err)
+// End to end through the real log path with a URL carrying a session token, a
+// search term and a fragment. Asserting on emitted output rather than on the
+// source, so a regression that logged report.URL directly is caught by what
+// actually leaves the process.
+func TestLogFreezeReport_ExportsThePathButNotTheQueryString(t *testing.T) {
+	resetFreezeReports(t)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	report := &freezeReport{
+		Kind: freezeMainThreadBlocked,
+		URL:  "https://news.example/article/42?session=SECRET-TOKEN&q=how+to+vpn#reader-comments",
 	}
-	if !strings.Contains(string(src), `"page_url", truncateForLog(sanitizeReportURL(report.URL))`) {
-		t.Error("page_url is not being passed through sanitizeReportURL; the query string would be exported")
+	req := httptest.NewRequest(http.MethodPost, freezeReportPath, nil)
+	proxyListener{}.logFreezeReport(freezeMainThreadBlocked, report, req, "Freeze report from widget")
+
+	out := buf.String()
+	if !strings.Contains(out, "https://news.example/article/42") {
+		t.Errorf("the part identifying the page is missing from the log line: %q", out)
+	}
+	for _, leaked := range []string{"SECRET-TOKEN", "session=", "how+to+vpn", "reader-comments"} {
+		if strings.Contains(out, leaked) {
+			t.Errorf("log line leaked %q, which now leaves the host: %q", leaked, out)
+		}
 	}
 }
