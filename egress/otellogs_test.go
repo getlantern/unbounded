@@ -123,7 +123,7 @@ func TestTeeHandler_LegsAreIndependentlyGated(t *testing.T) {
 }
 
 // WithAttrs / WithGroup have to reach both legs. Missing this means the
-// exported copy loses the peer attributes — remote_addr, user_agent, page_url
+// exported copy loses the peer attributes — donor_country, user_agent, page_url
 // — which are the only reason the line is worth exporting.
 func TestTeeHandler_WithAttrsReachesBothLegs(t *testing.T) {
 	h, local, remote := newTee(t)
@@ -331,74 +331,4 @@ func TestOTLPLogsEndpoint_ReportsWhichVariableSuppliedIt(t *testing.T) {
 	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" || val != "http://logs:4318/v1/logs" {
 		t.Errorf("got (%q, %q), want the logs-specific variable to win", name, val)
 	}
-}
-
-// Donor IPs must not leave the host, while the journal on the box keeps them —
-// that split is the entire point of redacting on the export leg only.
-func TestTeeHandler_DonorIPsStayOnTheHost(t *testing.T) {
-	var local bytes.Buffer
-	remoteRecs := &[]slog.Record{}
-	h := &teeHandler{
-		local:  slog.NewTextHandler(&local, &slog.HandlerOptions{Level: slog.LevelDebug}),
-		remote: recordingHandler{level: slog.LevelDebug, records: remoteRecs},
-	}
-
-	slog.New(h).Info("Refused WebSocket connection",
-		"remote_addr", "203.0.113.7:54321",
-		"forwarded_for", "198.51.100.4, 203.0.113.7",
-		"user_agent", "Mozilla/5.0 (X11)",
-		"kind", "legacy_team_client")
-
-	// stderr keeps everything: this is what identifies the nine hosts.
-	for _, want := range []string{"203.0.113.7", "198.51.100.4"} {
-		if !strings.Contains(local.String(), want) {
-			t.Errorf("local log lost %q; the host can no longer identify a peer: %q", want, local.String())
-		}
-	}
-
-	if len(*remoteRecs) != 1 {
-		t.Fatalf("remote got %d records, want 1", len(*remoteRecs))
-	}
-	exported := map[string]string{}
-	(*remoteRecs)[0].Attrs(func(a slog.Attr) bool {
-		exported[a.Key] = a.Value.String()
-		return true
-	})
-	for _, gone := range []string{"remote_addr", "forwarded_for"} {
-		if v, present := exported[gone]; present {
-			t.Errorf("%s=%q was exported; donor IPs must not be recorded centrally", gone, v)
-		}
-	}
-	// The attrs that make a refusal actionable must survive.
-	for _, kept := range []string{"user_agent", "kind"} {
-		if _, present := exported[kept]; !present {
-			t.Errorf("%s was dropped from the export; the line is no longer actionable", kept)
-		}
-	}
-}
-
-// The redaction reads the record's own attrs, so an attr attached via
-// slog.With is held by the handler and never passes through it. Nothing does
-// that today; this documents the limit rather than asserting a guarantee that
-// does not exist, so a future caller changing peerAttrs to use With finds out
-// here instead of in the collector.
-func TestTeeHandler_RedactionCannotBeBypassedByWith(t *testing.T) {
-	remoteRecs := &[]slog.Record{}
-	h := &teeHandler{
-		local:  recordingHandler{level: slog.LevelDebug, records: &[]slog.Record{}},
-		remote: recordingHandler{level: slog.LevelDebug, records: remoteRecs},
-	}
-
-	slog.New(h).With("remote_addr", "203.0.113.7:54321").Info("refused")
-
-	exported := map[string]string{}
-	(*remoteRecs)[0].Attrs(func(a slog.Attr) bool {
-		exported[a.Key] = a.Value.String()
-		return true
-	})
-	if _, present := exported["remote_addr"]; !present {
-		t.Skip("With-attached attrs now reach the record; redaction covers them and this test can be tightened")
-	}
-	t.Log("known limit: attrs attached via slog.With bypass redactForExport — " +
-		"keep peerAttrs spread into the call site, not attached with With")
 }

@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -177,14 +178,40 @@ func classifySubprotocolRefusal(raw, parsed []string) (reason refusalReason, msg
 // User-Agent is the field that actually discriminates the hypotheses: one
 // repeated UA points at a misdirected health check or monitor, many distinct ones
 // point at real clients failing the handshake.
+// peerAttrs describes the peer behind a request without recording who it is.
+//
+// Country rather than address, deliberately. The egress necessarily sees the
+// donor's IP — it is the other end of the socket — but seeing it and writing it
+// into a log are different things: a log is retained, copied and queried, and
+// these are the addresses of people running circumvention software. The country
+// is what the diagnostics actually need, and it is already what the metrics
+// carry (attrDonorCountry), so the log and the counters now describe a peer the
+// same way.
+//
+// What this gives up: an individual host is no longer identifiable from logs.
+// A refused population can still be characterised — country, user agent, and
+// the raw subprotocol values distinguish client builds — but pinpointing one
+// machine now has to be done live on the box rather than after the fact.
 func peerAttrs(r *http.Request) []any {
 	return []any{
-		// RemoteAddr is synthesized by net/http from the accepted socket, not
-		// taken from the request, so it needs no bounding.
-		"remote_addr", r.RemoteAddr,
-		"forwarded_for", truncateForLog(r.Header.Get("X-Forwarded-For")),
+		"donor_country", donorCountry(donorGeoAddr(r, transportAddr(r))),
 		"user_agent", truncateForLog(r.Header.Get("User-Agent")),
 	}
+}
+
+// transportAddr turns the accepted socket's address into a net.Addr for the geo
+// lookup. Returns nil when RemoteAddr is not a parseable ip:port, which
+// donorCountry reports as the unknown country rather than failing.
+func transportAddr(r *http.Request) net.Addr {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil
+	}
+	return &net.TCPAddr{IP: ip}
 }
 
 // maxLoggedValueLen is the hard ceiling on the total bytes any single
