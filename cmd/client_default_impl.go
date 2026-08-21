@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"log/slog"
@@ -99,6 +100,16 @@ func main() {
 		}
 	}
 
+	// HANDSHAKE_TIMEOUT bounds the post-ICE phase (DTLS/SCTP/datachannel). See
+	// WebRTCOptions.HandshakeTimeout. Any Go duration.
+	if v := strings.TrimSpace(os.Getenv("HANDSHAKE_TIMEOUT")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			rtcOpt.HandshakeTimeout = d
+		} else {
+			slog.Warn("ignoring invalid HANDSHAKE_TIMEOUT", "value", v, "default", rtcOpt.HandshakeTimeout)
+		}
+	}
+
 	egOpt := clientcore.NewDefaultEgressOptions()
 
 	if egress != "" {
@@ -117,6 +128,7 @@ func main() {
 		"discovery", rtcOpt.DiscoverySrv + rtcOpt.Endpoint,
 		"egress", egOpt.Addr + egOpt.Endpoint,
 		"nat_fail_timeout", rtcOpt.NATFailTimeout,
+		"handshake_timeout", rtcOpt.HandshakeTimeout,
 		"netstated", orNone(netstated),
 		"tag", orNone(tag),
 		"pprof", orNone(pprof),
@@ -140,6 +152,7 @@ func main() {
 	}
 
 	if clientType == "widget" {
+		go logNATCheck(rtcOpt)
 		go logWidgetStats(statsInterval())
 	}
 
@@ -196,6 +209,47 @@ func logWidgetStats(interval time.Duration) {
 			"total", humanBytes(total),
 			"avg_to_peer_per_conn", humanBytes(avgTo),
 			"avg_from_peer_per_conn", humanBytes(avgFrom),
+		)
+	}
+}
+
+// logNATCheck probes this host's NAT mapping behavior at startup and logs the
+// verdict. A widget can only serve peers over STUN (no TURN), so a symmetric NAT
+// is the difference between "can help" and "cannot help" — worth surfacing once,
+// up front, rather than leaving the operator to infer it from failed attempts.
+func logNATCheck(rtcOpt *clientcore.WebRTCOptions) {
+	servers, err := rtcOpt.STUNBatch(8)
+	if err != nil || len(servers) < 2 {
+		slog.Warn("NAT mapping self-check skipped", "error", err, "stun_servers", len(servers))
+		return
+	}
+	if len(servers) > 5 {
+		servers = servers[:5]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res := clientcore.CheckNATMapping(ctx, servers, 3*time.Second)
+
+	switch res.Mapping {
+	case clientcore.NATMappingEndpointIndependent:
+		slog.Info("NAT mapping self-check",
+			"result", res.Mapping.String(),
+			"public", res.PublicAddrs,
+			"samples", res.Samples,
+			"detail", "stable public mapping across STUN servers; STUN hole-punching is viable from this host",
+		)
+	case clientcore.NATMappingEndpointDependent:
+		slog.Warn("NAT mapping self-check",
+			"result", res.Mapping.String(),
+			"public", res.PublicAddrs,
+			"samples", res.Samples,
+			"detail", "SYMMETRIC NAT: the public port varies by destination, so STUN-only P2P (Unbounded has no TURN) will fail for most peers; put this host on a public IP or a cone NAT to serve reliably",
+		)
+	default:
+		slog.Warn("NAT mapping self-check inconclusive",
+			"samples", res.Samples,
+			"detail", "not enough STUN responses to determine NAT mapping behavior",
 		)
 	}
 }

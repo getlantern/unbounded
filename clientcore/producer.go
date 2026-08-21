@@ -32,10 +32,10 @@ import (
 const (
 	pInit          = iota // 0: create PeerConnection, ensure STUN cache
 	pAwaitPath            // 1: wait for upstream path assertion to share
-	pSignalGenesis       // 2: advertise availability, receive an offer
-	pSignalAnswer        // 3: answer the offer, exchange ICE candidates
-	pAwaitConn           // 4: wait for NAT traversal / datachannel to open
-	pProxy               // 5: relay data between peer and egress
+	pSignalGenesis        // 2: advertise availability, receive an offer
+	pSignalAnswer         // 3: answer the offer, exchange ICE candidates
+	pAwaitConn            // 4: wait for NAT traversal / datachannel to open
+	pProxy                // 5: relay data between peer and egress
 )
 
 var producerStateNames = map[int]string{
@@ -104,40 +104,50 @@ func localCandidatesChanged(pub []string) bool {
 	return true
 }
 
+// attemptCtx is the per-attempt peer/session identity shared between the FSM
+// goroutine and pion's event-callback goroutines. It is passed by value through
+// an atomic.Value so readers always see a consistent snapshot.
+type attemptCtx struct {
+	peer    net.IP
+	session string
+}
+
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
 
-	// Per-worker logging context. A WorkerFSM runs its states sequentially in a
-	// single goroutine (see protocol.go), so these are safe to read/write from any
-	// state without synchronization. curPeer/curSession/curRemoteCand describe the
-	// connection attempt currently in flight; they are reset at state pInit and
-	// populated once signaling reveals them, so every log line for an attempt can
-	// carry the peer and session. lastLocalSig tracks the last-logged local ICE
-	// candidate set so we log it at startup and then only when it changes.
+	// curRemoteCand/curLocalCand describe the connection attempt currently in
+	// flight. A WorkerFSM runs its states sequentially in a single goroutine (see
+	// protocol.go) and these are touched ONLY by that goroutine (set in states 0/3,
+	// read in states 3/4), so they need no synchronization.
 	var (
-		curPeer       net.IP
-		curSession    string
 		curRemoteCand []webrtc.ICECandidate
 		curLocalCand  []webrtc.ICECandidate
 	)
 
-	// Latest ICE / peer-connection state for the attempt in flight. The pion event
-	// callbacks run on their own goroutines, so these are atomics read by the FSM
-	// goroutine when it needs to explain a timeout. They let us tell a genuine NAT
-	// failure (ICE never left "checking", or reached "failed") apart from a slow
-	// but successful handshake (ICE "connected" but the datachannel just hadn't
-	// finished DTLS/SCTP when the NATFailTimeout fired).
-	var curICEState, curPCState atomic.Value
+	// The following are read by pion's event callbacks, which run on their own
+	// goroutines concurrently with the FSM goroutine (notably: peerConnection.Close()
+	// fires state-change callbacks while the FSM has already looped back to state 0
+	// and is resetting this context). They must therefore be accessed atomically.
+	//   - curCtx: peer/session for the attempt, read by plog from the callbacks.
+	//   - curICEState/curPCState: latest ICE / peer-connection state, read by the FSM
+	//     goroutine to classify a timeout; written by the callbacks.
+	var (
+		curCtx      atomic.Value // attemptCtx
+		curICEState atomic.Value // string
+		curPCState  atomic.Value // string
+	)
+	curCtx.Store(attemptCtx{})
 
 	// plog returns a logger tagged with the state name plus the peer and session
-	// once they are known for the current attempt.
+	// once they are known for the current attempt. Safe to call from any goroutine.
 	plog := func(state int) *slog.Logger {
 		l := slog.With("worker", "producer", "state", producerStateNames[state])
-		if curPeer != nil {
-			l = l.With("peer", curPeer.String())
+		ac, _ := curCtx.Load().(attemptCtx)
+		if ac.peer != nil {
+			l = l.With("peer", ac.peer.String())
 		}
-		if curSession != "" {
-			l = l.With("session", curSession)
+		if ac.session != "" {
+			l = l.With("session", ac.session)
 		}
 		return l
 	}
@@ -150,7 +160,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// A fresh connection attempt begins here; clear the previous attempt's
 			// peer/session/candidate context so stale values never leak onto this
 			// attempt's log lines.
-			curPeer, curSession, curRemoteCand, curLocalCand = nil, "", nil, nil
+			curCtx.Store(attemptCtx{})
+			curRemoteCand, curLocalCand = nil, nil
 			curICEState.Store("new")
 			curPCState.Store("new")
 			logger := plog(pInit)
@@ -582,10 +593,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			}
 
-			// Record the peer's session and candidates for this attempt so subsequent
-			// log lines (including the state-4 outcome) carry them.
+			// Record the peer's candidates for this attempt so subsequent log lines
+			// (including the state-4 outcome) carry them. Peer/session go into curCtx
+			// below, once we've also parsed the peer address.
 			candidates := iceMsg.(common.ICEMsg).Candidates
-			curSession = iceMsg.(common.ICEMsg).ConsumerSessionID
+			sessionID := iceMsg.(common.ICEMsg).ConsumerSessionID
 			curRemoteCand = candidates
 
 			var remoteAddr net.IP
@@ -615,9 +627,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					remoteAddr = parsedIP
 				}
 			}
-			// Now that we know the peer address and session, rebuild the logger so this
-			// and later states tag every line with them.
-			curPeer = remoteAddr
+			// Now that we know the peer address and session, publish them so this and
+			// later states — and pion's callbacks — tag every line with them.
+			curCtx.Store(attemptCtx{peer: remoteAddr, session: sessionID})
 			logger = plog(pSignalAnswer).With("peer_tag", offer.Tag, "peer_country", offer.Country)
 			logger.Debug("received peer ICE candidates", "remote_candidates", formatCandidates(candidates))
 
@@ -663,60 +675,127 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			consumerSessionID := input[6].(string)
 
 			logger := plog(pAwaitConn)
-			logger.Debug("signaling complete, awaiting NAT traversal")
+			logger.Debug("signaling complete, awaiting ICE connectivity")
 
-			select {
-			case <-ctx.Done():
-				peerConnection.Close()
-				return 0, []interface{}{}
-			case d := <-connectionEstablished:
-				logger.Debug("WebRTC connection established",
-					"remote_candidates", formatCandidates(curRemoteCand),
-					"local_candidates", formatCandidates(curLocalCand),
-				)
-				return 5, []interface{}{
-					peerConnection,
-					d,
-					connectionChange,
-					connectionClosed,
-					remoteAddr,
-					offer,
-					consumerSessionID,
-				}
-			case <-time.After(options.NATFailTimeout):
-				// The timer fired before the datachannel opened. That chain is
-				// ICE -> DTLS -> SCTP -> datachannel, so a bare "timeout" conflates
-				// very different failures. Use the last ICE/peer-connection state to
-				// classify what actually went wrong.
+			// Phase timers (FSM-goroutine only, no synchronization needed). waitStart
+			// marks the moment signaling finished; iceConnectedAt is set when ICE
+			// connectivity is achieved, so we can report how long ICE vs. the
+			// DTLS/SCTP/datachannel handshake each took.
+			waitStart := time.Now()
+			var iceConnectedAt time.Time
+
+			// Two-phase wait, so a timeout names the phase that actually failed:
+			//   Phase 1 (ICE):       reach a connected peer connection within NATFailTimeout.
+			//   Phase 2 (handshake): once connected, open the datachannel (DTLS -> SCTP ->
+			//                        datachannel) within HandshakeTimeout.
+			// A single combined budget was killing attempts whose ICE was still
+			// "checking", and mislabeling slow-but-successful handshakes as NAT failures.
+			fail := func(reason, detail string, budget time.Duration) (int, []interface{}) {
 				iceState, _ := curICEState.Load().(string)
 				pcState, _ := curPCState.Load().(string)
-
-				reason := "nat-traversal-timeout"
-				detail := "ICE did not complete before the timeout: peer likely unreachable via STUN (symmetric NAT / CGNAT on either end, and we have no TURN), or the timeout is too short for checks to finish"
-				switch iceState {
-				case "connected", "completed":
-					// ICE actually succeeded; the datachannel just wasn't up yet.
-					// This is NOT a NAT problem — the timeout is too short for the
-					// DTLS/SCTP handshake (covert-dtls mimicry adds latency).
-					reason = "handshake-timeout"
-					detail = "ICE connectivity succeeded but the datachannel had not opened when the timeout fired (DTLS/SCTP slower than NATFailTimeout); a longer timeout would likely let this connection through"
-				case "failed":
-					reason = "ice-failed"
-					detail = "ICE exhausted all candidate pairs without finding a working path to the peer; no TURN fallback exists"
-				}
-
-				logger.Info("connection attempt failed",
+				attrs := []any{
 					"reason", reason,
 					"detail", detail,
 					"ice_state", iceState,
 					"conn_state", pcState,
-					"timeout", options.NATFailTimeout,
+					"phase_timeout", budget,
+					"elapsed", time.Since(waitStart).Round(time.Millisecond),
+				}
+				if !iceConnectedAt.IsZero() {
+					// Failed in the handshake phase: report how long ICE took so the
+					// handshake time is separable from the ICE time.
+					attrs = append(attrs, "ice_duration", iceConnectedAt.Sub(waitStart).Round(time.Millisecond))
+				}
+				attrs = append(attrs,
 					"remote_candidates", formatCandidates(curRemoteCand),
 					"local_candidates", formatCandidates(curLocalCand),
 				)
-				// Borked!
+				logger.Info("connection attempt failed", attrs...)
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			}
+
+			// iceConnected returns true once ICE reports a working pair, so a slow DTLS
+			// handshake (which delays PeerConnectionStateConnected past the ICE budget)
+			// isn't misread as a NAT-traversal failure.
+			iceConnected := func() bool {
+				s, _ := curICEState.Load().(string)
+				return s == "connected" || s == "completed"
+			}
+
+			iceDeadline := time.After(options.NATFailTimeout)
+			var handshakeDeadline <-chan time.Time // nil blocks forever until ICE connects
+			inHandshake := false
+			enterHandshake := func() {
+				if inHandshake {
+					return
+				}
+				inHandshake = true
+				iceConnectedAt = time.Now()
+				iceDeadline = nil
+				handshakeDeadline = time.After(options.HandshakeTimeout)
+				logger.Debug("ICE connected, awaiting datachannel",
+					"ice_duration", iceConnectedAt.Sub(waitStart).Round(time.Millisecond),
+					"handshake_timeout", options.HandshakeTimeout,
+				)
+			}
+
+			for {
+				select {
+				case <-ctx.Done():
+					peerConnection.Close()
+					return 0, []interface{}{}
+				case d := <-connectionEstablished:
+					now := time.Now()
+					attrs := []any{"total", now.Sub(waitStart).Round(time.Millisecond)}
+					if !iceConnectedAt.IsZero() {
+						attrs = append(attrs,
+							"ice_duration", iceConnectedAt.Sub(waitStart).Round(time.Millisecond),
+							"handshake_duration", now.Sub(iceConnectedAt).Round(time.Millisecond),
+						)
+					}
+					attrs = append(attrs,
+						"remote_candidates", formatCandidates(curRemoteCand),
+						"local_candidates", formatCandidates(curLocalCand),
+					)
+					logger.Info("WebRTC connection established", attrs...)
+					return 5, []interface{}{
+						peerConnection,
+						d,
+						connectionChange,
+						connectionClosed,
+						remoteAddr,
+						offer,
+						consumerSessionID,
+					}
+				case s := <-connectionChange:
+					switch s {
+					case webrtc.PeerConnectionStateConnected:
+						enterHandshake()
+					case webrtc.PeerConnectionStateFailed:
+						return fail("ice-failed",
+							"ICE exhausted all candidate pairs without a working path to the peer; no TURN fallback exists",
+							options.NATFailTimeout)
+					case webrtc.PeerConnectionStateDisconnected, webrtc.PeerConnectionStateClosed:
+						return fail("connection-lost",
+							"peer connection dropped before the datachannel opened",
+							options.NATFailTimeout)
+					}
+				case <-iceDeadline:
+					// ICE budget elapsed. If ICE itself already succeeded (DTLS/SCTP
+					// just isn't done), move to the handshake phase rather than failing.
+					if iceConnected() {
+						enterHandshake()
+						continue
+					}
+					return fail("nat-traversal-timeout",
+						"ICE did not connect within NATFailTimeout: peer likely unreachable via STUN (symmetric NAT / CGNAT on either end, no TURN), or the ICE budget is too short",
+						options.NATFailTimeout)
+				case <-handshakeDeadline:
+					return fail("handshake-timeout",
+						"ICE connected but the datachannel did not open within HandshakeTimeout (DTLS/SCTP too slow); a longer handshake budget would likely let this connection through",
+						options.HandshakeTimeout)
+				}
 			}
 
 			// XXX: This loop represents an alternate strategy for detecting NAT traversal success or

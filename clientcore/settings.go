@@ -15,10 +15,19 @@ import (
 )
 
 type WebRTCOptions struct {
-	DiscoverySrv      string
-	Endpoint          string
-	GenesisAddr       string
-	NATFailTimeout    time.Duration
+	DiscoverySrv string
+	Endpoint     string
+	GenesisAddr  string
+	// NATFailTimeout bounds the ICE connectivity phase: how long a producer waits
+	// for ICE to establish a working candidate pair (peer connection state
+	// "connected") before giving up on an attempt. It does NOT cover the
+	// subsequent DTLS/SCTP/datachannel handshake — see HandshakeTimeout.
+	NATFailTimeout time.Duration
+	// HandshakeTimeout bounds the post-ICE phase: once ICE connects, how long to
+	// wait for the datachannel to open (DTLS -> SCTP -> datachannel). Splitting
+	// this out from NATFailTimeout keeps a slow-but-successful handshake from being
+	// misreported as (and killed as) a NAT-traversal failure.
+	HandshakeTimeout  time.Duration
 	STUNBatch         func(size uint32) (batch []string, err error)
 	STUNBatchSize     uint32
 	Tag               string
@@ -54,6 +63,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		Endpoint:          "/v1/signal",
 		GenesisAddr:       "genesis",
 		NATFailTimeout:    5 * time.Second,
+		HandshakeTimeout:  10 * time.Second,
 		STUNBatch:         DefaultSTUNBatchFunc,
 		STUNBatchSize:     5,
 		Tag:               "",
