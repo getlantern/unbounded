@@ -391,6 +391,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
+			answerPrepStart := time.Now()
 
 			// XXX: in our present signaling handshake, the *consumer's* ICE candidates are sent "a la carte"
 			// as a list in the final segment of the handshake. But here on the producer side, our ICE
@@ -436,7 +437,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			<-gatherComplete
 			curLocalCand = localCandidates
-			logger.Debug("ICE gathering complete", "local_candidates", formatCandidates(localCandidates))
+			logger.Debug("ICE gathering complete",
+				"gather_duration", time.Since(answerPrepStart).Round(time.Millisecond),
+				"local_candidates", formatCandidates(localCandidates),
+			)
 
 			// Log our local ICE candidates at startup and thereafter only when the set
 			// of public addresses we present to peers changes (see publicAddrs — ports
@@ -509,7 +513,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
 
+			// This POST long-polls: Freddie holds it open (up to remoteICEGatheringTTL,
+			// 15s) until the consumer returns its ICE candidates, so this duration is
+			// how long the consumer took to gather — or the full TTL when it never did.
+			remoteWaitStart := time.Now()
 			res, err := options.HTTPClient.Do(req)
+			remoteWait := time.Since(remoteWaitStart).Round(time.Millisecond)
 			if err != nil {
 				logger.Debug("couldn't signal answer SDP", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
@@ -574,6 +583,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				logger.Info("connection attempt failed",
 					"reason", "no-remote-candidates",
 					"detail", "partner accepted our answer but sent no ICE candidates (died or timed out during ICE gathering)",
+					"remote_wait", remoteWait,
 				)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -633,7 +643,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// later states — and pion's callbacks — tag every line with them.
 			curCtx.Store(attemptCtx{peer: remoteAddr, session: sessionID})
 			logger = plog(pSignalAnswer).With("peer_tag", offer.Tag, "peer_country", offer.Country)
-			logger.Debug("received peer ICE candidates", "remote_candidates", formatCandidates(candidates))
+			logger.Debug("received peer ICE candidates",
+				"remote_wait", remoteWait,
+				"remote_candidates", formatCandidates(candidates),
+			)
 
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
 			// us ICE candidates unless they contained at least one non-host type candidate. However, we
