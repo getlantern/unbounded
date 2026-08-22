@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -10,6 +11,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // OTel setup for the egress, scoped to the process rather than to a listener.
@@ -195,6 +198,17 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+
+	// Last, so it cannot announce success for setup that then fails — every
+	// step above returns through shutdownAfter. Placed after enableOTELLogs so
+	// that when export is on, this is exported too — when it is off, or the
+	// exporter could not be built, enableOTELLogs is a no-op and this stays
+	// stderr-only, which is the same place the line explaining why lives.
+	// Nothing else says which build is running: the spans carry no
+	// service.version, so until now the only way to know what was deployed was
+	// to ask the host, which is how a stale binary went unnoticed for days
+	// while newer releases were assumed live.
+	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
 
 	return shutdown, nil
 }

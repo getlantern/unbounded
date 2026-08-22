@@ -1,6 +1,8 @@
 package egress
 
 import (
+	"fmt"
+	"net"
 	"net/http/httptest"
 	"runtime"
 	"strings"
@@ -113,10 +115,12 @@ func TestRecordRefusal_NoLostCountsUnderConcurrency(t *testing.T) {
 	}
 }
 
-// peerAttrs exists to discriminate "one misdirected monitor" from "many broken
-// clients", so it must surface the forwarded address and User-Agent — RemoteAddr
-// alone is always Caddy's loopback and tells us nothing.
-func TestPeerAttrs_SurfacesForwardedAddressAndUserAgent(t *testing.T) {
+// peerAttrs must describe a peer well enough to tell "one misdirected monitor"
+// from "many broken clients", without recording who the peer is. The egress
+// necessarily sees the address — it is the other end of the socket — but a log
+// is retained, copied and queried, and these are the addresses of people
+// running circumvention software.
+func TestPeerAttrs_DescribesThePeerWithoutItsAddress(t *testing.T) {
 	r := httptest.NewRequest("GET", "/ws", nil)
 	r.RemoteAddr = "127.0.0.1:54321"
 	r.Header.Set("X-Forwarded-For", "203.0.113.7")
@@ -134,14 +138,27 @@ func TestPeerAttrs_SurfacesForwardedAddressAndUserAgent(t *testing.T) {
 		}
 		kv[k] = attrs[i+1]
 	}
-	for k, want := range map[string]string{
-		"remote_addr":   "127.0.0.1:54321",
-		"forwarded_for": "203.0.113.7",
-		"user_agent":    "some-monitor/1.0",
-	} {
-		if kv[k] != want {
-			t.Errorf("%s = %v, want %q", k, kv[k], want)
+
+	// No value may carry either address. Checked over every value rather than
+	// by key name, so renaming or adding an attribute cannot reintroduce one.
+	for k, v := range kv {
+		got := fmt.Sprint(v)
+		for _, addr := range []string{"203.0.113.7", "127.0.0.1"} {
+			if strings.Contains(got, addr) {
+				t.Errorf("%s = %q contains the peer address %s; IPs must not be logged", k, got, addr)
+			}
 		}
+	}
+
+	// Country replaces it: derived from the forwarded address, since RemoteAddr
+	// behind Caddy is always loopback. Value depends on the geo database, which
+	// tests do not load, so this asserts the attribute is carried rather than
+	// its content.
+	if _, ok := kv["donor_country"]; !ok {
+		t.Errorf("donor_country missing; a refusal can no longer be attributed to anywhere: %v", kv)
+	}
+	if got := kv["user_agent"]; got != "some-monitor/1.0" {
+		t.Errorf("user_agent = %v, want the client build", got)
 	}
 }
 
@@ -158,8 +175,15 @@ func TestPeerAttrs_HandlesMissingHeaders(t *testing.T) {
 	for i := 0; i < len(attrs); i += 2 {
 		kv[attrs[i].(string)] = attrs[i+1]
 	}
-	if kv["forwarded_for"] != "" {
-		t.Errorf("forwarded_for = %v, want empty", kv["forwarded_for"])
+	// No X-Forwarded-For, so the geo lookup falls back to the accepted socket.
+	// Whatever it resolves to, the address itself must not appear.
+	for k, v := range kv {
+		if strings.Contains(fmt.Sprint(v), "10.0.0.5") {
+			t.Errorf("%s = %v leaks the peer address", k, v)
+		}
+	}
+	if _, present := kv["donor_country"]; !present {
+		t.Error("donor_country key must be present even with no forwarded header")
 	}
 	if _, present := kv["user_agent"]; !present {
 		t.Error("user_agent key must be present even when the header is absent")
@@ -569,3 +593,34 @@ func TestShouldLogRefusal_Concurrent(t *testing.T) {
 		t.Errorf("suppressed = %d, want %d — a concurrent increment was lost", suppressed, want)
 	}
 }
+
+// The forwarded address is what gets geolocated, not the socket's. Behind Caddy
+// RemoteAddr is always loopback, so a regression to geolocating it would report
+// every donor as unknown while still populating the attribute — which the
+// existence check above would not notice.
+func TestPeerAttrs_GeolocatesTheForwardedDonorNotTheProxy(t *testing.T) {
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+	setDonorGeo(fakeCountryLookup{"203.0.113.7": "SE", "127.0.0.1": "ZZ"})
+
+	r := httptest.NewRequest("GET", "/ws", nil)
+	r.RemoteAddr = "127.0.0.1:54321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	kv := map[string]any{}
+	attrs := peerAttrs(r)
+	for i := 0; i < len(attrs); i += 2 {
+		kv[attrs[i].(string)] = attrs[i+1]
+	}
+	if got := kv["donor_country"]; got != "SE" {
+		t.Errorf("donor_country = %v, want SE — the proxy's address was geolocated instead of the donor's", got)
+	}
+}
+
+// fakeCountryLookup resolves the addresses a test names and nothing else.
+type fakeCountryLookup map[string]string
+
+func (f fakeCountryLookup) CountryCode(ip net.IP) string { return f[ip.String()] }
+func (f fakeCountryLookup) ISP(ip net.IP) string         { return "" }
+func (f fakeCountryLookup) ASN(ip net.IP) string         { return "" }
+func (f fakeCountryLookup) ASName(ip net.IP) string      { return "" }

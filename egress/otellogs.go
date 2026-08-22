@@ -3,7 +3,9 @@ package egress
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
@@ -53,13 +55,41 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// Same shape as telemetry.EnableOTELTracing returning a no-op when its
 	// sampler variables are absent: absent configuration means the feature is
 	// off, not misconfigured.
-	if !otlpLogsConfigured() {
+	endpointVar, endpoint := otlpLogsEndpoint()
+	if endpointVar == "" {
+		// Warn rather than returning quietly. Whether export is on is not
+		// otherwise observable: the answer lives in the absence of logs in the
+		// collector, which is indistinguishable from a healthy egress that
+		// simply had nothing to say. Someone deploying this needs to be able
+		// to confirm it from the journal.
+		slog.Warn("Log export disabled: no OTLP logs endpoint configured",
+			"checked", strings.Join(otlpLogsEndpointVars, ", "))
 		return func(context.Context) error { return nil }
 	}
 
-	exp, err := otlploghttp.New(ctx)
+	// Validated before otlploghttp.New, because New reads the same environment
+	// variable and its own error handler prints the offending value — with its
+	// credentials — straight to the log. It also does not return an error for a
+	// malformed endpoint: it logs, falls back, and leaves us announcing an
+	// export that will never work. Refusing here means the SDK never sees the
+	// value, so it never prints it.
+	safeEndpoint, ok := redactEndpoint(endpoint)
+	if !ok {
+		// The value is deliberately absent: it did not parse, so there is no
+		// way to tell which part of it was a secret.
+		slog.Warn("Log export disabled: the configured OTLP logs endpoint is not an absolute URL",
+			"from", endpointVar)
+		return func(context.Context) error { return nil }
+	}
+
+	exp, err := newLogExporter(ctx)
 	if err != nil {
-		slog.Warn("Log export disabled; could not build the OTLP log exporter", "err", err)
+		// The exporter reports what it could not parse, which for an endpoint
+		// problem is the endpoint — credentials included. Substituted rather
+		// than dropped, so the diagnostic survives without the secret.
+		slog.Warn("Log export disabled; could not build the OTLP log exporter",
+			"err", strings.ReplaceAll(err.Error(), endpoint, safeEndpoint),
+			"endpoint", safeEndpoint, "from", endpointVar)
 		return func(context.Context) error { return nil }
 	}
 
@@ -81,6 +111,14 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// Wrap whatever the binary installed rather than replacing it — each
 	// egress/cmd main sets a stderr TextHandler at Debug, and that is still
 	// the only place the high-volume lines are readable.
+	// Emitted before the handler swap so this line is stderr-only, never queued
+	// for export. It is the line an operator reads to find out whether export
+	// works, so routing it through the exporter it describes would be circular.
+	// (stderr would receive it either way — the tee's local leg is stderr — so
+	// the ordering is about not exporting it, not about reaching the journal.)
+	slog.Info("Log export enabled",
+		"endpoint", safeEndpoint, "from", endpointVar, "min_level", otelLogLevel)
+
 	local := slog.Default().Handler()
 	remote := otelslog.NewHandler("github.com/getlantern/broflake/egress",
 		otelslog.WithLoggerProvider(lp))
@@ -106,19 +144,35 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 // hold up process exit.
 const logShutdownTimeout = 5 * time.Second
 
-// otlpLogsConfigured reports whether an OTLP endpoint is configured for logs.
-// Checks the signal-specific variable first, matching OTEL's own precedence,
-// then the shared one.
-func otlpLogsConfigured() bool {
-	for _, k := range []string{
-		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
-		"OTEL_EXPORTER_OTLP_ENDPOINT",
-	} {
-		if os.Getenv(k) != "" {
-			return true
+// newLogExporter is indirected so the failure branch below is reachable from a
+// test. otlploghttp.New declines to fail for most bad input — it logs through
+// the SDK's error handler and falls back — so there is no environment value
+// that exercises the sanitizing path. Same shape as initMetricsFn in metrics.go.
+var newLogExporter = func(ctx context.Context) (sdklog.Exporter, error) {
+	return otlploghttp.New(ctx)
+}
+
+// otlpLogsEndpointVars are the variables that can supply a logs endpoint, in
+// OTEL's own precedence order: signal-specific first, then shared.
+//
+// Deliberately not the metrics or traces variables. A host that sets only
+// OTEL_EXPORTER_OTLP_METRICS_ENDPOINT has a collector, but says nothing about
+// where logs should go — otlploghttp would fall back to localhost:4318 and
+// queue records for something that is not there.
+var otlpLogsEndpointVars = []string{
+	"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+	"OTEL_EXPORTER_OTLP_ENDPOINT",
+}
+
+// otlpLogsEndpoint returns the variable that supplied a logs endpoint and its
+// value, or two empty strings when none is configured.
+func otlpLogsEndpoint() (name, value string) {
+	for _, k := range otlpLogsEndpointVars {
+		if v := os.Getenv(k); v != "" {
+			return k, v
 		}
 	}
-	return false
+	return "", ""
 }
 
 // teeHandler writes each record to both destinations. Not a general-purpose
@@ -144,8 +198,8 @@ func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 		firstErr = h.local.Handle(ctx, r)
 	}
 	if h.remoteEnabled(ctx, r.Level) {
-		// Clone because a Handler is allowed to retain or mutate the record's
-		// attrs, and the local handler has already been handed this one.
+		// Clone because a Handler may retain or mutate the record it is given,
+		// and the local leg has already been handed this one.
 		if err := h.remote.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
 			firstErr = err
 		}
@@ -159,4 +213,36 @@ func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{local: h.local.WithGroup(name), remote: h.remote.WithGroup(name)}
+}
+
+// redactEndpoint strips anything an OTLP endpoint could legally carry as a
+// credential before it reaches a log. These URLs are configuration rather than
+// user input, but "https://user:token@collector/v1/logs" and
+// "https://collector/v1/logs?api-key=..." are both valid values, and the journal
+// is read by more people than the config is. Scheme, host and path are what make
+// the line useful.
+//
+// Anything that is not an absolute http/https URL is refused outright rather
+// than returned. url.Parse accepts opaque strings ("secret", "http:token") and
+// network-path references ("//s3cr3t", which parses with that as the Host and
+// no scheme) without error, and clearing User does nothing to any of them, so
+// returning the parsed form would echo the whole value. Requiring both a scheme
+// and a host is what makes the redaction meaningful; with no structure to rely
+// on there is no way to tell which part was secret.
+func redactEndpoint(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	// http/https only: this exporter is OTLP over HTTP, so "ftp://collector"
+	// parses fine and would be announced as enabled while being unsendable.
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", false
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String(), true
 }

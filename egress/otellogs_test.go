@@ -3,10 +3,16 @@ package egress
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
 // recordingHandler captures what a leg of the tee actually received.
@@ -122,9 +128,10 @@ func TestTeeHandler_LegsAreIndependentlyGated(t *testing.T) {
 	}
 }
 
-// WithAttrs / WithGroup have to reach both legs. Missing this means the
-// exported copy loses the peer attributes — remote_addr, user_agent, page_url
-// — which are the only reason the line is worth exporting.
+// WithAttrs has to reach both legs, or the exported copy would arrive without
+// the peer attributes that make it worth exporting: donor_country, user_agent,
+// page_url. It does reach both, and this pins that — the phrasing below is a
+// statement about what would break, not about current behaviour.
 func TestTeeHandler_WithAttrsReachesBothLegs(t *testing.T) {
 	h, local, remote := newTee(t)
 	log := slog.New(h).With("csid", "abc123")
@@ -229,7 +236,7 @@ func TestTeeHandler_LocalLegStillFormatsNormally(t *testing.T) {
 // every Info record, and blocks on shutdown flushing to nothing — which hung
 // NewListener's own shutdown test for the full 600s timeout and would do the
 // same to a production egress on a host with no collector.
-func TestOTLPLogsConfigured_RequiresAnEndpoint(t *testing.T) {
+func TestOTLPLogsEndpoint_RequiresALogsEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name, generic, logs string
 		want                bool
@@ -243,8 +250,9 @@ func TestOTLPLogsConfigured_RequiresAnEndpoint(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", tc.generic)
 			t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", tc.logs)
-			if got := otlpLogsConfigured(); got != tc.want {
-				t.Errorf("otlpLogsConfigured() = %v, want %v", got, tc.want)
+			name, _ := otlpLogsEndpoint()
+			if got := name != ""; got != tc.want {
+				t.Errorf("otlpLogsEndpoint() name = %q (configured=%v), want configured=%v", name, got, tc.want)
 			}
 		})
 	}
@@ -273,5 +281,206 @@ func TestEnableOTELLogs_NoEndpointLeavesLoggingUntouched(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("shutdown blocked with no exporter configured")
+	}
+}
+
+// Whether export is on must be visible on stderr. Otherwise the only evidence
+// is the absence of logs in the collector, which looks identical to a healthy
+// egress that had nothing to say — so a misconfigured deploy is unfalsifiable.
+func TestEnableOTELLogs_SaysWhyItIsDisabled(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	_ = enableOTELLogs(context.Background())
+
+	out := buf.String()
+	if !strings.Contains(out, "Log export disabled") {
+		t.Errorf("no line explaining that export is off: %q", out)
+	}
+	// Naming the variables it looked at is the actionable part — otherwise the
+	// operator knows it is off but not what to set.
+	for _, v := range otlpLogsEndpointVars {
+		if !strings.Contains(out, v) {
+			t.Errorf("the disabled line does not name %s, so it is not actionable: %q", v, out)
+		}
+	}
+}
+
+// A metrics-only collector configuration must not be mistaken for a logs
+// endpoint. otlploghttp would fall back to localhost:4318 and queue records for
+// something that is not listening.
+func TestOTLPLogsEndpoint_IgnoresTheMetricsEndpoint(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://collector:4318/v1/metrics")
+
+	if name, _ := otlpLogsEndpoint(); name != "" {
+		t.Errorf("treated %s as a logs endpoint", name)
+	}
+}
+
+// And when one is configured, the enabled line has to say so, with the source
+// variable — that is what makes a deploy verifiable from the journal.
+func TestOTLPLogsEndpoint_ReportsWhichVariableSuppliedIt(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://shared:4318")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_ENDPOINT" || val != "http://shared:4318" {
+		t.Errorf("got (%q, %q), want the shared variable", name, val)
+	}
+
+	// Signal-specific wins, matching OTEL's precedence.
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://logs:4318/v1/logs")
+	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" || val != "http://logs:4318/v1/logs" {
+		t.Errorf("got (%q, %q), want the logs-specific variable to win", name, val)
+	}
+}
+
+// The enabled path, end to end against a real OTLP receiver so shutdown does
+// not have to time out. Without this, deleting the "Log export enabled" line
+// leaves the endpoint-detection tests passing while the only signal that export
+// is on disappears.
+func TestEnableOTELLogs_AnnouncesItselfAndRedactsTheEndpoint(t *testing.T) {
+	got := make(chan struct{}, 1)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+
+	// Credentials in the endpoint: a legal OTLP value, and the thing that must
+	// not reach the journal.
+	u, err := url.Parse(collector.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword("collector", "s3cr3t")
+	u.Path = "/v1/logs"
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", u.String())
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	var stderr bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	shutdown := enableOTELLogs(context.Background())
+
+	out := stderr.String()
+	if !strings.Contains(out, "Log export enabled") {
+		t.Errorf("nothing announced that export is on: %q", out)
+	}
+	if !strings.Contains(out, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") {
+		t.Errorf("the enabled line does not say which variable supplied the endpoint: %q", out)
+	}
+	for _, secret := range []string{"s3cr3t", "collector:s3cr3t"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("the endpoint's credentials reached the log: %q", out)
+		}
+	}
+	// The useful part survives redaction.
+	if !strings.Contains(out, "/v1/logs") {
+		t.Errorf("the redacted endpoint lost its path, so the line is not diagnostic: %q", out)
+	}
+
+	// The handler really was swapped: an Info record now reaches the collector.
+	slog.Info("a record that should be exported")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Error("no OTLP request reached the collector; export is announced but not wired")
+	}
+}
+
+// redactEndpoint's edge cases, which the enabled-path test cannot reach: it
+// supplies one realistic endpoint, so a mutation dropping the query/fragment
+// stripping — or returning a hostless value verbatim — would stay green there.
+func TestRedactEndpoint(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain endpoint survives", "https://collector:4318/v1/logs", "https://collector:4318/v1/logs"},
+		{"userinfo is dropped", "https://user:token@collector/v1/logs", "https://collector/v1/logs"},
+		{"query is dropped", "https://collector/v1/logs?api-key=SECRET", "https://collector/v1/logs"},
+		{"fragment is dropped", "https://collector/v1/logs#SECRET", "https://collector/v1/logs"},
+		{"bare query marker is dropped", "https://collector/v1/logs?", "https://collector/v1/logs"},
+		{"everything at once", "https://u:p@collector/v1/logs?k=S#f", "https://collector/v1/logs"},
+		// url.Parse accepts these without error, and clearing User does nothing
+		// to them — returning the parsed form would echo the secret whole.
+		{"opaque value is refused", "http:token", "(unparseable)"},
+		{"bare word is refused", "secret", "(unparseable)"},
+		{"hostless path is refused", "/v1/logs?api-key=SECRET", "(unparseable)"},
+		{"empty is refused", "", "(unparseable)"},
+		{"network-path reference is refused", "//s3cr3t", "(unparseable)"},
+		{"non-http scheme is refused", "ftp://collector/v1/logs", "(unparseable)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := redactEndpoint(tc.in)
+			if tc.want == "(unparseable)" {
+				if ok {
+					t.Errorf("redactEndpoint(%q) = (%q, true), want refused", tc.in, got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Errorf("redactEndpoint(%q) = (%q, %v), want (%q, true)", tc.in, got, ok, tc.want)
+			}
+		})
+	}
+}
+
+// The exporter-construction failure path, which is where a credential is most
+// likely to appear: a malformed-endpoint error is exactly the one that quotes
+// the endpoint back.
+//
+// The constructor is stubbed because no environment value reaches this branch —
+// anything malformed enough to break otlploghttp is refused earlier by
+// redactEndpoint, and otlploghttp itself prefers logging and falling back to
+// returning an error. An earlier version of this test used a malformed endpoint
+// and silently stopped covering the branch once that validation was added.
+func TestEnableOTELLogs_FailureDoesNotEchoTheEndpoint(t *testing.T) {
+	const endpoint = "https://user:s3cr3t@collector.example/v1/logs"
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", endpoint)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	prevCtor := newLogExporter
+	t.Cleanup(func() { newLogExporter = prevCtor })
+	// Quotes the endpoint back, exactly as an OTLP endpoint error does.
+	newLogExporter = func(context.Context) (sdklog.Exporter, error) {
+		return nil, fmt.Errorf("invalid endpoint %q: nope", endpoint)
+	}
+
+	var stderr bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	shutdown := enableOTELLogs(context.Background())
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+	out := stderr.String()
+	if strings.Contains(out, "s3cr3t") {
+		t.Errorf("the endpoint's credential reached the journal: %q", out)
+	}
+	if strings.Contains(out, endpoint) {
+		t.Errorf("the raw endpoint reached the journal: %q", out)
+	}
+	// The diagnostic has to survive the sanitizing, or the operator learns
+	// nothing about why export is off.
+	if !strings.Contains(out, "could not build the OTLP log exporter") {
+		t.Errorf("the failure was not explained: %q", out)
+	}
+	if !strings.Contains(out, "collector.example/v1/logs") {
+		t.Errorf("the redacted endpoint is missing, so the line is not actionable: %q", out)
 	}
 }
