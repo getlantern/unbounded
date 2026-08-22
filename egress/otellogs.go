@@ -69,7 +69,12 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 
 	exp, err := otlploghttp.New(ctx)
 	if err != nil {
-		slog.Warn("Log export disabled; could not build the OTLP log exporter", "err", err)
+		// The exporter reports what it could not parse, which for an endpoint
+		// problem is the endpoint — credentials included. Substituted rather
+		// than dropped, so the diagnostic survives without the secret.
+		slog.Warn("Log export disabled; could not build the OTLP log exporter",
+			"err", strings.ReplaceAll(err.Error(), endpoint, redactEndpoint(endpoint)),
+			"endpoint", redactEndpoint(endpoint), "from", endpointVar)
 		return func(context.Context) error { return nil }
 	}
 
@@ -189,14 +194,19 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 
 // redactEndpoint strips anything an OTLP endpoint could legally carry as a
 // credential before it reaches a log. These URLs are configuration rather than
-// user input, but "https://user:token@collector/v1/logs" is a valid value and
-// this line is written to the journal and exported, so the raw form is the one
-// thing not worth printing. Scheme, host and path are what make the line useful.
+// user input, but "https://user:token@collector/v1/logs" and
+// "https://collector/v1/logs?api-key=..." are both valid values, and the journal
+// is read by more people than the config is. Scheme, host and path are what make
+// the line useful.
+//
+// Anything without a host is refused outright rather than returned. url.Parse
+// accepts opaque and hostless strings — "secret", "http:token" — without error,
+// and clearing User does nothing to those, so returning the parsed form would
+// echo the whole value. Same rule as sanitizeReportURL: with no structure to
+// rely on, there is no way to tell which part was secret.
 func redactEndpoint(raw string) string {
 	u, err := url.Parse(raw)
-	if err != nil {
-		// Do not echo a value that failed to parse: with no structure to rely
-		// on, there is no way to tell which part of it was secret.
+	if err != nil || u.Host == "" {
 		return "(unparseable)"
 	}
 	u.User = nil

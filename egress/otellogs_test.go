@@ -400,3 +400,29 @@ func TestEnableOTELLogs_AnnouncesItselfAndRedactsTheEndpoint(t *testing.T) {
 		t.Error("no OTLP request reached the collector; export is announced but not wired")
 	}
 }
+
+// redactEndpoint's edge cases, which the enabled-path test cannot reach: it
+// supplies one realistic endpoint, so a mutation dropping the query/fragment
+// stripping — or returning a hostless value verbatim — would stay green there.
+func TestRedactEndpoint(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"plain endpoint survives", "https://collector:4318/v1/logs", "https://collector:4318/v1/logs"},
+		{"userinfo is dropped", "https://user:token@collector/v1/logs", "https://collector/v1/logs"},
+		{"query is dropped", "https://collector/v1/logs?api-key=SECRET", "https://collector/v1/logs"},
+		{"fragment is dropped", "https://collector/v1/logs#SECRET", "https://collector/v1/logs"},
+		{"bare query marker is dropped", "https://collector/v1/logs?", "https://collector/v1/logs"},
+		{"everything at once", "https://u:p@collector/v1/logs?k=S#f", "https://collector/v1/logs"},
+		// url.Parse accepts these without error, and clearing User does nothing
+		// to them — returning the parsed form would echo the secret whole.
+		{"opaque value is refused", "http:token", "(unparseable)"},
+		{"bare word is refused", "secret", "(unparseable)"},
+		{"hostless path is refused", "/v1/logs?api-key=SECRET", "(unparseable)"},
+		{"empty is refused", "", "(unparseable)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactEndpoint(tc.in); got != tc.want {
+				t.Errorf("redactEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}

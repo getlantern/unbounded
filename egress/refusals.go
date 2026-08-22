@@ -166,32 +166,25 @@ func classifySubprotocolRefusal(raw, parsed []string) (reason refusalReason, msg
 	}
 }
 
-// peerAttrs returns slog attributes identifying who was refused.
-//
-// RemoteAddr alone is useless here: Caddy terminates TLS on :443 and proxies to
-// localhost:9001, so every RemoteAddr is 127.0.0.1 with an ephemeral port. The
-// real client is in X-Forwarded-For, which Caddy sets. Both are logged because
-// their disagreement is itself information — an X-Forwarded-For present with a
-// non-loopback RemoteAddr would mean something is reaching 9001 without going
-// through Caddy.
-//
-// User-Agent is the field that actually discriminates the hypotheses: one
-// repeated UA points at a misdirected health check or monitor, many distinct ones
-// point at real clients failing the handshake.
 // peerAttrs describes the peer behind a request without recording who it is.
 //
 // Country rather than address, deliberately. The egress necessarily sees the
-// donor's IP — it is the other end of the socket — but seeing it and writing it
-// into a log are different things: a log is retained, copied and queried, and
-// these are the addresses of people running circumvention software. The country
-// is what the diagnostics actually need, and it is already what the metrics
-// carry (attrDonorCountry), so the log and the counters now describe a peer the
-// same way.
+// donor's IP — it is the other end of the socket, and behind Caddy it arrives
+// as X-Forwarded-For — but seeing it and writing it into a log are different
+// things: a log is retained, copied and queried, and these are the addresses of
+// people running circumvention software. The country is what the diagnostics
+// actually need, and it is already what the metrics carry (attrDonorCountry),
+// so the log and the counters now describe a peer the same way.
 //
-// What this gives up: an individual host is no longer identifiable from logs.
-// A refused population can still be characterised — country, user agent, and
-// the raw subprotocol values distinguish client builds — but pinpointing one
-// machine now has to be done live on the box rather than after the fact.
+// User-Agent is the field that discriminates the hypotheses these lines exist to
+// separate: one repeated UA points at a misdirected health check or monitor,
+// many distinct ones point at real clients failing the handshake. It identifies
+// a client build rather than a person, so it stays.
+//
+// What this gives up: an individual host is no longer identifiable from logs. A
+// refused population can still be characterised — country, user agent and the
+// raw subprotocol values distinguish client builds — but pinpointing one machine
+// now has to happen live on the box rather than after the fact.
 func peerAttrs(r *http.Request) []any {
 	return []any{
 		"donor_country", donorCountry(donorGeoAddr(r, transportAddr(r))),
