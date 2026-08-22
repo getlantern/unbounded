@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -90,10 +91,13 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// Wrap whatever the binary installed rather than replacing it — each
 	// egress/cmd main sets a stderr TextHandler at Debug, and that is still
 	// the only place the high-volume lines are readable.
-	// Logged before the handler is swapped, so it appears on stderr whether or
-	// not the exporter itself turns out to work.
+	// Emitted before the handler swap so this line is stderr-only, never queued
+	// for export. It is the line an operator reads to find out whether export
+	// works, so routing it through the exporter it describes would be circular.
+	// (stderr would receive it either way — the tee's local leg is stderr — so
+	// the ordering is about not exporting it, not about reaching the journal.)
 	slog.Info("Log export enabled",
-		"endpoint", endpoint, "from", endpointVar, "min_level", otelLogLevel)
+		"endpoint", redactEndpoint(endpoint), "from", endpointVar, "min_level", otelLogLevel)
 
 	local := slog.Default().Handler()
 	remote := otelslog.NewHandler("github.com/getlantern/broflake/egress",
@@ -181,4 +185,24 @@ func (h *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *teeHandler) WithGroup(name string) slog.Handler {
 	return &teeHandler{local: h.local.WithGroup(name), remote: h.remote.WithGroup(name)}
+}
+
+// redactEndpoint strips anything an OTLP endpoint could legally carry as a
+// credential before it reaches a log. These URLs are configuration rather than
+// user input, but "https://user:token@collector/v1/logs" is a valid value and
+// this line is written to the journal and exported, so the raw form is the one
+// thing not worth printing. Scheme, host and path are what make the line useful.
+func redactEndpoint(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		// Do not echo a value that failed to parse: with no structure to rely
+		// on, there is no way to tell which part of it was secret.
+		return "(unparseable)"
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }

@@ -150,13 +150,6 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	// nowhere queryable. Exported at Info and above only — see otellogs.go.
 	closeFuncLogs := enableOTELLogs(ctx)
 
-	// Emitted after the log handler is installed so it is exported, not just
-	// written to stderr. Nothing else says which build is running: the spans
-	// carry no service.version, so until now the only way to know what was
-	// deployed was to ask the host — which is how a stale binary went
-	// unnoticed for days while newer releases were assumed live.
-	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
-
 	// Shut all three down together. Dropping any one would leak its provider
 	// and discard whatever was still buffered, which on a low-traffic egress
 	// could be most of it.
@@ -205,6 +198,15 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+
+	// Last, so it cannot announce success for setup that then fails — every
+	// step above returns through shutdownAfter. Still after enableOTELLogs, so
+	// the handler is installed and this is exported rather than only written to
+	// stderr. Nothing else says which build is running: the spans carry no
+	// service.version, so until now the only way to know what was deployed was
+	// to ask the host, which is how a stale binary went unnoticed for days
+	// while newer releases were assumed live.
+	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
 
 	return shutdown, nil
 }

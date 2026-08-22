@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -122,9 +125,10 @@ func TestTeeHandler_LegsAreIndependentlyGated(t *testing.T) {
 	}
 }
 
-// WithAttrs / WithGroup have to reach both legs. Missing this means the
-// exported copy loses the peer attributes — donor_country, user_agent, page_url
-// — which are the only reason the line is worth exporting.
+// WithAttrs has to reach both legs, or the exported copy would arrive without
+// the peer attributes that make it worth exporting: donor_country, user_agent,
+// page_url. It does reach both, and this pins that — the phrasing below is a
+// statement about what would break, not about current behaviour.
 func TestTeeHandler_WithAttrsReachesBothLegs(t *testing.T) {
 	h, local, remote := newTee(t)
 	log := slog.New(h).With("csid", "abc123")
@@ -330,5 +334,69 @@ func TestOTLPLogsEndpoint_ReportsWhichVariableSuppliedIt(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "http://logs:4318/v1/logs")
 	if name, val := otlpLogsEndpoint(); name != "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT" || val != "http://logs:4318/v1/logs" {
 		t.Errorf("got (%q, %q), want the logs-specific variable to win", name, val)
+	}
+}
+
+// The enabled path, end to end against a real OTLP receiver so shutdown does
+// not have to time out. Without this, deleting the "Log export enabled" line
+// leaves the endpoint-detection tests passing while the only signal that export
+// is on disappears.
+func TestEnableOTELLogs_AnnouncesItselfAndRedactsTheEndpoint(t *testing.T) {
+	got := make(chan struct{}, 1)
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		select {
+		case got <- struct{}{}:
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer collector.Close()
+
+	// Credentials in the endpoint: a legal OTLP value, and the thing that must
+	// not reach the journal.
+	u, err := url.Parse(collector.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword("collector", "s3cr3t")
+	u.Path = "/v1/logs"
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", u.String())
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	var stderr bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	shutdown := enableOTELLogs(context.Background())
+
+	out := stderr.String()
+	if !strings.Contains(out, "Log export enabled") {
+		t.Errorf("nothing announced that export is on: %q", out)
+	}
+	if !strings.Contains(out, "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT") {
+		t.Errorf("the enabled line does not say which variable supplied the endpoint: %q", out)
+	}
+	for _, secret := range []string{"s3cr3t", "collector:s3cr3t"} {
+		if strings.Contains(out, secret) {
+			t.Errorf("the endpoint's credentials reached the log: %q", out)
+		}
+	}
+	// The useful part survives redaction.
+	if !strings.Contains(out, "/v1/logs") {
+		t.Errorf("the redacted endpoint lost its path, so the line is not diagnostic: %q", out)
+	}
+
+	// The handler really was swapped: an Info record now reaches the collector.
+	slog.Info("a record that should be exported")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := shutdown(ctx); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Error("no OTLP request reached the collector; export is announced but not wired")
 	}
 }
