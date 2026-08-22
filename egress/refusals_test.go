@@ -2,6 +2,7 @@ package egress
 
 import (
 	"fmt"
+	"net"
 	"net/http/httptest"
 	"runtime"
 	"strings"
@@ -592,3 +593,34 @@ func TestShouldLogRefusal_Concurrent(t *testing.T) {
 		t.Errorf("suppressed = %d, want %d — a concurrent increment was lost", suppressed, want)
 	}
 }
+
+// The forwarded address is what gets geolocated, not the socket's. Behind Caddy
+// RemoteAddr is always loopback, so a regression to geolocating it would report
+// every donor as unknown while still populating the attribute — which the
+// existence check above would not notice.
+func TestPeerAttrs_GeolocatesTheForwardedDonorNotTheProxy(t *testing.T) {
+	orig := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(orig) })
+	setDonorGeo(fakeCountryLookup{"203.0.113.7": "SE", "127.0.0.1": "ZZ"})
+
+	r := httptest.NewRequest("GET", "/ws", nil)
+	r.RemoteAddr = "127.0.0.1:54321"
+	r.Header.Set("X-Forwarded-For", "203.0.113.7")
+
+	kv := map[string]any{}
+	attrs := peerAttrs(r)
+	for i := 0; i < len(attrs); i += 2 {
+		kv[attrs[i].(string)] = attrs[i+1]
+	}
+	if got := kv["donor_country"]; got != "SE" {
+		t.Errorf("donor_country = %v, want SE — the proxy's address was geolocated instead of the donor's", got)
+	}
+}
+
+// fakeCountryLookup resolves the addresses a test names and nothing else.
+type fakeCountryLookup map[string]string
+
+func (f fakeCountryLookup) CountryCode(ip net.IP) string { return f[ip.String()] }
+func (f fakeCountryLookup) ISP(ip net.IP) string         { return "" }
+func (f fakeCountryLookup) ASN(ip net.IP) string         { return "" }
+func (f fakeCountryLookup) ASName(ip net.IP) string      { return "" }

@@ -82,7 +82,7 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
-	exp, err := otlploghttp.New(ctx)
+	exp, err := newLogExporter(ctx)
 	if err != nil {
 		// The exporter reports what it could not parse, which for an endpoint
 		// problem is the endpoint — credentials included. Substituted rather
@@ -143,6 +143,14 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 // collector on the same host, short enough that an unreachable one does not
 // hold up process exit.
 const logShutdownTimeout = 5 * time.Second
+
+// newLogExporter is indirected so the failure branch below is reachable from a
+// test. otlploghttp.New declines to fail for most bad input — it logs through
+// the SDK's error handler and falls back — so there is no environment value
+// that exercises the sanitizing path. Same shape as initMetricsFn in metrics.go.
+var newLogExporter = func(ctx context.Context) (sdklog.Exporter, error) {
+	return otlploghttp.New(ctx)
+}
 
 // otlpLogsEndpointVars are the variables that can supply a logs endpoint, in
 // OTEL's own precedence order: signal-specific first, then shared.
@@ -214,8 +222,8 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 // is read by more people than the config is. Scheme, host and path are what make
 // the line useful.
 //
-// Anything that is not an absolute URL is refused outright rather than
-// returned. url.Parse accepts opaque strings ("secret", "http:token") and
+// Anything that is not an absolute http/https URL is refused outright rather
+// than returned. url.Parse accepts opaque strings ("secret", "http:token") and
 // network-path references ("//s3cr3t", which parses with that as the Host and
 // no scheme) without error, and clearing User does nothing to any of them, so
 // returning the parsed form would echo the whole value. Requiring both a scheme
@@ -223,7 +231,12 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 // on there is no way to tell which part was secret.
 func redactEndpoint(raw string) (string, bool) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	// http/https only: this exporter is OTLP over HTTP, so "ftp://collector"
+	// parses fine and would be announced as enabled while being unsendable.
+	if u.Scheme != "http" && u.Scheme != "https" {
 		return "", false
 	}
 	u.User = nil

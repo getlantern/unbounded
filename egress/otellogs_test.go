@@ -3,6 +3,7 @@ package egress
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
 // recordingHandler captures what a leg of the tee actually received.
@@ -419,6 +422,7 @@ func TestRedactEndpoint(t *testing.T) {
 		{"hostless path is refused", "/v1/logs?api-key=SECRET", "(unparseable)"},
 		{"empty is refused", "", "(unparseable)"},
 		{"network-path reference is refused", "//s3cr3t", "(unparseable)"},
+		{"non-http scheme is refused", "ftp://collector/v1/logs", "(unparseable)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, ok := redactEndpoint(tc.in)
@@ -437,14 +441,24 @@ func TestRedactEndpoint(t *testing.T) {
 
 // The exporter-construction failure path, which is where a credential is most
 // likely to appear: a malformed-endpoint error is exactly the one that quotes
-// the endpoint back. Untested, a regression to passing err straight to slog
-// would leave the suite green while writing the credential to the journal.
+// the endpoint back.
+//
+// The constructor is stubbed because no environment value reaches this branch —
+// anything malformed enough to break otlploghttp is refused earlier by
+// redactEndpoint, and otlploghttp itself prefers logging and falling back to
+// returning an error. An earlier version of this test used a malformed endpoint
+// and silently stopped covering the branch once that validation was added.
 func TestEnableOTELLogs_FailureDoesNotEchoTheEndpoint(t *testing.T) {
-	// Parses well enough to get past the configured-endpoint guard, and badly
-	// enough that the exporter refuses it.
-	const bad = "http://user:s3cr3t@bad host:99999/v1/logs"
-	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", bad)
+	const endpoint = "https://user:s3cr3t@collector.example/v1/logs"
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", endpoint)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	prevCtor := newLogExporter
+	t.Cleanup(func() { newLogExporter = prevCtor })
+	// Quotes the endpoint back, exactly as an OTLP endpoint error does.
+	newLogExporter = func(context.Context) (sdklog.Exporter, error) {
+		return nil, fmt.Errorf("invalid endpoint %q: nope", endpoint)
+	}
 
 	var stderr bytes.Buffer
 	prev := slog.Default()
@@ -458,12 +472,15 @@ func TestEnableOTELLogs_FailureDoesNotEchoTheEndpoint(t *testing.T) {
 	if strings.Contains(out, "s3cr3t") {
 		t.Errorf("the endpoint's credential reached the journal: %q", out)
 	}
-	if strings.Contains(out, bad) {
+	if strings.Contains(out, endpoint) {
 		t.Errorf("the raw endpoint reached the journal: %q", out)
 	}
-	// Whatever happened, it has to be explained — silently doing nothing is the
-	// failure mode this whole file exists to avoid.
-	if !strings.Contains(out, "Log export") {
-		t.Errorf("nothing explained the outcome: %q", out)
+	// The diagnostic has to survive the sanitizing, or the operator learns
+	// nothing about why export is off.
+	if !strings.Contains(out, "could not build the OTLP log exporter") {
+		t.Errorf("the failure was not explained: %q", out)
+	}
+	if !strings.Contains(out, "collector.example/v1/logs") {
+		t.Errorf("the redacted endpoint is missing, so the line is not actionable: %q", out)
 	}
 }
