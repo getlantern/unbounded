@@ -200,9 +200,11 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	}
 
 	// Last, so it cannot announce success for setup that then fails — every
-	// step above returns through shutdownAfter. Still after enableOTELLogs, so
-	// the handler is installed and this is exported rather than only written to
-	// stderr. Nothing else says which build is running: the spans carry no
+	// step above returns through shutdownAfter. Placed after enableOTELLogs so
+	// that when export is on, this is exported too — when it is off, or the
+	// exporter could not be built, enableOTELLogs is a no-op and this stays
+	// stderr-only, which is the same place the line explaining why lives.
+	// Nothing else says which build is running: the spans carry no
 	// service.version, so until now the only way to know what was deployed was
 	// to ask the host, which is how a stale binary went unnoticed for days
 	// while newer releases were assumed live.

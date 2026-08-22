@@ -67,14 +67,29 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 		return func(context.Context) error { return nil }
 	}
 
+	// Validated before otlploghttp.New, because New reads the same environment
+	// variable and its own error handler prints the offending value — with its
+	// credentials — straight to the log. It also does not return an error for a
+	// malformed endpoint: it logs, falls back, and leaves us announcing an
+	// export that will never work. Refusing here means the SDK never sees the
+	// value, so it never prints it.
+	safeEndpoint, ok := redactEndpoint(endpoint)
+	if !ok {
+		// The value is deliberately absent: it did not parse, so there is no
+		// way to tell which part of it was a secret.
+		slog.Warn("Log export disabled: the configured OTLP logs endpoint is not an absolute URL",
+			"from", endpointVar)
+		return func(context.Context) error { return nil }
+	}
+
 	exp, err := otlploghttp.New(ctx)
 	if err != nil {
 		// The exporter reports what it could not parse, which for an endpoint
 		// problem is the endpoint — credentials included. Substituted rather
 		// than dropped, so the diagnostic survives without the secret.
 		slog.Warn("Log export disabled; could not build the OTLP log exporter",
-			"err", strings.ReplaceAll(err.Error(), endpoint, redactEndpoint(endpoint)),
-			"endpoint", redactEndpoint(endpoint), "from", endpointVar)
+			"err", strings.ReplaceAll(err.Error(), endpoint, safeEndpoint),
+			"endpoint", safeEndpoint, "from", endpointVar)
 		return func(context.Context) error { return nil }
 	}
 
@@ -102,7 +117,7 @@ func enableOTELLogs(ctx context.Context) func(context.Context) error {
 	// (stderr would receive it either way — the tee's local leg is stderr — so
 	// the ordering is about not exporting it, not about reaching the journal.)
 	slog.Info("Log export enabled",
-		"endpoint", redactEndpoint(endpoint), "from", endpointVar, "min_level", otelLogLevel)
+		"endpoint", safeEndpoint, "from", endpointVar, "min_level", otelLogLevel)
 
 	local := slog.Default().Handler()
 	remote := otelslog.NewHandler("github.com/getlantern/broflake/egress",
@@ -199,20 +214,22 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 // is read by more people than the config is. Scheme, host and path are what make
 // the line useful.
 //
-// Anything without a host is refused outright rather than returned. url.Parse
-// accepts opaque and hostless strings — "secret", "http:token" — without error,
-// and clearing User does nothing to those, so returning the parsed form would
-// echo the whole value. Same rule as sanitizeReportURL: with no structure to
-// rely on, there is no way to tell which part was secret.
-func redactEndpoint(raw string) string {
+// Anything that is not an absolute URL is refused outright rather than
+// returned. url.Parse accepts opaque strings ("secret", "http:token") and
+// network-path references ("//s3cr3t", which parses with that as the Host and
+// no scheme) without error, and clearing User does nothing to any of them, so
+// returning the parsed form would echo the whole value. Requiring both a scheme
+// and a host is what makes the redaction meaningful; with no structure to rely
+// on there is no way to tell which part was secret.
+func redactEndpoint(raw string) (string, bool) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return "(unparseable)"
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", false
 	}
 	u.User = nil
 	u.RawQuery = ""
 	u.ForceQuery = false
 	u.Fragment = ""
 	u.RawFragment = ""
-	return u.String()
+	return u.String(), true
 }

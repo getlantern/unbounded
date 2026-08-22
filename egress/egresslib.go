@@ -128,12 +128,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// filtered slice reported a client that clearly sent something as though it
 		// had sent nothing.
 		reason, msg, logValues := classifySubprotocolRefusal(rawSubprotocols, subprotocols)
-		attrs := append(peerAttrs(r), "subprotocol_count", len(subprotocols))
-		if logValues {
-			// Bounded even though the cookie mismatch means no session ID is present:
-			// these are still unbounded, peer-chosen bytes headed for disk.
-			attrs = append(attrs, "subprotocol_values", truncateForLog(strings.Join(subprotocols, "|")))
-		}
 
 		// A status only for the legacy client, because it is the only one of these
 		// where a specific remedy exists and a real operator is plausibly watching.
@@ -158,13 +152,25 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// The counter is the record; the log is a sample. See refusalLogInterval —
 		// these lines were 96% of the journal on unbounded-us.
 		if shouldLog, suppressed := shouldLogRefusal(reason, time.Now()); shouldLog {
+			// Built inside the throttle, not before it. peerAttrs resolves the
+			// donor's country, which is a geo database lookup, and this branch
+			// is the ~9 refusals/second path described above — building attrs
+			// unconditionally meant paying for that lookup on every refusal to
+			// discard it on all but one per minute.
+			attrs := append(peerAttrs(r), "subprotocol_count", len(subprotocols))
+			if logValues {
+				// Bounded even though the cookie mismatch means no session ID is
+				// present: these are still unbounded, peer-chosen bytes headed
+				// for disk.
+				attrs = append(attrs, "subprotocol_values", truncateForLog(strings.Join(subprotocols, "|")))
+			}
 			if suppressed > 0 {
 				attrs = append(attrs, "suppressed_since_last", suppressed)
 			}
 			// Info so it leaves the host. This is the sample that identifies a
-			// refused population — remote_addr, user_agent and the raw
-			// subprotocol values — and the throttle above is what makes it
-			// safe at an exported level.
+			// refused population — country, user agent and the raw subprotocol
+			// values — and the throttle is what makes it safe at an exported
+			// level.
 			slog.Info(msg, attrs...)
 		}
 		return

@@ -90,12 +90,21 @@ func TestNewListener_LogsTheRunningVersion(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ll.Close() })
 
-	out := buf.String()
-	if !strings.Contains(out, "Egress telemetry initialized") {
-		t.Fatalf("no startup line naming the build: %q", out)
+	// Find the startup record and assert the version is on *that* line. Two
+	// independent Contains calls over the whole buffer would pass if some other
+	// record happened to carry the version.
+	var startup string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "Egress telemetry initialized") {
+			startup = line
+			break
+		}
 	}
-	if !strings.Contains(out, common.Version) {
+	if startup == "" {
+		t.Fatalf("no startup line naming the build: %q", buf.String())
+	}
+	if !strings.Contains(startup, common.Version) {
 		t.Errorf("the startup line does not carry %s, so a deploy stays unverifiable: %q",
-			common.Version, out)
+			common.Version, startup)
 	}
 }

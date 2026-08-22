@@ -418,11 +418,52 @@ func TestRedactEndpoint(t *testing.T) {
 		{"bare word is refused", "secret", "(unparseable)"},
 		{"hostless path is refused", "/v1/logs?api-key=SECRET", "(unparseable)"},
 		{"empty is refused", "", "(unparseable)"},
+		{"network-path reference is refused", "//s3cr3t", "(unparseable)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := redactEndpoint(tc.in); got != tc.want {
-				t.Errorf("redactEndpoint(%q) = %q, want %q", tc.in, got, tc.want)
+			got, ok := redactEndpoint(tc.in)
+			if tc.want == "(unparseable)" {
+				if ok {
+					t.Errorf("redactEndpoint(%q) = (%q, true), want refused", tc.in, got)
+				}
+				return
+			}
+			if !ok || got != tc.want {
+				t.Errorf("redactEndpoint(%q) = (%q, %v), want (%q, true)", tc.in, got, ok, tc.want)
 			}
 		})
+	}
+}
+
+// The exporter-construction failure path, which is where a credential is most
+// likely to appear: a malformed-endpoint error is exactly the one that quotes
+// the endpoint back. Untested, a regression to passing err straight to slog
+// would leave the suite green while writing the credential to the journal.
+func TestEnableOTELLogs_FailureDoesNotEchoTheEndpoint(t *testing.T) {
+	// Parses well enough to get past the configured-endpoint guard, and badly
+	// enough that the exporter refuses it.
+	const bad = "http://user:s3cr3t@bad host:99999/v1/logs"
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", bad)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+
+	var stderr bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	shutdown := enableOTELLogs(context.Background())
+	t.Cleanup(func() { _ = shutdown(context.Background()) })
+
+	out := stderr.String()
+	if strings.Contains(out, "s3cr3t") {
+		t.Errorf("the endpoint's credential reached the journal: %q", out)
+	}
+	if strings.Contains(out, bad) {
+		t.Errorf("the raw endpoint reached the journal: %q", out)
+	}
+	// Whatever happened, it has to be explained — silently doing nothing is the
+	// failure mode this whole file exists to avoid.
+	if !strings.Contains(out, "Log export") {
+		t.Errorf("nothing explained the outcome: %q", out)
 	}
 }
