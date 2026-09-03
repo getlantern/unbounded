@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: Browsers Unbounded
- * Description: Browsers Unbounded widget to selected pages with editable theme, layout and location.
- * Version: 1.0
- * Author: Echo
+ * Plugin Name: Unbounded
+ * Description: Unbounded widget with editable theme, layout and location. Enable it per page, on all posts, or on the homepage.
+ * Version: 1.1
+ * Author: Lantern
  */
 
 // hooks for the admin ui
@@ -27,7 +27,7 @@ add_action('save_post', 'browsers_unbounded_save_meta_box_data');
 
  // menu item for settings page
 function browsers_unbounded_plugin_menu() {
-    add_menu_page('Browsers Unbounded Settings', 'Browsers Unbounded', 'manage_options', 'browsers-unbounded-settings', 'browsers_unbounded_plugin_settings_page');
+    add_menu_page('Unbounded Settings', 'Unbounded', 'manage_options', 'browsers-unbounded-settings', 'browsers_unbounded_plugin_settings_page');
 }
 
 // settings for storing plugin options
@@ -51,7 +51,7 @@ function browsers_unbounded_options_sanitize($options) {
 function browsers_unbounded_plugin_settings_page() {
     ?>
     <div class="wrap">
-        <h2>Browsers Unbounded Settings</h2>
+        <h2>Unbounded Settings</h2>
         <form method="post" action="options.php">
             <?php settings_fields('browsers_unbounded_options_group'); ?>
             <?php do_settings_sections('browsers-unbounded-settings'); ?>
@@ -71,7 +71,7 @@ function browsers_unbounded_layout_callback() {
         <option value='panel' <?php selected($layout, 'panel'); ?>>Panel</option>
         <option value='floating' <?php selected($layout, 'floating'); ?>>Floating</option>
     </select>
-    <p class="description">Select Browsers Unbounded layout.</p>
+    <p class="description">Select Unbounded layout.</p>
     <?php
 }
 
@@ -85,7 +85,7 @@ function browsers_unbounded_theme_callback() {
         <option value='dark' <?php selected($theme, 'dark'); ?>>Dark</option>
         <option value='auto' <?php selected($theme, 'auto'); ?>>Auto</option>
     </select>
-    <p class="description">Select Browsers Unbounded theme.</p>
+    <p class="description">Select Unbounded theme.</p>
     <?php
 }
 
@@ -97,7 +97,7 @@ function browsers_unbounded_location_callback() {
         <option value='header' <?php selected($location, 'header'); ?>>Header</option>
         <option value='footer' <?php selected($location, 'footer'); ?>>Footer</option>
     </select>
-    <p class="description">Select where to add Browsers Unbounded.</p>
+    <p class="description">Select where to add Unbounded.</p>
     <?php
 }
 
@@ -122,7 +122,7 @@ function browsers_unbounded_posts_callback() {
 
 // meta box to the page editor to enable the unbounded widget
 function browsers_unbounded_add_meta_box() {
-    add_meta_box('browsers-unbounded-enable', 'Enable Browsers Unbounded', 'browsers_unbounded_meta_box_callback', 'page', 'side');
+    add_meta_box('browsers-unbounded-enable', 'Enable Unbounded', 'browsers_unbounded_meta_box_callback', 'page', 'side');
 }
 
 // renders meta box in the page editor
@@ -131,7 +131,7 @@ function browsers_unbounded_meta_box_callback($post) {
     $value = get_post_meta($post->ID, '_browsers_unbounded_enable', true);
     echo '<label for="browsers_unbounded_field">';
     echo '<input type="checkbox" id="browsers_unbounded_field" name="browsers_unbounded_field" value="1"' . checked($value, 1, false) . ' />';
-    echo ' Enable Browsers Unbounded on this page';
+    echo ' Enable Unbounded on this page';
     echo '</label> ';
 }
 
@@ -159,7 +159,13 @@ function browsers_unbounded_add_element_and_script() {
         // script
         echo '<script defer="defer" src="https://embed.lantern.io/static/js/main.js"></script>';
 
-        // element
-        echo "<browsers-unbounded data-layout='{$options['layout']}' data-theme='{$options['theme']}' style='width: 100%;'></browsers-unbounded>";
+        // element — tag name is the widget's public API, so it stays "browsers-unbounded"
+        $layout = isset($options['layout']) ? $options['layout'] : 'banner';
+        $theme = isset($options['theme']) ? $options['theme'] : 'dark';
+        printf(
+            "<browsers-unbounded data-layout='%s' data-theme='%s' style='width: 100%%;'></browsers-unbounded>",
+            esc_attr($layout),
+            esc_attr($theme)
+        );
     }
 }
