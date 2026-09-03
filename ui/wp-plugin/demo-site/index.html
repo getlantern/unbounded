@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Unbounded for WordPress — Live Demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Urbanist:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#04100f; --ink2:#071a19; --line:rgba(0,188,212,.18);
+    --fg:#dff2f0; --fg-dim:#7fa5a4; --brand:#00BCD4; --brand2:#00A83E; --glow:rgba(0,188,212,.35);
+  }
+  *{box-sizing:border-box}
+  /* paint the canvas on html: a fixed background on body alone only covers
+     the viewport, leaving the rest of a tall page on the white default */
+  html{
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(0,188,212,.14), transparent 60%),
+      radial-gradient(700px 500px at 100% 0%, rgba(0,168,62,.10), transparent 55%),
+      linear-gradient(180deg,var(--ink) 0%, var(--ink2) 100%);
+    background-color:var(--ink2);
+    background-attachment:fixed;
+  }
+  body{
+    margin:0; min-height:100vh; color:var(--fg); background:transparent;
+    font-family:Urbanist,system-ui,sans-serif; font-size:16px; line-height:1.6;
+  }
+  /* faint mesh: the volunteer network motif */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.5;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:64px 64px; mask-image:radial-gradient(ellipse at 50% 0%,#000 30%,transparent 75%);
+  }
+  main{position:relative; max-width:760px; margin:0 auto; padding:9vh 24px 12vh}
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); display:flex; align-items:center; gap:10px; margin-bottom:22px;
+  }
+  .eyebrow::after{content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),transparent)}
+  h1{
+    font-family:Fraunces,Georgia,serif; font-weight:900; font-size:clamp(2.4rem,6vw,4rem);
+    line-height:1.02; letter-spacing:-.02em; margin:0 0 18px;
+  }
+  h1 em{font-style:italic; font-weight:400; color:var(--brand)}
+  .lede{font-size:clamp(1.02rem,2.2vw,1.18rem); color:var(--fg-dim); max-width:56ch; margin:0 0 34px}
+  .cta{
+    display:inline-flex; align-items:center; gap:12px; text-decoration:none;
+    background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#02120f; font-weight:600;
+    padding:15px 26px; border-radius:999px; font-size:1.03rem;
+    box-shadow:0 8px 30px var(--glow); transition:transform .18s ease, box-shadow .18s ease;
+  }
+  .cta:hover{transform:translateY(-2px); box-shadow:0 14px 42px var(--glow)}
+  .cta .arrow{transition:transform .18s ease}
+  .cta:hover .arrow{transform:translateX(4px)}
+  .note{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--fg-dim); margin-top:16px}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin:52px 0 0}
+  .card{
+    border:1px solid var(--line); border-radius:14px; padding:18px 20px;
+    background:rgba(255,255,255,.022); backdrop-filter:blur(6px);
+  }
+  .card h3{
+    margin:0 0 6px; font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--brand); font-weight:500;
+  }
+  .card p{margin:0; font-size:14.5px; color:var(--fg-dim)}
+  ol{counter-reset:s; list-style:none; padding:0; margin:44px 0 0}
+  ol li{position:relative; padding-left:44px; margin-bottom:16px; color:var(--fg-dim); font-size:15px}
+  ol li::before{
+    counter-increment:s; content:counter(s,decimal-leading-zero);
+    position:absolute; left:0; top:1px; font-family:"IBM Plex Mono",monospace; font-size:12px;
+    color:var(--brand); border:1px solid var(--line); border-radius:7px; padding:3px 7px;
+  }
+  ol li b{color:var(--fg); font-weight:600}
+  footer{margin-top:56px; padding-top:22px; border-top:1px solid var(--line); font-size:13px; color:var(--fg-dim)}
+  a.link{color:var(--brand); text-decoration:none; border-bottom:1px solid var(--line)}
+  a.link:hover{border-bottom-color:var(--brand)}
+  /* staggered reveal */
+  .r{opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
+  .r:nth-child(1){animation-delay:.05s} .r:nth-child(2){animation-delay:.13s}
+  .r:nth-child(3){animation-delay:.21s} .r:nth-child(4){animation-delay:.29s}
+  .r:nth-child(5){animation-delay:.37s} .r:nth-child(6){animation-delay:.45s}
+  .r:nth-child(7){animation-delay:.53s} .r:nth-child(8){animation-delay:.61s}
+  @keyframes rise{to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion:reduce){.r{animation:none; opacity:1; transform:none}}
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow r">Unbounded × WordPress</div>
+
+  <h1 class="r">Turn any WordPress site into <em>a volunteer proxy.</em></h1>
+
+  <p class="lede r">
+    The Unbounded plugin drops a single widget onto your site. Visitors who switch it on
+    lend a sliver of their connection to someone behind a firewall — no account, no install,
+    nothing to run on your server.
+  </p>
+
+  <a class="cta r" id="launch" href="#">
+    Launch the live demo <span class="arrow">→</span>
+  </a>
+  <div class="note r" id="note">Boots a real WordPress in your browser · nothing installed · ~20s</div>
+
+  <div class="grid r">
+    <div class="card">
+      <h3>No server</h3>
+      <p>WordPress compiled to WebAssembly, running entirely client-side.</p>
+    </div>
+    <div class="card">
+      <h3>Real plugin</h3>
+      <p>The actual plugin zip, installed and activated on boot.</p>
+    </div>
+    <div class="card">
+      <h3>Disposable</h3>
+      <p>Lives in your tab. Close it and it's gone — break anything you like.</p>
+    </div>
+  </div>
+
+  <ol class="r">
+    <li><b>Launch</b> — a fresh WordPress boots and the plugin activates itself.</li>
+    <li><b>Look</b> — the widget is already embedded on the front page.</li>
+    <li><b>Configure</b> — open <span style="font-family:'IBM Plex Mono',monospace">Unbounded</span> in the admin sidebar to change layout, theme, and placement.</li>
+    <li><b>Toggle</b> — flip the switch to start relaying traffic for real.</li>
+  </ol>
+
+  <footer>
+    Powered by <a class="link" href="https://playground.wordpress.net" target="_blank" rel="noopener">WordPress Playground</a>.
+    Plugin source lives in <a class="link" href="https://github.com/getlantern/unbounded/tree/main/ui/wp-plugin" target="_blank" rel="noopener">getlantern/unbounded</a>.
+    <span id="zipline"></span>
+  </footer>
+</main>
+
+<script>
+// Build the Playground link at runtime so this works on whatever domain it's deployed to.
+(function () {
+  var origin = location.origin + location.pathname.replace(/\/[^\/]*$/, '/');
+  var zipUrl = origin + 'wp-plugin.zip';
+  var launch = document.getElementById('launch');
+
+  fetch('blueprint.json')
+    .then(function (r) { return r.json(); })
+    .then(function (bp) {
+      var json = JSON.stringify(bp).replace('PLUGIN_ZIP_URL', zipUrl);
+      launch.href = 'https://playground.wordpress.net/#' + encodeURIComponent(json);
+      document.getElementById('zipline').innerHTML =
+        '<br>Plugin zip: <a class="link" href="' + zipUrl + '">wp-plugin.zip</a>';
+    })
+    .catch(function () {
+      document.getElementById('note').textContent =
+        'Could not load blueprint.json — check that it deployed alongside this page.';
+    });
+})();
+</script>
+</body>
+</html>

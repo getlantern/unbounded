@@ -1,0 +1,17 @@
+{
+  "$schema": "https://playground.wordpress.net/blueprint-schema.json",
+  "landingPage": "/",
+  "preferredVersions": { "php": "8.3", "wp": "latest" },
+  "login": true,
+  "steps": [
+    {
+      "step": "installPlugin",
+      "pluginData": { "resource": "url", "url": "PLUGIN_ZIP_URL" },
+      "options": { "activate": true }
+    },
+    {
+      "step": "runPHP",
+      "code": "<?php require_once '/wordpress/wp-load.php'; $id = wp_insert_post(array('post_type'=>'page','post_title'=>'Unbounded Demo','post_status'=>'publish','post_content'=>'<p>This page is running the Unbounded WordPress plugin. The widget below turns this browser into a volunteer proxy that helps people reach the open internet.</p>')); update_post_meta($id,'_browsers_unbounded_enable','1'); update_option('browsers_unbounded_options', array('layout'=>'banner','theme'=>'dark','location'=>'footer','homepage'=>'on')); update_option('show_on_front','page'); update_option('page_on_front',$id); update_option('blogname','Unbounded Demo');"
+    }
+  ]
+}
