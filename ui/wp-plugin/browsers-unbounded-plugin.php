@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Unbounded
- * Description: Unbounded widget to selected pages with editable theme, layout and location.
+ * Description: Unbounded widget with editable theme, layout and location. Enable it per page, on all posts, or on the homepage.
  * Version: 1.1
  * Author: Lantern
  */

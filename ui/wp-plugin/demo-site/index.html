@@ -144,8 +144,15 @@
     .then(function (bp) {
       var json = JSON.stringify(bp).replace('PLUGIN_ZIP_URL', zipUrl);
       launch.href = 'https://playground.wordpress.net/#' + encodeURIComponent(json);
-      document.getElementById('zipline').innerHTML =
-        '<br>Plugin zip: <a class="link" href="' + zipUrl + '">wp-plugin.zip</a>';
+
+      var zipline = document.getElementById('zipline');
+      var link = document.createElement('a');
+      link.className = 'link';
+      link.href = zipUrl;
+      link.textContent = 'wp-plugin.zip';
+      zipline.appendChild(document.createElement('br'));
+      zipline.appendChild(document.createTextNode('Plugin zip: '));
+      zipline.appendChild(link);
     })
     .catch(function () {
       document.getElementById('note').textContent =

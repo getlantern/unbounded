@@ -21,7 +21,7 @@ WordPress compiled to WebAssembly inside the visitor's browser, installs
 The project is connected to this repo, so a push to `main` publishes and every PR
 gets a preview URL.
 
-```
+```text
 Build command:            bash ui/wp-plugin/demo-site/build.sh
 Build output directory:   ui/wp-plugin/demo-site/dist
 Root directory:           /
@@ -42,7 +42,7 @@ what is actually in the tree.
 
 ## Testing locally
 
-`build.sh` then serve `dist/` over **HTTPS** — Playground is an HTTPS origin, and a
+Run `build.sh`, then serve `dist/` over **HTTPS** — Playground is an HTTPS origin, and a
 plugin zip on `http://localhost` is blocked as mixed content, which surfaces only as
 a Playground that hangs on "Loading Playgrounds". A preview deployment is usually the
 faster way to check a change.

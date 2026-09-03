@@ -27,5 +27,5 @@ Quick guide to get the Unbounded plugin running with Docker
     - Go to `http://localhost:8000/wp-admin/admin.php?page=browsers-unbounded-settings`
     - You should see the plugin settings page
     - Configure the plugin settings as needed
-    - Create a new page and check the `Enable Unbounded` box in the `Page Attributes` section
+    - Create a new page and tick `Enable Unbounded on this page` in the editor sidebar
     - View the page and you should see the widget in action
