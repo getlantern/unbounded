@@ -12,8 +12,8 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$(dirname "$here")"
 out="$here/dist"
 
-command -v zip >/dev/null || {
-  echo "build.sh needs 'zip', which is not on PATH in this build image" >&2
+command -v python3 >/dev/null || {
+  echo "build.sh needs python3, which is not on PATH in this build image" >&2
   exit 1
 }
 
@@ -25,7 +25,22 @@ for f in browsers-unbounded-plugin.php README.md; do
   cp "$plugin_dir/$f" "$out/stage/wp-plugin/$f"
 done
 
-( cd "$out/stage" && zip -r -q "$out/wp-plugin.zip" wp-plugin )
+# zipfile rather than the zip(1) binary: Cloudflare's Pages build image ships
+# python3 but not zip, and this keeps the local and CI builds on one code path.
+python3 - "$out/stage" "$out/wp-plugin.zip" <<'PY'
+import os, sys, zipfile
+
+stage, target = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
+    for root, dirs, files in sorted(os.walk(stage)):
+        dirs.sort()
+        rel = os.path.relpath(root, stage)
+        if rel != ".":
+            z.writestr(rel + "/", "")
+        for name in sorted(files):
+            path = os.path.join(root, name)
+            z.write(path, os.path.relpath(path, stage))
+PY
 rm -rf "$out/stage"
 
 cp "$here/index.html" "$here/blueprint.json" "$here/_headers" "$out/"
