@@ -36,7 +36,7 @@ function browsers_unbounded_script_url() {
     return apply_filters('browsers_unbounded_script_url', 'https://embed.lantern.io/static/js/main.js');
 }
 
-/** @return array<string, string> Allowed values keyed by option, first entry is the default. */
+/** @return array<string, string[]> Allowed values keyed by option, first entry is the default. */
 function browsers_unbounded_allowed_values() {
     return array(
         'layout'   => array('banner', 'panel', 'floating', 'simple'),
@@ -45,23 +45,18 @@ function browsers_unbounded_allowed_values() {
     );
 }
 
-/** @return array<string, string> Stored options merged over the defaults. */
+/**
+ * Stored options, normalised through the same rules applied on save.
+ *
+ * Reading through the sanitizer rather than merging over a defaults array
+ * matters on upgrade: 1.1 stored whatever was posted, so a site can be holding
+ * a value like location=sidebar that no longer matches any <option> and would
+ * otherwise reach the front end unchecked.
+ *
+ * @return array<string, string>
+ */
 function browsers_unbounded_get_options() {
-    $allowed = browsers_unbounded_allowed_values();
-    $defaults = array(
-        'layout'   => $allowed['layout'][0],
-        'theme'    => $allowed['theme'][0],
-        'location' => $allowed['location'][0],
-        'homepage' => '',
-        'posts'    => '',
-    );
-
-    $stored = get_option('browsers_unbounded_options');
-    if (!is_array($stored)) {
-        return $defaults;
-    }
-
-    return array_merge($defaults, $stored);
+    return browsers_unbounded_options_sanitize(get_option('browsers_unbounded_options'));
 }
 
 // hooks for the admin ui
@@ -109,16 +104,26 @@ function browsers_unbounded_register_settings() {
 }
 
 /**
- * Sanitizes plugin options before saving.
+ * Normalises the option array, on save and on read.
  *
  * The select values reach the front end as attributes on the widget element and
  * the checkboxes decide whether it renders at all, so anything not on the
  * allowlist falls back to the default rather than being stored and echoed.
  *
- * @param mixed $input Raw submitted value.
+ * Always returns every key, which is what lets it double as the read path in
+ * browsers_unbounded_get_options().
+ *
+ * @param mixed $input Raw submitted or stored value.
  * @return array<string, string>
  */
 function browsers_unbounded_options_sanitize($input) {
+    // Two callers pass something that need not be an array: register_setting
+    // hands over whatever was posted, and get_option() returns false when
+    // nothing is stored yet.
+    if (!is_array($input)) {
+        $input = array();
+    }
+
     $allowed = browsers_unbounded_allowed_values();
     $clean = array();
 

@@ -29,8 +29,18 @@ Then:
   this page** in the editor sidebar
 - View the page; the widget renders with its switch off
 
-Port 8000 collides often. `docker compose -f docker-compose.yml -f override.yml up -d`
-with a `ports: !override ["8001:80"]` block moves it.
+Port 8000 collides often. To move it without editing the tracked compose file,
+create the override yourself — it is gitignored:
+
+```bash
+cat > override.yml <<'EOF'
+services:
+  wordpress:
+    ports: !override
+      - "8001:80"
+EOF
+docker compose -f docker-compose.yml -f override.yml up -d
+```
 
 ## Building the plugin zip
 

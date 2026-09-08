@@ -3,7 +3,7 @@
 A one-click live demo of the plugin. No server runs WordPress: the landing page
 links to [WordPress Playground](https://playground.wordpress.net), which boots
 WordPress compiled to WebAssembly inside the visitor's browser, installs
-`wp-plugin.zip`, activates it, and lands on a page with the widget embedded.
+`unbounded.zip`, activates it, and lands on a page with the widget embedded.
 
 ## Layout
 
@@ -12,7 +12,7 @@ WordPress compiled to WebAssembly inside the visitor's browser, installs
 | `index.html` | Landing page. Builds the Playground link at runtime from `location.origin`, so it works on any domain with no edits. |
 | `blueprint.json` | Playground setup steps. `PLUGIN_ZIP_URL` is substituted by `index.html`. |
 | `_headers` | Permissive CORS. Belt-and-braces: Playground fetches plugin zips through its own proxy, so this is not currently load-bearing. |
-| `build.sh` | Assembles `dist/`, generating `wp-plugin.zip` from the plugin source. |
+| `build.sh` | Assembles `dist/`, generating `unbounded.zip` from the plugin source. |
 
 `dist/` is generated and gitignored.
 
