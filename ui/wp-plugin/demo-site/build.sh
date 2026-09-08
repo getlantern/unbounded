@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
 # Assemble the deployable demo site into ./dist.
 #
-# wp-plugin.zip is built from the plugin source next door rather than committed.
-# The hand-uploaded copy on S3 sat at the Feb 2024 build for two and a half years
-# while the source moved on, so a demo created from it installed a plugin that
-# silently ignored half its own settings. Generating the zip here means the demo
-# can only ever ship what is actually in the tree.
+# The same zip this produces is what gets submitted to the WordPress Plugin
+# Directory, so the archive layout is not arbitrary: the top-level directory
+# name becomes the plugin's permanent slug on wordpress.org. It must stay
+# "unbounded".
+#
+# The zip is built from source rather than committed. The hand-uploaded copy on
+# S3 sat at the Feb 2024 build for two and a half years while the source moved
+# on, so a demo created from it installed a plugin that silently ignored half
+# its own settings. Generating it here means the demo and the submission can
+# only ever ship what is actually in the tree.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$(dirname "$here")"
 out="$here/dist"
+slug="unbounded"
 
 command -v python3 >/dev/null || {
   echo "build.sh needs python3, which is not on PATH in this build image" >&2
@@ -18,16 +24,17 @@ command -v python3 >/dev/null || {
 }
 
 rm -rf "$out"
-mkdir -p "$out/stage/wp-plugin"
+mkdir -p "$out/stage/$slug"
 
-# Mirror the layout of the published archive: a single top-level wp-plugin/ dir.
-for f in browsers-unbounded-plugin.php README.md; do
-  cp "$plugin_dir/$f" "$out/stage/wp-plugin/$f"
+# Only what a WordPress install needs. README.md, docker-compose.yml and the
+# demo site itself are development files and stay out of the distributed plugin.
+for f in unbounded.php readme.txt uninstall.php; do
+  cp "$plugin_dir/$f" "$out/stage/$slug/$f"
 done
 
 # zipfile rather than the zip(1) binary: Cloudflare's Pages build image ships
 # python3 but not zip, and this keeps the local and CI builds on one code path.
-python3 - "$out/stage" "$out/wp-plugin.zip" <<'PY'
+python3 - "$out/stage" "$out/$slug.zip" <<'PY'
 import os, sys, zipfile
 
 stage, target = sys.argv[1], sys.argv[2]
@@ -45,5 +52,12 @@ rm -rf "$out/stage"
 
 cp "$here/index.html" "$here/blueprint.json" "$here/_headers" "$out/"
 
-version=$(sed -n 's/^ \* Version: *//p' "$plugin_dir/browsers-unbounded-plugin.php" | head -1)
-echo "built demo site -> $out (plugin v${version:-unknown}, zip $(wc -c < "$out/wp-plugin.zip") bytes)"
+version=$(sed -n 's/^ \* Version: *//p' "$plugin_dir/unbounded.php" | head -1)
+stable=$(sed -n 's/^Stable tag: *//p' "$plugin_dir/readme.txt" | head -1)
+if [ "$version" != "$stable" ]; then
+  echo "version mismatch: unbounded.php says '$version', readme.txt Stable tag says '$stable'" >&2
+  echo "wordpress.org serves whatever Stable tag points at, so these must agree" >&2
+  exit 1
+fi
+
+echo "built demo site -> $out (plugin v$version, $slug.zip $(wc -c < "$out/$slug.zip") bytes)"

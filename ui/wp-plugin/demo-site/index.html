@@ -136,7 +136,7 @@
 // Build the Playground link at runtime so this works on whatever domain it's deployed to.
 (function () {
   var origin = location.origin + location.pathname.replace(/\/[^\/]*$/, '/');
-  var zipUrl = origin + 'wp-plugin.zip';
+  var zipUrl = origin + 'unbounded.zip';
   var launch = document.getElementById('launch');
 
   fetch('blueprint.json')
@@ -149,7 +149,7 @@
       var link = document.createElement('a');
       link.className = 'link';
       link.href = zipUrl;
-      link.textContent = 'wp-plugin.zip';
+      link.textContent = 'unbounded.zip';
       zipline.appendChild(document.createElement('br'));
       zipline.appendChild(document.createTextNode('Plugin zip: '));
       zipline.appendChild(link);
