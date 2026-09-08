@@ -1,2 +1,4 @@
 # ignore WordPress demo site
 wp-content/*
+# local compose port override, see README.md
+override.yml
