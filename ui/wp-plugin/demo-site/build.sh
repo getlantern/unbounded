@@ -16,6 +16,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$(dirname "$here")"
 out="$here/dist"
+pkg="$here/package"
 slug="unbounded"
 
 command -v python3 >/dev/null || {
@@ -23,18 +24,20 @@ command -v python3 >/dev/null || {
   exit 1
 }
 
-rm -rf "$out"
-mkdir -p "$out/stage/$slug"
+rm -rf "$out" "$pkg"
+mkdir -p "$out" "$pkg/$slug"
 
 # Only what a WordPress install needs. README.md, docker-compose.yml and the
 # demo site itself are development files and stay out of the distributed plugin.
 for f in unbounded.php readme.txt uninstall.php; do
-  cp "$plugin_dir/$f" "$out/stage/$slug/$f"
+  cp "$plugin_dir/$f" "$pkg/$slug/$f"
 done
 
 # zipfile rather than the zip(1) binary: Cloudflare's Pages build image ships
 # python3 but not zip, and this keeps the local and CI builds on one code path.
-python3 - "$out/stage" "$out/$slug.zip" <<'PY'
+# The staged directory is kept: publish-wp-plugin.yml hands it to the SVN
+# deploy as BUILD_DIR, so the directory and the zip can never differ.
+python3 - "$pkg" "$out/$slug.zip" <<'PY'
 import os, sys, zipfile
 
 stage, target = sys.argv[1], sys.argv[2]
@@ -48,7 +51,6 @@ with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
             path = os.path.join(root, name)
             z.write(path, os.path.relpath(path, stage))
 PY
-rm -rf "$out/stage"
 
 cp "$here/index.html" "$here/blueprint.json" "$here/_headers" "$out/"
 
