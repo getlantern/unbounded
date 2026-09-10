@@ -1,0 +1,73 @@
+name: Publish WordPress plugin
+
+# Publishes ui/wp-plugin to the wordpress.org Plugin Directory (SVN) when a
+# wp-plugin/v* tag is pushed. Inert until the directory has approved the plugin
+# and SVN_USERNAME / SVN_PASSWORD exist as repository secrets.
+#
+# The tag is the release. Its version must equal the plugin's Version header and
+# the readme's Stable tag, because wordpress.org serves whatever Stable tag
+# points at -- a mismatch ships a tags/ directory nobody is served from.
+#
+# The previous distribution channel for this plugin was a zip uploaded to S3 by
+# hand in 2024 that nobody could update; it served a stale build for two and a
+# half years. Publishing from a tag keeps the directory pinned to the tree.
+
+on:
+  push:
+    tags:
+      - 'wp-plugin/v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      # Nothing here pushes to git -- the deploy target is SVN -- so the token
+      # actions/checkout would otherwise leave in .git/config has no use, and a
+      # third-party action runs in this workspace after it.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Derive the version from the tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#wp-plugin/v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build the plugin directory
+        run: bash ui/wp-plugin/demo-site/build.sh
+
+      - name: Tag must match the plugin Version and the readme Stable tag
+        env:
+          TAG_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -eu
+          php=$(sed -n 's/^ \* Version: *//p' ui/wp-plugin/unbounded.php | head -1)
+          stable=$(sed -n 's/^Stable tag: *//p' ui/wp-plugin/readme.txt | head -1)
+          if [ "$TAG_VERSION" != "$php" ] || [ "$TAG_VERSION" != "$stable" ]; then
+            echo "tag says $TAG_VERSION, unbounded.php says $php, readme Stable tag says $stable" >&2
+            exit 1
+          fi
+
+      - name: Refuse to run without SVN credentials
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$SVN_USERNAME" ] || missing="SVN_USERNAME"
+          [ -n "$SVN_PASSWORD" ] || missing="${missing:+$missing and }SVN_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "$missing not set. Either the plugin has not been approved by wordpress.org yet, or the secrets were never added." >&2
+            exit 1
+          fi
+
+      - name: Deploy to wordpress.org SVN
+        uses: 10up/action-wordpress-plugin-deploy@stable
+        env:
+          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
+          SLUG: unbounded
+          VERSION: ${{ steps.v.outputs.version }}
+          BUILD_DIR: ui/wp-plugin/demo-site/package/unbounded
