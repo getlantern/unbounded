@@ -53,12 +53,14 @@ their browser contacts:
 * **fonts.googleapis.com / fonts.gstatic.com** -- the widget's typeface,
   Urbanist, from Google Fonts.
 * **plausible.io** -- usage analytics, loaded inside the embed.lantern.io frame.
-  The widget sends it two events: that it loaded, and later whether it was
-  switched on. Plausible's own script adds its usual page metadata, including
-  the frame's referrer -- the site the widget is embedded on, usually just the
-  origin, as trimmed by that site's referrer policy. Plausible is cookieless
-  and keeps no persistent identifier for the visitor; Lantern uses the counts
-  to report how many sites run the widget and how many visitors volunteer.
+  On load the widget sends it two events: that it rendered, tagged with the
+  embed type (web page or browser extension), and the state of the switch,
+  which is off. The switch event is sent again whenever a visitor changes it.
+  Plausible's own script adds its usual page metadata, including the frame's
+  referrer -- the site the widget is embedded on, usually just the origin, as
+  trimmed by that site's referrer policy. Plausible is cookieless and keeps no
+  persistent identifier for the visitor; Lantern uses the counts to report how
+  many sites run the widget and how many visitors volunteer.
 
 Nothing else is contacted until a visitor turns the switch on. After that:
 
