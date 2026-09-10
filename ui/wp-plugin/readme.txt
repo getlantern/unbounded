@@ -53,10 +53,12 @@ their browser contacts:
 * **fonts.googleapis.com / fonts.gstatic.com** -- the widget's typeface,
   Urbanist, from Google Fonts.
 * **plausible.io** -- usage analytics, loaded inside the embed.lantern.io frame.
-  It records that the widget loaded, later whether it was switched on, and the
-  address of the page it is embedded on. Plausible is cookieless and keeps no
-  persistent identifier for the visitor; Lantern uses the counts to report how
-  many sites run the widget and how many visitors volunteer.
+  The widget sends it two events: that it loaded, and later whether it was
+  switched on. Plausible's own script adds its usual page metadata, including
+  the frame's referrer -- the site the widget is embedded on, usually just the
+  origin, as trimmed by that site's referrer policy. Plausible is cookieless
+  and keeps no persistent identifier for the visitor; Lantern uses the counts
+  to report how many sites run the widget and how many visitors volunteer.
 
 Nothing else is contacted until a visitor turns the switch on. After that:
 
@@ -68,8 +70,9 @@ Nothing else is contacted until a visitor turns the switch on. After that:
   appropriate for them.
 * **freddie.iantem.io** -- peer discovery and connection signaling.
 * **unbounded.iantem.io** -- the exit servers that relayed traffic egresses
-  through. If the widget's page freezes or crashes, a small diagnostic report
-  (timing data, no personal data) is also sent here.
+  through. If the widget's page freezes or crashes, a diagnostic report is also
+  sent here: timing measurements, the page's address, the browser's user-agent
+  string, and the widget build. It carries no identifier for the visitor.
 * **netstated-d7bbec1ed55b.herokuapp.com** -- anonymous network-state updates
   that power the live map of active connections.
 
