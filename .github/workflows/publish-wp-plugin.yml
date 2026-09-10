@@ -48,9 +48,13 @@ jobs:
       - name: Refuse to run without SVN credentials
         env:
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
+          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
         run: |
-          if [ -z "$SVN_USERNAME" ]; then
-            echo "SVN_USERNAME / SVN_PASSWORD are not set. Either the plugin has not been approved by wordpress.org yet, or the secrets were never added." >&2
+          missing=""
+          [ -n "$SVN_USERNAME" ] || missing="SVN_USERNAME"
+          [ -n "$SVN_PASSWORD" ] || missing="${missing:+$missing and }SVN_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "$missing not set. Either the plugin has not been approved by wordpress.org yet, or the secrets were never added." >&2
             exit 1
           fi
 
