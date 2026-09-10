@@ -24,7 +24,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      # Nothing here pushes to git -- the deploy target is SVN -- so the token
+      # actions/checkout would otherwise leave in .git/config has no use, and a
+      # third-party action runs in this workspace after it.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Derive the version from the tag
         id: v
