@@ -45,21 +45,35 @@ This plugin is a client for the Unbounded network, run by Lantern. The widget
 cannot work locally: relaying traffic for someone in another country requires
 peers, signaling, and exit infrastructure, all of which live in the service.
 
-When the widget renders on a page, the visitor's browser contacts:
+When the widget renders on a page -- before the visitor has done anything --
+their browser contacts:
 
-* **embed.lantern.io** — serves the widget bundle, and the WebAssembly proxy
-  engine once a visitor turns the switch on. The engine is around 12 MB, which
-  is why it is fetched on demand from the service rather than bundled into this
+* **embed.lantern.io** -- serves the widget bundle and its images, and hosts a
+  small invisible frame the widget uses to remember volunteering statistics.
+* **fonts.googleapis.com / fonts.gstatic.com** -- the widget's typeface,
+  Urbanist, from Google Fonts.
+
+Nothing else is contacted until a visitor turns the switch on. After that:
+
+* **embed.lantern.io** -- the WebAssembly proxy engine, around 12 MB, which is
+  why it is fetched on demand from the service rather than bundled into this
   plugin.
-* **geo.getiantem.org** — a country lookup, used to draw the map and to warn
+* **geo.getiantem.org** -- a country lookup, used to draw the map and to warn
   visitors who appear to be in a censored region that volunteering may not be
   appropriate for them.
-* **freddie.iantem.io** — peer discovery and connection signaling.
-* **unbounded.iantem.io** — the exit servers that relayed traffic egresses
-  through.
+* **freddie.iantem.io** -- peer discovery and connection signaling.
+* **unbounded.iantem.io** -- the exit servers that relayed traffic egresses
+  through. If the widget's page freezes or crashes, a small diagnostic report
+  (timing data, no personal data) is also sent here.
+* **netstated-d7bbec1ed55b.herokuapp.com** -- anonymous network-state updates
+  that power the live map of active connections.
 
-Only the first of these is contacted when the page loads. The rest are contacted
-only after a visitor turns the switch on.
+= What is kept in the visitor's browser =
+
+The widget stores a few values in browser storage: the interface language, a
+crash-recovery marker, and -- inside the embed.lantern.io frame, so it follows
+the visitor across sites that run the widget -- running totals of people
+helped. None of it identifies the visitor.
 
 Unbounded does not track visitors, set advertising identifiers, or collect
 personal data. Relayed traffic is end-to-end encrypted between the person being
