@@ -52,6 +52,11 @@ their browser contacts:
   small invisible frame the widget uses to remember volunteering statistics.
 * **fonts.googleapis.com / fonts.gstatic.com** -- the widget's typeface,
   Urbanist, from Google Fonts.
+* **plausible.io** -- usage analytics, loaded inside the embed.lantern.io frame.
+  It records that the widget loaded, later whether it was switched on, and the
+  address of the page it is embedded on. Plausible is cookieless and keeps no
+  persistent identifier for the visitor; Lantern uses the counts to report how
+  many sites run the widget and how many visitors volunteer.
 
 Nothing else is contacted until a visitor turns the switch on. After that:
 
