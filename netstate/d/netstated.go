@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -16,12 +17,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/coder/websocket"
 	netstatecl "github.com/getlantern/broflake/netstate/client"
 	"github.com/getlantern/geo"
 )
 
+// The Big Idea™ (current as of 09/13/2026):
+//
+// 1. uncensored peers POST state updates to /exec under 3 conditions:
+//		a) they send their first update on boot which establishes their presence in the graph
+//		b) when they connect and disconnect a censored peer (that's how we materialize a view of the censored world)
+//		c) on a heartbeat interval, just to refresh their TTL
+//
+// 2. server prunes vertex state on the 'pruneEvery' interval against the TTL - peers do not announce
+// their departure, server simply deletes them (and their censored connections) if we haven't heard from
+// them for a while
+//
+// 3. UI clients hit the /data endpoint to get the current state of the world
+//
+// 4. UI clients hit the /stream websocket to receive push updates - presently, only "new uncensored
+// peer join" events are pushed, and there's potentially some synchronization edge cases - it's
+// intended just to introduce some liveness to your visualization, not for topological perfection
+//
+// 5. if you set UNSAFE=1, you expose the /neato endpoint, which prunes *on demand* and serves a
+// fresh state of the world that also leaks IP info - for debugging / network investigations
+
 const (
-	ttl = 5 * time.Minute // How long do vertices live before we prune them?
+	ttl        = 5 * time.Minute  // How long do vertices live before we prune them?
+	pruneEvery = 30 * time.Second // How often do we sweep for expired vertices?
 )
 
 const (
@@ -33,6 +56,7 @@ var (
 	world     multigraph
 	geolookup geo.Lookup
 	geoDb     string
+	stream    *streamBroadcaster
 )
 
 type vertexLabel string
@@ -53,8 +77,61 @@ type publicPeerData struct {
 	T        int       `json:"t"`
 	Lat      float64   `json:"lat"`
 	Lon      float64   `json:"lon"`
+	City     string    `json:"city"`
 	LastSeen time.Time `json:"lastSeen"`
 	Edges    []int     `json:"edges"`
+}
+
+type uncensoredJoinEvent struct {
+	Lat  float64 `json:"lat"`
+	Lon  float64 `json:"lon"`
+	City string  `json:"city"`
+}
+
+type streamBroadcaster struct {
+	mu    sync.Mutex
+	conns map[*websocket.Conn]bool
+}
+
+func newStreamBroadcaster() *streamBroadcaster {
+	return &streamBroadcaster{conns: make(map[*websocket.Conn]bool)}
+}
+
+func (b *streamBroadcaster) add(c *websocket.Conn) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.conns[c] = true
+}
+
+func (b *streamBroadcaster) remove(c *websocket.Conn) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.conns, c)
+}
+
+func (b *streamBroadcaster) broadcast(v any) {
+	j, err := json.Marshal(v)
+	if err != nil {
+		slog.Debug("stream event marshal error", "error", err)
+		return
+	}
+
+	b.mu.Lock()
+	conns := make([]*websocket.Conn, 0, len(b.conns))
+	for c := range b.conns {
+		conns = append(conns, c)
+	}
+	b.mu.Unlock()
+
+	for _, c := range conns {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := c.Write(ctx, websocket.MessageText, j)
+		cancel()
+
+		if err != nil {
+			slog.Debug("stream broadcast write error", "error", err)
+		}
+	}
 }
 
 type vertex struct {
@@ -62,6 +139,7 @@ type vertex struct {
 	lastSeen time.Time
 	lat      float64
 	lon      float64
+	city     string
 	t        clientType
 }
 
@@ -86,12 +164,14 @@ func newMultigraph() *multigraph {
 	return &multigraph{data: make(map[vertexLabel]vertex)}
 }
 
-// Idempotently add a vertex; if this vertex already exists, just update all of its properties
-func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, t clientType) {
+// Idempotently add a vertex; if this vertex already exists, just update all of its properties.
+// Returns true for new vertices
+func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, city string, t clientType) bool {
 	g.Lock()
 	defer g.Unlock()
 
-	if _, ok := g.data[v]; !ok {
+	_, existed := g.data[v]
+	if !existed {
 		g.data[v] = vertex{}
 	}
 
@@ -99,8 +179,11 @@ func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, t clientType) {
 	vv.lastSeen = time.Now()
 	vv.lat = lat
 	vv.lon = lon
+	vv.city = city
 	vv.t = t
 	g.data[v] = vv
+
+	return !existed
 }
 
 // Get the degree of vertex v, returns 0 if v does not exist
@@ -108,6 +191,19 @@ func (g *multigraph) degree(v vertexLabel) int {
 	g.RLock()
 	defer g.RUnlock()
 	return len(g.data[v].edges)
+}
+
+func (g *multigraph) setEdges(v vertexLabel, edges []edge) {
+	g.Lock()
+	defer g.Unlock()
+
+	vv, ok := g.data[v]
+	if !ok {
+		return
+	}
+
+	vv.edges = edges
+	g.data[v] = vv
 }
 
 // prune deletes expired vertices from this multigraph based on the delta between ttl and the current time
@@ -143,8 +239,8 @@ func (g *multigraph) prune(ttl time.Duration) {
 
 // Encode this multigraph as a Graphviz graph using the 'neato' layout
 func (g *multigraph) toGraphvizNeato() string {
-	printedLabel := func(v vertexLabel, t clientType, lat, lon float64) string {
-		return fmt.Sprintf("%v [%v]\nlat: %v, lon: %v", v, t, lat, lon)
+	printedLabel := func(v vertexLabel, t clientType, lat, lon float64, city string) string {
+		return fmt.Sprintf("%v [%v]\nlat: %v, lon: %v\ncity: %v", v, t, lat, lon, city)
 	}
 
 	g.RLock()
@@ -157,16 +253,16 @@ func (g *multigraph) toGraphvizNeato() string {
 
 	// Encode the vertices
 	for vertexLabel, vertex := range g.data {
-		printedVertexLabel := printedLabel(vertexLabel, vertex.t, vertex.lat, vertex.lon)
+		printedVertexLabel := printedLabel(vertexLabel, vertex.t, vertex.lat, vertex.lon, vertex.city)
 		gv += fmt.Sprintf("\t\"%v\";\n", printedVertexLabel)
 	}
 
 	// Encode the edges
 	for vertexLabel, vertex := range g.data {
-		printedVertexLabel := printedLabel(vertexLabel, vertex.t, vertex.lat, vertex.lon)
+		printedVertexLabel := printedLabel(vertexLabel, vertex.t, vertex.lat, vertex.lon, vertex.city)
 
 		for _, e := range vertex.edges {
-			printedEdgeLabel := printedLabel(e.label, g.data[e.label].t, g.data[e.label].lat, g.data[e.label].lon)
+			printedEdgeLabel := printedLabel(e.label, g.data[e.label].t, g.data[e.label].lat, g.data[e.label].lon, g.data[e.label].city)
 			gv += fmt.Sprintf("\t\"%v\" -> \"%v\";\n", printedVertexLabel, printedEdgeLabel)
 		}
 	}
@@ -194,7 +290,7 @@ func (g *multigraph) toPublicPeerData() []publicPeerData {
 	ppd := make([]publicPeerData, len(peerIdx))
 
 	for vl, vertex := range g.data {
-		peerData := publicPeerData{T: int(vertex.t), Lat: vertex.lat, Lon: vertex.lon, LastSeen: vertex.lastSeen}
+		peerData := publicPeerData{T: int(vertex.t), Lat: vertex.lat, Lon: vertex.lon, City: vertex.city, LastSeen: vertex.lastSeen}
 		peerEdges := []int{}
 
 		for _, e := range vertex.edges {
@@ -209,10 +305,9 @@ func (g *multigraph) toPublicPeerData() []publicPeerData {
 }
 
 // GET /neato
-// Fetch a Graphviz encoded representation of the global network topology, 'neato' layout
-// TODO: this is a massively unoptimized approach where we prune and encode the graph upon every
-// request, both of which are expensive operations. In the near future, we'll want to run a
-// prune/encode job not very often, and cache the last state of the world to serve requests.
+// Fetch a Graphviz encoded representation of the global network topology, 'neato' layout. This is
+// a debugging endpoint, so unlike /data, we prune on every request - refreshing the page gives an
+// exact view of the network rather than waiting on the background prune interval.
 func handleNeato(w http.ResponseWriter, r *http.Request) {
 	enableCors(&w)
 
@@ -230,7 +325,7 @@ func handleNeato(w http.ResponseWriter, r *http.Request) {
 
 // GET /data
 // Fetch a JSON encoded representation of the global network topology, structured as an array of
-// peerData objects. TODO: like handleNeato above, this is massively unoptimized.
+// peerData objects.
 func handleData(w http.ResponseWriter, r *http.Request) {
 	enableCors(&w)
 
@@ -240,7 +335,6 @@ func handleData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	world.prune(ttl)
 	ppd := world.toPublicPeerData()
 
 	j, err := json.Marshal(ppd)
@@ -334,8 +428,12 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		// 2. Idempotently add a vertex representing each reported consumer, updating its lastSeen time and lat/lon
 		// 3. Replace the reporting node's edges with a new set of edges representing its current consumers
 
-		lat, lon := geolocate(geoDb, parsedAddr)
-		world.addVertex(localLabel, lat, lon, clientTypeUncensored)
+		lat, lon, city := geolocate(geoDb, parsedAddr)
+		isNewPeer := world.addVertex(localLabel, lat, lon, city, clientTypeUncensored)
+
+		if isNewPeer {
+			go stream.broadcast(uncensoredJoinEvent{Lat: lat, Lon: lon, City: city})
+		}
 
 		var newEdges []edge
 
@@ -347,19 +445,39 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			lat, lon := geolocate(geoDb, parsedIP)
+			lat, lon, city := geolocate(geoDb, parsedIP)
 			remoteLabel := vertexLabel(fmt.Sprintf("%v (%v)", remoteAddr, remoteTag))
-			world.addVertex(remoteLabel, lat, lon, clientTypeCensored)
+			world.addVertex(remoteLabel, lat, lon, city, clientTypeCensored)
 			newEdges = append(newEdges, edge{label: remoteLabel, id: workerIdx})
 		}
 
-		vv := world.data[localLabel]
-		vv.edges = newEdges
-		world.data[localLabel] = vv
+		world.setEdges(localLabel, newEdges)
 	}
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("200\n"))
+}
+
+func handleStream(w http.ResponseWriter, r *http.Request) {
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		slog.Debug("Error accepting /stream WebSocket connection", "error", err)
+		return
+	}
+
+	stream.add(c)
+	defer func() {
+		stream.remove(c)
+		c.Close(websocket.StatusNormalClosure, "")
+	}()
+
+	for {
+		if _, _, err := c.Read(r.Context()); err != nil {
+			return
+		}
+	}
 }
 
 // TODO: delete me and replace with a real CORS strategy!
@@ -374,12 +492,13 @@ func enableCors(w *http.ResponseWriter) {
 	)
 }
 
-func geolocate(geoDb string, addr net.IP) (lat float64, lon float64) {
+func geolocate(geoDb string, addr net.IP) (lat float64, lon float64, city string) {
 	if geoDb != "" {
 		lat, lon = geolookup.LatLong(addr)
+		city, _ = geolookup.City(addr)
 	}
 
-	return lat, lon
+	return lat, lon, city
 }
 
 func main() {
@@ -424,6 +543,16 @@ func main() {
 	}
 
 	world = *newMultigraph()
+	stream = newStreamBroadcaster()
+
+	go func() {
+		ticker := time.NewTicker(pruneEvery)
+		defer ticker.Stop()
+
+		for range ticker.C {
+			world.prune(ttl)
+		}
+	}()
 
 	if geoDb != "" {
 		// XXX: The API for github.com/getlantern/geo requires 3 repetitive arguments for reasons that
@@ -460,6 +589,7 @@ func main() {
 
 	http.HandleFunc("/data", handleData)
 	http.HandleFunc("/exec", handleExec)
+	http.HandleFunc("/stream", handleStream)
 	slog.Debug("netstated listening on", "addr", srv.Addr)
 	err = srv.ListenAndServe()
 	if err != nil {
