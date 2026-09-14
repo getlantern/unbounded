@@ -56,6 +56,11 @@ their browser contacts:
   On load the widget sends it two events: that it rendered, tagged with the
   embed type (web page or browser extension), and the state of the switch,
   which is off. The switch event is sent again whenever a visitor changes it.
+  Both events carry the hostname of the page the widget is embedded on and
+  whether the embed opted into the public leaderboard. While the switch is on,
+  one further event is sent each time the widget starts helping a new person,
+  with the same two fields; unbounded.lantern.io/leaderboard ranks sites that
+  opted in by these counts.
   Plausible's own script adds its usual page metadata, including the frame's
   referrer -- the site the widget is embedded on, usually just the origin, as
   trimmed by that site's referrer policy. Plausible is cookieless and keeps no

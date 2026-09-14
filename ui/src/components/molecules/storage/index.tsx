@@ -17,9 +17,11 @@ enum StorageKeys {
 }
 
 const Storage = ({settings}: {settings: Settings}) => {
-	const {target} = settings
+	const {target, leaderboard} = settings
+	const site = window.location.hostname
 	const {wasmInterface} = useContext(AppContext)
 	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
+	const reportedConnections = useRef<number | null>(null)
 	const iframe = useRef<HTMLIFrameElement>(null)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
 	const lifetimeChunks = useEmitterState(lifetimeChunksEmitter)
@@ -36,6 +38,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_CONNECTIONS]) || 0
 					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
 					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
+					reportedConnections.current = lifetimeConnectionsEmitter.state
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
@@ -118,11 +121,30 @@ const Storage = ({settings}: {settings: Settings}) => {
 				[SIGNATURE]: true,
 				data: {
 					eventName: 'load',
-					eventProperties: {target}
+					eventProperties: {target, site, leaderboard}
 				}
 			}, '*')
 		}, 1000)
-	}, [target, iframe])
+	}, [target, site, leaderboard, iframe])
+
+	// one 'helped' event per new consumer connection, attributed to the embedding site.
+	// the leaderboard at unbounded.lantern.io ranks sites by these events.
+	useEffect(() => {
+		if (!iframe.current || reportedConnections.current === null) return
+		const delta = lifetimeConnections - reportedConnections.current
+		reportedConnections.current = lifetimeConnections
+		for (let i = 0; i < delta; i++) {
+			iframe.current.contentWindow?.postMessage({
+				type: MessageTypes.EVENT,
+				[SIGNATURE]: true,
+				data: {
+					eventName: 'helped',
+					eventProperties: {site, leaderboard}
+				}
+			}, '*')
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [lifetimeConnections])
 
 	useEffect(() => {
 		if (!iframe.current) return;

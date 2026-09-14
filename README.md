@@ -162,6 +162,7 @@ The "default" column shows the default value if the attribute is not set.
 | branding  | boolean to include logos                                  | true    |
 | mock      | boolean to use the mock wasm client data                  | false   |
 | target    | string "web", "extension-offscreen" or "extension-popup"  | web     |
+| leaderboard | boolean to opt the embedding site into the public leaderboard at unbounded.lantern.io/leaderboard | false |
 
 In development, these settings can be customized using the `REACT_APP_*` environment variables in the `.env` or in your terminal.
 For example, to run the widget in "panel" layout, you can run `REACT_APP_LAYOUT=panel yarn start`. To run the widget with mock data,
