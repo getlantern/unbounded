@@ -40,7 +40,7 @@ type errorlessWebSocketPacketConn struct {
 	// session span. Separate from stats.ingressBytes, which the otel callback
 	// resets every interval.
 	sessionBytes *int64
-	countUsage   func(int)
+	usage        *usageCounter
 	// keepaliveFailed is set when a keepalive ping goes unanswered, which is the
 	// signature of a wedged peer rather than one that disconnected. The handler
 	// reports it as the session's teardown reason.
@@ -48,6 +48,11 @@ type errorlessWebSocketPacketConn struct {
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	if q.usage != nil {
+		q.usage.ops.RLock()
+		defer q.usage.ops.RUnlock()
+	}
+
 	// TODO: The channel and goroutine we fire off here are used to implement serverside keepalive.
 	// For as long as we're reading from this WebSocket, if we haven't received any readable data for
 	// a while, we send a ping. Keepalive is only desirable to prevent lots of disconnections
@@ -119,8 +124,8 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}
 
 	copy(p, b)
-	if q.countUsage != nil {
-		q.countUsage(len(b))
+	if q.usage != nil {
+		q.usage.add(len(b))
 	}
 	// Attribute bytes to this connection's donor country and to its session.
 	// Both are nil-checked because migration_test and other callers construct
@@ -139,6 +144,11 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 }
 
 func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
+	if q.usage != nil {
+		q.usage.ops.RLock()
+		defer q.usage.ops.RUnlock()
+	}
+
 	// TODO https://github.com/getlantern/engineering/issues/2437
 	unboundedPacket := common.UnboundedPacket{
 		SourceAddr: q.addr.String(),
@@ -157,8 +167,8 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 	}
 
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
-	if err == nil && q.countUsage != nil {
-		q.countUsage(len(p))
+	if err == nil && q.usage != nil {
+		q.usage.add(len(p))
 	}
 
 	// Intercept and hide errors from the caller
@@ -170,7 +180,11 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 
 func (q errorlessWebSocketPacketConn) Close() error {
 	defer slog.Debug("Closed a WebSocket connection", "total", atomic.AddUint64(&nClients, ^uint64(0)))
-	return q.w.Close(websocket.StatusNormalClosure, "")
+	err := q.w.Close(websocket.StatusNormalClosure, "")
+	if q.usage != nil {
+		q.usage.close()
+	}
+	return err
 }
 
 func (q errorlessWebSocketPacketConn) LocalAddr() net.Addr {

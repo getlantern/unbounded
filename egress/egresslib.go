@@ -105,6 +105,13 @@ func (l proxyListener) Close() error {
 }
 
 func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
+	release, ok := retainUsage(l.usage)
+	if !ok {
+		http.Error(w, "Egress shutting down", http.StatusServiceUnavailable)
+		return
+	}
+	defer release()
+
 	// Our subprotocols should be a slice containing a single comma-separated string. But weird browsers
 	// could theoretically send multiple Sec-Websocket-Protocol headers, one for each subprotocol, which
 	// would result in a slice containing multiple strings. We handle both cases:
@@ -311,7 +318,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		readError:       make(chan error),
 		stats:           stats,
 		sessionBytes:    &sessionBytes,
-		countUsage:      l.usage.counter(r),
+		usage:           l.usage.counter(r),
 		keepaliveFailed: &keepaliveFailed,
 	}
 

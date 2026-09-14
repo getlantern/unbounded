@@ -38,6 +38,7 @@ type usageKey struct{ origin, donor, day string }
 type usageReporter struct {
 	mu                              sync.Mutex
 	pending                         map[usageKey]int64
+	counters                        map[*usageCounter]struct{}
 	dropped                         int64
 	endpoint, credential, salt, dir string
 	client                          *http.Client
@@ -76,8 +77,12 @@ func startUsage() (*usageReporter, func()) {
 	}
 	sharedUsage.refs++
 	reporter := sharedUsage.reporter
+	return reporter, usageRelease(reporter)
+}
+
+func usageRelease(reporter *usageReporter) func() {
 	var once sync.Once
-	return reporter, func() {
+	return func() {
 		once.Do(func() {
 			sharedUsage.Lock()
 			defer sharedUsage.Unlock()
@@ -91,7 +96,67 @@ func startUsage() (*usageReporter, func()) {
 	}
 }
 
-func (r *usageReporter) counter(req *http.Request) func(int) {
+// Accepted handlers own a reporter reference until their packet connection closes.
+func retainUsage(reporter *usageReporter) (func(), bool) {
+	if reporter == nil {
+		return func() {}, true
+	}
+	sharedUsage.Lock()
+	defer sharedUsage.Unlock()
+	if sharedUsage.reporter != reporter || sharedUsage.refs == 0 {
+		return nil, false
+	}
+	sharedUsage.refs++
+	return usageRelease(reporter), true
+}
+
+type usageCounter struct {
+	reporter      *usageReporter
+	origin, donor string
+	ops           sync.RWMutex
+	mu            sync.Mutex
+	daily         map[int64]int64
+	once          sync.Once
+}
+
+func (c *usageCounter) add(n int) {
+	if n <= 0 {
+		return
+	}
+	day := time.Now().Unix() / 86400
+	c.mu.Lock()
+	c.daily[day] += int64(n)
+	c.mu.Unlock()
+}
+
+// The reporter mutex is held only while merging snapshots, never on packet I/O.
+func (r *usageReporter) collect(c *usageCounter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for day, n := range c.daily {
+		key := usageKey{c.origin, c.donor, time.Unix(day*86400, 0).UTC().Format("2006-01-02")}
+		if _, ok := r.pending[key]; !ok && len(r.pending) >= usageCapacity {
+			r.dropped += n
+		} else {
+			r.pending[key] += n
+		}
+	}
+	clear(c.daily)
+}
+
+func (c *usageCounter) close() {
+	c.once.Do(func() {
+		// Close the socket before waiting here, so blocked reads/writes can finish.
+		c.ops.Lock()
+		defer c.ops.Unlock()
+		c.reporter.mu.Lock()
+		defer c.reporter.mu.Unlock()
+		c.reporter.collect(c)
+		delete(c.reporter.counters, c)
+	})
+}
+
+func (r *usageReporter) counter(req *http.Request) *usageCounter {
 	if r == nil {
 		return nil
 	}
@@ -104,19 +169,18 @@ func (r *usageReporter) counter(req *http.Request) func(int) {
 	mac := hmac.New(sha256.New, []byte(r.salt))
 	_, _ = io.WriteString(mac, origin+"\x00"+id.String())
 	donor := hex.EncodeToString(mac.Sum(nil))
-	return func(n int) {
-		if n <= 0 {
-			return
-		}
-		key := usageKey{origin, donor, time.Now().UTC().Format("2006-01-02")}
-		r.mu.Lock()
-		defer r.mu.Unlock()
-		if _, ok := r.pending[key]; !ok && len(r.pending) >= usageCapacity {
-			r.dropped += int64(n)
-			return
-		}
-		r.pending[key] += int64(n)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.counters == nil {
+		r.counters = make(map[*usageCounter]struct{})
 	}
+	if len(r.counters) >= usageCapacity {
+		slog.Warn("Leaderboard connection counter capacity reached")
+		return nil
+	}
+	c := &usageCounter{reporter: r, origin: origin, donor: donor, daily: make(map[int64]int64)}
+	r.counters[c] = struct{}{}
+	return c
 }
 
 func (r *usageReporter) run(ctx context.Context) {
@@ -152,6 +216,11 @@ func (r *usageReporter) run(ctx context.Context) {
 }
 
 func (r *usageReporter) persist() error {
+	r.mu.Lock()
+	for c := range r.counters {
+		r.collect(c)
+	}
+	r.mu.Unlock()
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
 		return err
@@ -278,14 +347,35 @@ func (r *usageReporter) sendBatch(ctx context.Context, batch []usageEvent, paths
 		return fmt.Errorf("export usage: %w", err)
 	}
 	defer res.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(res.Body, 4096))
 	if res.StatusCode != http.StatusOK {
 		return fmt.Errorf("usage API status %d", res.StatusCode)
 	}
-	for _, path := range paths {
-		if err = os.Remove(path); err != nil {
+	var ack struct {
+		IDs []string `json:"acknowledged_event_ids"`
+	}
+	decoder := json.NewDecoder(io.LimitReader(res.Body, 16385))
+	if err = decoder.Decode(&ack); err != nil {
+		return fmt.Errorf("decode usage acknowledgement: %w", err)
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		return errors.New("invalid usage acknowledgement body")
+	}
+	acknowledged := make(map[string]bool, len(ack.IDs))
+	for _, id := range ack.IDs {
+		acknowledged[id] = true
+	}
+	remaining := 0
+	for i, event := range batch {
+		if !acknowledged[event.ID] {
+			remaining++
+			continue
+		}
+		if err = os.Remove(paths[i]); err != nil {
 			return err
 		}
+	}
+	if remaining > 0 {
+		return fmt.Errorf("usage API left %d events unacknowledged", remaining)
 	}
 	return nil
 }

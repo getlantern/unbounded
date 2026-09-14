@@ -288,7 +288,8 @@ The website widget can contribute to a verified team's totals after the voluntee
 checks **Include my anonymous contribution in this website’s team totals**.
 This is off by default. Turning it off removes the per-origin browser identifier;
 stop sharing first to change the choice. Unsupported/blocked browser storage and
-non-HTTPS pages do not send an identifier. Extension and native clients do not
+non-HTTPS pages do not send an identifier. Attribution is also omitted unless
+the egress connection uses WSS. Extension and native clients do not
 opt in automatically. The site's exact HTTPS Origin identifies the website;
 team owners verify that origin in lantern-cloud with a DNS TXT record.
 
@@ -305,8 +306,14 @@ identifier, and reports to lantern-cloud. Configure all four server variables:
 Without an endpoint, reporting is disabled. No credentials belong in widget code.
 A mounted spool survives process/container replacement. Counters are snapshotted
 every 30 seconds to owner-only files; successful API acknowledgement removes
-those files. Retries reuse event IDs, including after restart. Memory and disk
-queues are bounded to 4,096 attribution buckets/events each. Outages beyond queue
+only files listed in `acknowledged_event_ids`. Empty, malformed and partial
+acknowledgements leave unacknowledged files available for retry. Retries reuse
+event IDs, including after restart. Memory and disk
+queues are bounded to 4,096 attribution buckets/events each, with at most 4,096
+active connection counters. Each connection accumulates its own counters;
+periodic snapshots merge them without a global mutex on packet I/O. Accepted
+WebSocket handlers retain the reporter after listener closure; its final flush
+waits for the last handler and its in-flight packet operations to finish. Outages beyond queue
 capacity, abrupt termination before a snapshot, storage failures or expired
 observations can undercount. This is not a lossless billing ledger. Observations
 expire within seven days, matching the API's deduplication window. Traffic serving

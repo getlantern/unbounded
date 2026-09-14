@@ -96,17 +96,7 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				Debug("JIT egress consumer dialing", "csid", csidPrefix(consumerInfoMsg.SessionID))
 
 			// TODO: WSS
-			address := options.Addr + options.Endpoint
-			if options.DonorID != nil {
-				if parsed, e := url.Parse(address); e == nil {
-					q := parsed.Query()
-					if donor := options.DonorID(); donor != "" {
-						q.Set("donor_id", donor)
-					}
-					parsed.RawQuery = q.Encode()
-					address = parsed.String()
-				}
-			}
+			address := egressAddress(options)
 			c, _, err := websocket.Dial(ctx, address, dialOpts)
 			if err != nil {
 				slog.Debug("Couldn't connect to egress server", "addr", options.Addr, "error", err)
@@ -260,4 +250,19 @@ func csidPrefix(csid string) string {
 		return csid[:8]
 	}
 	return csid
+}
+
+func egressAddress(options *EgressOptions) string {
+	address := options.Addr + options.Endpoint
+	if options.DonorID != nil {
+		if parsed, err := url.Parse(address); err == nil && parsed.Scheme == "wss" {
+			if donor := options.DonorID(); donor != "" {
+				q := parsed.Query()
+				q.Set("donor_id", donor)
+				parsed.RawQuery = q.Encode()
+				return parsed.String()
+			}
+		}
+	}
+	return address
 }
