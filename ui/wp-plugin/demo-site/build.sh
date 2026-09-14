@@ -2,9 +2,11 @@
 # Assemble the deployable demo site into ./dist.
 #
 # The same zip this produces is what gets submitted to the WordPress Plugin
-# Directory, so the archive layout is not arbitrary: the top-level directory
-# name becomes the plugin's permanent slug on wordpress.org. It must stay
-# "unbounded".
+# Directory, so the archive layout is not arbitrary. wordpress.org generates the
+# slug from `Plugin Name:` in unbounded.php, not from this directory -- but the
+# two still have to agree, because the directory name is what the update API
+# matches against installed plugin folders. Keep $slug below in step with that
+# header; it is also the plugin's text domain.
 #
 # The zip is built from source rather than committed. The hand-uploaded copy on
 # S3 sat at the Feb 2024 build for two and a half years while the source moved
