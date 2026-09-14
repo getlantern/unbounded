@@ -21,7 +21,8 @@ const Storage = ({settings}: {settings: Settings}) => {
 	const site = window.location.hostname
 	const {wasmInterface} = useContext(AppContext)
 	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
-	const reportedConnections = useRef<number | null>(null)
+	const restoredConnections = useRef(0)
+	const reportedConnections = useRef(0)
 	const iframe = useRef<HTMLIFrameElement>(null)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
 	const lifetimeChunks = useEmitterState(lifetimeChunksEmitter)
@@ -38,7 +39,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_CONNECTIONS]) || 0
 					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
 					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
-					reportedConnections.current = lifetimeConnectionsEmitter.state
+					restoredConnections.current += value
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
@@ -129,10 +130,12 @@ const Storage = ({settings}: {settings: Settings}) => {
 
 	// one 'helped' event per new consumer connection, attributed to the embedding site.
 	// the leaderboard at unbounded.lantern.io ranks sites by these events.
+	// connections restored from storage are excluded so only this session's are reported.
 	useEffect(() => {
-		if (!iframe.current || reportedConnections.current === null) return
-		const delta = lifetimeConnections - reportedConnections.current
-		reportedConnections.current = lifetimeConnections
+		if (!iframe.current) return
+		const live = lifetimeConnections - restoredConnections.current
+		const delta = live - reportedConnections.current
+		reportedConnections.current = live
 		for (let i = 0; i < delta; i++) {
 			iframe.current.contentWindow?.postMessage({
 				type: MessageTypes.EVENT,
