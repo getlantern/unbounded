@@ -303,14 +303,21 @@ identifier, and reports to lantern-cloud. Configure all four server variables:
 - `LEADERBOARD_SPOOL_DIR`: persistent, writable directory dedicated to one egress
   process (multiple listeners within that process share one reporter).
 
+Deploy lantern-cloud first: the reporter requires `acknowledged_event_ids`, and
+logs an explicit API deployment-order error when a legacy response omits them.
+Unreadable or invalid spool events are logged and discarded without blocking
+other events; unacknowledged valid events remain for retry while later batches
+continue. Startup removes orphaned `.tmp` files from interrupted writes.
+
 Without an endpoint, reporting is disabled. No credentials belong in widget code.
 A mounted spool survives process/container replacement. Counters are snapshotted
 every 30 seconds to owner-only files; successful API acknowledgement removes
 only files listed in `acknowledged_event_ids`. Empty, malformed and partial
 acknowledgements leave unacknowledged files available for retry. Retries reuse
 event IDs, including after restart. Memory and disk
-queues are bounded to 4,096 attribution buckets/events each, with at most 4,096
-active connection counters. Each connection accumulates its own counters;
+queues default to 100,000 attribution buckets/events each. Set
+`LEADERBOARD_CAPACITY` (100–1,000,000) to tune both bounds per host. Active
+connection counters live with their sockets and are not excluded by the queue cap. Each connection accumulates its own counters;
 periodic snapshots merge them without a global mutex on packet I/O. Accepted
 WebSocket handlers retain the reporter after listener closure; its final flush
 waits for the last handler and its in-flight packet operations to finish. Outages beyond queue
@@ -325,3 +332,7 @@ measure unique people helped. Origin/installation IDs are attribution hints, not
 authentication; a modified native client can spoof them. Only authenticated egress
 reports can increment totals, and only verified domains map to teams. Deployment
 order: lantern-cloud API/schema and secrets, then egress/widget, then website.
+
+The browser WebSocket API cannot set an attribution header, so the installation
+ID travels in the WSS query string. Keep query-string access logging disabled or
+redacted for `/ws`; do not record the donor ID in request logs or traces.

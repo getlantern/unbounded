@@ -31,7 +31,12 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "leaderboard": {
+        "consent": "Include my anonymous contribution in this website’s team totals.",
+        "info": "Uses an identifier saved on this website. Only team totals are public. Stop sharing to change this choice.",
+        "storageError": "Browser storage is unavailable; your contribution remains unlisted."
+      }
     }
   },
   "zh-Hans": {
@@ -63,7 +68,12 @@
       "censoredMsg2": "下载 Lantern 以访问被封锁的网站和应用程序。",
       "censoredBtn": "下载 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 制作，充满了 {{love}}"
+      "love": "由 {{lantern}} 制作，充满了 {{love}}",
+      "leaderboard": {
+        "consent": "将我的匿名贡献计入此网站的团队总量。",
+        "info": "使用保存在此网站上的标识符。仅团队总量公开。停止共享后可更改此选择。",
+        "storageError": "浏览器存储不可用；您的贡献将不被列出。"
+      }
     }
   },
   "ar": {
@@ -95,7 +105,12 @@
       "censoredMsg2": "قم بتنزيل Lantern للوصول إلى المواقع والتطبيقات المحجوبة.",
       "censoredBtn": "تحميل Lantern",
       "censoredIgnore": "تجاهل",
-      "love": "صُنع بحب {{love}} من قِبل {{lantern}}"
+      "love": "صُنع بحب {{love}} من قِبل {{lantern}}",
+      "leaderboard": {
+        "consent": "تضمين مساهمتي المجهولة في مجاميع فريق هذا الموقع.",
+        "info": "يستخدم معرّفًا محفوظًا على هذا الموقع. مجاميع الفريق فقط علنية. أوقف المشاركة لتغيير هذا الخيار.",
+        "storageError": "تخزين المتصفح غير متاح؛ ستبقى مساهمتك غير مدرجة."
+      }
     }
   },
   "ru": {
@@ -127,7 +142,12 @@
       "censoredMsg2": "Скачайте Lantern, чтобы получить доступ к заблокированным сайтам и приложениям.",
       "censoredBtn": "Скачать Lantern",
       "censoredIgnore": "Игнорировать",
-      "love": "Сделано с {{love}} компанией {{lantern}}"
+      "love": "Сделано с {{love}} компанией {{lantern}}",
+      "leaderboard": {
+        "consent": "Учитывать мой анонимный вклад в итогах команды этого сайта.",
+        "info": "Используется идентификатор, сохранённый на этом сайте. Публичны только итоги команды. Остановите передачу, чтобы изменить выбор.",
+        "storageError": "Хранилище браузера недоступно; ваш вклад не будет указан."
+      }
     }
   },
   "fa": {
@@ -159,7 +179,12 @@
       "censoredMsg2": "لانترن را دانلود کنید تا به سایت‌ها و برنامه‌های مسدود شده دسترسی پیدا کنید.",
       "censoredBtn": "دانلود لنترن",
       "censoredIgnore": "نادیده گرفتن",
-      "love": "ساخته‌شده با {{love}} توسط {{lantern}}"
+      "love": "ساخته‌شده با {{love}} توسط {{lantern}}",
+      "leaderboard": {
+        "consent": "مشارکت ناشناس من را در مجموع تیم این وب‌سایت حساب کن.",
+        "info": "از شناسه‌ای ذخیره‌شده در این وب‌سایت استفاده می‌کند. فقط مجموع تیم عمومی است. برای تغییر این انتخاب، اشتراک‌گذاری را متوقف کنید.",
+        "storageError": "ذخیره‌سازی مرورگر در دسترس نیست؛ مشارکت شما در فهرست نمایش داده نمی‌شود."
+      }
     }
   },
   "zh-Hant-TW": {
@@ -191,7 +216,12 @@
       "censoredMsg2": "下載 Lantern 以訪問被封鎖的網站和應用程式。",
       "censoredBtn": "下載 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 製作，充滿了 {{love}}"
+      "love": "由 {{lantern}} 製作，充滿了 {{love}}",
+      "leaderboard": {
+        "consent": "將我的匿名貢獻計入此網站的團隊總量。",
+        "info": "使用儲存在此網站上的識別碼。僅團隊總量公開。停止共享後可變更此選擇。",
+        "storageError": "瀏覽器儲存空間無法使用；您的貢獻將不被列出。"
+      }
     }
   },
   "es-419": {
@@ -223,7 +253,12 @@
       "censoredMsg2": "Descarga Lantern para acceder a sitios y aplicaciones bloqueadas.",
       "censoredBtn": "Descargar Lantern",
       "censoredIgnore": "Ignorar",
-      "love": "Hecho con {{love}} por {{lantern}}"
+      "love": "Hecho con {{love}} por {{lantern}}",
+      "leaderboard": {
+        "consent": "Incluir mi contribución anónima en los totales del equipo de este sitio.",
+        "info": "Usa un identificador guardado en este sitio. Solo los totales del equipo son públicos. Deja de compartir para cambiar esta opción.",
+        "storageError": "El almacenamiento del navegador no está disponible; tu contribución no se mostrará."
+      }
     }
   },
   "zh": {
@@ -255,7 +290,12 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "leaderboard": {
+        "consent": "将我的匿名贡献计入此网站的团队总量。",
+        "info": "使用保存在此网站上的标识符。仅团队总量公开。停止共享后可更改此选择。",
+        "storageError": "浏览器存储不可用；您的贡献将不被列出。"
+      }
     }
   },
   "en-US": {
@@ -287,7 +327,12 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "leaderboard": {
+        "consent": "Include my anonymous contribution in this website’s team totals.",
+        "info": "Uses an identifier saved on this website. Only team totals are public. Stop sharing to change this choice.",
+        "storageError": "Browser storage is unavailable; your contribution remains unlisted."
+      }
     }
   }
 }

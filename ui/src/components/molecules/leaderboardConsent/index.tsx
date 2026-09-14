@@ -1,3 +1,4 @@
+import {useTranslation} from 'react-i18next'
 import {useContext, useEffect, useState} from 'react'
 import {Themes} from '../../../constants'
 import {AppContext} from '../../../context'
@@ -6,6 +7,7 @@ import {sharingEmitter} from '../../../utils/wasmInterface'
 import {leaderboardConsent, setLeaderboardConsent} from '../../../utils/leaderboard'
 
 export default function LeaderboardConsent() {
+  const {t} = useTranslation()
   const [enabled, setEnabled] = useState(leaderboardConsent)
   const [error, setError] = useState('')
   const sharing = useEmitterState(sharingEmitter)
@@ -27,10 +29,10 @@ export default function LeaderboardConsent() {
     <label style={{display: 'block'}}>
       <input type="checkbox" checked={enabled} disabled={sharing} onChange={e => {
         if (setLeaderboardConsent(e.target.checked)) { setEnabled(e.target.checked); setError('') }
-        else setError('Browser storage is unavailable; your contribution remains unlisted.')
-      }} /> Include my anonymous contribution in this website’s team totals.
+        else setError('leaderboard.storageError')
+      }} /> {t('leaderboard.consent')}
     </label>
-    <small>Uses an identifier saved on this website. Only team totals are public. Stop sharing to change this choice.</small>
-    {error && <p role="alert">{error}</p>}
+    <small>{t('leaderboard.info')}</small>
+    {error && <p role="alert">{t(error)}</p>}
   </div>
 }

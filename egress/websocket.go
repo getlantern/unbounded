@@ -123,9 +123,9 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		runtime.Goexit()
 	}
 
-	copy(p, b)
+	n = copy(p, b)
 	if q.usage != nil {
-		q.usage.add(len(b))
+		q.usage.add(n)
 	}
 	// Attribute bytes to this connection's donor country and to its session.
 	// Both are nil-checked because migration_test and other callers construct
@@ -135,12 +135,12 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	// from the per-country blocks, so incrementing a global nothing reads would
 	// be a pointless atomic on the hot read path.
 	if q.stats != nil {
-		atomic.AddInt64(&q.stats.ingressBytes, int64(len(b)))
+		atomic.AddInt64(&q.stats.ingressBytes, int64(n))
 	}
 	if q.sessionBytes != nil {
-		atomic.AddInt64(q.sessionBytes, int64(len(b)))
+		atomic.AddInt64(q.sessionBytes, int64(n))
 	}
-	return len(b), q.tcpAddr, err
+	return n, q.tcpAddr, err
 }
 
 func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {

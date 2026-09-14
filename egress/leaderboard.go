@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,7 +24,7 @@ import (
 	"github.com/google/uuid"
 )
 
-const usageCapacity = 4096
+const usageCapacity = 100000
 
 var usageHost = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}$`)
 
@@ -39,6 +40,7 @@ type usageReporter struct {
 	mu                              sync.Mutex
 	pending                         map[usageKey]int64
 	counters                        map[*usageCounter]struct{}
+	capacity                        int
 	dropped                         int64
 	endpoint, credential, salt, dir string
 	client                          *http.Client
@@ -70,8 +72,29 @@ func startUsage() (*usageReporter, func()) {
 			slog.Error("Leaderboard spool unavailable", "error", err)
 			return nil, func() {}
 		}
+		capacity := usageCapacity
+		if raw := os.Getenv("LEADERBOARD_CAPACITY"); raw != "" {
+			n, err := strconv.Atoi(raw)
+			if err != nil || n < 100 || n > 1000000 {
+				slog.Error("Leaderboard reporting disabled: LEADERBOARD_CAPACITY must be 100..1000000")
+				return nil, func() {}
+			}
+			capacity = n
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			slog.Error("Leaderboard spool unavailable", "error", err)
+			return nil, func() {}
+		}
+		for _, entry := range entries {
+			if strings.HasSuffix(entry.Name(), ".tmp") {
+				if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+					slog.Warn("Leaderboard stale temporary file cleanup failed", "error", err)
+				}
+			}
+		}
 		ctx, cancel := context.WithCancel(context.Background())
-		r := &usageReporter{pending: make(map[usageKey]int64), endpoint: endpoint, credential: key, salt: salt, dir: dir, client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, cancel: cancel, done: make(chan struct{})}
+		r := &usageReporter{capacity: capacity, pending: make(map[usageKey]int64), endpoint: endpoint, credential: key, salt: salt, dir: dir, client: &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, cancel: cancel, done: make(chan struct{})}
 		sharedUsage.reporter = r
 		go r.run(ctx)
 	}
@@ -135,7 +158,7 @@ func (r *usageReporter) collect(c *usageCounter) {
 	defer c.mu.Unlock()
 	for day, n := range c.daily {
 		key := usageKey{c.origin, c.donor, time.Unix(day*86400, 0).UTC().Format("2006-01-02")}
-		if _, ok := r.pending[key]; !ok && len(r.pending) >= usageCapacity {
+		if _, ok := r.pending[key]; !ok && len(r.pending) >= r.limit() {
 			r.dropped += n
 		} else {
 			r.pending[key] += n
@@ -173,10 +196,6 @@ func (r *usageReporter) counter(req *http.Request) *usageCounter {
 	defer r.mu.Unlock()
 	if r.counters == nil {
 		r.counters = make(map[*usageCounter]struct{})
-	}
-	if len(r.counters) >= usageCapacity {
-		slog.Warn("Leaderboard connection counter capacity reached")
-		return nil
 	}
 	c := &usageCounter{reporter: r, origin: origin, donor: donor, daily: make(map[int64]int64)}
 	r.counters[c] = struct{}{}
@@ -255,7 +274,7 @@ func (r *usageReporter) persist() error {
 			complete(k, n)
 			continue
 		}
-		if count >= usageCapacity {
+		if count >= r.limit() {
 			return errors.New("leaderboard disk queue full")
 		}
 		if n > 1_000_000_000_000 {
@@ -291,11 +310,19 @@ func (r *usageReporter) persist() error {
 	return nil
 }
 
+func (r *usageReporter) limit() int {
+	if r.capacity > 0 {
+		return r.capacity
+	}
+	return usageCapacity
+}
+
 func (r *usageReporter) send(ctx context.Context) error {
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
 		return err
 	}
+	var sendErr error
 	batch := []usageEvent{}
 	paths := []string{}
 	for _, entry := range entries {
@@ -303,13 +330,23 @@ func (r *usageReporter) send(ctx context.Context) error {
 			continue
 		}
 		path := filepath.Join(r.dir, entry.Name())
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+		if ctx.Err() != nil {
+			return errors.Join(sendErr, ctx.Err())
 		}
+		data, err := os.ReadFile(path)
 		var e usageEvent
-		if err = json.Unmarshal(data, &e); err != nil {
-			return fmt.Errorf("read usage batch: %w", err)
+		if err == nil {
+			err = json.Unmarshal(data, &e)
+		}
+		if err == nil && !validUsage(e) {
+			err = errors.New("invalid usage event")
+		}
+		if err != nil {
+			slog.Warn("Discarding unreadable or invalid leaderboard spool event", "file", entry.Name(), "error", err)
+			if removeErr := os.Remove(path); removeErr != nil {
+				sendErr = errors.Join(sendErr, fmt.Errorf("remove invalid usage: %w", removeErr))
+			}
+			continue
 		}
 		if e.At.Before(time.Now().Add(-7 * 24 * time.Hour)) {
 			_ = os.Remove(path)
@@ -319,13 +356,13 @@ func (r *usageReporter) send(ctx context.Context) error {
 		paths = append(paths, path)
 		if len(batch) == 100 {
 			if err := r.sendBatch(ctx, batch, paths); err != nil {
-				return err
+				sendErr = errors.Join(sendErr, err)
 			}
 			batch = nil
 			paths = nil
 		}
 	}
-	return r.sendBatch(ctx, batch, paths)
+	return errors.Join(sendErr, r.sendBatch(ctx, batch, paths))
 }
 
 func (r *usageReporter) sendBatch(ctx context.Context, batch []usageEvent, paths []string) error {
@@ -360,6 +397,9 @@ func (r *usageReporter) sendBatch(ctx context.Context, batch []usageEvent, paths
 	if decoder.Decode(new(any)) != io.EOF {
 		return errors.New("invalid usage acknowledgement body")
 	}
+	if len(ack.IDs) == 0 {
+		return errors.New("usage API returned no acknowledged_event_ids; deploy the lantern-cloud leaderboard API before egress")
+	}
 	acknowledged := make(map[string]bool, len(ack.IDs))
 	for _, id := range ack.IDs {
 		acknowledged[id] = true
@@ -378,4 +418,11 @@ func (r *usageReporter) sendBatch(ctx context.Context, batch []usageEvent, paths
 		return fmt.Errorf("usage API left %d events unacknowledged", remaining)
 	}
 	return nil
+}
+
+func validUsage(e usageEvent) bool {
+	id, err := uuid.Parse(e.ID)
+	u, originErr := url.Parse(e.Origin)
+	_, donorErr := hex.DecodeString(e.Donor)
+	return err == nil && id != uuid.Nil && id.String() == e.ID && originErr == nil && u.Scheme == "https" && u.User == nil && u.Host == u.Hostname() && u.Path == "" && u.RawQuery == "" && u.Fragment == "" && len(u.Host) <= 245 && usageHost.MatchString(u.Hostname()) && donorErr == nil && len(e.Donor) == 64 && strings.ToLower(e.Donor) == e.Donor && e.Bytes > 0 && e.Bytes <= 1_000_000_000_000 && !e.At.IsZero() && !e.At.After(time.Now().Add(5*time.Minute))
 }

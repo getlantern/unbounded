@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -109,7 +111,7 @@ func TestUsageDrainsMultipleBatches(t *testing.T) {
 	r := &usageReporter{pending: make(map[usageKey]int64), endpoint: server.URL, dir: t.TempDir(), client: server.Client()}
 	day := time.Now().UTC().Format("2006-01-02")
 	for i := 0; i < 205; i++ {
-		r.pending[usageKey{"https://example.org", uuid.NewString(), day}] = 1
+		r.pending[usageKey{"https://example.org", fmt.Sprintf("%064x", i), day}] = 1
 	}
 	require.NoError(t, r.persist())
 	require.NoError(t, r.send(context.Background()))
@@ -240,4 +242,96 @@ func TestUsageCountersDoNotTakeReporterLockOnPackets(t *testing.T) {
 		require.EqualValues(t, 2000, n)
 	}
 	r.mu.Unlock()
+}
+
+func TestUsageSkipsCorruptFilesAndUnacknowledgedBatches(t *testing.T) {
+	requests, total := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var events []usageEvent
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&events))
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"acknowledged_event_ids":[]}`))
+			return
+		}
+		total += len(events)
+		ackUsage(w, events)
+	}))
+	defer server.Close()
+	r := &usageReporter{dir: t.TempDir(), endpoint: server.URL, client: server.Client()}
+	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "000-corrupt.json"), []byte("{"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "001-invalid.json"), []byte(`{"bytes":-1}`), 0600))
+	for i := 0; i < 105; i++ {
+		e := usageEvent{ID: uuid.NewString(), Origin: "https://example.org", Donor: strings.Repeat("a", 64), At: time.Now().UTC(), Bytes: 1}
+		data, err := json.Marshal(e)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(filepath.Join(r.dir, fmt.Sprintf("event-%03d.json", i)), data, 0600))
+	}
+	require.ErrorContains(t, r.send(context.Background()), "deploy the lantern-cloud")
+	require.Equal(t, 5, total)
+	files, err := os.ReadDir(r.dir)
+	require.NoError(t, err)
+	require.Len(t, files, 100)
+	require.NoError(t, r.send(context.Background()))
+	require.Equal(t, 105, total)
+}
+
+func TestReporterCapacityAndTemporaryRecovery(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "orphan.tmp"), []byte("unfinished"), 0600))
+	t.Setenv("LEADERBOARD_ENDPOINT", "https://example.org/usage")
+	t.Setenv("LEADERBOARD_INGEST_KEY", strings.Repeat("k", 32))
+	t.Setenv("LEADERBOARD_DONOR_KEY", strings.Repeat("s", 32))
+	t.Setenv("LEADERBOARD_SPOOL_DIR", dir)
+	t.Setenv("LEADERBOARD_CAPACITY", "100")
+	r, release := startUsage()
+	require.NotNil(t, r)
+	defer release()
+	require.Equal(t, 100, r.limit())
+	_, err := os.Stat(filepath.Join(dir, "orphan.tmp"))
+	require.ErrorIs(t, err, os.ErrNotExist)
+	req := httptest.NewRequest("GET", "https://egress/ws?donor_id="+uuid.NewString(), nil)
+	req.Header.Set("Origin", "https://example.org")
+	for i := 0; i < 101; i++ {
+		c := r.counter(req)
+		require.NotNil(t, c)
+		c.add(1)
+	}
+	require.NoError(t, r.persist())
+	files, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	data, err := os.ReadFile(filepath.Join(dir, files[0].Name()))
+	require.NoError(t, err)
+	var e usageEvent
+	require.NoError(t, json.Unmarshal(data, &e))
+	require.EqualValues(t, 101, e.Bytes)
+}
+
+func TestUsageCountsDeliveredReadBytes(t *testing.T) {
+	peers := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		peers <- conn
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, strings.Replace(server.URL, "http", "ws", 1), nil)
+	require.NoError(t, err)
+	defer conn.CloseNow()
+	peer := <-peers
+	defer peer.CloseNow()
+	counter := &usageCounter{daily: make(map[int64]int64)}
+	q := errorlessWebSocketPacketConn{w: conn, keepalive: time.Minute, usage: counter}
+	require.NoError(t, peer.Write(ctx, websocket.MessageBinary, []byte("abcdef")))
+	buffer := make([]byte, 3)
+	n, _, err := q.ReadFrom(buffer)
+	require.NoError(t, err)
+	require.Equal(t, 3, n)
+	require.Equal(t, "abc", string(buffer))
+	require.EqualValues(t, 3, counter.daily[time.Now().Unix()/86400])
 }
