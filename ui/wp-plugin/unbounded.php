@@ -1,6 +1,6 @@
 <?php
 /**
- * Plugin Name:       Unbounded
+ * Plugin Name:       Unbounded by Lantern
  * Plugin URI:        https://unbounded.lantern.io
  * Description:       Let visitors volunteer a slice of their connection to help people reach the open internet. Enable the widget per page, on all posts, or on the homepage.
  * Version:           1.2.0
@@ -10,7 +10,7 @@
  * Author URI:        https://lantern.io
  * License:           GPL-3.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-3.0.html
- * Text Domain:       unbounded
+ * Text Domain:       unbounded-by-lantern
  */
 
 // The plugin is a thin client for the Unbounded network: it prints the widget
@@ -81,8 +81,8 @@ add_action('save_post', 'browsers_unbounded_save_meta_box_data');
  // menu item for settings page
 function browsers_unbounded_plugin_menu() {
     add_menu_page(
-        __('Unbounded Settings', 'unbounded'),
-        __('Unbounded', 'unbounded'),
+        __('Unbounded Settings', 'unbounded-by-lantern'),
+        __('Unbounded', 'unbounded-by-lantern'),
         'manage_options',
         'browsers-unbounded-settings',
         'browsers_unbounded_plugin_settings_page'
@@ -96,11 +96,11 @@ function browsers_unbounded_register_settings() {
         'default'           => array(),
     ));
     add_settings_section('browsers_unbounded_main_section', null, null, 'browsers-unbounded-settings');
-    add_settings_field('browsers_unbounded_layout', __('Layout', 'unbounded'), 'browsers_unbounded_layout_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
-    add_settings_field('browsers_unbounded_theme', __('Theme', 'unbounded'), 'browsers_unbounded_theme_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
-    add_settings_field('browsers_unbounded_location', __('Location', 'unbounded'), 'browsers_unbounded_location_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
-    add_settings_field('browsers_unbounded_homepage', __('Display on Homepage', 'unbounded'), 'browsers_unbounded_homepage_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
-    add_settings_field('browsers_unbounded_posts', __('Display on Posts', 'unbounded'), 'browsers_unbounded_posts_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_layout', __('Layout', 'unbounded-by-lantern'), 'browsers_unbounded_layout_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_theme', __('Theme', 'unbounded-by-lantern'), 'browsers_unbounded_theme_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_location', __('Location', 'unbounded-by-lantern'), 'browsers_unbounded_location_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_homepage', __('Display on Homepage', 'unbounded-by-lantern'), 'browsers_unbounded_homepage_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_posts', __('Display on Posts', 'unbounded-by-lantern'), 'browsers_unbounded_posts_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
 }
 
 /**
@@ -150,7 +150,7 @@ function browsers_unbounded_plugin_settings_page() {
     }
     ?>
     <div class="wrap">
-        <h2><?php esc_html_e('Unbounded Settings', 'unbounded'); ?></h2>
+        <h2><?php esc_html_e('Unbounded Settings', 'unbounded-by-lantern'); ?></h2>
         <form method="post" action="options.php">
             <?php settings_fields('browsers_unbounded_options_group'); ?>
             <?php do_settings_sections('browsers-unbounded-settings'); ?>
@@ -165,12 +165,12 @@ function browsers_unbounded_layout_callback() {
     $layout = browsers_unbounded_get_options()['layout'];
     ?>
     <select id='browsers_unbounded_layout' name='browsers_unbounded_options[layout]'>
-        <option value='banner' <?php selected($layout, 'banner'); ?>><?php esc_html_e('Banner', 'unbounded'); ?></option>
-        <option value='panel' <?php selected($layout, 'panel'); ?>><?php esc_html_e('Panel', 'unbounded'); ?></option>
-        <option value='floating' <?php selected($layout, 'floating'); ?>><?php esc_html_e('Floating', 'unbounded'); ?></option>
-        <option value='simple' <?php selected($layout, 'simple'); ?>><?php esc_html_e('Simple', 'unbounded'); ?></option>
+        <option value='banner' <?php selected($layout, 'banner'); ?>><?php esc_html_e('Banner', 'unbounded-by-lantern'); ?></option>
+        <option value='panel' <?php selected($layout, 'panel'); ?>><?php esc_html_e('Panel', 'unbounded-by-lantern'); ?></option>
+        <option value='floating' <?php selected($layout, 'floating'); ?>><?php esc_html_e('Floating', 'unbounded-by-lantern'); ?></option>
+        <option value='simple' <?php selected($layout, 'simple'); ?>><?php esc_html_e('Simple', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select Unbounded layout.', 'unbounded'); ?></p>
+    <p class="description"><?php esc_html_e('Select Unbounded layout.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -179,11 +179,11 @@ function browsers_unbounded_theme_callback() {
     $theme = browsers_unbounded_get_options()['theme'];
     ?>
     <select id='browsers_unbounded_theme' name='browsers_unbounded_options[theme]'>
-        <option value='light' <?php selected($theme, 'light'); ?>><?php esc_html_e('Light', 'unbounded'); ?></option>
-        <option value='dark' <?php selected($theme, 'dark'); ?>><?php esc_html_e('Dark', 'unbounded'); ?></option>
-        <option value='auto' <?php selected($theme, 'auto'); ?>><?php esc_html_e('Auto', 'unbounded'); ?></option>
+        <option value='light' <?php selected($theme, 'light'); ?>><?php esc_html_e('Light', 'unbounded-by-lantern'); ?></option>
+        <option value='dark' <?php selected($theme, 'dark'); ?>><?php esc_html_e('Dark', 'unbounded-by-lantern'); ?></option>
+        <option value='auto' <?php selected($theme, 'auto'); ?>><?php esc_html_e('Auto', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select Unbounded theme.', 'unbounded'); ?></p>
+    <p class="description"><?php esc_html_e('Select Unbounded theme.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -191,10 +191,10 @@ function browsers_unbounded_location_callback() {
     $location = browsers_unbounded_get_options()['location'];
     ?>
     <select id='browsers_unbounded_location' name='browsers_unbounded_options[location]'>
-        <option value='header' <?php selected($location, 'header'); ?>><?php esc_html_e('Header', 'unbounded'); ?></option>
-        <option value='footer' <?php selected($location, 'footer'); ?>><?php esc_html_e('Footer', 'unbounded'); ?></option>
+        <option value='header' <?php selected($location, 'header'); ?>><?php esc_html_e('Header', 'unbounded-by-lantern'); ?></option>
+        <option value='footer' <?php selected($location, 'footer'); ?>><?php esc_html_e('Footer', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select where to add Unbounded.', 'unbounded'); ?></p>
+    <p class="description"><?php esc_html_e('Select where to add Unbounded.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -202,7 +202,7 @@ function browsers_unbounded_homepage_callback() {
     $homepage = browsers_unbounded_get_options()['homepage'];
     ?>
     <input type='checkbox' id='browsers_unbounded_homepage' name='browsers_unbounded_options[homepage]' <?php checked($homepage, 'on'); ?> />
-    <label for='browsers_unbounded_homepage'><?php esc_html_e('Enable widget on the homepage', 'unbounded'); ?></label>
+    <label for='browsers_unbounded_homepage'><?php esc_html_e('Enable widget on the homepage', 'unbounded-by-lantern'); ?></label>
     <?php
 }
 
@@ -210,14 +210,14 @@ function browsers_unbounded_posts_callback() {
     $posts = browsers_unbounded_get_options()['posts'];
     ?>
     <input type='checkbox' id='browsers_unbounded_posts' name='browsers_unbounded_options[posts]' <?php checked($posts, 'on'); ?> />
-    <label for='browsers_unbounded_posts'><?php esc_html_e('Enable widget on all posts', 'unbounded'); ?></label>
+    <label for='browsers_unbounded_posts'><?php esc_html_e('Enable widget on all posts', 'unbounded-by-lantern'); ?></label>
     <?php
 }
 
 
 // meta box to the page editor to enable the unbounded widget
 function browsers_unbounded_add_meta_box() {
-    add_meta_box('browsers-unbounded-enable', __('Enable Unbounded', 'unbounded'), 'browsers_unbounded_meta_box_callback', 'page', 'side');
+    add_meta_box('browsers-unbounded-enable', __('Enable Unbounded', 'unbounded-by-lantern'), 'browsers_unbounded_meta_box_callback', 'page', 'side');
 }
 
 // renders meta box in the page editor
@@ -227,7 +227,7 @@ function browsers_unbounded_meta_box_callback($post) {
     ?>
     <label for="browsers_unbounded_field">
         <input type="checkbox" id="browsers_unbounded_field" name="browsers_unbounded_field" value="1" <?php checked($value, 1); ?> />
-        <?php esc_html_e('Enable Unbounded on this page', 'unbounded'); ?>
+        <?php esc_html_e('Enable Unbounded on this page', 'unbounded-by-lantern'); ?>
     </label>
     <?php
 }

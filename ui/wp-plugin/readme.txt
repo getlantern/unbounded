@@ -1,4 +1,4 @@
-=== Unbounded ===
+=== Unbounded by Lantern ===
 Contributors: getlantern
 Tags: censorship, privacy, proxy, volunteer, webrtc
 Requires at least: 5.0
