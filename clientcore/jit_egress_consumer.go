@@ -3,6 +3,7 @@ package clientcore
 import (
 	"context"
 	"log/slog"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -95,7 +96,18 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 				Debug("JIT egress consumer dialing", "csid", csidPrefix(consumerInfoMsg.SessionID))
 
 			// TODO: WSS
-			c, _, err := websocket.Dial(ctx, options.Addr+options.Endpoint, dialOpts)
+			address := options.Addr + options.Endpoint
+			if options.DonorID != nil {
+				if parsed, e := url.Parse(address); e == nil {
+					q := parsed.Query()
+					if donor := options.DonorID(); donor != "" {
+						q.Set("donor_id", donor)
+					}
+					parsed.RawQuery = q.Encode()
+					address = parsed.String()
+				}
+			}
+			c, _, err := websocket.Dial(ctx, address, dialOpts)
 			if err != nil {
 				slog.Debug("Couldn't connect to egress server", "addr", options.Addr, "error", err)
 

@@ -1,3 +1,4 @@
+import {leaderboardDonor} from './leaderboard'
 import go from './goWasmExec'
 import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
@@ -90,6 +91,7 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
+		donorID?: () => string,
 	): WasmClient;
 }
 
@@ -177,7 +179,8 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				this.target === Targets.WEB ? leaderboardDonor : () => ''
 			)
 		}
 	}

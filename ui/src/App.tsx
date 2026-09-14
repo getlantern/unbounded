@@ -17,6 +17,7 @@ import {Targets, Layouts} from './constants'
 import {AppContextProvider} from './context'
 import useAutoUpdate, {AUTO_START_STORAGE_FLAG} from './hooks/useAutoUpdate'
 import './i18n'
+import LeaderboardConsent from './components/molecules/leaderboardConsent'
 
 interface Props {
   appId: number
@@ -107,6 +108,7 @@ const App = ({appId, embed}: Props) => {
           { settings.layout === Layouts.SIMPLE && (
             <Simple />
           )}
+          {settings.target === Targets.WEB && Object.values(Layouts).includes(settings.layout) && <LeaderboardConsent />}
         </Suspense>
       </Layout>
     </AppContextProvider>

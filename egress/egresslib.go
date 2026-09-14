@@ -70,6 +70,8 @@ type proxyListener struct {
 	connections  chan net.Conn
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+	usage        *usageReporter
+	closeUsage   func()
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -83,6 +85,9 @@ func (l proxyListener) Addr() net.Addr {
 
 func (l proxyListener) Close() error {
 	err := l.Listener.Close()
+	if l.closeUsage != nil {
+		l.closeUsage()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -306,6 +311,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		readError:       make(chan error),
 		stats:           stats,
 		sessionBytes:    &sessionBytes,
+		countUsage:      l.usage.counter(r),
 		keepaliveFailed: &keepaliveFailed,
 	}
 
@@ -404,6 +410,8 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		probeTimeout:    35 * time.Second,
 	}
 
+	usage, closeUsage := startUsage()
+
 	// We use this wrapped listener to enable our local HTTP proxy to listen for WebSocket connections
 	l := proxyListener{
 		Listener:          ll,
@@ -411,6 +419,8 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
+		usage:             usage,
+		closeUsage:        closeUsage,
 	}
 
 	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.

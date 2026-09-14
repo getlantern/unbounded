@@ -281,3 +281,40 @@ The copy and translations are bootstrapped with [Strapi](https://strapi.io/) as 
 The translations are queried at build time and the UI uses the `i18next` library to manage the translations and the `react-i18next` library to bind the translations to the UI components.
 
 To re-query the translations from the CMS, run `yarn translate`. This will fetch the latest translations from the CMS and update the `src/translations.json` file.
+
+## Team leaderboard reporting
+
+The website widget can contribute to a verified team's totals after the volunteer
+checks **Include my anonymous contribution in this website’s team totals**.
+This is off by default. Turning it off removes the per-origin browser identifier;
+stop sharing first to change the choice. Unsupported/blocked browser storage and
+non-HTTPS pages do not send an identifier. Extension and native clients do not
+opt in automatically. The site's exact HTTPS Origin identifies the website;
+team owners verify that origin in lantern-cloud with a DNS TXT record.
+
+Egress measures successful transport reads and writes, pseudonymizes the browser
+identifier, and reports to lantern-cloud. Configure all four server variables:
+
+- `LEADERBOARD_ENDPOINT`: full HTTPS URL, e.g. `https://api.iantem.io/v1/leaderboard/usage`.
+- `LEADERBOARD_INGEST_KEY`: random secret of at least 32 characters, matching API configuration.
+- `LEADERBOARD_DONOR_KEY`: a separate random secret of at least 32 characters;
+  keep this stable and identical across egress hosts to deduplicate installations.
+- `LEADERBOARD_SPOOL_DIR`: persistent, writable directory dedicated to one egress
+  process (multiple listeners within that process share one reporter).
+
+Without an endpoint, reporting is disabled. No credentials belong in widget code.
+A mounted spool survives process/container replacement. Counters are snapshotted
+every 30 seconds to owner-only files; successful API acknowledgement removes
+those files. Retries reuse event IDs, including after restart. Memory and disk
+queues are bounded to 4,096 attribution buckets/events each. Outages beyond queue
+capacity, abrupt termination before a snapshot, storage failures or expired
+observations can undercount. This is not a lossless billing ledger. Observations
+expire within seven days, matching the API's deduplication window. Traffic serving
+continues independently of reporting. Do not share a spool between processes.
+
+Totals include both directions of QUIC transport bytes, including transport
+handshakes and retransmissions, excluding JSON/WebSocket framing. They do not
+measure unique people helped. Origin/installation IDs are attribution hints, not
+authentication; a modified native client can spoof them. Only authenticated egress
+reports can increment totals, and only verified domains map to teams. Deployment
+order: lantern-cloud API/schema and secrets, then egress/widget, then website.

@@ -83,10 +83,14 @@ Nothing else is contacted until a visitor turns the switch on. After that:
 The widget stores a few values in browser storage: the interface language, a
 crash-recovery marker, and -- inside the embed.lantern.io frame, so it follows
 the visitor across sites that run the widget -- running totals of people
-helped. None of it identifies the visitor.
+helped. If the visitor separately opts in to team contributions, the widget also
+stores a random installation identifier and that choice on the current website.
+The identifier is sent to Lantern egress while sharing, pseudonymized there, and
+used to count bandwidth and active installations for the website's verified team.
+Only team totals are public. Stopping sharing and unchecking the contribution
+choice removes the saved identifier and stops future team attribution.
 
-Unbounded does not track visitors, set advertising identifiers, or collect
-personal data. Relayed traffic is end-to-end encrypted between the person being
+Unbounded does not set advertising identifiers. Relayed traffic is end-to-end encrypted between the person being
 helped and their destination; a volunteering browser cannot read it.
 
 * Privacy policy: https://lantern.io/privacy

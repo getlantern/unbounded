@@ -51,6 +51,9 @@ func main() {
 			egOpt := clientcore.NewDefaultEgressOptions()
 			egOpt.Addr = args[9].String()
 			egOpt.Endpoint = args[10].String()
+			if len(args) > 11 && args[11].Type() == js.TypeFunction {
+				egOpt.DonorID = func() string { return args[11].Invoke().String() }
+			}
 
 			_, ui, err := clientcore.NewBroflake(&bfOpt, rtcOpt, egOpt)
 			if err != nil {

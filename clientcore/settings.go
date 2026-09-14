@@ -70,6 +70,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 }
 
 type EgressOptions struct {
+	DonorID        func() string
 	Addr           string
 	Endpoint       string
 	ConnectTimeout time.Duration

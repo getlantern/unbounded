@@ -24,6 +24,7 @@ export const getBorderRadius = (layout: Layouts) => {
 const AppWrapper = styled.section`
   font-family: 'Urbanist', sans-serif;
   display: flex;
+  flex-direction: column;
   // simple gets a definite width: in shrink-to-fit hosts (flex/inline-block
   // slots) width:100% collapses to max-content, which differs between the
   // off/on control bars and makes the card resize when toggled. Its

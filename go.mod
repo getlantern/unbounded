@@ -16,6 +16,7 @@ require (
 	github.com/pion/transport/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/quic-go/quic-go v0.59.0
+	github.com/stretchr/testify v1.11.1
 	github.com/theodorsm/covert-dtls v1.5.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.11.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.66.0
@@ -37,6 +38,7 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/dsnet/compress v0.0.2-0.20230904184137-39efe44ab707 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/getlantern/context v0.0.0-20220418194847-3d5e7a086201 // indirect
@@ -75,6 +77,7 @@ require (
 	github.com/pion/srtp/v3 v3.0.10 // indirect
 	github.com/pion/stun/v3 v3.1.1 // indirect
 	github.com/pion/turn/v4 v4.1.4 // indirect
+	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
@@ -99,4 +102,5 @@ require (
 	google.golang.org/grpc v1.72.1 // indirect
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

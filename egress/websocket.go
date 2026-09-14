@@ -40,6 +40,7 @@ type errorlessWebSocketPacketConn struct {
 	// session span. Separate from stats.ingressBytes, which the otel callback
 	// resets every interval.
 	sessionBytes *int64
+	countUsage   func(int)
 	// keepaliveFailed is set when a keepalive ping goes unanswered, which is the
 	// signature of a wedged peer rather than one that disconnected. The handler
 	// reports it as the session's teardown reason.
@@ -118,6 +119,9 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	}
 
 	copy(p, b)
+	if q.countUsage != nil {
+		q.countUsage(len(b))
+	}
 	// Attribute bytes to this connection's donor country and to its session.
 	// Both are nil-checked because migration_test and other callers construct
 	// this type directly without the instrumentation fields.
@@ -153,6 +157,9 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 	}
 
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
+	if err == nil && q.countUsage != nil {
+		q.countUsage(len(p))
+	}
 
 	// Intercept and hide errors from the caller
 	// TODO: be more specific about which error(s) to hide?
