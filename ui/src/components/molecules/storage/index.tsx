@@ -17,7 +17,7 @@ enum StorageKeys {
 }
 
 const Storage = ({settings}: {settings: Settings}) => {
-	const {target, leaderboard} = settings
+	const {target} = settings
 	const site = window.location.hostname
 	const {wasmInterface} = useContext(AppContext)
 	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
@@ -37,9 +37,11 @@ const Storage = ({settings}: {settings: Settings}) => {
 				// handle lifetime connections messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CONNECTIONS)) {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_CONNECTIONS]) || 0
-					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
-					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
+					// record the restored amount before publishing the raised total, so the
+					// helped effect can never observe one without the other
 					restoredConnections.current += value
+					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
+					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
@@ -122,14 +124,15 @@ const Storage = ({settings}: {settings: Settings}) => {
 				[SIGNATURE]: true,
 				data: {
 					eventName: 'load',
-					eventProperties: {target, site, leaderboard}
+					eventProperties: {target, site}
 				}
 			}, '*')
 		}, 1000)
-	}, [target, site, leaderboard, iframe])
+	}, [target, site, iframe])
 
 	// one 'helped' event per new consumer connection, attributed to the embedding site.
-	// the leaderboard at unbounded.lantern.io ranks sites by these events.
+	// every embedding site is listed on the leaderboard at unbounded.lantern.io and
+	// ranked by these events; removing a site is done on the website side, not here.
 	// connections restored from storage are excluded so only this session's are reported.
 	useEffect(() => {
 		if (!iframe.current) return
@@ -142,7 +145,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 				[SIGNATURE]: true,
 				data: {
 					eventName: 'helped',
-					eventProperties: {site, leaderboard}
+					eventProperties: {site}
 				}
 			}, '*')
 		}

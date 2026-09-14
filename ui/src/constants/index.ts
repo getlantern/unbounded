@@ -80,7 +80,6 @@ export interface Settings {
 	title: boolean
 	share: boolean
 	infoLink: string
-	leaderboard: boolean
 }
 
 export const defaultSettings: Settings = {
@@ -100,8 +99,7 @@ export const defaultSettings: Settings = {
 	menu: false, // @todo make true after extension is ready
 	title: false,
 	share: false,
-	infoLink: '',
-	leaderboard: false
+	infoLink: ''
 }
 
 export const POPUP = 'popup'
