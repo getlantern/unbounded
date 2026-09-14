@@ -17,7 +17,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="$(dirname "$here")"
 out="$here/dist"
 pkg="$here/package"
-slug="unbounded"
+slug="unbounded-by-lantern"
 
 command -v python3 >/dev/null || {
   echo "build.sh needs python3, which is not on PATH in this build image" >&2

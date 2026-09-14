@@ -17,8 +17,8 @@ the service.
 
 ```bash
 docker compose up -d
-mkdir -p ./wp-content/plugins/unbounded
-cp unbounded.php readme.txt uninstall.php ./wp-content/plugins/unbounded/
+mkdir -p ./wp-content/plugins/unbounded-by-lantern
+cp unbounded.php readme.txt uninstall.php ./wp-content/plugins/unbounded-by-lantern/
 ```
 
 Then:
@@ -48,11 +48,19 @@ docker compose -f docker-compose.yml -f override.yml up -d
 bash demo-site/build.sh
 ```
 
-Produces `demo-site/dist/unbounded.zip` alongside the demo site. The archive's
-top-level directory is `unbounded/`, which is the plugin's permanent slug on
-wordpress.org — do not rename it. `build.sh` fails if `unbounded.php`'s
-`Version` and `readme.txt`'s `Stable tag` disagree, since wordpress.org serves
-whatever `Stable tag` points at.
+Produces `demo-site/dist/unbounded-by-lantern.zip` alongside the demo site,
+with `unbounded-by-lantern/` as the archive's top-level directory.
+
+The slug is generated from `Plugin Name:` in `unbounded.php`, not from the
+archive — wordpress.org derives it from that header at submission ("Unbounded by
+Lantern" → `unbounded-by-lantern`) and it is permanent once approved. Keep the
+directory name in step with it regardless: that name is what the update API
+matches against installed plugin folders. The slug is also the required text
+domain, so renaming the plugin means renaming the domain in every translated
+string.
+
+`build.sh` fails if `unbounded.php`'s `Version` and `readme.txt`'s `Stable tag`
+disagree, since wordpress.org serves whatever `Stable tag` points at.
 
 The same zip serves the demo and the directory submission, so the two cannot
 drift apart.
@@ -65,6 +73,13 @@ name is the widget bundle's public API — `ui/src/index.tsx` matches only
 `browsers-unbounded` or the legacy `lantern-network` — so renaming it would
 render nothing. The prefixes stayed with it for consistency.
 
+The directory listing is "Unbounded by Lantern", not plain "Unbounded".
+Guideline 17 wants a distinctive name carrying the owning brand, and bare
+"Unbounded" sits close to live software-sector marks (UNBOUNDED SOLUTIONS, US
+reg. 5563892; UNBOUNDED AI) and to NLnet Labs' Unbound resolver. Qualifying it
+cost nothing: the previously published archive unpacked to `wp-plugin/`, so no
+installed copy was ever going to match a slug of `unbounded`.
+
 ## Submitting to the WordPress Plugin Directory
 
 See `readme.txt`'s **External services** section first: the plugin loads its
@@ -72,7 +87,7 @@ bundle from `embed.lantern.io`, which needs the Software-as-a-Service reading of
 [guideline 8](https://developer.wordpress.org/plugins/wordpress-org/detailed-plugin-guidelines/#8-plugins-may-not-send-executable-code-via-third-party-systems).
 That section is the argument, so keep it accurate.
 
-Submit `unbounded.zip` at <https://wordpress.org/plugins/developers/add/> from a
+Submit `unbounded-by-lantern.zip` at <https://wordpress.org/plugins/developers/add/> from a
 `@getlantern.org` account, with `plugins@wordpress.org` whitelisted. Review
 takes up to 14 business days; approval grants an SVN repo, and the plugin goes
 live once pushed there.

@@ -68,6 +68,6 @@ jobs:
         env:
           SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
           SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
-          SLUG: unbounded
+          SLUG: unbounded-by-lantern
           VERSION: ${{ steps.v.outputs.version }}
-          BUILD_DIR: ui/wp-plugin/demo-site/package/unbounded
+          BUILD_DIR: ui/wp-plugin/demo-site/package/unbounded-by-lantern
