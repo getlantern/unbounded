@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -10,7 +11,10 @@ import (
 	"github.com/getlantern/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -136,7 +140,10 @@ var initMetricsFn = initMetrics
 // initMetrics creates the exporters, instruments and callback. Callers must hold
 // metricsMu.
 func initMetrics(ctx context.Context) (func(context.Context) error, error) {
-	closeFuncMetrics := telemetry.EnableOTELMetrics(ctx)
+	closeFuncMetrics, err := enableOTELMetrics(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("enabling OTEL metrics: %w", err)
+	}
 
 	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
 	// metrics rather than instead of them: the counters answer "is the fleet
@@ -159,7 +166,6 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 
-	var err error
 	if nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -181,6 +187,17 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	if freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+
+	// proxy.io is synchronous — its measurements arrive via addProxyIO on
+	// the packet path, not via the callback — so it must NOT be added to
+	// the RegisterCallback list below. The list's rule ("every instrument
+	// the callback observes must be declared") applies to observables
+	// only; a synchronous counter in that list would be an error.
+	proxyIO, err := m.Int64Counter("proxy.io", metric.WithUnit("bytes"))
+	if err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
 
 	if _, err = m.RegisterCallback(
 		observeMetrics,
@@ -211,6 +228,42 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
 
 	return shutdown, nil
+}
+
+// enableOTELMetrics stands in for telemetry.EnableOTELMetrics with two
+// deliberate differences. First, the exporter carries a temporality
+// selector: the fleet-wide proxy.io contract requires delta (see
+// counterTemporality), and getlantern/telemetry exposes no way to set
+// one. Second, a failed exporter build is returned rather than swallowed
+// into a silent no-op provider — this package already treats "telemetry
+// that looks installed but isn't" as the worst failure mode (see the
+// callback-registration comment above), and a malformed OTEL_* env var
+// deserves a loud startup failure, not a host that serves traffic while
+// reporting nothing. Env-var configuration (endpoint, headers) is
+// unchanged: otlpmetrichttp reads the same OTEL_EXPORTER_OTLP_* vars.
+func enableOTELMetrics(ctx context.Context) (func(context.Context) error, error) {
+	exp, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithTemporalitySelector(counterTemporality))
+	if err != nil {
+		return nil, fmt.Errorf("creating OTLP metric exporter: %w", err)
+	}
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+	)
+	otel.SetMeterProvider(mp)
+	return mp.Shutdown, nil
+}
+
+// counterTemporality maps synchronous counters — proxy.io is the only
+// one — to delta, and leaves every other kind cumulative so the
+// Observable* instruments above keep the temporality their SigNoz
+// queries were written against. Do not widen the delta case without
+// checking every saved query on the affected instruments.
+func counterTemporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+	if kind == sdkmetric.InstrumentKindCounter {
+		return metricdata.DeltaTemporality
+	}
+	return metricdata.CumulativeTemporality
 }
 
 // shutdownAfter tears down the half-built provider and returns the original error,
