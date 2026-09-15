@@ -44,6 +44,11 @@ type errorlessWebSocketPacketConn struct {
 	// signature of a wedged peer rather than one that disconnected. The handler
 	// reports it as the session's teardown reason.
 	keepaliveFailed *atomic.Bool
+	// ioSets holds this connection's pre-built proxy.io attribute sets.
+	// nil when the conn is constructed outside handleWebsocket (tests),
+	// in which case no proxy.io measurements are recorded — the same
+	// convention as stats and sessionBytes above.
+	ioSets *proxyIOSets
 }
 
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
@@ -131,6 +136,9 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	if q.sessionBytes != nil {
 		atomic.AddInt64(q.sessionBytes, int64(len(b)))
 	}
+	if q.ioSets != nil {
+		addProxyIO(int64(len(b)), q.ioSets.rx)
+	}
 	return len(b), q.tcpAddr, err
 }
 
@@ -153,6 +161,14 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 	}
 
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
+
+	// Counted only on a successful write, and counted post-marshal: the
+	// number reporting wants is bytes actually pushed through a donor,
+	// which is the envelope on the wire, not the payload the caller
+	// handed us.
+	if err == nil && q.ioSets != nil {
+		addProxyIO(int64(len(b)), q.ioSets.tx)
+	}
 
 	// Intercept and hide errors from the caller
 	// TODO: be more specific about which error(s) to hide?
