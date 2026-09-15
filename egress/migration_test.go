@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,12 +9,18 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
+	"io"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/quic-go/quic-go"
 
 	"github.com/getlantern/broflake/common"
@@ -49,7 +56,7 @@ import (
 func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 	// Long enough for the test cleanup; failed migrations show up as
 	// quic-go errors well before this fires.
-	t.Parallel()
+	before := migrationSnapshot()
 
 	consumer, _ := startTestConsumer(t)
 	t.Cleanup(func() { _ = consumer.Close() })
@@ -133,6 +140,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		t.Fatalf("OpenStreamSync over migrated connection: %v", err)
 	}
 	_ = streamB.Close()
+	assertMigrationDelta(t, before, [5]int64{1, 1, 0, 0, 0})
 }
 
 // TestConnectionManager_Migration_ProbeTimeout pins down what happens
@@ -148,7 +156,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 // or panicking, and that the connection state is preserved for a
 // subsequent retry.
 func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
-	t.Parallel()
+	before := migrationSnapshot()
 
 	consumer, _ := startTestConsumer(t)
 	t.Cleanup(func() { _ = consumer.Close() })
@@ -222,6 +230,244 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	cm.mx.Unlock()
 	if !present {
 		t.Errorf("connection record gone from cm.connections after probe failure; cannot retry migration")
+	}
+	assertMigrationDelta(t, before, [5]int64{1, 0, 0, 1, 0})
+}
+
+// The production adapter must hide a dead donor's errors long enough to move
+// the existing stream onto a replacement. A successful Probe alone cannot prove
+// this: require delivery of the entire payload after a period with no donor.
+func TestConnectionManager_Migration_DonorLossResumesStream(t *testing.T) {
+	t.Run("upload", func(t *testing.T) { testDonorLossResumesStream(t, false) })
+	t.Run("download", func(t *testing.T) { testDonorLossResumesStream(t, true) })
+}
+
+func testDonorLossResumesStream(t *testing.T, download bool) {
+	t.Helper()
+	before := migrationSnapshot()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	transport := &quic.Transport{Conn: pc}
+	listener, err := transport.Listen(testServerTLS(), &common.QUICCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	t.Cleanup(func() { _ = listener.Close() })
+	cm := &connectionManager{
+		connections: map[string]*connectionRecord{}, tlsConfig: testClientTLS(),
+		migrationWindow: 5 * time.Second, probeTimeout: 5 * time.Second,
+	}
+	pathA, disconnectA := migrationDonor(t, pc.LocalAddr())
+	conn, err := cm.createOrMigrate("donor-loss", pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { closeAllRecords(cm) })
+	consumer, err := listener.Accept(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = consumer.CloseWithError(0, "test cleanup") })
+	stream, err := consumer.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stream.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	prefix := []byte("transfer started on donor A")
+	if _, err := stream.Write(prefix); err != nil {
+		t.Fatal(err)
+	}
+	received, err := conn.AcceptStream(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := received.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	gotPrefix := make([]byte, len(prefix))
+	if _, err := io.ReadFull(received, gotPrefix); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(prefix, gotPrefix) {
+		t.Fatal("prefix corrupted")
+	}
+	sender, receiver := stream, received
+	if download {
+		sender, receiver = received, stream
+		if _, err := sender.Write(prefix); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.ReadFull(receiver, gotPrefix); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(prefix, gotPrefix) {
+			t.Fatal("download prefix corrupted")
+		}
+	}
+	assertMigrationDelta(t, before, [5]int64{})
+
+	disconnectA()
+	select {
+	case <-pathA.readError:
+	case <-ctx.Done():
+		t.Fatal("egress did not observe donor loss")
+	}
+	// Exceed stream buffering so this transfer cannot finish on local Write
+	// success alone. The receiver must acknowledge and verify every byte.
+	payload := bytes.Repeat([]byte("payload through replacement donor\n"), 65536)
+	written := make(chan error, 1)
+	go func() {
+		_, err := sender.Write(payload)
+		if err == nil {
+			err = sender.Close()
+		}
+		written <- err
+	}()
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	read := make(chan readResult, 1)
+	go func() {
+		data, err := io.ReadAll(receiver)
+		read <- readResult{data, err}
+	}()
+	select {
+	case result := <-read:
+		t.Fatalf("transfer ended without replacement: %v (%d bytes)", result.err, len(result.data))
+	case <-time.After(200 * time.Millisecond):
+	}
+	pathB, _ := migrationDonor(t, pc.LocalAddr())
+	migrated, err := cm.createOrMigrate("donor-loss", pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated != conn {
+		t.Fatal("replacement dialed a new QUIC connection")
+	}
+	select {
+	case result := <-read:
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if !bytes.Equal(result.data, payload) {
+			t.Fatalf("resumed transfer corrupted: got %d bytes, want %d", len(result.data), len(payload))
+		}
+	case <-ctx.Done():
+		t.Fatal("original stream did not resume after migration")
+	}
+	select {
+	case err := <-written:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("sender did not finish")
+	}
+	assertMigrationDelta(t, before, [5]int64{1, 1, 0, 0, 0})
+}
+
+// Bridge the production WebSocket framing to a loopback QUIC consumer. Each
+// invocation has a distinct UDP address, just as each donor supplies a new path.
+func migrationDonor(t *testing.T, consumer net.Addr) (*errorlessWebSocketPacketConn, func()) {
+	t.Helper()
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = udp.Close() })
+	accepted := make(chan *websocket.Conn, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ws, err := websocket.Accept(w, r, nil)
+		if err == nil {
+			accepted <- ws
+		}
+	}))
+	t.Cleanup(server.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	peer, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = peer.CloseNow() })
+	var ws *websocket.Conn
+	select {
+	case ws = <-accepted:
+	case <-ctx.Done():
+		t.Fatal("WebSocket accept timed out")
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	peer.SetReadLimit(1 << 20)
+	ws.SetReadLimit(1 << 20)
+	var workers sync.WaitGroup
+	workers.Add(2)
+	go func() {
+		defer workers.Done()
+		for {
+			_, b, err := peer.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var packet common.UnboundedPacket
+			if json.Unmarshal(b, &packet) != nil {
+				return
+			}
+			if _, err := udp.WriteTo(packet.Payload, consumer); err != nil {
+				return
+			}
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if peer.Write(context.Background(), websocket.MessageBinary, buf[:n]) != nil {
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	disconnect := func() {
+		once.Do(func() {
+			_ = peer.CloseNow()
+			_ = udp.Close()
+			workers.Wait()
+		})
+	}
+	t.Cleanup(disconnect)
+	return &errorlessWebSocketPacketConn{
+		w: ws, addr: common.DebugAddr(udp.LocalAddr().String()),
+		tcpAddr:   &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: udp.LocalAddr().(*net.UDPAddr).Port},
+		keepalive: time.Minute, readError: make(chan error, 1),
+	}, disconnect
+}
+
+func migrationSnapshot() (counts [5]int64) {
+	for i := range counts {
+		counts[i] = migrationCounts[i].Load()
+	}
+	return
+}
+
+func assertMigrationDelta(t *testing.T, before, want [5]int64) {
+	t.Helper()
+	for i, count := range migrationSnapshot() {
+		if got := count - before[i]; got != want[i] {
+			t.Errorf("migration %s: got %d, want %d", migrationOutcomes[i], got, want[i])
+		}
 	}
 }
 

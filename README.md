@@ -122,6 +122,27 @@ TAG=Bob FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./desktop`
 signaling process and establish connection(s) to one another, you should see the network you have
 created. You must refresh the page to update the visualization.
 
+#### QUIC migration telemetry
+
+The egress exports the monotonic `quic-migrations` counter with an `outcome` label:
+`attempt`, `success`, `add_path_error`, `probe_error`, or `switch_error`.
+Initial QUIC dials are excluded. A success means the replacement path passed
+validation and QUIC accepted the switch request; it does not prove application bytes resumed.
+
+In SigNoz, filter to `service.name = unbounded-egress`, use the counter's rate,
+and group by `outcome`. Compare successes and failures against attempts; do not
+sum all outcomes as a total because each attempt also produces an outcome.
+An in-flight attempt may finish in a later collection interval. If the same
+instance arrives through multiple collectors (`via`), select one collector to
+avoid counting duplicate exports. These counters do not depend on trace sampling
+or DEBUG log export and become available after deploying the updated egress.
+
+Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
+validation, probe timeout accounting, and upload/download continuation on the
+original stream after donor loss. The donor-loss test uses the production
+WebSocket adapter with a loopback relay; WebRTC discovery and re-pairing are
+outside its scope.
+
 ### :art: UI
 
 ![ui system](https://user-images.githubusercontent.com/24487544/220998573-0b1f3bd2-66d1-41eb-b256-4da1aa69da76.png)

@@ -90,6 +90,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		return newConn, nil
 	}
 	// Atomic migration path
+	migrationCounts[migrationAttempt].Add(1)
 	slog.Debug("Trying to migrate QUIC connection", "local_addr", pconn.LocalAddr(), "csid", csid)
 	t1 := time.Now()
 	record.mx.Lock()
@@ -98,6 +99,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
+		migrationCounts[migrationAddPathError].Add(1)
 		return nil, fmt.Errorf("AddPath error: %v", err)
 	}
 
@@ -105,15 +107,18 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	defer cancel()
 	err = path.Probe(ctx)
 	if err != nil {
+		migrationCounts[migrationProbeError].Add(1)
 		return nil, fmt.Errorf("path probe error: %v", err)
 	}
 
 	err = path.Switch()
 	if err != nil {
+		migrationCounts[migrationSwitchError].Add(1)
 		return nil, fmt.Errorf("path switch error: %v", err)
 	}
 
 	t2 := time.Now()
+	migrationCounts[migrationSuccess].Add(1)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
 	record.lastMigrated = time.Now()
 

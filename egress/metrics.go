@@ -74,6 +74,21 @@ var teardownCounter metric.Int64ObservableCounter
 // stopped answering, this one says why.
 var freezeReportCounter metric.Int64ObservableCounter
 
+var migrationCounter metric.Int64ObservableCounter
+
+const (
+	migrationAttempt = iota
+	migrationSuccess
+	migrationAddPathError
+	migrationProbeError
+	migrationSwitchError
+)
+
+// Fixed outcomes keep session IDs and error text out of metric labels. Attempts
+// count only reuse of an existing QUIC connection, never initial dials.
+var migrationCounts [5]atomic.Int64
+var migrationOutcomes = [...]string{"attempt", "success", "add_path_error", "probe_error", "switch_error"}
+
 var (
 	// metricsMu guards both fields below. A plain mutex rather than sync.Once
 	// because the setup has to be repeatable: refcount reaching zero shuts the
@@ -181,6 +196,9 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	if freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+	if migrationCounter, err = m.Int64ObservableCounter("quic-migrations"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
 
 	if _, err = m.RegisterCallback(
 		observeMetrics,
@@ -195,6 +213,7 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		// exported. Silent, and indistinguishable from "the event never happened".
 		teardownCounter,
 		freezeReportCounter,
+		migrationCounter,
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -223,6 +242,10 @@ func shutdownAfter(ctx context.Context, shutdown func(context.Context) error, er
 // observeMetrics is the single otel callback. Registered once per process, so it
 // must read only process-global state — which is all it does.
 func observeMetrics(ctx context.Context, o metric.Observer) error {
+	for i, outcome := range migrationOutcomes {
+		o.ObserveInt64(migrationCounter, migrationCounts[i].Load(),
+			metric.WithAttributes(attribute.String("outcome", outcome)))
+	}
 	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
 	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))
 
