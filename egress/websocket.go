@@ -163,8 +163,9 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
 
 	// Counted only on a successful write, and counted post-marshal: the
-	// grant-facing number is bytes actually pushed through a donor, which
-	// is the envelope on the wire, not the payload the caller handed us.
+	// number reporting wants is bytes actually pushed through a donor,
+	// which is the envelope on the wire, not the payload the caller
+	// handed us.
 	if err == nil && q.ioSets != nil {
 		addProxyIO(int64(len(b)), q.ioSets.tx)
 	}

@@ -256,7 +256,7 @@ func enableOTELMetrics(ctx context.Context) (func(context.Context) error, error)
 
 // counterTemporality maps synchronous counters — proxy.io is the only
 // one — to delta, and leaves every other kind cumulative so the
-// Observable* instruments above keep the temporality their SigNoz
+// Observable* instruments above keep the temporality their dashboard
 // queries were written against. Do not widen the delta case without
 // checking every saved query on the affected instruments.
 func counterTemporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {

@@ -258,13 +258,12 @@ func TestStartMetrics_ReleaseReturnsTheSameErrorEveryTime(t *testing.T) {
 	}
 }
 
-// The ops collectors require proxy.io to arrive as DELTA (their pipeline
-// merges series with identity stripped, and merging cumulative streams
-// corrupts rate() silently — see routing/host_identity in lantern-cloud's
-// ops/otelcol.yaml). Every OTHER instrument in this package is an
-// Observable* kind whose SigNoz queries assume cumulative, so the delta
-// mapping must cover synchronous counters and nothing else. This test is
-// the tripwire for both directions of that contract.
+// The telemetry pipeline requires proxy.io to arrive as DELTA (it merges
+// series with host identity stripped, and merging cumulative streams
+// corrupts rate() silently). Every OTHER instrument in this package is an
+// Observable* kind whose dashboard queries assume cumulative, so the
+// delta mapping must cover synchronous counters and nothing else. This
+// test is the tripwire for both directions of that contract.
 func TestCounterTemporality_DeltaOnlyForSyncCounters(t *testing.T) {
 	cases := []struct {
 		kind sdkmetric.InstrumentKind

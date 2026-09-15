@@ -69,11 +69,10 @@ func proxyIOSum(t *testing.T, reader *sdkmetric.ManualReader, direction string) 
 	return total
 }
 
-// The attribute contract is what makes the datapoints land in the right
-// BigQuery columns (keys flatten dots-to-underscores) and the right arm
-// of teleport.protocols' COALESCE. Getting a spelling wrong doesn't
-// error anywhere — it just files the traffic under NULL forever — so the
-// exact keys and values are pinned here.
+// The attribute contract is what downstream storage and reporting key on
+// to classify this traffic. Getting a spelling wrong doesn't error
+// anywhere — it just files the traffic under NULL forever — so the exact
+// keys and values are pinned here.
 func TestProxyIOSetsFor_AttributeContract(t *testing.T) {
 	sets := proxyIOSetsFor("IR")
 	for _, tc := range []struct {
@@ -94,7 +93,7 @@ func TestProxyIOSetsFor_AttributeContract(t *testing.T) {
 			t.Errorf("%s: network.io.direction = %q (present=%v), want %q", tc.name, v.AsString(), ok, tc.direction)
 		}
 		if tc.set.Len() != 3 {
-			t.Errorf("%s: %d attributes, want exactly 3 — an extra attribute is an extra BigQuery column and a cardinality multiplier", tc.name, tc.set.Len())
+			t.Errorf("%s: %d attributes, want exactly 3 — an extra attribute is an extra datastore column and a cardinality multiplier", tc.name, tc.set.Len())
 		}
 	}
 }
@@ -159,7 +158,7 @@ func newWSPair(t *testing.T) (server, client *websocket.Conn) {
 	return server, client
 }
 
-// The transmit direction is the one #3900 exists for — "bandwidth
+// The transmit direction is the one this metric exists for — "bandwidth
 // shared" is egress→donor. The counted quantity is the marshaled
 // UnboundedPacket envelope (what WriteTo actually puts on the wire),
 // not the caller's payload.

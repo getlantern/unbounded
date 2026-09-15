@@ -9,29 +9,26 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// proxy.io is the fleet-standard bandwidth counter: every Lantern proxy
-// emits it, it is the ONLY metric the ops collectors forward to BigQuery
-// (filter/keep_metrics_for_bigquery in lantern-cloud's ops/otelcol.yaml),
-// and the teleport.protocols view aggregates it into the per-protocol
-// GB/day numbers grant reporting reads. Emitting it here is what makes
-// Browsers Unbounded traffic exist in that pipeline at all — see
-// getlantern/engineering#3900 for the gap this closes.
+// proxy.io measures throughput: every proxy in the fleet emits it, the
+// telemetry pipeline forwards it to a datastore, and periodic reporting
+// aggregates it into per-protocol totals there. Emitting it here is what
+// makes Browsers Unbounded traffic exist in that pipeline at all.
 //
 // It deliberately coexists with ingress-bytes rather than replacing it:
-// ingress-bytes keeps per-host identity in SigNoz (proxy.io has it
-// stripped by the collectors) and existing dashboards read it. proxy.io
-// adds the transmit direction — the "bandwidth shared" number — which
-// ingress-bytes never carried.
+// ingress-bytes keeps per-host identity (proxy.io has it stripped by the
+// pipeline) and existing dashboards read it. proxy.io adds the transmit
+// direction — the "bandwidth shared" number — which ingress-bytes never
+// carried.
 //
 // Unlike every other instrument in this package, proxy.io is a
-// synchronous counter, because the collectors require it to arrive as
+// synchronous counter, because the pipeline requires it to arrive as
 // DELTA (see counterTemporality in metrics.go) and switching the
 // Observable* instruments' temporality would silently change what their
 // saved queries mean.
 
-// proxyIOProtocol is the value the teleport.protocols view surfaces as
-// this traffic's protocol. "unbounded" matches the service name and repo;
-// change it only in concert with whoever reads the BigQuery numbers.
+// proxyIOProtocol is the value downstream reporting surfaces as this
+// traffic's protocol. "unbounded" matches the service name and repo;
+// change it only in concert with whoever reads those reports.
 const proxyIOProtocol = "unbounded"
 
 // proxyIOHandle wraps the counter interface so atomic.Pointer has a
@@ -61,10 +58,9 @@ type proxyIOSets struct {
 
 // proxyIOSetsFor builds the attribute sets for a session with the given
 // donor country. The three attributes here are the whole contract —
-// spellings are load-bearing (BigQuery columns and the
-// teleport.protocols COALESCE match on them) and anything added
-// multiplies series cardinality, so additions need the same scrutiny the
-// freeze-report attributes got in metrics.go.
+// spellings are load-bearing (downstream storage and reporting match on
+// them) and anything added multiplies series cardinality, so additions
+// need the same scrutiny the freeze-report attributes got in metrics.go.
 func proxyIOSetsFor(donorCC string) *proxyIOSets {
 	set := func(direction string) attribute.Set {
 		return attribute.NewSet(
