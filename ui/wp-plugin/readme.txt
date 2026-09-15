@@ -56,7 +56,7 @@ their browser contacts:
   On load the widget sends it two events: that it rendered, tagged with the
   embed type (web page or browser extension), and the state of the switch,
   which is off. The switch event is sent again whenever a visitor changes it.
-  Both events carry the hostname of the page the widget is embedded on. While
+  The load event carries the hostname of the page the widget is embedded on. While
   the switch is on, one further event is sent each time the widget starts
   helping a new person, tagged with the same hostname. Every site that embeds
   the widget is listed automatically on unbounded.lantern.io/leaderboard and
