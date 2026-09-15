@@ -3,7 +3,6 @@ package egress
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -140,10 +139,7 @@ var initMetricsFn = initMetrics
 // initMetrics creates the exporters, instruments and callback. Callers must hold
 // metricsMu.
 func initMetrics(ctx context.Context) (func(context.Context) error, error) {
-	closeFuncMetrics, err := enableOTELMetrics(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("enabling OTEL metrics: %w", err)
-	}
+	closeFuncMetrics := enableOTELMetrics(ctx)
 
 	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
 	// metrics rather than instead of them: the counters answer "is the fleet
@@ -166,6 +162,7 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 
 	m := otel.Meter("github.com/getlantern/broflake/egress")
 
+	var err error
 	if nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -234,24 +231,28 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 // deliberate differences. First, the exporter carries a temporality
 // selector: the fleet-wide proxy.io contract requires delta (see
 // counterTemporality), and getlantern/telemetry exposes no way to set
-// one. Second, a failed exporter build is returned rather than swallowed
-// into a silent no-op provider — this package already treats "telemetry
-// that looks installed but isn't" as the worst failure mode (see the
-// callback-registration comment above), and a malformed OTEL_* env var
-// deserves a loud startup failure, not a host that serves traffic while
-// reporting nothing. Env-var configuration (endpoint, headers) is
-// unchanged: otlpmetrichttp reads the same OTEL_EXPORTER_OTLP_* vars.
-func enableOTELMetrics(ctx context.Context) (func(context.Context) error, error) {
+// one. Second, a failed exporter build is logged rather than swallowed
+// without a trace: telemetry is observability, never a gate on serving
+// traffic (the same rule proxyListener.Close and enableOTELLogs follow),
+// so the fallback is a no-op — the global meter provider is left at its
+// no-op default and every instrument built on it degrades to nothing —
+// but the log line means a malformed OTEL_* env var is at least visible
+// in the journal instead of silently costing all metrics. Env-var
+// configuration (endpoint, headers) is unchanged: otlpmetrichttp reads
+// the same OTEL_EXPORTER_OTLP_* vars.
+func enableOTELMetrics(ctx context.Context) func(context.Context) error {
 	exp, err := otlpmetrichttp.New(ctx,
 		otlpmetrichttp.WithTemporalitySelector(counterTemporality))
 	if err != nil {
-		return nil, fmt.Errorf("creating OTLP metric exporter: %w", err)
+		slog.Error("OTEL metrics disabled: creating OTLP metric exporter failed",
+			"error", err)
+		return func(context.Context) error { return nil }
 	}
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
 	)
 	otel.SetMeterProvider(mp)
-	return mp.Shutdown, nil
+	return mp.Shutdown
 }
 
 // counterTemporality maps synchronous counters — proxy.io is the only
