@@ -281,3 +281,24 @@ The copy and translations are bootstrapped with [Strapi](https://strapi.io/) as 
 The translations are queried at build time and the UI uses the `i18next` library to manage the translations and the `react-i18next` library to bind the translations to the UI components.
 
 To re-query the translations from the CMS, run `yarn translate`. This will fetch the latest translations from the CMS and update the `src/translations.json` file.
+
+## Site leaderboard
+
+Every site that embeds the widget is listed automatically on
+[unbounded.lantern.io/leaderboard](https://unbounded.lantern.io/leaderboard).
+There is nothing to configure and no account to create.
+
+The widget reports two things to Plausible through the storage iframe: a `load`
+event when it renders and a `helped` event each time it starts helping a new
+person, both tagged with the hostname of the embedding page (`site`). The
+leaderboard ranks sites by `helped` events over the selected period and shows
+unique volunteers alongside. This is the same Plausible reporting the widget has
+always done, with the hostname made explicit so it survives the embedding site's
+referrer policy; Plausible is cookieless and stores no visitor identifiers.
+
+Sites are removed, renamed or given a logo on the website side, in
+`apps/frontend/data/leaderboardSites.json` of
+[getlantern/lantern-website](https://github.com/getlantern/lantern-website).
+`listed: false` removes a site regardless of traffic. A site that must not be
+publicly associated with Unbounded can ask for that by opening an issue on
+[getlantern/unbounded](https://github.com/getlantern/unbounded/issues).

@@ -25,6 +25,7 @@ export interface Throughput {
 // create state emitters
 export const connectionsEmitter = new StateEmitter<Connection[]>([])
 export const averageThroughputEmitter = new StateEmitter<number>(0)
+export const servedConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeChunksEmitter = new StateEmitter<Chunk[]>([])
 export const readyEmitter = new StateEmitter<boolean>(false)
@@ -268,6 +269,7 @@ export class WasmInterface {
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
+			servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1)
 		}
 	}
 
