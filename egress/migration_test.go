@@ -681,3 +681,51 @@ func TestConnectionManagerSessionLocksAreIndependent(t *testing.T) {
 	<-done
 	busy.mx.Lock()
 }
+
+func TestConnectionManager_Migration_FailedProbesThenRecovery(t *testing.T) {
+	before := migrationSnapshot()
+	consumer, _ := startTestConsumer(t)
+	t.Cleanup(func() { _ = consumer.Close() })
+	cm := &connectionManager{
+		connections: map[string]*connectionRecord{}, tlsConfig: testClientTLS(),
+		migrationWindow: 5 * time.Second, probeTimeout: 250 * time.Millisecond,
+	}
+	defer closeAllRecords(cm)
+	newSocket := func() net.PacketConn {
+		t.Helper()
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = pc.Close() })
+		return pc
+	}
+	const csid = "failed-probes-then-recovery"
+	original, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exceed the four-ID active pool before trying a healthy replacement.
+	const failures = 6
+	for attempt := 0; attempt < failures; attempt++ {
+		dropping := &droppingPacketConn{PacketConn: newSocket()}
+		_, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
+		if err == nil || !strings.Contains(err.Error(), "path probe error: context deadline exceeded") {
+			t.Fatalf("failed probe %d: got %v, want probe timeout", attempt+1, err)
+		}
+	}
+	cm.probeTimeout = 3 * time.Second
+	recovered, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
+	if err != nil {
+		t.Fatalf("healthy replacement after %d failed probes: %v", failures, err)
+	}
+	if recovered != original {
+		t.Fatal("recovery replaced the QUIC connection")
+	}
+	stream, err := openWritableStream(t, recovered)
+	if err != nil {
+		t.Fatalf("open stream after recovery: %v", err)
+	}
+	_ = stream.Close()
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{failures + 1, 1, 0, failures, 0})
+}

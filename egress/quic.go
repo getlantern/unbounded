@@ -127,12 +127,18 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	defer cancel()
 	err = path.Probe(ctx)
 	if err != nil {
+		if closeErr := path.Close(); closeErr != nil {
+			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
+		}
 		recordMigration(migrationProbeError)
 		return nil, fmt.Errorf("path probe error: %v", err)
 	}
 
 	err = path.Switch()
 	if err != nil {
+		if closeErr := path.Close(); closeErr != nil {
+			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
+		}
 		recordMigration(migrationSwitchError)
 		return nil, fmt.Errorf("path switch error: %v", err)
 	}
