@@ -66,12 +66,8 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		migrationWindow: 5 * time.Second,
 		probeTimeout:    5 * time.Second,
 	}
-	// closeAllRecords is registered LAST below so it runs FIRST in
-	// cleanup (t.Cleanup is LIFO). The order matters: we want QUIC
-	// connections closed before their underlying PacketConns disappear,
-	// otherwise quic-go's read goroutines observe a vanished transport
-	// before they observe the connection close, which produces noisy
-	// error logs and occasionally races on the test's assertion path.
+	// Deferred connection shutdown runs before transport t.Cleanup callbacks,
+	// so QUIC connections close while their PacketConns are still alive.
 
 	csid := "test-csid-happy"
 
@@ -113,8 +109,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		t.Fatalf("ListenPacket pconnB: %v", err)
 	}
 	t.Cleanup(func() { _ = pconnB.Close() })
-	// Registered after both PacketConns so it runs first (LIFO) and
-	// closes the QUIC conns while their transports are still alive.
+	// Deferred calls run before every t.Cleanup, regardless of registration order.
 	defer closeAllRecords(cm)
 
 	connB, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
@@ -139,7 +134,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 		t.Fatalf("OpenStreamSync over migrated connection: %v", err)
 	}
 	_ = streamB.Close()
-	assertMigrationDelta(t, before, [5]int64{1, 1, 0, 0, 0})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{1, 1, 0, 0, 0})
 }
 
 // TestConnectionManager_Migration_ProbeTimeout pins down what happens
@@ -167,8 +162,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 		migrationWindow: 5 * time.Second,
 		probeTimeout:    probeTimeout,
 	}
-	// closeAllRecords is registered LAST below so it runs FIRST in
-	// cleanup (LIFO); see comment in the happy-path test for why.
+	// Deferred connection shutdown runs before transport t.Cleanup callbacks.
 
 	csid := "test-csid-probe-timeout"
 
@@ -230,7 +224,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	if !present {
 		t.Errorf("connection record gone from cm.connections after probe failure; cannot retry migration")
 	}
-	assertMigrationDelta(t, before, [5]int64{1, 0, 0, 1, 0})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{1, 0, 0, 1, 0})
 }
 
 // The production adapter must hide a dead donor's errors long enough to move
@@ -315,7 +309,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 			t.Fatal("download prefix corrupted")
 		}
 	}
-	assertMigrationDelta(t, before, [5]int64{})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{})
 
 	for hop := 0; hop < hops; hop++ {
 		t.Logf("replacing donor %d/%d", hop+1, hops)
@@ -392,7 +386,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 	if err != nil || len(extra) != 0 {
 		t.Fatalf("unexpected trailing data: %d bytes, %v", len(extra), err)
 	}
-	assertMigrationDelta(t, before, [5]int64{int64(hops), int64(hops), 0, 0, 0})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{int64(hops), int64(hops), 0, 0, 0})
 }
 
 // Bridge the production WebSocket framing to a loopback QUIC consumer. Each
@@ -477,7 +471,7 @@ func migrationDonor(t *testing.T, consumer net.Addr) (*errorlessWebSocketPacketC
 
 var migrationOutcomes = [...]migrationOutcome{migrationAttempt, migrationSuccess, migrationAddPathError, migrationProbeError, migrationSwitchError}
 
-func migrationSnapshot() (counts [5]int64) {
+func migrationSnapshot() (counts [len(migrationOutcomes)]int64) {
 	eachMigration(func(outcome migrationOutcome, count int64) {
 		for i, label := range migrationOutcomes {
 			if label == outcome {
@@ -488,7 +482,7 @@ func migrationSnapshot() (counts [5]int64) {
 	return
 }
 
-func assertMigrationDelta(t *testing.T, before, want [5]int64) {
+func assertMigrationDelta(t *testing.T, before, want [len(migrationOutcomes)]int64) {
 	t.Helper()
 	for i, count := range migrationSnapshot() {
 		if got := count - before[i]; got != want[i] {

@@ -123,7 +123,7 @@ func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, directio
 	if string(prefix) != "ready" {
 		t.Fatalf("unexpected prefix: %q", prefix)
 	}
-	assertMigrationDelta(t, before, [5]int64{})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{})
 	for round := 0; round < 8; round++ {
 		t.Logf("replacing donor %d/8", round+1)
 		disconnect()
@@ -182,7 +182,7 @@ func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, directio
 			t.Fatalf("legacy acknowledged round %d, want %d", done.Round, round)
 		}
 	}
-	assertMigrationDelta(t, before, [5]int64{8, 8, 0, 0, 0})
+	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{8, 8, 0, 0, 0})
 	if err := stdin.Close(); err != nil {
 		t.Fatal(err)
 	}
