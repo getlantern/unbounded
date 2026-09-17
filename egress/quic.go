@@ -120,7 +120,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
 		recordMigration(migrationAddPathError)
-		return nil, fmt.Errorf("AddPath error: %v", err)
+		return nil, fmt.Errorf("AddPath error: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
@@ -131,7 +131,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationProbeError)
-		return nil, fmt.Errorf("path probe error: %v", err)
+		return nil, fmt.Errorf("path probe error: %w", err)
 	}
 
 	err = path.Switch()
@@ -140,7 +140,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationSwitchError)
-		return nil, fmt.Errorf("path switch error: %v", err)
+		return nil, fmt.Errorf("path switch error: %w", err)
 	}
 
 	t2 := time.Now()

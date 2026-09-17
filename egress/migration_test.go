@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"errors"
 	"io"
 	"math/big"
 	"net"
@@ -705,12 +706,13 @@ func TestConnectionManager_Migration_FailedProbesThenRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Exceed the four-ID active pool before trying a healthy replacement.
+	// Assumes the pinned fork's unexported MaxActiveConnectionIDs is 4.
+	// Exceed that pool before trying a healthy replacement; recheck on fork upgrades.
 	const failures = 6
 	for attempt := 0; attempt < failures; attempt++ {
 		dropping := &droppingPacketConn{PacketConn: newSocket()}
 		_, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
-		if err == nil || !strings.Contains(err.Error(), "path probe error: context deadline exceeded") {
+		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("failed probe %d: got %v, want probe timeout", attempt+1, err)
 		}
 	}

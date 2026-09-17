@@ -147,7 +147,8 @@ Migration failures also produce `session-teardowns{reason="create_or_migrate_fai
 that teardown reason includes initial dial failures too. Do not sum these two metrics.
 
 Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
-validation, probe timeout accounting, and upload/download continuation on the
+validation, probe timeout accounting, connection-ID reclamation after repeated
+failed probes, and upload/download continuation on the
 original stream after donor loss, including eight successive donor replacements.
 The donor-loss tests use the production WebSocket adapter with a loopback relay;
 WebRTC discovery and re-pairing are outside their scope.
