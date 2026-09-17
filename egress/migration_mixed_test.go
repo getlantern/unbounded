@@ -104,7 +104,7 @@ func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, directio
 	}
 	cm := &connectionManager{connections: map[string]*connectionRecord{}, tlsConfig: testClientTLS(), migrationWindow: 5 * time.Second, probeTimeout: 5 * time.Second}
 	path, disconnect := migrationDonor(t, addr)
-	conn, err := cm.createOrMigrate("mixed-version", path)
+	conn, _, err := cm.createOrMigrate("mixed-version", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, directio
 		case <-time.After(200 * time.Millisecond):
 		}
 		path, disconnect = migrationDonor(t, addr)
-		migrated, err := cm.createOrMigrate("mixed-version", path)
+		migrated, _, err := cm.createOrMigrate("mixed-version", path)
 		if err != nil {
 			t.Fatalf("migration %d: %v", round+1, err)
 		}

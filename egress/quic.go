@@ -15,10 +15,10 @@ import (
 )
 
 type connectionRecord struct {
-	mx           sync.Mutex
-	connection   *quic.Conn
-	lastMigrated time.Time
-	lastPath     *quic.Path
+	mx         sync.Mutex
+	connection *quic.Conn
+	transport  *quic.Transport
+	lastPath   *quic.Path
 }
 
 // migrationWindow: when migrating from WebSocket A to B, how long should we wait after WebSocket
@@ -61,7 +61,9 @@ func (manager *connectionManager) lockRecord(csid string) *connectionRecord {
 	}
 }
 
-func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.Time) {
+// deleteIfCurrent ignores cleanup from superseded connections or donor transports.
+// A nil donor means the QUIC connection itself failed, regardless of its current donor.
+func (manager *connectionManager) deleteIfCurrent(csid string, conn *quic.Conn, donor *quic.Transport) {
 	manager.mx.Lock()
 	record := manager.connections[csid]
 	manager.mx.Unlock()
@@ -71,7 +73,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 	record.mx.Lock()
 	defer record.mx.Unlock()
 	manager.mx.Lock()
-	expired := manager.connections[csid] == record && record.connection != nil && !record.lastMigrated.After(t)
+	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport == donor)
 	if expired {
 		delete(manager.connections, csid)
 	}
@@ -86,7 +88,7 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 // production this is always *errorlessWebSocketPacketConn (the WS-as-UDP
 // adapter), but tests inject in-memory or loopback-UDP pconns to exercise
 // the connection-migration paths without a real WebSocket handshake.
-func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, error) {
+func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, *quic.Transport, error) {
 	record := manager.lockRecord(csid)
 	defer record.mx.Unlock()
 	transport := &quic.Transport{Conn: pconn}
@@ -105,12 +107,12 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			manager.mx.Lock()
 			delete(manager.connections, csid)
 			manager.mx.Unlock()
-			return nil, err
+			return nil, nil, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
 		record.connection = newConn
-		record.lastMigrated = time.Now()
-		return newConn, nil
+		record.transport = transport
+		return newConn, transport, nil
 	}
 	// Atomic migration path
 	recordMigration(migrationAttempt)
@@ -120,7 +122,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
 		recordMigration(migrationAddPathError)
-		return nil, fmt.Errorf("AddPath error: %w", err)
+		return nil, nil, fmt.Errorf("AddPath error: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
@@ -131,7 +133,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationProbeError)
-		return nil, fmt.Errorf("path probe error: %w", err)
+		return nil, nil, fmt.Errorf("path probe error: %w", err)
 	}
 
 	err = path.Switch()
@@ -140,13 +142,13 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationSwitchError)
-		return nil, fmt.Errorf("path switch error: %w", err)
+		return nil, nil, fmt.Errorf("path switch error: %w", err)
 	}
 
 	t2 := time.Now()
 	recordMigration(migrationSuccess)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
-	record.lastMigrated = time.Now()
+	record.transport = transport
 
 	if record.lastPath != nil {
 		err = record.lastPath.Close()
@@ -160,5 +162,5 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	}
 
 	record.lastPath = path
-	return record.connection, nil
+	return record.connection, transport, nil
 }

@@ -79,7 +79,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pconnA.Close() })
 
-	connA, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnA, dst: consumer.LocalAddr()})
+	connA, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnA, dst: consumer.LocalAddr()})
 	if err != nil {
 		t.Fatalf("createOrMigrate path A: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 	// Deferred calls run before every t.Cleanup, regardless of registration order.
 	defer closeAllRecords(cm)
 
-	connB, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
+	connB, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
 	if err != nil {
 		// This is the diagnostic line nelson would search for if
 		// migration regressed. The error string itself names the
@@ -173,7 +173,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = pconnA.Close() })
 
-	if _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnA, dst: consumer.LocalAddr()}); err != nil {
+	if _, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnA, dst: consumer.LocalAddr()}); err != nil {
 		t.Fatalf("createOrMigrate path A: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	defer closeAllRecords(cm)
 
 	start := time.Now()
-	_, err = cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
+	_, _, err = cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
 	elapsed := time.Since(start)
 	if err == nil {
 		t.Fatalf("createOrMigrate succeeded over a dropping path (expected probe timeout)")
@@ -262,7 +262,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 		migrationWindow: 5 * time.Second, probeTimeout: 5 * time.Second,
 	}
 	pathA, disconnectA := migrationDonor(t, pc.LocalAddr())
-	conn, err := cm.createOrMigrate("donor-loss", pathA)
+	conn, _, err := cm.createOrMigrate("donor-loss", pathA)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 		case <-time.After(200 * time.Millisecond):
 		}
 		pathB, disconnectB := migrationDonor(t, pc.LocalAddr())
-		migrated, err := cm.createOrMigrate("donor-loss", pathB)
+		migrated, _, err := cm.createOrMigrate("donor-loss", pathB)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -665,7 +665,7 @@ func TestConnectionManagerSessionLocksAreIndependent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		close(waiting)
-		cm.deleteIfNotMigratedSince("busy", time.Now())
+		cm.deleteIfCurrent("busy", nil, nil)
 		close(done)
 	}()
 	<-waiting
@@ -702,7 +702,7 @@ func TestConnectionManager_Migration_FailedProbesThenRecovery(t *testing.T) {
 		return pc
 	}
 	const csid = "failed-probes-then-recovery"
-	original, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
+	original, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -711,13 +711,13 @@ func TestConnectionManager_Migration_FailedProbesThenRecovery(t *testing.T) {
 	const failures = 6
 	for attempt := 0; attempt < failures; attempt++ {
 		dropping := &droppingPacketConn{PacketConn: newSocket()}
-		_, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
+		_, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("failed probe %d: got %v, want probe timeout", attempt+1, err)
 		}
 	}
 	cm.probeTimeout = 3 * time.Second
-	recovered, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
+	recovered, _, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: newSocket(), dst: consumer.LocalAddr()})
 	if err != nil {
 		t.Fatalf("healthy replacement after %d failed probes: %v", failures, err)
 	}
@@ -730,4 +730,74 @@ func TestConnectionManager_Migration_FailedProbesThenRecovery(t *testing.T) {
 	}
 	_ = stream.Close()
 	assertMigrationDelta(t, before, [len(migrationOutcomes)]int64{failures + 1, 1, 0, failures, 0})
+}
+
+func TestConnectionManager_Migration_StaleDonorCleanup(t *testing.T) {
+	consumer, _ := startTestConsumer(t)
+	t.Cleanup(func() { _ = consumer.Close() })
+	cm := &connectionManager{
+		connections: map[string]*connectionRecord{}, tlsConfig: testClientTLS(),
+		migrationWindow: 5 * time.Second, probeTimeout: 3 * time.Second,
+	}
+	defer closeAllRecords(cm)
+	const csid = "stale-donor-cleanup"
+	pathA, disconnectA := migrationDonor(t, consumer.LocalAddr())
+	conn, donorA, err := cm.createOrMigrate(csid, pathA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pathB, _ := migrationDonor(t, consumer.LocalAddr())
+	migrated, donorB, err := cm.createOrMigrate(csid, pathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if migrated != conn || donorB == donorA {
+		t.Fatal("migration must preserve the connection and replace the donor identity")
+	}
+	// A reports its read error only AFTER B has successfully migrated.
+	disconnectA()
+	select {
+	case <-pathA.readError:
+	case <-time.After(3 * time.Second):
+		t.Fatal("old donor did not report its late read error")
+	}
+	cm.deleteIfCurrent(csid, conn, donorA)
+	assertCurrent := func(expected *quic.Conn, donor *quic.Transport) {
+		t.Helper()
+		cm.mx.Lock()
+		record := cm.connections[csid]
+		cm.mx.Unlock()
+		if record == nil || record.connection != expected || record.transport != donor {
+			t.Fatal("stale cleanup removed or replaced the current connection")
+		}
+		if err := expected.Context().Err(); err != nil {
+			t.Fatalf("stale cleanup closed the current connection: %v", err)
+		}
+	}
+	assertCurrent(conn, donorB)
+
+	// The current donor must still be able to expire its own connection.
+	cm.deleteIfCurrent(csid, conn, donorB)
+	if cm.connections[csid] != nil {
+		t.Fatal("current donor cleanup did not remove its connection")
+	}
+	select {
+	case <-conn.Context().Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("current donor cleanup did not close its connection")
+	}
+
+	// The same session ID can be reused before old handlers finish teardown.
+	pathC, _ := migrationDonor(t, consumer.LocalAddr())
+	replacement, donorC, err := cm.createOrMigrate(csid, pathC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cm.deleteIfCurrent(csid, conn, donorB)
+	cm.deleteIfCurrent(csid, conn, nil)
+	assertCurrent(replacement, donorC)
+	cm.deleteIfCurrent(csid, replacement, nil)
+	if cm.connections[csid] != nil {
+		t.Fatal("QUIC failure cleanup did not remove its own connection")
+	}
 }
