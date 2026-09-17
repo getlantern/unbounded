@@ -19,15 +19,22 @@ import (
 // A separate module and process prevent Go's module selection from replacing
 // the legacy endpoint with the egress's newer QUIC dependency.
 func TestConnectionManager_Migration_MixedVersion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("mixed-version integration test builds a legacy consumer")
+	}
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("mixed-version integration test requires the Go toolchain")
+	}
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "legacy-consumer")
 	buildCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	build := exec.CommandContext(buildCtx, "go", "build", "-race", "-mod=readonly", "-o", binary, ".")
+	build := exec.CommandContext(buildCtx, goTool, "build", "-mod=readonly", "-o", binary, ".")
 	build.Dir = filepath.Join("testdata", "legacy-consumer")
 	build.Env = append(os.Environ(), "GOWORK=off")
 	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build legacy consumer: %v\n%s", err, output)
+		t.Fatalf("build legacy consumer (requires cached modules or network access): %v\n%s", err, output)
 	}
 	cert := testServerTLS().Certificates[0]
 	key, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
@@ -47,7 +54,6 @@ func TestConnectionManager_Migration_MixedVersion(t *testing.T) {
 }
 
 func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, direction string) {
-	t.Helper()
 	before := migrationSnapshot()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -102,7 +108,7 @@ func testMixedVersionMigration(t *testing.T, binary, certFile, keyFile, directio
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { closeAllRecords(cm) })
+	defer closeAllRecords(cm)
 	stream, err := conn.AcceptStream(ctx)
 	if err != nil {
 		t.Fatal(err)

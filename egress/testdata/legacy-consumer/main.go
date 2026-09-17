@@ -22,6 +22,9 @@ func main() {
 }
 
 func run() error {
+	if len(os.Args) != 3 {
+		return fmt.Errorf("usage: legacy-consumer cert.pem key.pem")
+	}
 	cert, err := tls.LoadX509KeyPair(os.Args[1], os.Args[2])
 	if err != nil {
 		return err
@@ -41,6 +44,9 @@ func run() error {
 				version = dep.Replace.Path + "@" + dep.Replace.Version
 			}
 		}
+	}
+	if version == "" {
+		return fmt.Errorf("legacy QUIC dependency missing from build info")
 	}
 	out := json.NewEncoder(os.Stdout)
 	if err := out.Encode(map[string]string{"addr": listener.Addr().String(), "version": version}); err != nil {

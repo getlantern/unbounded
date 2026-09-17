@@ -38,26 +38,48 @@ type connectionManager struct {
 	probeTimeout    time.Duration
 }
 
+// lockRecord serializes one session without holding the map lock while waiting.
+// Recheck membership after taking the record lock: expiry or a failed dial may
+// have removed this record while we waited.
+func (manager *connectionManager) lockRecord(csid string) *connectionRecord {
+	for {
+		manager.mx.Lock()
+		record := manager.connections[csid]
+		if record == nil {
+			record = &connectionRecord{}
+			manager.connections[csid] = record
+		}
+		manager.mx.Unlock()
+		record.mx.Lock()
+		manager.mx.Lock()
+		current := manager.connections[csid] == record
+		manager.mx.Unlock()
+		if current {
+			return record
+		}
+		record.mx.Unlock()
+	}
+}
+
 func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.Time) {
 	manager.mx.Lock()
-
-	record, ok := manager.connections[csid]
-
-	if !ok {
-		manager.mx.Unlock()
+	record := manager.connections[csid]
+	manager.mx.Unlock()
+	if record == nil {
 		return
 	}
-
 	record.mx.Lock()
-
-	if !record.lastMigrated.After(t) {
-		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
+	defer record.mx.Unlock()
+	manager.mx.Lock()
+	expired := manager.connections[csid] == record && record.connection != nil && !record.lastMigrated.After(t)
+	if expired {
 		delete(manager.connections, csid)
+	}
+	manager.mx.Unlock()
+	if expired {
+		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		slog.Debug("QUIC connection expired, closed, and deleted", "csid", csid, "total", atomic.AddUint64(&nQUICConnections, ^uint64(0)))
 	}
-
-	record.mx.Unlock()
-	manager.mx.Unlock()
 }
 
 // createOrMigrate accepts any net.PacketConn for the new transport. In
@@ -65,13 +87,12 @@ func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.T
 // adapter), but tests inject in-memory or loopback-UDP pconns to exercise
 // the connection-migration paths without a real WebSocket handshake.
 func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, error) {
-	manager.mx.Lock()
-
+	record := manager.lockRecord(csid)
+	defer record.mx.Unlock()
 	transport := &quic.Transport{Conn: pconn}
-	record, ok := manager.connections[csid]
 
 	// Atomic creation path
-	if !ok {
+	if record.connection == nil {
 		slog.Debug("No existing QUIC connection, dialing...", "local_addr", pconn.LocalAddr(), "csid", csid)
 		newConn, err := transport.Dial(
 			context.Background(),
@@ -81,25 +102,24 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		)
 
 		if err != nil {
+			manager.mx.Lock()
+			delete(manager.connections, csid)
 			manager.mx.Unlock()
 			return nil, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
-		manager.connections[csid] = &connectionRecord{connection: newConn, lastMigrated: time.Now()}
-		manager.mx.Unlock()
+		record.connection = newConn
+		record.lastMigrated = time.Now()
 		return newConn, nil
 	}
 	// Atomic migration path
-	migrationCounts[migrationAttempt].Add(1)
+	recordMigration(migrationAttempt)
 	slog.Debug("Trying to migrate QUIC connection", "local_addr", pconn.LocalAddr(), "csid", csid)
 	t1 := time.Now()
-	record.mx.Lock()
-	manager.mx.Unlock()
-	defer record.mx.Unlock()
 
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
-		migrationCounts[migrationAddPathError].Add(1)
+		recordMigration(migrationAddPathError)
 		return nil, fmt.Errorf("AddPath error: %v", err)
 	}
 
@@ -107,18 +127,18 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	defer cancel()
 	err = path.Probe(ctx)
 	if err != nil {
-		migrationCounts[migrationProbeError].Add(1)
+		recordMigration(migrationProbeError)
 		return nil, fmt.Errorf("path probe error: %v", err)
 	}
 
 	err = path.Switch()
 	if err != nil {
-		migrationCounts[migrationSwitchError].Add(1)
+		recordMigration(migrationSwitchError)
 		return nil, fmt.Errorf("path switch error: %v", err)
 	}
 
 	t2 := time.Now()
-	migrationCounts[migrationSuccess].Add(1)
+	recordMigration(migrationSuccess)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
 	record.lastMigrated = time.Now()
 

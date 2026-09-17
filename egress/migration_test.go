@@ -54,8 +54,7 @@ import (
 // idle-timeout during the re-pair gap, or producer-side WS bring-up
 // delays exceeding the migration window).
 func TestConnectionManager_Migration_HappyPath(t *testing.T) {
-	// Long enough for the test cleanup; failed migrations show up as
-	// quic-go errors well before this fires.
+	// These tests run serially because their counter snapshots are process-wide.
 	before := migrationSnapshot()
 
 	consumer, _ := startTestConsumer(t)
@@ -116,7 +115,7 @@ func TestConnectionManager_Migration_HappyPath(t *testing.T) {
 	t.Cleanup(func() { _ = pconnB.Close() })
 	// Registered after both PacketConns so it runs first (LIFO) and
 	// closes the QUIC conns while their transports are still alive.
-	t.Cleanup(func() { closeAllRecords(cm) })
+	defer closeAllRecords(cm)
 
 	connB, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
 	if err != nil {
@@ -191,7 +190,7 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = rawB.Close() })
 	dropping := &droppingPacketConn{PacketConn: rawB}
-	t.Cleanup(func() { closeAllRecords(cm) })
+	defer closeAllRecords(cm)
 
 	start := time.Now()
 	_, err = cm.createOrMigrate(csid, dialedPconn{PacketConn: dropping, dst: consumer.LocalAddr()})
@@ -248,7 +247,6 @@ func TestConnectionManager_Migration_RepeatedDonorLoss(t *testing.T) {
 }
 
 func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
-	t.Helper()
 	before := migrationSnapshot()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(15*hops)*time.Second)
 	defer cancel()
@@ -273,7 +271,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { closeAllRecords(cm) })
+	defer closeAllRecords(cm)
 	consumer, err := listener.Accept(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -283,7 +281,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.SetDeadline(time.Now().Add(time.Duration(15*hops) * time.Second)); err != nil {
+	if err := stream.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	prefix := []byte("transfer started on donor A")
@@ -294,7 +292,7 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := received.SetDeadline(time.Now().Add(time.Duration(15*hops) * time.Second)); err != nil {
+	if err := received.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	gotPrefix := make([]byte, len(prefix))
@@ -321,6 +319,11 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 
 	for hop := 0; hop < hops; hop++ {
 		t.Logf("replacing donor %d/%d", hop+1, hops)
+		for _, s := range []*quic.Stream{sender, receiver} {
+			if err := s.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+				t.Fatalf("hop %d deadline: %v", hop+1, err)
+			}
+		}
 		disconnectA()
 		select {
 		case <-pathA.readError:
@@ -378,6 +381,9 @@ func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 			t.Fatal("sender did not finish")
 		}
 		pathA, disconnectA = pathB, disconnectB
+	}
+	if err := receiver.SetReadDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatal(err)
 	}
 	if err := sender.Close(); err != nil {
 		t.Fatal(err)
@@ -469,10 +475,16 @@ func migrationDonor(t *testing.T, consumer net.Addr) (*errorlessWebSocketPacketC
 	}, disconnect
 }
 
+var migrationOutcomes = [...]migrationOutcome{migrationAttempt, migrationSuccess, migrationAddPathError, migrationProbeError, migrationSwitchError}
+
 func migrationSnapshot() (counts [5]int64) {
-	for i := range counts {
-		counts[i] = migrationCounts[i].Load()
-	}
+	eachMigration(func(outcome migrationOutcome, count int64) {
+		for i, label := range migrationOutcomes {
+			if label == outcome {
+				counts[i] = count
+			}
+		}
+	})
 	return
 }
 
@@ -648,4 +660,30 @@ func generateTestCert() {
 		Certificate: [][]byte{der},
 		PrivateKey:  priv,
 	}
+}
+
+func TestConnectionManagerSessionLocksAreIndependent(t *testing.T) {
+	cm := &connectionManager{connections: map[string]*connectionRecord{}}
+	busy := cm.lockRecord("busy")
+	defer busy.mx.Unlock()
+	waiting := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(waiting)
+		cm.deleteIfNotMigratedSince("busy", time.Now())
+		close(done)
+	}()
+	<-waiting
+	other := make(chan *connectionRecord, 1)
+	go func() { other <- cm.lockRecord("unrelated") }()
+	select {
+	case record := <-other:
+		record.mx.Unlock()
+	case <-time.After(time.Second):
+		t.Fatal("busy session blocked an unrelated session")
+	}
+	// Releasing busy lets expiry finish without deleting an uninitialized record.
+	busy.mx.Unlock()
+	<-done
+	busy.mx.Lock()
 }

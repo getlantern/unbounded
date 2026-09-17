@@ -8,6 +8,9 @@ RUN go mod download && go mod verify
 COPY . .
 RUN go build -v -o /usr/local/bin/freddie ./freddie/cmd/...
 
+RUN addgroup -S unbounded && adduser -S -G unbounded unbounded
+USER unbounded
+
 EXPOSE 9000/tcp
 
 CMD ["freddie"]
