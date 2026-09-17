@@ -75,8 +75,8 @@ github.com/getlantern/ops v0.0.0-20190325191751-d70cb0d6f85f/go.mod h1:D5ao98qkA
 github.com/getlantern/ops v0.0.0-20220713155959-1315d978fff7/go.mod h1:D5ao98qkA6pxftxoqzibIBBrLSUli+kYnJqrgBf9cIA=
 github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf h1:q8nsH0Lx9fP8HY6T9rA1zogvOzO9JtbUI5BXkh7wxxI=
 github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf/go.mod h1:R7HfJVLsnSeqaDWkiUlU+ANBjac4oYmXGrrps8vW7CM=
-github.com/getlantern/quic-go-unbounded-fork v0.62.1-0.20260917175512-e867a99308d3 h1:qM1useC5GXdHHwwFoiN9wmKJL93AQ8vXJYxWIc8FIbQ=
-github.com/getlantern/quic-go-unbounded-fork v0.62.1-0.20260917175512-e867a99308d3/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
+github.com/getlantern/quic-go-unbounded-fork v0.62.1-0.20260917175749-6d7266067e75 h1:80Ot9CJ18xWd3NKnsfXq7lt+ysHeyl5/2Yzb6ZZZbdw=
+github.com/getlantern/quic-go-unbounded-fork v0.62.1-0.20260917175749-6d7266067e75/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
 github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5 h1:6ITBYqNkLbVZ1tQNXwmH8N80rZtvyW6IZa8L6EAhBQo=
 github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5/go.mod h1:gx3dPUhZtQszPX5C+TshhxPXQHlY5t4gMnOOMA+viPA=
 github.com/go-gl/glfw v0.0.0-20190409004039-e6da0acd62b1/go.mod h1:vR7hzQXu2zJy9AVAgeJqvqgH9Q5CA+iKCZ2gyEVpxRU=
