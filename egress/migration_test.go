@@ -238,14 +238,19 @@ func TestConnectionManager_Migration_ProbeTimeout(t *testing.T) {
 // the existing stream onto a replacement. A successful Probe alone cannot prove
 // this: require delivery of the entire payload after a period with no donor.
 func TestConnectionManager_Migration_DonorLossResumesStream(t *testing.T) {
-	t.Run("upload", func(t *testing.T) { testDonorLossResumesStream(t, false) })
-	t.Run("download", func(t *testing.T) { testDonorLossResumesStream(t, true) })
+	t.Run("upload", func(t *testing.T) { testDonorLossResumesStream(t, false, 1) })
+	t.Run("download", func(t *testing.T) { testDonorLossResumesStream(t, true, 1) })
 }
 
-func testDonorLossResumesStream(t *testing.T, download bool) {
+func TestConnectionManager_Migration_RepeatedDonorLoss(t *testing.T) {
+	t.Run("upload", func(t *testing.T) { testDonorLossResumesStream(t, false, 8) })
+	t.Run("download", func(t *testing.T) { testDonorLossResumesStream(t, true, 8) })
+}
+
+func testDonorLossResumesStream(t *testing.T, download bool, hops int) {
 	t.Helper()
 	before := migrationSnapshot()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(15*hops)*time.Second)
 	defer cancel()
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -278,7 +283,7 @@ func testDonorLossResumesStream(t *testing.T, download bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := stream.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := stream.SetDeadline(time.Now().Add(time.Duration(15*hops) * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	prefix := []byte("transfer started on donor A")
@@ -289,7 +294,7 @@ func testDonorLossResumesStream(t *testing.T, download bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := received.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+	if err := received.SetDeadline(time.Now().Add(time.Duration(15*hops) * time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	gotPrefix := make([]byte, len(prefix))
@@ -314,65 +319,74 @@ func testDonorLossResumesStream(t *testing.T, download bool) {
 	}
 	assertMigrationDelta(t, before, [5]int64{})
 
-	disconnectA()
-	select {
-	case <-pathA.readError:
-	case <-ctx.Done():
-		t.Fatal("egress did not observe donor loss")
-	}
-	// Exceed stream buffering so this transfer cannot finish on local Write
-	// success alone. The receiver must acknowledge and verify every byte.
-	payload := bytes.Repeat([]byte("payload through replacement donor\n"), 65536)
-	written := make(chan error, 1)
-	go func() {
-		_, err := sender.Write(payload)
-		if err == nil {
-			err = sender.Close()
+	for hop := 0; hop < hops; hop++ {
+		t.Logf("replacing donor %d/%d", hop+1, hops)
+		disconnectA()
+		select {
+		case <-pathA.readError:
+		case <-ctx.Done():
+			t.Fatal("egress did not observe donor loss")
 		}
-		written <- err
-	}()
-	type readResult struct {
-		data []byte
-		err  error
-	}
-	read := make(chan readResult, 1)
-	go func() {
-		data, err := io.ReadAll(receiver)
-		read <- readResult{data, err}
-	}()
-	select {
-	case result := <-read:
-		t.Fatalf("transfer ended without replacement: %v (%d bytes)", result.err, len(result.data))
-	case <-time.After(200 * time.Millisecond):
-	}
-	pathB, _ := migrationDonor(t, pc.LocalAddr())
-	migrated, err := cm.createOrMigrate("donor-loss", pathB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if migrated != conn {
-		t.Fatal("replacement dialed a new QUIC connection")
-	}
-	select {
-	case result := <-read:
-		if result.err != nil {
-			t.Fatal(result.err)
+		// Exceed stream buffering so this transfer cannot finish on local Write
+		// success alone. The receiver must acknowledge and verify every byte.
+		payload := bytes.Repeat([]byte("payload through replacement donor\n"), 65536)
+		written := make(chan error, 1)
+		go func() {
+			_, err := sender.Write(payload)
+			written <- err
+		}()
+		type readResult struct {
+			data []byte
+			err  error
 		}
-		if !bytes.Equal(result.data, payload) {
-			t.Fatalf("resumed transfer corrupted: got %d bytes, want %d", len(result.data), len(payload))
+		read := make(chan readResult, 1)
+		go func() {
+			data := make([]byte, len(payload))
+			_, err := io.ReadFull(receiver, data)
+			read <- readResult{data, err}
+		}()
+		select {
+		case result := <-read:
+			t.Fatalf("transfer ended without replacement: %v (%d bytes)", result.err, len(result.data))
+		case <-time.After(200 * time.Millisecond):
 		}
-	case <-ctx.Done():
-		t.Fatal("original stream did not resume after migration")
-	}
-	select {
-	case err := <-written:
+		pathB, disconnectB := migrationDonor(t, pc.LocalAddr())
+		migrated, err := cm.createOrMigrate("donor-loss", pathB)
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-ctx.Done():
-		t.Fatal("sender did not finish")
+		if migrated != conn {
+			t.Fatal("replacement dialed a new QUIC connection")
+		}
+		select {
+		case result := <-read:
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			if !bytes.Equal(result.data, payload) {
+				t.Fatalf("resumed transfer corrupted: got %d bytes, want %d", len(result.data), len(payload))
+			}
+		case <-ctx.Done():
+			t.Fatal("original stream did not resume after migration")
+		}
+		select {
+		case err := <-written:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-ctx.Done():
+			t.Fatal("sender did not finish")
+		}
+		pathA, disconnectA = pathB, disconnectB
 	}
-	assertMigrationDelta(t, before, [5]int64{1, 1, 0, 0, 0})
+	if err := sender.Close(); err != nil {
+		t.Fatal(err)
+	}
+	extra, err := io.ReadAll(receiver)
+	if err != nil || len(extra) != 0 {
+		t.Fatalf("unexpected trailing data: %d bytes, %v", len(extra), err)
+	}
+	assertMigrationDelta(t, before, [5]int64{int64(hops), int64(hops), 0, 0, 0})
 }
 
 // Bridge the production WebSocket framing to a loopback QUIC consumer. Each

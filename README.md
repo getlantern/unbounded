@@ -139,7 +139,7 @@ or DEBUG log export and become available after deploying the updated egress.
 
 Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
 validation, probe timeout accounting, and upload/download continuation on the
-original stream after donor loss. The donor-loss test uses the production
+original stream after donor loss, including eight successive donor replacements. The donor-loss test uses the production
 WebSocket adapter with a loopback relay; WebRTC discovery and re-pairing are
 outside its scope.
 
