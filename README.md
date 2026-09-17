@@ -139,9 +139,17 @@ or DEBUG log export and become available after deploying the updated egress.
 
 Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
 validation, probe timeout accounting, and upload/download continuation on the
-original stream after donor loss, including eight successive donor replacements. The donor-loss test uses the production
-WebSocket adapter with a loopback relay; WebRTC discovery and re-pairing are
-outside its scope.
+original stream after donor loss, including eight successive donor replacements.
+The donor-loss tests use the production WebSocket adapter with a loopback relay;
+WebRTC discovery and re-pairing are outside their scope.
+
+`TestConnectionManager_Migration_MixedVersion` builds a separate consumer process
+from `egress/testdata/legacy-consumer`, pinned to the unmodified
+`v0.59.0-unbounded` fork. It verifies the helper's compiled dependency version and
+checks uploads and downloads across eight donor replacements on the original
+stream against the current egress dependency. It runs in the normal native test
+suite; its first build may download the legacy module dependencies. This tests
+QUIC interoperability, not an installed Lantern binary or every historical client.
 
 ### :art: UI
 
