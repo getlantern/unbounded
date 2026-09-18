@@ -377,7 +377,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// initiate as part of our orderly outside-in tunnel collapse. This can happen, for example,
 		// if the QUIC connection times out due to inactivity. To resynchronize, we delete the QUIC
 		// connection state and return from handleWebsocket, closing the tunnel completely.
-		l.connectionManager.deleteIfCurrent(consumerSessionID, conn, nil)
+		l.connectionManager.deleteOnQUICFailure(consumerSessionID, conn)
 	}
 }
 

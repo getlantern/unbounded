@@ -665,7 +665,7 @@ func TestConnectionManagerSessionLocksAreIndependent(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		close(waiting)
-		cm.deleteIfCurrent("busy", nil, nil)
+		cm.deleteOnQUICFailure("busy", nil)
 		close(done)
 	}()
 	<-waiting
@@ -767,7 +767,13 @@ func TestConnectionManager_Migration_StaleDonorCleanup(t *testing.T) {
 		cm.mx.Lock()
 		record := cm.connections[csid]
 		cm.mx.Unlock()
-		if record == nil || record.connection != expected || record.transport != donor {
+		if record == nil {
+			t.Fatal("stale cleanup removed the current connection")
+		}
+		record.mx.Lock()
+		matches := record.connection == expected && record.transport == donor
+		record.mx.Unlock()
+		if !matches {
 			t.Fatal("stale cleanup removed or replaced the current connection")
 		}
 		if err := expected.Context().Err(); err != nil {
@@ -775,10 +781,17 @@ func TestConnectionManager_Migration_StaleDonorCleanup(t *testing.T) {
 		}
 	}
 	assertCurrent(conn, donorB)
+	cm.deleteIfCurrent(csid, conn, nil)
+	cm.deleteIfCurrent(csid, nil, donorB)
+	cm.deleteOnQUICFailure(csid, nil)
+	assertCurrent(conn, donorB)
 
 	// The current donor must still be able to expire its own connection.
 	cm.deleteIfCurrent(csid, conn, donorB)
-	if cm.connections[csid] != nil {
+	cm.mx.Lock()
+	remaining := cm.connections[csid]
+	cm.mx.Unlock()
+	if remaining != nil {
 		t.Fatal("current donor cleanup did not remove its connection")
 	}
 	select {
@@ -794,10 +807,13 @@ func TestConnectionManager_Migration_StaleDonorCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	cm.deleteIfCurrent(csid, conn, donorB)
-	cm.deleteIfCurrent(csid, conn, nil)
+	cm.deleteOnQUICFailure(csid, conn)
 	assertCurrent(replacement, donorC)
-	cm.deleteIfCurrent(csid, replacement, nil)
-	if cm.connections[csid] != nil {
+	cm.deleteOnQUICFailure(csid, replacement)
+	cm.mx.Lock()
+	remaining = cm.connections[csid]
+	cm.mx.Unlock()
+	if remaining != nil {
 		t.Fatal("QUIC failure cleanup did not remove its own connection")
 	}
 }

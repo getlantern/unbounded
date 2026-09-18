@@ -62,8 +62,20 @@ func (manager *connectionManager) lockRecord(csid string) *connectionRecord {
 }
 
 // deleteIfCurrent ignores cleanup from superseded connections or donor transports.
-// A nil donor means the QUIC connection itself failed, regardless of its current donor.
 func (manager *connectionManager) deleteIfCurrent(csid string, conn *quic.Conn, donor *quic.Transport) {
+	if donor == nil {
+		return
+	}
+	manager.deleteConnection(csid, conn, donor)
+}
+
+// deleteOnQUICFailure removes only this connection, regardless of its current donor.
+func (manager *connectionManager) deleteOnQUICFailure(csid string, conn *quic.Conn) {
+	manager.deleteConnection(csid, conn, nil)
+}
+
+// Only QUIC-failure cleanup may omit the donor identity.
+func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn, donor *quic.Transport) {
 	manager.mx.Lock()
 	record := manager.connections[csid]
 	manager.mx.Unlock()
