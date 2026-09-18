@@ -4,7 +4,7 @@ go 1.26.0
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
-replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.62.1-0.20260917175749-6d7266067e75
+replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.62.1-unbounded
 
 require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
