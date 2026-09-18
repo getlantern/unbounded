@@ -1,10 +1,10 @@
 module github.com/getlantern/broflake
 
-go 1.24.0
+go 1.26.0
 
 replace github.com/enobufs/go-nats => github.com/noahlevenson/go-nats v0.0.0-20230720174341-49df1f749775
 
-replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.59.0-unbounded
+replace github.com/quic-go/quic-go => github.com/getlantern/quic-go-unbounded-fork v0.62.1-unbounded
 
 require (
 	github.com/armon/go-socks5 v0.0.0-20160902184237-e75332964ef5
@@ -15,7 +15,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/pion/transport/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.11
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.62.0
 	github.com/theodorsm/covert-dtls v1.5.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.11.0
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.66.0
@@ -25,7 +25,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.41.0
 	go.opentelemetry.io/otel/sdk/log v0.12.2
 	go.opentelemetry.io/otel/trace v1.41.0
-	golang.org/x/mod v0.32.0
+	golang.org/x/mod v0.37.0
 )
 
 require (
@@ -90,10 +90,10 @@ require (
 	go.uber.org/multierr v1.6.0 // indirect
 	go.uber.org/zap v1.19.1 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/crypto v0.54.0 // indirect
+	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4 // indirect
 	google.golang.org/grpc v1.72.1 // indirect
