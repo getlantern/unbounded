@@ -3,7 +3,7 @@
  * Plugin Name:       Unbounded by Lantern
  * Plugin URI:        https://unbounded.lantern.io
  * Description:       Let visitors volunteer a slice of their connection to help people reach the open internet. Enable the widget per page, on all posts, or on the homepage.
- * Version:           1.2.0
+ * Version:           1.2.1
  * Requires at least: 5.0
  * Requires PHP:      7.4
  * Author:            Lantern
