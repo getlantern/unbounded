@@ -71,3 +71,4 @@ jobs:
           SLUG: unbounded-by-lantern
           VERSION: ${{ steps.v.outputs.version }}
           BUILD_DIR: ui/wp-plugin/demo-site/package/unbounded-by-lantern
+          ASSETS_DIR: ui/wp-plugin/.wordpress-org

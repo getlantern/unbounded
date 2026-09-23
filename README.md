@@ -14,6 +14,7 @@
 * [System components](#floppy_disk-system-components)
 * [Quickstart for devs](#arrow_forward-quickstart-for-devs)
 * [Observing networks with netstate](#spider_web)
+* [QUIC migration telemetry](#quic-migration-telemetry)
 * [UI](#art-ui)
 
 ### :question: What is Unbounded?
@@ -121,6 +122,45 @@ TAG=Bob FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./desktop`
 4. Open a web browser and navigate to `http://localhost:8080`. As Alice and Bob complete the 
 signaling process and establish connection(s) to one another, you should see the network you have
 created. You must refresh the page to update the visualization.
+
+### QUIC migration telemetry
+
+Building this revision requires **Go 1.26 or newer**, including downstream modules
+that import `github.com/getlantern/broflake`: quic-go v0.62.0 requires it.
+Before updating a downstream dependency, upgrade its build/CI toolchain and run
+`go mod tidy` plus its native/mobile builds. Existing compiled v0.59 clients do
+not need a simultaneous upgrade for the tested egress-only rollout.
+
+The egress exports the monotonic `quic-migrations` counter with an `outcome` label:
+`success`, `add_path_error`, `probe_error`, or `switch_error`.
+The separate `quic-migration-attempts` counter includes in-flight attempts.
+Initial QUIC dials are excluded. A success means the replacement path passed
+validation and QUIC accepted the switch request; it does not prove application bytes resumed.
+
+In SigNoz, filter to `service.name = unbounded-egress`, use the counter's rate,
+and group by `outcome`. Compare completed outcomes against `quic-migration-attempts`.
+An in-flight attempt may finish in a later collection interval. If the same
+instance arrives through multiple collectors (`via`), select one collector to
+avoid counting duplicate exports. These counters do not depend on trace sampling
+or DEBUG log export and become available after deploying the updated egress.
+Migration failures also produce `session-teardowns{reason="create_or_migrate_failed"}`;
+that teardown reason includes initial dial failures too. Do not sum these two metrics.
+
+Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
+validation, probe timeout accounting, connection-ID reclamation after repeated
+failed probes, and upload/download continuation on the
+original stream after donor loss, including eight successive donor replacements.
+The donor-loss tests use the production WebSocket adapter with a loopback relay;
+WebRTC discovery and re-pairing are outside their scope.
+
+`TestConnectionManager_Migration_MixedVersion` builds a separate consumer process
+from `egress/testdata/legacy-consumer`, pinned to the unmodified
+`v0.59.0-unbounded` fork. It verifies the helper's compiled dependency version and
+checks uploads and downloads across eight donor replacements on the original
+stream against the current egress dependency. It runs in the normal native test
+suite; `-short` skips it, and its first build may download the legacy module dependencies.
+The helper does not require cgo; the parent egress still runs under `-race` in CI. This tests
+QUIC interoperability, not an installed Lantern binary or every historical client.
 
 ### :art: UI
 

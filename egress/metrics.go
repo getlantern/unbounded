@@ -77,6 +77,27 @@ var teardownCounter metric.Int64ObservableCounter
 // stopped answering, this one says why.
 var freezeReportCounter metric.Int64ObservableCounter
 
+var migrationCounter metric.Int64ObservableCounter
+
+type migrationOutcome string
+
+const (
+	migrationAttempt      migrationOutcome = "attempt"
+	migrationSuccess      migrationOutcome = "success"
+	migrationAddPathError migrationOutcome = "add_path_error"
+	migrationProbeError   migrationOutcome = "probe_error"
+	migrationSwitchError  migrationOutcome = "switch_error"
+)
+
+var migrations = newLabeledTally()
+var migrationAttemptsCounter metric.Int64ObservableCounter
+
+func recordMigration(outcome migrationOutcome) { migrations.add(string(outcome)) }
+
+func eachMigration(f func(migrationOutcome, int64)) {
+	migrations.each(func(label string, count int64) { f(migrationOutcome(label), count) })
+}
+
 var (
 	// metricsMu guards both fields below. A plain mutex rather than sync.Once
 	// because the setup has to be repeatable: refcount reaching zero shuts the
@@ -184,6 +205,12 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	if freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+	if migrationAttemptsCounter, err = m.Int64ObservableCounter("quic-migration-attempts"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if migrationCounter, err = m.Int64ObservableCounter("quic-migrations"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
 
 	// proxy.io is synchronous — its measurements arrive via addProxyIO on
 	// the packet path, not via the callback — so it must NOT be added to
@@ -209,6 +236,8 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		// exported. Silent, and indistinguishable from "the event never happened".
 		teardownCounter,
 		freezeReportCounter,
+		migrationCounter,
+		migrationAttemptsCounter,
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -277,6 +306,13 @@ func shutdownAfter(ctx context.Context, shutdown func(context.Context) error, er
 // observeMetrics is the single otel callback. Registered once per process, so it
 // must read only process-global state — which is all it does.
 func observeMetrics(ctx context.Context, o metric.Observer) error {
+	eachMigration(func(outcome migrationOutcome, count int64) {
+		if outcome == migrationAttempt {
+			o.ObserveInt64(migrationAttemptsCounter, count)
+			return
+		}
+		o.ObserveInt64(migrationCounter, count, metric.WithAttributes(attribute.String("outcome", string(outcome))))
+	})
 	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
 	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))
 

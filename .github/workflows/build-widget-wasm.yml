@@ -99,6 +99,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
 
       - name: Build widget for js/wasm
         env:
@@ -121,6 +124,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
 
       # Every package, not just the ones the widget is built from. The narrower list
       # meant the egress was never tested here at all: its paths did not trigger this
@@ -170,6 +176,9 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
 
       # Real output path this time, unlike build-wasm above. Same flags as
       # cmd/build_web.sh so what ships matches what a local build produces.

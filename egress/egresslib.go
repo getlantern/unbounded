@@ -313,7 +313,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer wspconn.Close()
 	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
-	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
+	conn, donor, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
 		teardown = teardownMigrateFailed
 		span.RecordError(err)
@@ -327,7 +327,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// is no longer connected. (See commentary around errorlessWebSocketPacketConn for more context
 	// around error interception). When we intercept a read error on the errorlessWebSocketPacketConn,
 	// we wait for a bounded duration of time (the "migration window"), and then we delete the QUIC
-	// connection state from the connection manager if it has not been migrated within that window.
+	// connection state only if this donor still owns it when that window ends.
 	// The deletion operation will cause AcceptStream (below) to return an error, which returns from
 	// and cleans up the stream handling goroutine. If the QUIC connection DID migrate within the
 	// migration window, we keep its state intact, and we forcibly kill the stream handling goroutine
@@ -368,9 +368,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// necessary, then return from handleWebsocket.
 		slog.Debug("read error, waiting for migration...", "addr", wspconn.addr, "migration_window_s", l.connectionManager.migrationWindow.Seconds())
 
-		t1 := time.Now()
 		<-time.After(l.connectionManager.migrationWindow)
-		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, t1)
+		l.connectionManager.deleteIfCurrent(consumerSessionID, conn, donor)
 		wsCancel()
 	case <-QUICLayerError:
 		// Unexpected *inside-out* tunnel collapse: we should only enter this path if there's a bug. If
@@ -378,7 +377,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// initiate as part of our orderly outside-in tunnel collapse. This can happen, for example,
 		// if the QUIC connection times out due to inactivity. To resynchronize, we delete the QUIC
 		// connection state and return from handleWebsocket, closing the tunnel completely.
-		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, time.Now().Add(24*time.Hour))
+		l.connectionManager.deleteOnQUICFailure(consumerSessionID, conn)
 	}
 }
 
