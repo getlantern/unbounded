@@ -1,9 +1,10 @@
 import {Body, BodyWrapper, Container, Header, HeaderRight, HeaderWrapper, Item} from './styles'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
 import Menu from '../../molecules/menu'
-import React, {lazy, Suspense, useContext, useEffect, useState} from 'react'
+import React, {useContext, useEffect, useState} from 'react'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Stats, {Connections} from '../../molecules/stats'
@@ -17,8 +18,6 @@ import Title from '../../molecules/title'
 import ExtensionCta from '../../molecules/extensionCta'
 import Love from '../../molecules/love'
 // import Tutorial from '../../atoms/tutorial' // removing this at request of nelson
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 
 const Banner = () => {
@@ -102,9 +101,7 @@ const Banner = () => {
 							{
 								settings.globe && (
 									<Col>
-										<Suspense fallback={<GlobeSuspense />}>
-											<Globe target={settings.target}/>
-										</Suspense>
+										<SafeGlobe target={settings.target}/>
 									</Col>
 								)
 							}
@@ -142,6 +139,7 @@ const Banner = () => {
 										{/*)}*/}
 									</>
 								</Row>
+								<UnsupportedNote/>
 								<Stats/>
 								{
 									!menu && (target === Targets.WEB) && (
