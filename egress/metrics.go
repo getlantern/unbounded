@@ -10,7 +10,10 @@ import (
 	"github.com/getlantern/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -157,7 +160,7 @@ var initMetricsFn = initMetrics
 // initMetrics creates the exporters, instruments and callback. Callers must hold
 // metricsMu.
 func initMetrics(ctx context.Context) (func(context.Context) error, error) {
-	closeFuncMetrics := telemetry.EnableOTELMetrics(ctx)
+	closeFuncMetrics := enableOTELMetrics(ctx)
 
 	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
 	// metrics rather than instead of them: the counters answer "is the fleet
@@ -209,6 +212,17 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
 
+	// proxy.io is synchronous — its measurements arrive via addProxyIO on
+	// the packet path, not via the callback — so it must NOT be added to
+	// the RegisterCallback list below. The list's rule ("every instrument
+	// the callback observes must be declared") applies to observables
+	// only; a synchronous counter in that list would be an error.
+	proxyIO, err := m.Int64Counter("proxy.io", metric.WithUnit("bytes"))
+	if err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
+
 	if _, err = m.RegisterCallback(
 		observeMetrics,
 		nClientsCounter,
@@ -240,6 +254,46 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
 
 	return shutdown, nil
+}
+
+// enableOTELMetrics stands in for telemetry.EnableOTELMetrics with two
+// deliberate differences. First, the exporter carries a temporality
+// selector: the fleet-wide proxy.io contract requires delta (see
+// counterTemporality), and getlantern/telemetry exposes no way to set
+// one. Second, a failed exporter build is logged rather than swallowed
+// without a trace: telemetry is observability, never a gate on serving
+// traffic (the same rule proxyListener.Close and enableOTELLogs follow),
+// so the fallback is a no-op — the global meter provider is left at its
+// no-op default and every instrument built on it degrades to nothing —
+// but the log line means a malformed OTEL_* env var is at least visible
+// in the journal instead of silently costing all metrics. Env-var
+// configuration (endpoint, headers) is unchanged: otlpmetrichttp reads
+// the same OTEL_EXPORTER_OTLP_* vars.
+func enableOTELMetrics(ctx context.Context) func(context.Context) error {
+	exp, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithTemporalitySelector(counterTemporality))
+	if err != nil {
+		slog.Error("OTEL metrics disabled: creating OTLP metric exporter failed",
+			"error", err)
+		return func(context.Context) error { return nil }
+	}
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+	)
+	otel.SetMeterProvider(mp)
+	return mp.Shutdown
+}
+
+// counterTemporality maps synchronous counters — proxy.io is the only
+// one — to delta, and leaves every other kind cumulative so the
+// Observable* instruments above keep the temporality their dashboard
+// queries were written against. Do not widen the delta case without
+// checking every saved query on the affected instruments.
+func counterTemporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+	if kind == sdkmetric.InstrumentKindCounter {
+		return metricdata.DeltaTemporality
+	}
+	return metricdata.CumulativeTemporality
 }
 
 // shutdownAfter tears down the half-built provider and returns the original error,

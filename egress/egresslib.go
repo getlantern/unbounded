@@ -307,6 +307,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		stats:           stats,
 		sessionBytes:    &sessionBytes,
 		keepaliveFailed: &keepaliveFailed,
+		ioSets:          proxyIOSetsFor(donorCC),
 	}
 
 	defer wspconn.Close()
@@ -340,7 +341,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for {
 			stream, err := conn.AcceptStream(wsContext)
-
 			if err != nil {
 				slog.Debug("QUIC AcceptStream error, terminating handler", "addr", wspconn.addr, "error", err)
 				QUICLayerError <- struct{}{}
