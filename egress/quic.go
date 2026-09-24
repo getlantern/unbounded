@@ -17,7 +17,7 @@ import (
 type connectionRecord struct {
 	mx         sync.Mutex
 	connection *quic.Conn
-	transport  *quic.Transport
+	transport  atomic.Pointer[quic.Transport]
 	lastPath   *quic.Path
 }
 
@@ -85,7 +85,7 @@ func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn,
 	record.mx.Lock()
 	defer record.mx.Unlock()
 	manager.mx.Lock()
-	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport == donor)
+	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport.Load() == donor)
 	if expired {
 		delete(manager.connections, csid)
 	}
@@ -96,11 +96,33 @@ func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn,
 	}
 }
 
+// currentDonor reports whether donor is still the transport carrying
+// csid. A donor that has been migrated away from keeps its own accept
+// loop running for the whole migrationWindow on the connection it no
+// longer carries, so "did I accept a stream" is not by itself evidence
+// that this donor proxied anything.
+//
+// The record is read without taking record.mx on purpose: probeTimeout
+// is 35s, and a migration in flight holds that mutex for the duration.
+// Nothing on the serving path may wait that long for a telemetry
+// decision.
+func (manager *connectionManager) currentDonor(csid string, donor *quic.Transport) bool {
+	manager.mx.Lock()
+	record := manager.connections[csid]
+	manager.mx.Unlock()
+	return record != nil && record.transport.Load() == donor
+}
+
 // createOrMigrate accepts any net.PacketConn for the new transport. In
 // production this is always *errorlessWebSocketPacketConn (the WS-as-UDP
 // adapter), but tests inject in-memory or loopback-UDP pconns to exercise
 // the connection-migration paths without a real WebSocket handshake.
-func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, *quic.Transport, error) {
+//
+// The bool reports whether the migrate branch was taken. Only the caller
+// can tell the two apart otherwise, and they differ in a way that
+// matters outside this function: a migrated connection keeps the streams
+// it already had, so nothing downstream will observe a fresh one.
+func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, *quic.Transport, bool, error) {
 	record := manager.lockRecord(csid)
 	defer record.mx.Unlock()
 	transport := &quic.Transport{Conn: pconn}
@@ -119,12 +141,12 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			manager.mx.Lock()
 			delete(manager.connections, csid)
 			manager.mx.Unlock()
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
 		record.connection = newConn
-		record.transport = transport
-		return newConn, transport, nil
+		record.transport.Store(transport)
+		return newConn, transport, false, nil
 	}
 	// Atomic migration path
 	recordMigration(migrationAttempt)
@@ -134,7 +156,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
 		recordMigration(migrationAddPathError)
-		return nil, nil, fmt.Errorf("AddPath error: %w", err)
+		return nil, nil, false, fmt.Errorf("AddPath error: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
@@ -145,7 +167,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationProbeError)
-		return nil, nil, fmt.Errorf("path probe error: %w", err)
+		return nil, nil, false, fmt.Errorf("path probe error: %w", err)
 	}
 
 	err = path.Switch()
@@ -154,13 +176,13 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
 		}
 		recordMigration(migrationSwitchError)
-		return nil, nil, fmt.Errorf("path switch error: %w", err)
+		return nil, nil, false, fmt.Errorf("path switch error: %w", err)
 	}
 
 	t2 := time.Now()
 	recordMigration(migrationSuccess)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
-	record.transport = transport
+	record.transport.Store(transport)
 
 	if record.lastPath != nil {
 		err = record.lastPath.Close()
@@ -174,5 +196,5 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	}
 
 	record.lastPath = path
-	return record.connection, transport, nil
+	return record.connection, transport, true, nil
 }

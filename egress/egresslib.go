@@ -313,7 +313,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer wspconn.Close()
 	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
-	conn, donor, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
+	conn, donor, migrated, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
 		teardown = teardownMigrateFailed
 		span.RecordError(err)
@@ -338,6 +338,17 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	wsContext, wsCancel := context.WithCancel(context.Background())
 	QUICLayerError := make(chan struct{}, 1)
 
+	// Counted at most once for this donor, from whichever of the two
+	// places below reaches it first. See proxysession.go for why those
+	// are the two moments that qualify.
+	tally := &proxySessionTally{donorCC: donorCC}
+	if migrated {
+		// A migrated connection brings its open streams with it, so
+		// AcceptStream below will not fire for them and this donor would
+		// go uncounted while carrying the consumer's traffic.
+		tally.count()
+	}
+
 	go func() {
 		for {
 			stream, err := conn.AcceptStream(wsContext)
@@ -346,6 +357,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				QUICLayerError <- struct{}{}
 				close(QUICLayerError)
 				return
+			}
+			// Not every stream this loop accepts was carried by this
+			// donor: after a migration the replacement owns the path,
+			// while this loop stays live until wsContext is cancelled and
+			// can still win the accept race on the shared connection.
+			if l.connectionManager.currentDonor(consumerSessionID, donor) {
+				tally.count()
 			}
 			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))

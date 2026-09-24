@@ -212,16 +212,25 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
 
-	// proxy.io is synchronous — its measurements arrive via addProxyIO on
-	// the packet path, not via the callback — so it must NOT be added to
-	// the RegisterCallback list below. The list's rule ("every instrument
-	// the callback observes must be declared") applies to observables
-	// only; a synchronous counter in that list would be an error.
+	// proxy.io and proxy.sessions are synchronous — their measurements
+	// arrive from the packet and stream paths, via addProxyIO and
+	// recordProxySession, not via the callback — so neither may be added
+	// to the RegisterCallback list below. The list's rule ("every
+	// instrument the callback observes must be declared") applies to
+	// observables only; a synchronous counter in that list is an error.
 	proxyIO, err := m.Int64Counter("proxy.io", metric.WithUnit("bytes"))
 	if err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
 	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
+
+	proxySessions, err := m.Int64Counter("proxy.sessions",
+		metric.WithUnit("session"),
+		metric.WithDescription("donor sessions that carried consumer traffic"))
+	if err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	proxySessionCounter.Store(&proxySessionHandle{proxySessions})
 
 	if _, err = m.RegisterCallback(
 		observeMetrics,
@@ -284,11 +293,11 @@ func enableOTELMetrics(ctx context.Context) func(context.Context) error {
 	return mp.Shutdown
 }
 
-// counterTemporality maps synchronous counters — proxy.io is the only
-// one — to delta, and leaves every other kind cumulative so the
-// Observable* instruments above keep the temporality their dashboard
-// queries were written against. Do not widen the delta case without
-// checking every saved query on the affected instruments.
+// counterTemporality maps synchronous counters — proxy.io and
+// proxy.sessions — to delta, and leaves every other kind cumulative so
+// the Observable* instruments above keep the temporality their
+// dashboard queries were written against. Do not widen the delta case
+// without checking every saved query on the affected instruments.
 func counterTemporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
 	if kind == sdkmetric.InstrumentKindCounter {
 		return metricdata.DeltaTemporality
