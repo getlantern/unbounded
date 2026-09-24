@@ -592,12 +592,28 @@ func openWritableStream(t *testing.T, conn *quic.Conn) (*quic.Stream, error) {
 
 // closeAllRecords closes any QUIC connections still tracked in cm so
 // they don't outlive the test goroutine.
+//
+// The records are detached under cm.mx and only then locked
+// individually, which is the order deleteConnection uses; holding cm.mx
+// across record.mx would invert it. connection is read under record.mx
+// because createOrMigrate writes it there — a test whose handler is
+// still mid-dial at cleanup races otherwise — and may still be nil when
+// that dial has not returned.
 func closeAllRecords(cm *connectionManager) {
 	cm.mx.Lock()
-	defer cm.mx.Unlock()
+	records := make([]*connectionRecord, 0, len(cm.connections))
 	for csid, r := range cm.connections {
-		_ = r.connection.CloseWithError(0, "test cleanup")
+		records = append(records, r)
 		delete(cm.connections, csid)
+	}
+	cm.mx.Unlock()
+
+	for _, r := range records {
+		r.mx.Lock()
+		if r.connection != nil {
+			_ = r.connection.CloseWithError(0, "test cleanup")
+		}
+		r.mx.Unlock()
 	}
 }
 
@@ -771,7 +787,7 @@ func TestConnectionManager_Migration_StaleDonorCleanup(t *testing.T) {
 			t.Fatal("stale cleanup removed the current connection")
 		}
 		record.mx.Lock()
-		matches := record.connection == expected && record.transport == donor
+		matches := record.connection == expected && record.transport.Load() == donor
 		record.mx.Unlock()
 		if !matches {
 			t.Fatal("stale cleanup removed or replaced the current connection")

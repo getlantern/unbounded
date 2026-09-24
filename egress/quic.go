@@ -17,7 +17,7 @@ import (
 type connectionRecord struct {
 	mx         sync.Mutex
 	connection *quic.Conn
-	transport  *quic.Transport
+	transport  atomic.Pointer[quic.Transport]
 	lastPath   *quic.Path
 }
 
@@ -85,7 +85,7 @@ func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn,
 	record.mx.Lock()
 	defer record.mx.Unlock()
 	manager.mx.Lock()
-	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport == donor)
+	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport.Load() == donor)
 	if expired {
 		delete(manager.connections, csid)
 	}
@@ -94,6 +94,23 @@ func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn,
 		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		slog.Debug("QUIC connection expired, closed, and deleted", "csid", csid, "total", atomic.AddUint64(&nQUICConnections, ^uint64(0)))
 	}
+}
+
+// currentDonor reports whether donor is still the transport carrying
+// csid. A donor that has been migrated away from keeps its own accept
+// loop running for the whole migrationWindow on the connection it no
+// longer carries, so "did I accept a stream" is not by itself evidence
+// that this donor proxied anything.
+//
+// The record is read without taking record.mx on purpose: probeTimeout
+// is 35s, and a migration in flight holds that mutex for the duration.
+// Nothing on the serving path may wait that long for a telemetry
+// decision.
+func (manager *connectionManager) currentDonor(csid string, donor *quic.Transport) bool {
+	manager.mx.Lock()
+	record := manager.connections[csid]
+	manager.mx.Unlock()
+	return record != nil && record.transport.Load() == donor
 }
 
 // createOrMigrate accepts any net.PacketConn for the new transport. In
@@ -128,7 +145,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
 		record.connection = newConn
-		record.transport = transport
+		record.transport.Store(transport)
 		return newConn, transport, false, nil
 	}
 	// Atomic migration path
@@ -165,7 +182,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	t2 := time.Now()
 	recordMigration(migrationSuccess)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
-	record.transport = transport
+	record.transport.Store(transport)
 
 	if record.lastPath != nil {
 		err = record.lastPath.Close()

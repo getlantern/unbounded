@@ -142,18 +142,81 @@ func TestProxySessionTally_CountsEachSession(t *testing.T) {
 	}
 }
 
-// A session that connects, handshakes and never carries a consumer
-// stream is not an activation. This is the whole reason the count hangs
-// off AcceptStream rather than off session setup or the first byte
-// read, so it gets a tripwire of its own.
-func TestProxySessionTally_NoStreamsCountsNothing(t *testing.T) {
-	reader := installTestProxySessionCounter(t)
+// A donor that connects, completes the QUIC handshake and never
+// carries a consumer stream is not an activation. This is the whole
+// reason the count hangs off AcceptStream rather than off session setup
+// or the first byte read, so it drives the real handler: the consumer
+// accepting the connection proves setup finished and handshake bytes
+// crossed the donor, and the count must still be zero.
+func TestHandleWebsocket_NoStreamCountsNothing(t *testing.T) {
+	origGeo := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(origGeo) })
+	setDonorGeo(fakeCountryLookup{"203.0.113.7": "SE"})
 
-	tally := &proxySessionTally{donorCC: "US"}
-	_ = tally
+	reader := installTestProxySessionCounter(t)
+	consumer := startStreamOpeningConsumer(t)
+	_, srv, cleanup := startTestEgress(t)
+	defer cleanup()
+
+	startTestDonor(t, srv.URL, "proxysession-idle-donor", "203.0.113.7", consumer.addr())
+	consumer.awaitConn(t)
 
 	if dps := proxySessionDatapoints(t, reader); len(dps) != 0 {
-		t.Errorf("%d datapoints for a session that carried no streams, want 0", len(dps))
+		t.Errorf("%d datapoints for a donor that carried no stream, want 0 — the count moved to session setup or to the first byte", len(dps))
+	}
+}
+
+// The accept loop asks currentDonor before counting, because a donor
+// that has been migrated away from keeps accepting on the shared
+// connection for the rest of its migration window. Pinned directly:
+// end to end it depends on winning an accept race.
+func TestCurrentDonor_FalseAfterAnotherDonorTakesOver(t *testing.T) {
+	consumer, _ := startTestConsumer(t)
+	t.Cleanup(func() { _ = consumer.Close() })
+
+	cm := &connectionManager{
+		connections:     map[string]*connectionRecord{},
+		tlsConfig:       testClientTLS(),
+		migrationWindow: 5 * time.Second,
+		probeTimeout:    5 * time.Second,
+	}
+	defer closeAllRecords(cm)
+
+	const csid = "currentdonor-test"
+	pconnA, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket A: %v", err)
+	}
+	t.Cleanup(func() { _ = pconnA.Close() })
+	_, donorA, migrated, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnA, dst: consumer.LocalAddr()})
+	if err != nil {
+		t.Fatalf("createOrMigrate A: %v", err)
+	}
+	if migrated {
+		t.Fatal("first createOrMigrate reported a migration; it dialed a new connection")
+	}
+	if !cm.currentDonor(csid, donorA) {
+		t.Fatal("the only donor is not the current one")
+	}
+
+	pconnB, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket B: %v", err)
+	}
+	t.Cleanup(func() { _ = pconnB.Close() })
+	_, donorB, migrated, err := cm.createOrMigrate(csid, dialedPconn{PacketConn: pconnB, dst: consumer.LocalAddr()})
+	if err != nil {
+		t.Fatalf("createOrMigrate B: %v", err)
+	}
+	if !migrated {
+		t.Fatal("second createOrMigrate did not report a migration")
+	}
+
+	if cm.currentDonor(csid, donorA) {
+		t.Error("the migrated-away-from donor still reads as current; its accept loop would file an activation for traffic it does not carry")
+	}
+	if !cm.currentDonor(csid, donorB) {
+		t.Error("the donor that took the session over does not read as current")
 	}
 }
 
@@ -268,6 +331,14 @@ func TestHandleWebsocket_CountsAMigratedSession(t *testing.T) {
 		t.Fatalf("no successful migration was recorded (%d then %d); the test never reached the path it is about", before[1], got)
 	}
 
+	// recordMigration fires inside createOrMigrate, before the handler
+	// reaches tally.count(), so poll rather than assert once.
+	for time.Now().Before(deadline) {
+		if proxySessionCount(t, reader, "SE") == 2 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	if got := proxySessionCount(t, reader, "SE"); got != 2 {
 		t.Errorf("count = %d after a second donor took over the session by migration, want 2", got)
 	}

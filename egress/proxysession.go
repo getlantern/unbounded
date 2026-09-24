@@ -34,6 +34,14 @@ import (
 // stream does: packets crossed this donor, and its path is now the one
 // carrying the consumer.
 //
+// The two moments overlap rather than partition: a migrated-away-from
+// donor keeps accepting on the shared connection until its handler
+// returns, so the accept loop asks currentDonor whether this session
+// still owns the path before counting. Without that check, a donor that
+// carried nothing, lost its WebSocket, and then won an accept race
+// inside the migration window would file an activation under its own
+// country for bytes the replacement donor moved.
+//
 // It counts sessions, not people. A donor who reconnects, or whose
 // consumer migrates onto a different WebSocket, starts a new session
 // and counts again; there is no stable donor identity at this layer to

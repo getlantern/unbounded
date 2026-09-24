@@ -358,7 +358,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				close(QUICLayerError)
 				return
 			}
-			tally.count()
+			// Not every stream this loop accepts was carried by this
+			// donor: after a migration the replacement owns the path,
+			// while this loop stays live until wsContext is cancelled and
+			// can still win the accept race on the shared connection.
+			if l.connectionManager.currentDonor(consumerSessionID, donor) {
+				tally.count()
+			}
 			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 
