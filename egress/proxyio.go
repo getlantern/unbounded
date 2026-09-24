@@ -26,10 +26,11 @@ import (
 // Observable* instruments' temporality would silently change what their
 // saved queries mean.
 
-// proxyIOProtocol is the value downstream reporting surfaces as this
-// traffic's protocol. "unbounded" matches the service name and repo;
-// change it only in concert with whoever reads those reports.
-const proxyIOProtocol = "unbounded"
+// proxyProtocol is the value downstream reporting surfaces as this
+// traffic's protocol, on proxy.io and on proxy.sessions alike.
+// "unbounded" matches the service name and repo; change it only in
+// concert with whoever reads those reports.
+const proxyProtocol = "unbounded"
 
 // proxyIOHandle wraps the counter interface so atomic.Pointer has a
 // single concrete type to hold regardless of which implementation is
@@ -64,7 +65,7 @@ type proxyIOSets struct {
 func proxyIOSetsFor(donorCC string) *proxyIOSets {
 	set := func(direction string) attribute.Set {
 		return attribute.NewSet(
-			semconv.ProxyProtocolKey.String(proxyIOProtocol),
+			semconv.ProxyProtocolKey.String(proxyProtocol),
 			semconv.GeoCountryISOCodeKey.String(donorCC),
 			semconv.NetworkIODirectionKey.String(direction),
 		)

@@ -339,6 +339,11 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	QUICLayerError := make(chan struct{}, 1)
 
 	go func() {
+		// An accepted stream is the moment this donor starts proxying
+		// for somebody, which is the event reporting counts. Owned by
+		// this goroutine alone; see proxysession.go for why it is
+		// counted here and not at teardown.
+		tally := proxySessionTally{donorCC: donorCC}
 		for {
 			stream, err := conn.AcceptStream(wsContext)
 			if err != nil {
@@ -347,6 +352,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				close(QUICLayerError)
 				return
 			}
+			tally.streamAccepted()
 			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 
