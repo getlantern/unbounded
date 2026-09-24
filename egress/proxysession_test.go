@@ -2,12 +2,22 @@ package egress
 
 import (
 	"context"
+	"encoding/json"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/coder/websocket"
 	"github.com/getlantern/semconv"
+	"github.com/quic-go/quic-go"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // installTestProxySessionCounter swaps the process-global
@@ -156,4 +166,200 @@ func TestRecordProxySession_NoCounterInstalledIsANoOp(t *testing.T) {
 
 	tally := proxySessionTally{donorCC: "US"}
 	tally.streamAccepted() // must not panic
+}
+
+// The tests above drive proxySessionTally directly, which leaves the
+// production wiring untested: the tally could be dropped from the accept
+// loop, or donorCC could stop reaching it, and every one of them would
+// still pass while proxy.sessions went empty or mislabelled in real
+// traffic. This drives the real handleWebsocket instead — a donor
+// WebSocket carrying a real QUIC session, with the country resolved the
+// way production resolves it — and asserts the datapoint that session
+// produces.
+func TestHandleWebsocket_CountsOneSessionWithDonorCountry(t *testing.T) {
+	origGeo := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(origGeo) })
+	setDonorGeo(fakeCountryLookup{"203.0.113.7": "SE"})
+
+	reader := installTestProxySessionCounter(t)
+	consumer := startStreamOpeningConsumer(t)
+
+	cm := &connectionManager{
+		connections:     map[string]*connectionRecord{},
+		tlsConfig:       testClientTLS(),
+		migrationWindow: 5 * time.Second,
+		probeTimeout:    5 * time.Second,
+	}
+	defer closeAllRecords(cm)
+
+	// Buffered so the accept loop never blocks handing a stream over; the
+	// test drains it as its synchronization point.
+	l := proxyListener{
+		connectionManager: cm,
+		connections:       make(chan net.Conn, 4),
+		addr:              common.DebugAddr("proxysession-test-egress"),
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(l.handleWebsocket))
+	t.Cleanup(srv.Close)
+
+	startTestDonor(t, srv.URL, "203.0.113.7", consumer.addr())
+
+	// The egress dials the consumer through the donor, so the consumer
+	// side is where a stream can be opened toward the accept loop.
+	quicConn := consumer.awaitConn(t)
+	stream, err := openWritableStream(t, quicConn)
+	if err != nil {
+		t.Fatalf("consumer opening first stream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	awaitAcceptedStream(t, l.connections)
+
+	if got := proxySessionCount(t, reader, "SE"); got != 1 {
+		t.Fatalf("count = %d after one session carried a stream, want 1 — the accept loop is not counting, or donorCC is not reaching it", got)
+	}
+	for _, dp := range proxySessionDatapoints(t, reader) {
+		if v, _ := dp.Attributes.Value(semconv.ProxyProtocolKey); v.AsString() != "unbounded" {
+			t.Errorf("proxy.protocol = %q, want \"unbounded\"", v.AsString())
+		}
+	}
+
+	// A second stream on the same session must not count again. The unit
+	// test pins this against the tally; this pins it against the loop the
+	// tally actually lives in.
+	second, err := openWritableStream(t, quicConn)
+	if err != nil {
+		t.Fatalf("consumer opening second stream: %v", err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	awaitAcceptedStream(t, l.connections)
+
+	if got := proxySessionCount(t, reader, "SE"); got != 1 {
+		t.Errorf("count = %d after a second stream on the same session, want 1", got)
+	}
+}
+
+// streamOpeningConsumer is the censored end of a session: it QUIC-listens
+// so the egress's dial completes, and hands the accepted connection back
+// so the test can open streams toward the egress. startTestConsumer only
+// drains streams, which is the opposite direction from what the accept
+// loop needs.
+type streamOpeningConsumer struct {
+	pc    net.PacketConn
+	conns chan *quic.Conn
+}
+
+func (c *streamOpeningConsumer) addr() net.Addr { return c.pc.LocalAddr() }
+
+func (c *streamOpeningConsumer) awaitConn(t *testing.T) *quic.Conn {
+	t.Helper()
+	select {
+	case conn := <-c.conns:
+		return conn
+	case <-time.After(15 * time.Second):
+		t.Fatal("egress never completed a QUIC dial to the consumer")
+		return nil
+	}
+}
+
+func startStreamOpeningConsumer(t *testing.T) *streamOpeningConsumer {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket consumer: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+
+	tr := &quic.Transport{Conn: pc}
+	listener, err := tr.Listen(testServerTLS(), &common.QUICCfg)
+	if err != nil {
+		t.Fatalf("Transport.Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+
+	c := &streamOpeningConsumer{pc: pc, conns: make(chan *quic.Conn, 1)}
+	go func() {
+		for {
+			conn, err := listener.Accept(context.Background())
+			if err != nil {
+				return
+			}
+			select {
+			case c.conns <- conn:
+			default:
+			}
+		}
+	}()
+	return c
+}
+
+// startTestDonor plays the volunteer: it dials the egress's /ws with the
+// subprotocols and forwarded address a real donor sends, then relays
+// between the WebSocket and the consumer's UDP socket. The relay is
+// migrationDonor's, minus the parts that build the egress side by hand —
+// here the egress side is whatever handleWebsocket builds.
+func startTestDonor(t *testing.T, serverURL, donorIP string, consumer net.Addr) {
+	t.Helper()
+	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("ListenPacket donor: %v", err)
+	}
+	t.Cleanup(func() { _ = udp.Close() })
+
+	header := http.Header{}
+	header.Set("X-Forwarded-For", donorIP)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(serverURL, "http"), &websocket.DialOptions{
+		HTTPHeader:   header,
+		Subprotocols: common.NewSubprotocolsRequest("proxysession-test-csid", common.Version),
+	})
+	if err != nil {
+		t.Fatalf("donor dialing /ws: %v", err)
+	}
+	t.Cleanup(func() { _ = ws.CloseNow() })
+	ws.SetReadLimit(1 << 20)
+
+	// Egress to consumer: unwrap the envelope WriteTo put on the wire.
+	go func() {
+		for {
+			_, b, err := ws.Read(context.Background())
+			if err != nil {
+				return
+			}
+			var packet common.UnboundedPacket
+			if json.Unmarshal(b, &packet) != nil {
+				return
+			}
+			if _, err := udp.WriteTo(packet.Payload, consumer); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Consumer to egress: raw datagrams, which is what ReadFrom expects.
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, _, err := udp.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if ws.Write(context.Background(), websocket.MessageBinary, buf[:n]) != nil {
+				return
+			}
+		}
+	}()
+}
+
+// awaitAcceptedStream waits for the accept loop to hand a stream to the
+// listener, which is the point after which the count is observable.
+func awaitAcceptedStream(t *testing.T, conns chan net.Conn) {
+	t.Helper()
+	select {
+	case <-conns:
+	case <-time.After(15 * time.Second):
+		t.Fatal("handleWebsocket never delivered an accepted stream")
+	}
 }
