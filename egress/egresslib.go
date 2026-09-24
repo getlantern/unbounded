@@ -313,7 +313,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer wspconn.Close()
 	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
-	conn, donor, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
+	conn, donor, migrated, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
 		teardown = teardownMigrateFailed
 		span.RecordError(err)
@@ -338,12 +338,18 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	wsContext, wsCancel := context.WithCancel(context.Background())
 	QUICLayerError := make(chan struct{}, 1)
 
+	// Counted at most once for this donor, from whichever of the two
+	// places below reaches it first. See proxysession.go for why those
+	// are the two moments that qualify.
+	tally := &proxySessionTally{donorCC: donorCC}
+	if migrated {
+		// A migrated connection brings its open streams with it, so
+		// AcceptStream below will not fire for them and this donor would
+		// go uncounted while carrying the consumer's traffic.
+		tally.count()
+	}
+
 	go func() {
-		// An accepted stream is the moment this donor starts proxying
-		// for somebody, which is the event reporting counts. Owned by
-		// this goroutine alone; see proxysession.go for why it is
-		// counted here and not at teardown.
-		tally := proxySessionTally{donorCC: donorCC}
 		for {
 			stream, err := conn.AcceptStream(wsContext)
 			if err != nil {
@@ -352,7 +358,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				close(QUICLayerError)
 				return
 			}
-			tally.streamAccepted()
+			tally.count()
 			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 

@@ -113,9 +113,9 @@ func TestRecordProxySession_AttributeContract(t *testing.T) {
 func TestProxySessionTally_CountsOncePerSession(t *testing.T) {
 	reader := installTestProxySessionCounter(t)
 
-	tally := proxySessionTally{donorCC: "RU"}
+	tally := &proxySessionTally{donorCC: "RU"}
 	for range 5 {
-		tally.streamAccepted()
+		tally.count()
 	}
 
 	if got := proxySessionCount(t, reader, "RU"); got != 1 {
@@ -129,9 +129,9 @@ func TestProxySessionTally_CountsEachSession(t *testing.T) {
 	reader := installTestProxySessionCounter(t)
 
 	for _, cc := range []string{"RU", "RU", "CN"} {
-		tally := proxySessionTally{donorCC: cc}
-		tally.streamAccepted()
-		tally.streamAccepted()
+		tally := &proxySessionTally{donorCC: cc}
+		tally.count()
+		tally.count()
 	}
 
 	if got := proxySessionCount(t, reader, "RU"); got != 2 {
@@ -149,7 +149,7 @@ func TestProxySessionTally_CountsEachSession(t *testing.T) {
 func TestProxySessionTally_NoStreamsCountsNothing(t *testing.T) {
 	reader := installTestProxySessionCounter(t)
 
-	tally := proxySessionTally{donorCC: "US"}
+	tally := &proxySessionTally{donorCC: "US"}
 	_ = tally
 
 	if dps := proxySessionDatapoints(t, reader); len(dps) != 0 {
@@ -164,8 +164,8 @@ func TestRecordProxySession_NoCounterInstalledIsANoOp(t *testing.T) {
 	prev := proxySessionCounter.Swap(nil)
 	t.Cleanup(func() { proxySessionCounter.Store(prev) })
 
-	tally := proxySessionTally{donorCC: "US"}
-	tally.streamAccepted() // must not panic
+	tally := &proxySessionTally{donorCC: "US"}
+	tally.count() // must not panic
 }
 
 // The tests above drive proxySessionTally directly, which leaves the
@@ -183,27 +183,10 @@ func TestHandleWebsocket_CountsOneSessionWithDonorCountry(t *testing.T) {
 
 	reader := installTestProxySessionCounter(t)
 	consumer := startStreamOpeningConsumer(t)
+	l, srv, cleanup := startTestEgress(t)
+	defer cleanup()
 
-	cm := &connectionManager{
-		connections:     map[string]*connectionRecord{},
-		tlsConfig:       testClientTLS(),
-		migrationWindow: 5 * time.Second,
-		probeTimeout:    5 * time.Second,
-	}
-	defer closeAllRecords(cm)
-
-	// Buffered so the accept loop never blocks handing a stream over; the
-	// test drains it as its synchronization point.
-	l := proxyListener{
-		connectionManager: cm,
-		connections:       make(chan net.Conn, 4),
-		addr:              common.DebugAddr("proxysession-test-egress"),
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(l.handleWebsocket))
-	t.Cleanup(srv.Close)
-
-	startTestDonor(t, srv.URL, "203.0.113.7", consumer.addr())
+	startTestDonor(t, srv.URL, "proxysession-one-donor", "203.0.113.7", consumer.addr())
 
 	// The egress dials the consumer through the donor, so the consumer
 	// side is where a stream can be opened toward the accept loop.
@@ -237,6 +220,82 @@ func TestHandleWebsocket_CountsOneSessionWithDonorCountry(t *testing.T) {
 	if got := proxySessionCount(t, reader, "SE"); got != 1 {
 		t.Errorf("count = %d after a second stream on the same session, want 1", got)
 	}
+}
+
+// A donor that takes over an existing consumer session by migration is
+// proxying for somebody just as surely as one that accepts a fresh
+// stream, but it inherits the streams already open, so AcceptStream
+// never fires for it. Counting only in the accept loop dropped that
+// donor entirely. Migration runs at roughly 4% of donor session churn,
+// concentrated in exactly the sessions that carry traffic.
+func TestHandleWebsocket_CountsAMigratedSession(t *testing.T) {
+	origGeo := lookupDonorGeo()
+	t.Cleanup(func() { setDonorGeo(origGeo) })
+	setDonorGeo(fakeCountryLookup{"203.0.113.7": "SE"})
+
+	reader := installTestProxySessionCounter(t)
+	consumer := startStreamOpeningConsumer(t)
+	l, srv, cleanup := startTestEgress(t)
+	defer cleanup()
+
+	const csid = "proxysession-migrating-session"
+
+	startTestDonor(t, srv.URL, csid, "203.0.113.7", consumer.addr())
+	quicConn := consumer.awaitConn(t)
+	stream, err := openWritableStream(t, quicConn)
+	if err != nil {
+		t.Fatalf("consumer opening stream: %v", err)
+	}
+	t.Cleanup(func() { _ = stream.Close() })
+	awaitAcceptedStream(t, l.connections)
+
+	if got := proxySessionCount(t, reader, "SE"); got != 1 {
+		t.Fatalf("count = %d after the first donor, want 1", got)
+	}
+
+	// Second donor, same CSID: createOrMigrate takes the migrate branch
+	// and the consumer opens nothing new.
+	before := migrationSnapshot()
+	startTestDonor(t, srv.URL, csid, "203.0.113.7", consumer.addr())
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if migrationSnapshot()[1] > before[1] {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := migrationSnapshot()[1]; got <= before[1] {
+		t.Fatalf("no successful migration was recorded (%d then %d); the test never reached the path it is about", before[1], got)
+	}
+
+	if got := proxySessionCount(t, reader, "SE"); got != 2 {
+		t.Errorf("count = %d after a second donor took over the session by migration, want 2", got)
+	}
+}
+
+// startTestEgress stands up a proxyListener serving the real
+// handleWebsocket. The connections channel is buffered so the accept
+// loop never blocks handing a stream over, and drained by the caller as
+// its synchronization point.
+func startTestEgress(t *testing.T) (proxyListener, *httptest.Server, func()) {
+	t.Helper()
+	cm := &connectionManager{
+		connections:     map[string]*connectionRecord{},
+		tlsConfig:       testClientTLS(),
+		migrationWindow: 5 * time.Second,
+		probeTimeout:    5 * time.Second,
+	}
+	l := proxyListener{
+		connectionManager: cm,
+		connections:       make(chan net.Conn, 8),
+		addr:              common.DebugAddr("proxysession-test-egress"),
+	}
+	srv := httptest.NewServer(http.HandlerFunc(l.handleWebsocket))
+	t.Cleanup(srv.Close)
+	// Returned rather than registered: QUIC connections must close while
+	// their PacketConns are still alive, and deferred calls run before
+	// every t.Cleanup.
+	return l, srv, func() { closeAllRecords(cm) }
 }
 
 // streamOpeningConsumer is the censored end of a session: it QUIC-listens
@@ -298,7 +357,7 @@ func startStreamOpeningConsumer(t *testing.T) *streamOpeningConsumer {
 // between the WebSocket and the consumer's UDP socket. The relay is
 // migrationDonor's, minus the parts that build the egress side by hand —
 // here the egress side is whatever handleWebsocket builds.
-func startTestDonor(t *testing.T, serverURL, donorIP string, consumer net.Addr) {
+func startTestDonor(t *testing.T, serverURL, csid, donorIP string, consumer net.Addr) {
 	t.Helper()
 	udp, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -313,7 +372,7 @@ func startTestDonor(t *testing.T, serverURL, donorIP string, consumer net.Addr) 
 	defer cancel()
 	ws, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(serverURL, "http"), &websocket.DialOptions{
 		HTTPHeader:   header,
-		Subprotocols: common.NewSubprotocolsRequest("proxysession-test-csid", common.Version),
+		Subprotocols: common.NewSubprotocolsRequest(csid, common.Version),
 	})
 	if err != nil {
 		t.Fatalf("donor dialing /ws: %v", err)

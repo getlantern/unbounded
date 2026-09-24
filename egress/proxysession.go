@@ -27,6 +27,13 @@ import (
 // traffic. An accepted stream is a consumer connection being served,
 // which is what "proxied traffic for others" has to mean here.
 //
+// A session that arrives by migration counts on the migration instead.
+// It inherits the consumer's open streams, so no stream is ever
+// accepted on it and the accept loop alone would miss it entirely. A
+// successful path probe and switch make the same claim an accepted
+// stream does: packets crossed this donor, and its path is now the one
+// carrying the consumer.
+//
 // It counts sessions, not people. A donor who reconnects, or whose
 // consumer migrates onto a different WebSocket, starts a new session
 // and counts again; there is no stable donor identity at this layer to
@@ -45,22 +52,20 @@ type proxySessionHandle struct{ c metric.Int64Counter }
 // addProxyIO follows.
 var proxySessionCounter atomic.Pointer[proxySessionHandle]
 
-// proxySessionTally records one session's activation on the first
-// stream it carries and never again. One per session, owned by the
-// single goroutine that accepts that session's streams, so the flag
-// needs no synchronization.
+// proxySessionTally records one session's activation the first time
+// that session is seen carrying traffic, and never again. Two
+// goroutines reach it — the handler, for a session that arrives by
+// migration, and the stream accept loop — so the guard is atomic.
 type proxySessionTally struct {
 	donorCC string
-	counted bool
+	counted atomic.Bool
 }
 
-// streamAccepted notes that this session accepted a consumer stream.
-func (t *proxySessionTally) streamAccepted() {
-	if t.counted {
-		return
+// count records this session's activation, once.
+func (t *proxySessionTally) count() {
+	if t.counted.CompareAndSwap(false, true) {
+		recordProxySession(t.donorCC)
 	}
-	t.counted = true
-	recordProxySession(t.donorCC)
 }
 
 // recordProxySession increments proxy.sessions for a donor in donorCC,
