@@ -1,11 +1,12 @@
 import {Container, Body, BodyWrapper, ExpandWrapper, Header, CtaWrapper} from './styles'
-import React, {useContext, useState, lazy, Suspense, useEffect} from 'react'
+import React, {useContext, useState, useEffect} from 'react'
 import {AppContext} from '../../../context'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
 import Stats from '../../molecules/stats'
 import About from '../../molecules/about'
 // import Footer from '../../molecules/footer'
@@ -15,8 +16,6 @@ import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import ExtensionCta from '../../molecules/extensionCta'
 import Love from '../../molecules/love'
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 const Panel = () => {
 	const {width, settings} = useContext(AppContext)
@@ -46,9 +45,7 @@ const Panel = () => {
 					{
 						settings.globe && expanded && (
 							<Col>
-								<Suspense fallback={<GlobeSuspense/>}>
-									<Globe target={settings.target}/>
-								</Suspense>
+								<SafeGlobe target={settings.target}/>
 							</Col>
 						)
 					}
@@ -63,6 +60,7 @@ const Panel = () => {
 								onToggle={onToggle}
 							/>
 						</Row>
+						<UnsupportedNote/>
 						<Stats/>
 						{
 							!menu && (target === Targets.WEB) && (

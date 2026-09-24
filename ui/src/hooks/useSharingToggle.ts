@@ -6,6 +6,7 @@ import {readyEmitter, sharingEmitter} from '../utils/wasmInterface'
 import {geoLookup} from './useGeoFuture'
 import {censoredCountryCodes} from '../utils/countries'
 import {tutorialOnEmitter} from '../components/atoms/tutorial'
+import {hasWebAssembly} from '../utils/capabilities'
 
 // Shared sharing-switch logic: lazy wasm init on web and the censored-geo gate
 // that must pass before sharing can start. Spread the returned switchProps onto
@@ -17,6 +18,8 @@ export const useSharingToggle = (onToggle?: (share: boolean) => void) => {
 	const {mock, target} = settings
 	// on web, we don't need to initialize wasm until user starts sharing
 	const needsInit = target === Targets.WEB && !wasmInterface?.instance
+	// without WebAssembly the client can never start, e.g. under iOS Lockdown Mode
+	const supported = hasWebAssembly()
 	const [loading, setLoading] = useState(false)
 	const [isCensored, setIsCensored] = useState(false)
 	const [ignoreCensored, setIgnoreCensored] = useState(false)
@@ -46,6 +49,7 @@ export const useSharingToggle = (onToggle?: (share: boolean) => void) => {
 	}
 
 	const toggle = async (share: boolean, ignoreCensored = false) => {
+		if (share && !supported) return
 		if (share && !ignoreCensored) {
 			const isCensored = await isCensoredGeo()
 			if (isCensored) {
@@ -75,7 +79,7 @@ export const useSharingToggle = (onToggle?: (share: boolean) => void) => {
 		switchProps: {
 			onToggle: (share: boolean) => toggle(share, ignoreCensored),
 			checked: sharing,
-			disabled: !ready && !needsInit,
+			disabled: !supported || (!ready && !needsInit),
 			loading
 		}
 	}
