@@ -78,9 +78,7 @@ const Floating = () => {
 					}
 					{
 						settings.globe && expanded && (
-							<Col>
-								<SafeGlobe target={settings.target}/>
-							</Col>
+							<SafeGlobe target={settings.target}/>
 						)
 					}
 					{

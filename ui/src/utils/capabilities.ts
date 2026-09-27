@@ -22,5 +22,11 @@ export const hasWebGL = (): boolean => {
 	return webGL
 }
 
+// WasmInterface.initialize uses instantiateStreaming with no fallback, so that
+// is the method that has to exist, not merely the WebAssembly global.
 export const hasWebAssembly = (): boolean =>
-	typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function'
+	typeof WebAssembly === 'object' && typeof WebAssembly.instantiateStreaming === 'function'
+
+// The mock client never touches WebAssembly. Shared by the switch and the note
+// so the two cannot disagree.
+export const canShare = (mock: boolean): boolean => mock || hasWebAssembly()

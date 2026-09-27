@@ -49,8 +49,23 @@ describe('hasWebAssembly', () => {
 		expect(load().hasWebAssembly()).toBe(false)
 	})
 
-	test('is true when WebAssembly can instantiate', () => {
+	// Safari 14 and older: WebAssembly exists but instantiateStreaming does not,
+	// and WasmInterface.initialize has no fallback, so the client cannot start.
+	test('is false when WebAssembly lacks instantiateStreaming', () => {
 		Object.defineProperty(globalThis, 'WebAssembly', {value: {instantiate: () => {}}, configurable: true, writable: true})
+		expect(load().hasWebAssembly()).toBe(false)
+	})
+
+	test('is true when WebAssembly can instantiate streaming', () => {
+		Object.defineProperty(globalThis, 'WebAssembly', {value: {instantiateStreaming: () => {}}, configurable: true, writable: true})
 		expect(load().hasWebAssembly()).toBe(true)
+	})
+
+	// The mock client never touches WebAssembly, so it can share regardless.
+	test('canShare is true in mock mode even without WebAssembly', () => {
+		Object.defineProperty(globalThis, 'WebAssembly', {value: undefined, configurable: true, writable: true})
+		const {canShare} = load()
+		expect(canShare(true)).toBe(true)
+		expect(canShare(false)).toBe(false)
 	})
 })

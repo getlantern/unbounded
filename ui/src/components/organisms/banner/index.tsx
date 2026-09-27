@@ -100,9 +100,7 @@ const Banner = () => {
 						>
 							{
 								settings.globe && (
-									<Col>
-										<SafeGlobe target={settings.target}/>
-									</Col>
+									<SafeGlobe target={settings.target}/>
 								)
 							}
 							<Col>

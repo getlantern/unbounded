@@ -7,7 +7,6 @@ import {useSharingToggle} from '../../../hooks/useSharingToggle'
 import Switch from '../../atoms/switch'
 import Modal from '../../molecules/modal'
 import SafeGlobe from '../../molecules/globe/safe'
-import Col from '../../atoms/col'
 import UnsupportedNote from '../../molecules/unsupportedNote'
 import {BarText, Container, OffPill, OnPanel, PanelLeft, PanelRow, SIMPLE_COLORS, StatusDot} from './styles'
 
@@ -41,9 +40,7 @@ const Simple = () => {
 			<Modal isCensored={isCensored} onIgnore={onIgnore} />
 			{
 				settings.globe && (
-					<Col>
-						<SafeGlobe target={settings.target}/>
-					</Col>
+					<SafeGlobe target={settings.target}/>
 				)
 			}
 			{

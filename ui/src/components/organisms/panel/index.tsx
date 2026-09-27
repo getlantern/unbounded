@@ -44,9 +44,7 @@ const Panel = () => {
 					{ !expanded && <About style={{padding: '24px 0 16px 0', fontSize: 12, lineHeight: '20px'}} /> }
 					{
 						settings.globe && expanded && (
-							<Col>
-								<SafeGlobe target={settings.target}/>
-							</Col>
+							<SafeGlobe target={settings.target}/>
 						)
 					}
 					{ expanded && <About style={{padding: '24px 0 16px 0', fontSize: 12, lineHeight: '20px'}} /> }

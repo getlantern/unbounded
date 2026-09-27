@@ -39,6 +39,8 @@ describe('SafeGlobe', () => {
 		await waitFor(() => expect(screen.queryByTestId('globe-loading')).not.toBeInTheDocument())
 		expect(mockGlobe).toHaveBeenCalled()
 		expect(screen.getByLabelText('connect')).toBeInTheDocument()
+		// no empty column left behind: in the desktop layouts it would take half the row
+		expect(screen.getByLabelText('connect').parentElement!.childElementCount).toBe(1)
 	})
 
 	// Without WebGL the globe can only fail, so don't spend the download on it.
@@ -50,6 +52,7 @@ describe('SafeGlobe', () => {
 		expect(screen.queryByTestId('globe-loading')).not.toBeInTheDocument()
 		expect(mockGlobe).not.toHaveBeenCalled()
 		expect(screen.getByLabelText('connect')).toBeInTheDocument()
+		expect(screen.getByLabelText('connect').parentElement!.childElementCount).toBe(1)
 	})
 
 	test('renders the globe when WebGL works', async () => {
