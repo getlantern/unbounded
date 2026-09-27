@@ -87,6 +87,7 @@ const Banner = () => {
 						</Item>
 					)
 				}
+				{ !expanded && <UnsupportedNote style={{padding: '0 8px'}}/> }
 			</HeaderWrapper>
 			{
 				expanded && (

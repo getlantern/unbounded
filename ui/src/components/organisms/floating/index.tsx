@@ -73,6 +73,7 @@ const Floating = () => {
 										info
 									/>
 								</Item>
+								<UnsupportedNote/>
 							</Col>
 						)
 					}
