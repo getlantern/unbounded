@@ -1,11 +1,12 @@
 import {Container, Body, BodyWrapper, Header, Item, HeaderRight, CtaWrapper} from './styles'
-import React, {useContext, useState, lazy, Suspense, useEffect} from 'react'
+import React, {useContext, useState, useEffect} from 'react'
 import {AppContext} from '../../../context'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
 import Stats, {Connections} from '../../molecules/stats'
 // import Footer from '../../molecules/footer'
 import ExpandCollapse from '../../atoms/expandCollapse'
@@ -16,8 +17,6 @@ import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import ExtensionCta from '../../molecules/extensionCta'
 import Love from '../../molecules/love'
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 const Floating = () => {
 	const {width, settings} = useContext(AppContext)
@@ -74,16 +73,13 @@ const Floating = () => {
 										info
 									/>
 								</Item>
+								<UnsupportedNote/>
 							</Col>
 						)
 					}
 					{
 						settings.globe && expanded && (
-							<Col>
-								<Suspense fallback={<GlobeSuspense/>}>
-									<Globe target={settings.target}/>
-								</Suspense>
-							</Col>
+							<SafeGlobe target={settings.target}/>
 						)
 					}
 					{
@@ -101,6 +97,7 @@ const Floating = () => {
 										onToggle={onToggle}
 									/>
 								</Row>
+								<UnsupportedNote/>
 								{
 									expanded && (
 										<>

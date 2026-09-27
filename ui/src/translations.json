@@ -31,7 +31,8 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "unsupportedBrowser": "This browser can't share a connection because WebAssembly is turned off, for example by Lockdown Mode."
     }
   },
   "zh-Hans": {
