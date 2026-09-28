@@ -14,14 +14,15 @@ type activation struct {
 	cur atomic.Pointer[string]
 }
 
-// begin mints a new ID. Called on start, so turning proxy mode off and
-// on again is a new activation.
+// begin mints a new ID unless one is already active. Called on start,
+// so a new activation starts only after end, and a repeated start
+// keeps counting as the same one.
 func (a *activation) begin() {
 	if a == nil {
 		return
 	}
 	id := common.NewActivationID()
-	a.cur.Store(&id)
+	a.cur.CompareAndSwap(nil, &id)
 }
 
 // end clears the ID. A slot that dials after stop sends none, which the

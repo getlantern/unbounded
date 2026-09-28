@@ -26,6 +26,12 @@ func TestActivation_BeginEnd(t *testing.T) {
 		t.Fatal("id changed without a new begin")
 	}
 
+	// A repeated start without a stop is still the same activation.
+	a.begin()
+	if got := a.id(); got != first {
+		t.Fatalf("a repeated begin replaced the ID: got %q, want %q", got, first)
+	}
+
 	a.end()
 	if got := a.id(); got != "" {
 		t.Fatalf("id after end = %q, want empty", got)
@@ -84,10 +90,6 @@ func TestJITEgressConsumer_SendsActivationID(t *testing.T) {
 		ConnectTimeout: 5 * time.Second,
 		ErrorBackoff:   10 * time.Millisecond,
 	}, act, nil)
-	go func() {
-		for range fsm.com.tx {
-		}
-	}()
 	fsm.Start()
 	t.Cleanup(fsm.Stop)
 
