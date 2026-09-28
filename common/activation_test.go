@@ -71,9 +71,9 @@ func TestParseSubprotocolsRequest_ActivationOnlyIsSafeForOldParser(t *testing.T)
 	}
 }
 
-// The ID becomes a key in the egress's seen-set, so anything that is not
-// exactly the form NewActivationID produces is dropped rather than
-// stored. Dropping it must not refuse the connection.
+// The ID becomes a key in the egress's activation store, so anything
+// that is not exactly the form NewActivationID produces is dropped
+// rather than stored. Dropping it must not refuse the connection.
 func TestParseSubprotocolsRequestWithActivation_BoundsUntrustedID(t *testing.T) {
 	id := NewActivationID()
 	for _, bad := range []string{

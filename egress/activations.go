@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,8 +28,53 @@ import (
 // migrates, so one afternoon with the widget on is dozens of
 // WebSockets and one activation.
 //
-// The ID itself goes nowhere but the seen-set: not into attributes,
-// not into spans, not into logs.
+// The ID itself goes nowhere but the activation store: not into
+// attributes, not into spans, not into logs.
+
+// activationStore remembers which activation IDs are active. It is the
+// seam for moving that memory off the egress, to a store shared by
+// every egress: the rest of the package only asks whether an ID is
+// new.
+//
+// first runs on the serving path, after createOrMigrate and before the
+// stream accept loop starts, so a networked implementation must bound
+// its own latency.
+type activationStore interface {
+	// first marks id as active now and reports whether it was not
+	// already active.
+	first(ctx context.Context, id string) (bool, error)
+}
+
+// activations counts proxy.activations, asking store which IDs are new.
+type activations struct {
+	store activationStore
+}
+
+func newActivations(store activationStore) *activations {
+	return &activations{store: store}
+}
+
+// record counts id as an activation for a donor in donorCC if it has
+// not been counted while active. A nil receiver, as in tests that
+// drive handleWebsocket without one, and an empty ID, from a widget
+// that does not send one, record nothing.
+//
+// A store error skips the count. Undercounting during an outage is the
+// only failure mode that neither blocks a donor nor counts one
+// activation twice.
+func (a *activations) record(ctx context.Context, id, donorCC string) {
+	if a == nil || id == "" {
+		return
+	}
+	fresh, err := a.store.first(ctx, id)
+	if err != nil {
+		slog.Warn("activation store failed; not counting", "error", err)
+		return
+	}
+	if fresh {
+		recordActivation(donorCC)
+	}
+}
 
 // activationIdleTTL is how long the egress remembers an ID after its
 // last successful WebSocket. A widget left on keeps refreshing its
@@ -39,66 +85,53 @@ import (
 // its resolution.
 const activationIdleTTL = 24 * time.Hour
 
-// maxActivations bounds the seen-set, because IDs are client-supplied.
-// Each entry costs one successful QUIC handshake through the egress,
-// which bounds the insertion rate but not the total. Far above any
-// realistic number of widgets on at once.
+// maxActivations bounds the in-memory store, because IDs are
+// client-supplied. Each entry costs one successful QUIC handshake
+// through the egress, which bounds the insertion rate but not the
+// total. Far above any realistic number of widgets on at once.
 const maxActivations = 1 << 18
 
 // activationSweepInterval is how often an insert may pay for an
-// expiry sweep of the whole set.
+// expiry sweep of the whole store.
 const activationSweepInterval = time.Minute
 
-// activationSet remembers recently active activation IDs.
-type activationSet struct {
+// memoryActivations is an activationStore local to one egress process.
+// A restart forgets every ID, and a second egress keeps its own.
+type memoryActivations struct {
 	mu        sync.Mutex
 	lastSeen  map[string]time.Time
 	lastSweep time.Time
 	now       func() time.Time
 }
 
-func newActivationSet() *activationSet {
-	return &activationSet{lastSeen: map[string]time.Time{}, now: time.Now}
+func newMemoryActivations() *memoryActivations {
+	return &memoryActivations{lastSeen: map[string]time.Time{}, now: time.Now}
 }
 
-// first marks id as active now and reports whether it was not already
-// active: never seen, or idle for longer than activationIdleTTL. When
-// the set is full, a new ID is neither stored nor counted, so a flood
-// of IDs cannot inflate the count by evicting real ones.
-func (s *activationSet) first(id string) bool {
-	now := s.now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// first treats an ID idle for longer than activationIdleTTL as new.
+// When the store is full, a new ID is neither stored nor reported new,
+// so a flood of IDs cannot inflate the count by evicting real ones.
+func (m *memoryActivations) first(_ context.Context, id string) (bool, error) {
+	now := m.now()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	if now.Sub(s.lastSweep) >= activationSweepInterval {
-		for k, t := range s.lastSeen {
+	if now.Sub(m.lastSweep) >= activationSweepInterval {
+		for k, t := range m.lastSeen {
 			if now.Sub(t) > activationIdleTTL {
-				delete(s.lastSeen, k)
+				delete(m.lastSeen, k)
 			}
 		}
-		s.lastSweep = now
+		m.lastSweep = now
 	}
 
-	t, ok := s.lastSeen[id]
+	t, ok := m.lastSeen[id]
 	fresh := !ok || now.Sub(t) > activationIdleTTL
-	if !ok && len(s.lastSeen) >= maxActivations {
-		return false
+	if !ok && len(m.lastSeen) >= maxActivations {
+		return false, nil
 	}
-	s.lastSeen[id] = now
-	return fresh
-}
-
-// record counts id as an activation for a donor in donorCC if it has
-// not been counted while active. A nil set, as in tests that drive
-// handleWebsocket without one, and an empty ID, from a widget that does
-// not send one, record nothing.
-func (s *activationSet) record(id, donorCC string) {
-	if s == nil || id == "" {
-		return
-	}
-	if s.first(id) {
-		recordActivation(donorCC)
-	}
+	m.lastSeen[id] = now
+	return fresh, nil
 }
 
 // proxyActivationHandle wraps the counter interface so atomic.Pointer
