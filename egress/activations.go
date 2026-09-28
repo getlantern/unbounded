@@ -53,15 +53,15 @@ func newActivations(store activationStore) *activations {
 	return &activations{store: store}
 }
 
-// record counts id as an activation for a donor in countryCodeDonor
-// if it has not been counted while active. A nil receiver, as in tests
-// that drive handleWebsocket without one, and an empty ID, from a
-// widget that does not send one, record nothing.
+// record counts id as an activation for a donor in donorCC if it has
+// not been counted while active. A nil receiver, as in tests that
+// drive handleWebsocket without one, and an empty ID, from a widget
+// that does not send one, record nothing.
 //
 // A store error skips the count. Undercounting during an outage is the
 // only failure mode that neither blocks a donor nor counts one
 // activation twice.
-func (a *activations) record(ctx context.Context, id, countryCodeDonor string) {
+func (a *activations) record(ctx context.Context, id, donorCC string) {
 	if a == nil || id == "" {
 		return
 	}
@@ -71,7 +71,7 @@ func (a *activations) record(ctx context.Context, id, countryCodeDonor string) {
 		return
 	}
 	if fresh {
-		recordActivation(countryCodeDonor)
+		recordActivation(donorCC)
 	}
 }
 
@@ -130,20 +130,19 @@ type proxyActivationHandle struct{ c metric.Int64Counter }
 // measurements while nil, the contract addProxyIO follows.
 var proxyActivationCounter atomic.Pointer[proxyActivationHandle]
 
-// recordActivation increments proxy.activations for a donor in
-// countryCodeDonor.
+// recordActivation increments proxy.activations for a donor in donorCC.
 //
 // The spellings are load-bearing the same way proxyIOSetsFor's are:
 // downstream storage files these under columns named after the keys,
 // so a wrong one files the count under NULL instead of failing
 // anywhere visible.
-func recordActivation(countryCodeDonor string) {
+func recordActivation(donorCC string) {
 	h := proxyActivationCounter.Load()
 	if h == nil {
 		return
 	}
 	h.c.Add(context.Background(), 1, metric.WithAttributeSet(attribute.NewSet(
 		semconv.ProxyProtocolKey.String(proxyProtocol),
-		semconv.GeoCountryISOCodeKey.String(countryCodeDonor),
+		semconv.GeoCountryISOCodeKey.String(donorCC),
 	)))
 }
