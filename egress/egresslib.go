@@ -70,6 +70,7 @@ type proxyListener struct {
 	connections  chan net.Conn
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+	activations  *activationSet
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -114,9 +115,9 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	consumerSessionID, version, consumerCountry, ok := common.ParseSubprotocolsRequestWithCountry(subprotocols)
+	consumerSessionID, version, consumerCountry, activationID, ok := common.ParseSubprotocolsRequestWithActivation(subprotocols)
 	if !ok {
-		// ParseSubprotocolsRequestWithCountry returns !ok for three different
+		// ParseSubprotocolsRequestWithActivation returns !ok for three different
 		// situations with three different owners, so they are reported separately.
 		// Collapsing them is not a cosmetic loss: the egress refused ~9
 		// connections/second for ten days, and the single "missing subprotocols"
@@ -313,13 +314,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	defer wspconn.Close()
 	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
-	conn, donor, migrated, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
+	conn, donor, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
 		teardown = teardownMigrateFailed
 		span.RecordError(err)
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
+	l.activations.record(activationID, donorCC)
 
 	// Here we enter the steady state for the WebSocket tunnel and continue until there's some reason
 	// to tear the tunnel down. An explainer about teardown: teardown begins when we intercept a read
@@ -338,17 +340,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	wsContext, wsCancel := context.WithCancel(context.Background())
 	QUICLayerError := make(chan struct{}, 1)
 
-	// Counted at most once for this donor, from whichever of the two
-	// places below reaches it first. See proxysession.go for why those
-	// are the two moments that qualify.
-	tally := &proxySessionTally{donorCC: donorCC}
-	if migrated {
-		// A migrated connection brings its open streams with it, so
-		// AcceptStream below will not fire for them and this donor would
-		// go uncounted while carrying the consumer's traffic.
-		tally.count()
-	}
-
 	go func() {
 		for {
 			stream, err := conn.AcceptStream(wsContext)
@@ -357,13 +348,6 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 				QUICLayerError <- struct{}{}
 				close(QUICLayerError)
 				return
-			}
-			// Not every stream this loop accepts was carried by this
-			// donor: after a migration the replacement owns the path,
-			// while this loop stays live until wsContext is cancelled and
-			// can still win the accept race on the shared connection.
-			if l.connectionManager.currentDonor(consumerSessionID, donor) {
-				tally.count()
 			}
 			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
@@ -428,6 +412,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
+		activations:       newActivationSet(),
 	}
 
 	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.

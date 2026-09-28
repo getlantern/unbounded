@@ -27,7 +27,7 @@ import (
 // saved queries mean.
 
 // proxyProtocol is the value downstream reporting surfaces as this
-// traffic's protocol, on proxy.io and on proxy.sessions alike.
+// traffic's protocol, on proxy.io and on proxy.activations alike.
 // "unbounded" matches the service name and repo; change it only in
 // concert with whoever reads those reports.
 const proxyProtocol = "unbounded"

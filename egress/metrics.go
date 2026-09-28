@@ -212,9 +212,9 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
 
-	// proxy.io and proxy.sessions are synchronous — their measurements
-	// arrive from the packet and stream paths, via addProxyIO and
-	// recordProxySession, not via the callback — so neither may be added
+	// proxy.io and proxy.activations are synchronous — their measurements
+	// arrive from the packet and session paths, via addProxyIO and
+	// recordActivation, not via the callback — so neither may be added
 	// to the RegisterCallback list below. The list's rule ("every
 	// instrument the callback observes must be declared") applies to
 	// observables only; a synchronous counter in that list is an error.
@@ -224,13 +224,13 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	}
 	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
 
-	proxySessions, err := m.Int64Counter("proxy.sessions",
-		metric.WithUnit("session"),
-		metric.WithDescription("donor sessions that carried consumer traffic"))
+	proxyActivations, err := m.Int64Counter("proxy.activations",
+		metric.WithUnit("activation"),
+		metric.WithDescription("times proxy mode was turned on and proxied traffic"))
 	if err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
-	proxySessionCounter.Store(&proxySessionHandle{proxySessions})
+	proxyActivationCounter.Store(&proxyActivationHandle{proxyActivations})
 
 	if _, err = m.RegisterCallback(
 		observeMetrics,
@@ -294,7 +294,7 @@ func enableOTELMetrics(ctx context.Context) func(context.Context) error {
 }
 
 // counterTemporality maps synchronous counters — proxy.io and
-// proxy.sessions — to delta, and leaves every other kind cumulative so
+// proxy.activations — to delta, and leaves every other kind cumulative so
 // the Observable* instruments above keep the temporality their
 // dashboard queries were written against. Do not widen the delta case
 // without checking every saved query on the affected instruments.
