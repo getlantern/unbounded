@@ -40,8 +40,7 @@ import (
 // stream accept loop starts, so a networked implementation must bound
 // its own latency.
 type activationStore interface {
-	// first marks id as active now and reports whether it was not
-	// already active.
+	// first marks id as active now and reports whether it was not already active.
 	first(ctx context.Context, id string) (bool, error)
 }
 
@@ -54,15 +53,15 @@ func newActivations(store activationStore) *activations {
 	return &activations{store: store}
 }
 
-// record counts id as an activation for a donor in donorCC if it has
-// not been counted while active. A nil receiver, as in tests that
-// drive handleWebsocket without one, and an empty ID, from a widget
-// that does not send one, record nothing.
+// record counts id as an activation for a donor in countryCodeDonor
+// if it has not been counted while active. A nil receiver, as in tests
+// that drive handleWebsocket without one, and an empty ID, from a
+// widget that does not send one, record nothing.
 //
 // A store error skips the count. Undercounting during an outage is the
 // only failure mode that neither blocks a donor nor counts one
 // activation twice.
-func (a *activations) record(ctx context.Context, id, donorCC string) {
+func (a *activations) record(ctx context.Context, id, countryCodeDonor string) {
 	if a == nil || id == "" {
 		return
 	}
@@ -72,28 +71,15 @@ func (a *activations) record(ctx context.Context, id, donorCC string) {
 		return
 	}
 	if fresh {
-		recordActivation(donorCC)
+		recordActivation(countryCodeDonor)
 	}
 }
 
-// activationIdleTTL is how long the egress remembers an ID after its
-// last successful WebSocket. A widget left on keeps refreshing its
-// entry as consumers churn, so this only has to outlast a quiet
-// stretch with no consumers. Too short re-counts a widget left on
-// overnight; the cost of too long is only memory, bounded by
-// maxActivations. The indicator is quarterly, so a day is well inside
-// its resolution.
-const activationIdleTTL = 24 * time.Hour
-
-// maxActivations bounds the in-memory store, because IDs are
-// client-supplied. Each entry costs one successful QUIC handshake
-// through the egress, which bounds the insertion rate but not the
-// total. Far above any realistic number of widgets on at once.
-const maxActivations = 1 << 18
-
-// activationSweepInterval is how often an insert may pay for an
-// expiry sweep of the whole store.
-const activationSweepInterval = time.Minute
+const (
+	activationIdleTTL       = 24 * time.Hour // forget an ID idle this long
+	maxActivations          = 1 << 18        // IDs are client-supplied
+	activationSweepInterval = time.Minute    // between expiry sweeps
+)
 
 // memoryActivations is an activationStore local to one egress process.
 // A restart forgets every ID, and a second egress keeps its own.
@@ -144,19 +130,20 @@ type proxyActivationHandle struct{ c metric.Int64Counter }
 // measurements while nil, the contract addProxyIO follows.
 var proxyActivationCounter atomic.Pointer[proxyActivationHandle]
 
-// recordActivation increments proxy.activations for a donor in donorCC.
+// recordActivation increments proxy.activations for a donor in
+// countryCodeDonor.
 //
 // The spellings are load-bearing the same way proxyIOSetsFor's are:
 // downstream storage files these under columns named after the keys,
 // so a wrong one files the count under NULL instead of failing
 // anywhere visible.
-func recordActivation(donorCC string) {
+func recordActivation(countryCodeDonor string) {
 	h := proxyActivationCounter.Load()
 	if h == nil {
 		return
 	}
 	h.c.Add(context.Background(), 1, metric.WithAttributeSet(attribute.NewSet(
 		semconv.ProxyProtocolKey.String(proxyProtocol),
-		semconv.GeoCountryISOCodeKey.String(donorCC),
+		semconv.GeoCountryISOCodeKey.String(countryCodeDonor),
 	)))
 }
