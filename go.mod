@@ -11,7 +11,7 @@ require (
 	github.com/coder/websocket v1.8.12
 	github.com/elazarl/goproxy v1.7.2
 	github.com/getlantern/geo v0.0.0-20240108161311-50692a1b69a9
-	github.com/getlantern/semconv v0.0.0-20260911194252-22d64fe1dd0b
+	github.com/getlantern/semconv v0.0.0-20260928193748-dd4a95ca2554
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
 	github.com/pion/transport/v4 v4.0.1

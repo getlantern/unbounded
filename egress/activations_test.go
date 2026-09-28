@@ -3,6 +3,7 @@ package egress
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -76,12 +77,30 @@ func activationCount(t *testing.T, reader *sdkmetric.ManualReader, donorCC strin
 	return total
 }
 
-// testActivationSet returns a set whose clock the test advances by hand.
-func testActivationSet() (*activationSet, *time.Time) {
+// testActivations returns an in-memory store whose clock the test
+// advances by hand, and the wrapper that counts against it.
+func testActivations() (*activations, *memoryActivations, *time.Time) {
 	now := time.Unix(1_700_000_000, 0)
-	s := newActivationSet()
-	s.now = func() time.Time { return now }
-	return s, &now
+	m := newMemoryActivations()
+	m.now = func() time.Time { return now }
+	return newActivations(m), m, &now
+}
+
+// firstOK calls m.first, which never fails, and returns its answer.
+func firstOK(t *testing.T, m *memoryActivations, id string) bool {
+	t.Helper()
+	fresh, err := m.first(context.Background(), id)
+	if err != nil {
+		t.Fatalf("memory store failed: %v", err)
+	}
+	return fresh
+}
+
+// failingStore stands in for a shared store that is unreachable.
+type failingStore struct{}
+
+func (failingStore) first(context.Context, string) (bool, error) {
+	return false, errors.New("store unreachable")
 }
 
 // The attribute contract is what downstream storage and reporting key
@@ -119,28 +138,28 @@ func TestRecordActivation_NoCounterInstalledIsANoOp(t *testing.T) {
 	recordActivation("IR")
 }
 
-func TestActivationSet_CountsOncePerID(t *testing.T) {
+func TestActivations_CountsOncePerID(t *testing.T) {
 	reader := installTestActivationCounter(t)
-	s, _ := testActivationSet()
+	s, _, _ := testActivations()
 	a, b := common.NewActivationID(), common.NewActivationID()
 
 	for range 5 {
-		s.record(a, "SE")
+		s.record(context.Background(), a, "SE")
 	}
-	s.record(b, "SE")
+	s.record(context.Background(), b, "SE")
 
 	if got := activationCount(t, reader, "SE"); got != 2 {
 		t.Fatalf("count = %d for two IDs seen six times, want 2", got)
 	}
 }
 
-func TestActivationSet_IgnoresMissingIDAndNilSet(t *testing.T) {
+func TestActivations_IgnoresMissingIDAndNilReceiver(t *testing.T) {
 	reader := installTestActivationCounter(t)
-	s, _ := testActivationSet()
+	s, _, _ := testActivations()
 
-	s.record("", "SE")
-	var none *activationSet
-	none.record(common.NewActivationID(), "SE")
+	s.record(context.Background(), "", "SE")
+	var none *activations
+	none.record(context.Background(), common.NewActivationID(), "SE")
 
 	if got := activationCount(t, reader, "SE"); got != 0 {
 		t.Fatalf("count = %d, want 0", got)
@@ -150,59 +169,71 @@ func TestActivationSet_IgnoresMissingIDAndNilSet(t *testing.T) {
 // Each sighting refreshes the entry, so a widget that stays on and
 // keeps opening WebSockets is never re-counted, however long it runs.
 // Only an ID that goes quiet for longer than the TTL counts again.
-func TestActivationSet_IdleExpiry(t *testing.T) {
+// A store that cannot answer must cost a count, never a donor's
+// connection and never a second count for the same activation.
+func TestActivations_StoreErrorSkipsCount(t *testing.T) {
 	reader := installTestActivationCounter(t)
-	s, now := testActivationSet()
+
+	newActivations(failingStore{}).record(context.Background(), common.NewActivationID(), "SE")
+
+	if got := len(activationDatapoints(t, reader)); got != 0 {
+		t.Fatalf("%d datapoints while the store failed, want 0", got)
+	}
+}
+
+func TestMemoryActivations_IdleExpiry(t *testing.T) {
+	reader := installTestActivationCounter(t)
+	s, _, now := testActivations()
 	id := common.NewActivationID()
 
-	s.record(id, "SE")
+	s.record(context.Background(), id, "SE")
 	for range 10 {
 		*now = now.Add(activationIdleTTL / 2)
-		s.record(id, "SE")
+		s.record(context.Background(), id, "SE")
 	}
 	if got := activationCount(t, reader, "SE"); got != 1 {
 		t.Fatalf("count = %d for an ID active across five TTLs, want 1", got)
 	}
 
 	*now = now.Add(activationIdleTTL + time.Second)
-	s.record(id, "SE")
+	s.record(context.Background(), id, "SE")
 	if got := activationCount(t, reader, "SE"); got != 2 {
 		t.Fatalf("count = %d after the ID was idle past the TTL, want 2", got)
 	}
 }
 
-func TestActivationSet_SweepsExpiredEntries(t *testing.T) {
-	s, now := testActivationSet()
+func TestMemoryActivations_SweepsExpiredEntries(t *testing.T) {
+	_, m, now := testActivations()
 	for range 100 {
-		s.first(common.NewActivationID())
+		firstOK(t, m, common.NewActivationID())
 	}
 
 	*now = now.Add(activationIdleTTL + activationSweepInterval)
-	s.first(common.NewActivationID())
+	firstOK(t, m, common.NewActivationID())
 
-	if n := len(s.lastSeen); n != 1 {
+	if n := len(m.lastSeen); n != 1 {
 		t.Fatalf("%d entries after the sweep, want 1", n)
 	}
 }
 
 // A flood of IDs must not evict real ones, or it could re-count every
-// live widget. A full set declines new IDs and keeps the old ones.
-func TestActivationSet_FullSetDeclinesNewIDs(t *testing.T) {
-	s, _ := testActivationSet()
+// live widget. A full store declines new IDs and keeps the old ones.
+func TestMemoryActivations_FullStoreDeclinesNewIDs(t *testing.T) {
+	_, m, _ := testActivations()
 	live := common.NewActivationID()
-	s.first(live)
-	for len(s.lastSeen) < maxActivations {
-		s.lastSeen[common.NewActivationID()] = s.now()
+	firstOK(t, m, live)
+	for len(m.lastSeen) < maxActivations {
+		m.lastSeen[common.NewActivationID()] = m.now()
 	}
 
-	if s.first(common.NewActivationID()) {
-		t.Error("a new ID counted into a full set")
+	if firstOK(t, m, common.NewActivationID()) {
+		t.Error("a new ID counted into a full store")
 	}
-	if s.first(live) {
-		t.Error("an ID already in the full set counted again")
+	if firstOK(t, m, live) {
+		t.Error("an ID already in the full store counted again")
 	}
-	if n := len(s.lastSeen); n != maxActivations {
-		t.Errorf("set grew to %d past maxActivations", n)
+	if n := len(m.lastSeen); n != maxActivations {
+		t.Errorf("store grew to %d past maxActivations", n)
 	}
 }
 
@@ -283,7 +314,7 @@ func TestHandleWebsocket_CountsOneActivationAcrossWebSockets(t *testing.T) {
 	if got := activationCount(t, reader, "SE"); got != 1 {
 		t.Errorf("count = %d for one activation across three WebSockets, want 1", got)
 	}
-	if got := l.activations.first(id); got {
+	if got, _ := l.activations.store.first(context.Background(), id); got {
 		t.Error("the activation was not remembered")
 	}
 }
@@ -398,7 +429,7 @@ func startTestEgress(t *testing.T) (proxyListener, *httptest.Server, func()) {
 		connectionManager: cm,
 		connections:       make(chan net.Conn, 8),
 		addr:              common.DebugAddr("activation-test-egress"),
-		activations:       newActivationSet(),
+		activations:       newActivations(newMemoryActivations()),
 	}
 	srv := httptest.NewServer(http.HandlerFunc(l.handleWebsocket))
 	t.Cleanup(srv.Close)

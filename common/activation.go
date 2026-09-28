@@ -83,7 +83,7 @@ func ParseSubprotocolsRequestWithActivation(s []string) (csid, version, country,
 // NewActivationID produces, and "" otherwise.
 //
 // The ID arrives in a client-controlled subprotocol element and becomes
-// a key in the egress's in-memory seen-set, so it is bounded the same
+// a key in the egress's activation store, so it is bounded the same
 // way normalizeCountry bounds the country: rejected rather than
 // truncated, and never passed through verbatim.
 func normalizeActivationID(id string) string {

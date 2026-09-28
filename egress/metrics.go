@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/getlantern/semconv"
 	"github.com/getlantern/telemetry"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -218,13 +219,13 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	// to the RegisterCallback list below. The list's rule ("every
 	// instrument the callback observes must be declared") applies to
 	// observables only; a synchronous counter in that list is an error.
-	proxyIO, err := m.Int64Counter("proxy.io", metric.WithUnit("bytes"))
+	proxyIO, err := m.Int64Counter(semconv.ProxyMetricIO, metric.WithUnit("bytes"))
 	if err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
 	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
 
-	proxyActivations, err := m.Int64Counter("proxy.activations",
+	proxyActivations, err := m.Int64Counter(semconv.ProxyMetricActivations,
 		metric.WithUnit("activation"),
 		metric.WithDescription("times proxy mode was turned on and proxied traffic"))
 	if err != nil {

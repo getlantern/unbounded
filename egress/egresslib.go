@@ -70,7 +70,7 @@ type proxyListener struct {
 	connections  chan net.Conn
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
-	activations  *activationSet
+	activations  *activations
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -321,7 +321,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
-	l.activations.record(activationID, donorCC)
+	l.activations.record(r.Context(), activationID, donorCC)
 
 	// Here we enter the steady state for the WebSocket tunnel and continue until there's some reason
 	// to tear the tunnel down. An explainer about teardown: teardown begins when we intercept a read
@@ -412,7 +412,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
-		activations:       newActivationSet(),
+		activations:       newActivations(newMemoryActivations()),
 	}
 
 	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.
