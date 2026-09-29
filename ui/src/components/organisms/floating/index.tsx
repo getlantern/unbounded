@@ -39,15 +39,13 @@ const Floating = () => {
 				<Body
 					mobile={width < BREAKPOINT}
 				>
+					{ settings.branding && <LogoLink /> }
 					<Header
 						style={{
 							paddingBottom: !expanded ? 8 : 0
 						}}
 					>
-						<div
-							style={{height: 48}} // this is a hack to create real estate for the logo which is positioned absolute because it overlaps the header right
-						/>
-						{ settings.branding && <LogoLink style={{position: 'absolute'}} /> }
+						<div />
 						<HeaderRight>
 							{
 								settings.collapse && (

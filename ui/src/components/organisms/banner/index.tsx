@@ -36,10 +36,11 @@ const Banner = () => {
 					padding: width > BREAKPOINT ? '8px 32px' : '8px 16px'
 				}}
 			>
+				{ settings.branding && <LogoLink /> }
 				<Header
 					collapse={collapse}
 				>
-					{ settings.branding ? <LogoLink /> : <div /> }
+					<div />
 					{
 						!expanded && width > 650 && (
 							<Item

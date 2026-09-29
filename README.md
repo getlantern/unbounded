@@ -18,13 +18,13 @@
 
 ### :question: What is Unbounded?
 Unbounded is a next-gen technology stack for circumventing internet censorship using browser-based 
-P2P proxies. It organizes an ephemeral swarm of short-lived residential IP addresses, provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
+P2P proxies. The volunteer product built on it (the website, the browser extension, the embeddable widget and the WordPress plugin) ships as **Lantern Action Mode**; "Unbounded" is the name of the engine and this repo. It organizes an ephemeral swarm of short-lived residential IP addresses, provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
 
 **Here are just a few of the things you can do:**
 
 * Turn your friends into a private swarm to unblock a loved one in a censored region ([tutorial](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm)) :fire:
 * Add a P2P transport to your circumvention app (tutorial coming soon)
-* Volunteer on the Lantern network with just one click ([link](https://unbounded.lantern.io))
+* Volunteer on the Lantern network with just one click ([link](https://actionmode.lantern.io))
 * Add the Lantern volunteer widget to your website (tutorial coming soon)
 * Deploy a permanent volunteer node on a Raspberry Pi (tutorial coming soon)
 
@@ -130,7 +130,7 @@ created. You must refresh the page to update the visualization.
 
 The UI is bootstrapped with [Create React App](https://github.com/facebook/create-react-app). Then "re-wired" to build one single js bundle entry using [rewire](https://www.npmjs.com/package/rewire). 
 The React app will bind to a custom `<browsers-unbounded>` DOM el and render based on settings passed to the [dataset](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/dataset). 
-In development, this html can be found in `ui/public/index.html`. In production, the html is supplied by the "embedder" via https://unbounded.lantern.io/embed.
+In development, this html can be found in `ui/public/index.html`. In production, the html is supplied by the "embedder" via https://actionmode.lantern.io/embed.
 
 Example production embed:
 
@@ -177,7 +177,7 @@ Links:
 
 [Github pages sandbox](https://embed.lantern.io)
 
-[Unbounded website](https://unbounded.lantern.io)
+[Action Mode website](https://actionmode.lantern.io)
 
 #### UI quickstart for devs
 
@@ -191,7 +191,7 @@ Development:
 Production: **you don't deploy by hand.** Merging to `main` publishes both `widget.wasm`
 and the page bundle to the `gh-pages` branch (and from there to embed.lantern.io) via
 `.github/workflows/build-widget-wasm.yml`, gated on the js/wasm build and the Go unit
-tests. That covers unbounded.lantern.io and every third-party embedder at once, since
+tests. That covers actionmode.lantern.io and every third-party embedder at once, since
 they all load `https://embed.lantern.io/static/js/main.js` by absolute URL.
 
 > [!WARNING]
@@ -285,7 +285,7 @@ To re-query the translations from the CMS, run `yarn translate`. This will fetch
 ## Site leaderboard
 
 Every site that embeds the widget is listed automatically on
-[unbounded.lantern.io/leaderboard](https://unbounded.lantern.io/leaderboard).
+[actionmode.lantern.io/leaderboard](https://actionmode.lantern.io/leaderboard).
 There is nothing to configure and no account to create.
 
 The widget reports two things to Plausible through the storage iframe: a `load`
@@ -300,5 +300,5 @@ Sites are removed, renamed or given a logo on the website side, in
 `apps/frontend/data/leaderboardSites.json` of
 [getlantern/lantern-website](https://github.com/getlantern/lantern-website).
 `listed: false` removes a site regardless of traffic. A site that must not be
-publicly associated with Unbounded can ask for that by opening an issue on
+publicly associated with Action Mode can ask for that by opening an issue on
 [getlantern/unbounded](https://github.com/getlantern/unbounded/issues).
