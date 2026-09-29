@@ -13,7 +13,7 @@
  * Text Domain:       unbounded-by-lantern
  */
 
-// The plugin is a thin client for the Unbounded network: it prints the widget
+// The plugin is a thin client for the Action Mode network: it prints the widget
 // element and loads the widget bundle, and everything else -- peer discovery,
 // transport, the WebAssembly proxy -- happens in the service. Nothing here
 // starts proxying; the widget does that only when a visitor flips its switch.
