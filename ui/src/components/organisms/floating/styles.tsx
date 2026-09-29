@@ -9,17 +9,21 @@ export const Container = styled.div`
 `
 
 export const Header = styled.div`
+  position: relative;
   display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
+  justify-content: center;
+  align-items: center;
   width: 100%;
-	a {
-		outline: none;
-		cursor: pointer;
-	}
+  min-height: 32px;
+  padding: 0 56px;
+  box-sizing: border-box;
 `
 
 export const HeaderRight = styled.div`
+	position: absolute;
+	right: 0;
+	top: 50%;
+	transform: translateY(-50%);
 	display: flex;
   align-items: center;
 	z-index: 1;
