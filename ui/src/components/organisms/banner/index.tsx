@@ -35,11 +35,10 @@ const Banner = () => {
 					padding: width > BREAKPOINT ? '8px 32px' : '8px 16px'
 				}}
 			>
-				{ settings.branding && <LogoLink /> }
 				<Header
 					collapse={collapse}
 				>
-					<div />
+					{ settings.branding ? <LogoLink align={'left'} /> : <div /> }
 					{
 						!expanded && width > 650 && (
 							<Item
