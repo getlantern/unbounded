@@ -38,13 +38,12 @@ const Floating = () => {
 				<Body
 					mobile={width < BREAKPOINT}
 				>
-					{ settings.branding && <LogoLink /> }
 					<Header
 						style={{
 							paddingBottom: !expanded ? 8 : 0
 						}}
 					>
-						<div />
+						{ settings.branding && <LogoLink stackBelow={400} /> }
 						<HeaderRight>
 							{
 								settings.collapse && (

@@ -6,14 +6,15 @@ import {Wrapper} from './styles'
 
 interface Props {
 	align?: 'left' | 'center'
+	stackBelow?: number
 }
 
-const LogoLink = ({align = 'center'}: Props) => {
+const LogoLink = ({align = 'center', stackBelow = LOGO_STACK_BREAKPOINT}: Props) => {
 	const {width} = useContext(AppContext)
 	return (
 		<Wrapper $align={align}>
 			<a href={'https://actionmode.lantern.io'} target={'_blank'} rel={'noopener noreferrer'} aria-label={'Lantern Action Mode'}>
-				{width < LOGO_STACK_BREAKPOINT ? <LogoStacked /> : <LogoHorizontal />}
+				{width < stackBelow ? <LogoStacked /> : <LogoHorizontal />}
 			</a>
 		</Wrapper>
 	)
