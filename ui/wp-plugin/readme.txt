@@ -1,10 +1,10 @@
-=== Unbounded by Lantern ===
+=== Lantern Action Mode ===
 Contributors: getlantern
 Tags: censorship, privacy, proxy, volunteer, webrtc
 Requires at least: 5.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.2.1
+Stable tag: 1.3.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -13,7 +13,7 @@ Let visitors volunteer a slice of their connection to help people in censored re
 == Description ==
 
 Roughly a third of the world's internet users live behind some form of national
-censorship. Unbounded lets the people who visit your site help, without
+censorship. Action Mode lets the people who visit your site help, without
 installing anything: the widget adds a switch to your page, and a visitor who
 turns it on lends a small amount of their bandwidth to relay traffic for someone
 whose government blocks the open internet.
@@ -35,13 +35,13 @@ editor to turn it on for a given page.
 
 = Open source =
 
-Unbounded is developed in the open at
+Action Mode is developed in the open at
 [github.com/getlantern/unbounded](https://github.com/getlantern/unbounded).
 The plugin source lives in `ui/wp-plugin`, and the widget it loads is in `ui/`.
 
 == External services ==
 
-This plugin is a client for the Unbounded network, run by Lantern. The widget
+This plugin is a client for Lantern's Action Mode network. The widget
 cannot work locally: relaying traffic for someone in another country requires
 peers, signaling, and exit infrastructure, all of which live in the service.
 
@@ -59,7 +59,7 @@ their browser contacts:
   The load event carries the hostname of the page the widget is embedded on. While
   the switch is on, one further event is sent each time the widget starts
   helping a new person, tagged with the same hostname. Every site that embeds
-  the widget is listed automatically on unbounded.lantern.io/leaderboard and
+  the widget is listed automatically on actionmode.lantern.io/leaderboard and
   ranked by these counts. A site that should not appear there can ask to be
   removed at github.com/getlantern/unbounded/issues.
   Plausible's own script adds its usual page metadata, including the frame's
@@ -91,7 +91,7 @@ crash-recovery marker, and -- inside the embed.lantern.io frame, so it follows
 the visitor across sites that run the widget -- running totals of people
 helped. None of it identifies the visitor.
 
-Unbounded does not track visitors, set advertising identifiers, or collect
+Action Mode does not track visitors, set advertising identifiers, or collect
 personal data. Relayed traffic is end-to-end encrypted between the person being
 helped and their destination; a volunteering browser cannot read it.
 
@@ -105,10 +105,10 @@ add it to your own privacy policy if you have one.
 == Installation ==
 
 1. Install and activate the plugin.
-2. Open **Unbounded** in the admin sidebar and pick a layout, theme, and location.
+2. Open **Action Mode** in the admin sidebar and pick a layout, theme, and location.
 3. Decide where the widget appears. Either tick **Display on Homepage** or
    **Display on Posts** on that settings screen, or enable it for individual
-   pages: edit a page and tick **Enable Unbounded on this page** in the editor
+   pages: edit a page and tick **Enable Action Mode on this page** in the editor
    sidebar.
 4. View the page. The widget renders with its switch off, waiting for a visitor
    to opt in.
@@ -141,11 +141,14 @@ out of step with the network, so the hosted URL is the default.
 
 = Why is the HTML element called "browsers-unbounded"? =
 
-The product used to be called Browsers Unbounded. The element name is the
-widget's public API and renaming it would break every existing embed, so it
-stayed.
+The product was called Browsers Unbounded, then Unbounded, and is now Lantern
+Action Mode. The element name is the widget's public API and renaming it would
+break every existing embed, so it stayed.
 
 == Changelog ==
+
+= 1.3.0 =
+* Renamed from Unbounded to Lantern Action Mode. Settings, saved options and the widget element are unchanged.
 
 = 1.2.1 =
 * Added a plugin icon for the directory listing.

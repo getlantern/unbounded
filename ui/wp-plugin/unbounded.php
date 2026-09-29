@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name:       Unbounded by Lantern
- * Plugin URI:        https://unbounded.lantern.io
+ * Plugin Name:       Lantern Action Mode
+ * Plugin URI:        https://actionmode.lantern.io
  * Description:       Let visitors volunteer a slice of their connection to help people reach the open internet. Enable the widget per page, on all posts, or on the homepage.
- * Version:           1.2.1
+ * Version:           1.3.0
  * Requires at least: 5.0
  * Requires PHP:      7.4
  * Author:            Lantern
@@ -13,7 +13,7 @@
  * Text Domain:       unbounded-by-lantern
  */
 
-// The plugin is a thin client for the Unbounded network: it prints the widget
+// The plugin is a thin client for the Action Mode network: it prints the widget
 // element and loads the widget bundle, and everything else -- peer discovery,
 // transport, the WebAssembly proxy -- happens in the service. Nothing here
 // starts proxying; the widget does that only when a visitor flips its switch.
@@ -81,8 +81,8 @@ add_action('save_post', 'browsers_unbounded_save_meta_box_data');
  // menu item for settings page
 function browsers_unbounded_plugin_menu() {
     add_menu_page(
-        __('Unbounded Settings', 'unbounded-by-lantern'),
-        __('Unbounded', 'unbounded-by-lantern'),
+        __('Action Mode Settings', 'unbounded-by-lantern'),
+        __('Action Mode', 'unbounded-by-lantern'),
         'manage_options',
         'browsers-unbounded-settings',
         'browsers_unbounded_plugin_settings_page'
@@ -150,7 +150,7 @@ function browsers_unbounded_plugin_settings_page() {
     }
     ?>
     <div class="wrap">
-        <h2><?php esc_html_e('Unbounded Settings', 'unbounded-by-lantern'); ?></h2>
+        <h2><?php esc_html_e('Action Mode Settings', 'unbounded-by-lantern'); ?></h2>
         <form method="post" action="options.php">
             <?php settings_fields('browsers_unbounded_options_group'); ?>
             <?php do_settings_sections('browsers-unbounded-settings'); ?>
@@ -170,7 +170,7 @@ function browsers_unbounded_layout_callback() {
         <option value='floating' <?php selected($layout, 'floating'); ?>><?php esc_html_e('Floating', 'unbounded-by-lantern'); ?></option>
         <option value='simple' <?php selected($layout, 'simple'); ?>><?php esc_html_e('Simple', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select Unbounded layout.', 'unbounded-by-lantern'); ?></p>
+    <p class="description"><?php esc_html_e('Select Action Mode layout.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -183,7 +183,7 @@ function browsers_unbounded_theme_callback() {
         <option value='dark' <?php selected($theme, 'dark'); ?>><?php esc_html_e('Dark', 'unbounded-by-lantern'); ?></option>
         <option value='auto' <?php selected($theme, 'auto'); ?>><?php esc_html_e('Auto', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select Unbounded theme.', 'unbounded-by-lantern'); ?></p>
+    <p class="description"><?php esc_html_e('Select Action Mode theme.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -194,7 +194,7 @@ function browsers_unbounded_location_callback() {
         <option value='header' <?php selected($location, 'header'); ?>><?php esc_html_e('Header', 'unbounded-by-lantern'); ?></option>
         <option value='footer' <?php selected($location, 'footer'); ?>><?php esc_html_e('Footer', 'unbounded-by-lantern'); ?></option>
     </select>
-    <p class="description"><?php esc_html_e('Select where to add Unbounded.', 'unbounded-by-lantern'); ?></p>
+    <p class="description"><?php esc_html_e('Select where to add Action Mode.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 
@@ -217,7 +217,7 @@ function browsers_unbounded_posts_callback() {
 
 // meta box to the page editor to enable the unbounded widget
 function browsers_unbounded_add_meta_box() {
-    add_meta_box('browsers-unbounded-enable', __('Enable Unbounded', 'unbounded-by-lantern'), 'browsers_unbounded_meta_box_callback', 'page', 'side');
+    add_meta_box('browsers-unbounded-enable', __('Enable Action Mode', 'unbounded-by-lantern'), 'browsers_unbounded_meta_box_callback', 'page', 'side');
 }
 
 // renders meta box in the page editor
@@ -227,7 +227,7 @@ function browsers_unbounded_meta_box_callback($post) {
     ?>
     <label for="browsers_unbounded_field">
         <input type="checkbox" id="browsers_unbounded_field" name="browsers_unbounded_field" value="1" <?php checked($value, 1); ?> />
-        <?php esc_html_e('Enable Unbounded on this page', 'unbounded-by-lantern'); ?>
+        <?php esc_html_e('Enable Action Mode on this page', 'unbounded-by-lantern'); ?>
     </label>
     <?php
 }
@@ -306,7 +306,7 @@ function browsers_unbounded_add_element() {
 
     // The tag name is the widget's public API -- the bundle only looks for
     // "browsers-unbounded" (or the legacy "lantern-network") -- so it stays put
-    // even though the product is now called Unbounded.
+    // even though the product is now called Lantern Action Mode.
     printf(
         "<browsers-unbounded data-layout='%s' data-theme='%s' style='width: 100%%;'></browsers-unbounded>",
         esc_attr($options['layout']),

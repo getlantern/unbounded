@@ -1,6 +1,6 @@
-# Unbounded WordPress Plugin
+# Lantern Action Mode WordPress Plugin
 
-The WordPress front end for the Unbounded widget. It prints the widget element,
+The WordPress front end for the Action Mode widget. It prints the widget element,
 loads the widget bundle, and adds a settings screen and a per-page toggle.
 Everything else — peer discovery, transport, the WebAssembly proxy — happens in
 the service.
@@ -25,7 +25,7 @@ Then:
 
 - Activate at `http://localhost:8000/wp-admin/plugins.php`
 - Configure at `http://localhost:8000/wp-admin/admin.php?page=browsers-unbounded-settings`
-- Tick **Display on Homepage**, or edit a page and tick **Enable Unbounded on
+- Tick **Display on Homepage**, or edit a page and tick **Enable Action Mode on
   this page** in the editor sidebar
 - View the page; the widget renders with its switch off
 
@@ -51,13 +51,16 @@ bash demo-site/build.sh
 Produces `demo-site/dist/unbounded-by-lantern.zip` alongside the demo site,
 with `unbounded-by-lantern/` as the archive's top-level directory.
 
-The slug is generated from `Plugin Name:` in `unbounded.php`, not from the
-archive — wordpress.org derives it from that header at submission ("Unbounded by
-Lantern" → `unbounded-by-lantern`) and it is permanent once approved. Keep the
-directory name in step with it regardless: that name is what the update API
-matches against installed plugin folders. The slug is also the required text
-domain, so renaming the plugin means renaming the domain in every translated
-string.
+The slug and the display name are different things. The slug was derived by
+wordpress.org from the `Plugin Name:` header at first submission ("Unbounded by
+Lantern" → `unbounded-by-lantern`) and is permanent once approved. The display
+name (`Plugin Name:` and the `readme.txt` title) can change at any time without
+touching the slug, which is how the listing became "Lantern Action Mode". Keep
+the directory name in step with the slug regardless: that name is what the
+update API matches against installed plugin folders. The slug is also the
+required text domain, so the text domain stays `unbounded-by-lantern` whatever
+the display name says; only a plugin that has not yet been approved can still
+pick a different one.
 
 `build.sh` fails if `unbounded.php`'s `Version` and `readme.txt`'s `Stable tag`
 disagree, since wordpress.org serves whatever `Stable tag` points at.
@@ -73,7 +76,9 @@ name is the widget bundle's public API — `ui/src/index.tsx` matches only
 `browsers-unbounded` or the legacy `lantern-network` — so renaming it would
 render nothing. The prefixes stayed with it for consistency.
 
-The directory listing is "Unbounded by Lantern", not plain "Unbounded".
+The directory listing is now "Lantern Action Mode"; it was submitted as
+"Unbounded by Lantern", which fixed the slug. That name was chosen over plain
+"Unbounded" for the same reason the new one carries Lantern:
 Guideline 17 wants a distinctive name carrying the owning brand, and bare
 "Unbounded" sits close to live software-sector marks (UNBOUNDED SOLUTIONS, US
 reg. 5563892; UNBOUNDED AI) and to NLnet Labs' Unbound resolver. Qualifying it

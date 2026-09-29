@@ -1,4 +1,4 @@
-# Unbounded WordPress plugin — demo site
+# Lantern Action Mode WordPress plugin — demo site
 
 A one-click live demo of the plugin. No server runs WordPress: the landing page
 links to [WordPress Playground](https://playground.wordpress.net), which boots
