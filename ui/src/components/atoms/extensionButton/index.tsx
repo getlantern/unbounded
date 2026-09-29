@@ -52,7 +52,7 @@ const ExtensionButton = ({isSmall}: Props) => {
 					lineHeight: '24px',
 				}}
 			>
-				{isSmall ? `${t('installCtaBtnSm', {browser: isFirefox() ? 'Firefox' : 'Chrome'})}` : `${t('installCtaBtnLg', {browser: isFirefox() ? 'Firefox' : 'Chrome'})}`}
+				{t('installCtaBtnSm', {browser: isFirefox() ? 'Firefox' : 'Chrome'})}
 			</Text>
 		</StyledLink>
 	)

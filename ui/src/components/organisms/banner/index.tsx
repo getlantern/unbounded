@@ -38,7 +38,7 @@ const Banner = () => {
 				<Header
 					collapse={collapse}
 				>
-					{ settings.branding ? <LogoLink /> : <div /> }
+					{ settings.branding ? <LogoLink align={'left'} /> : <div /> }
 					{
 						!expanded && width > 650 && (
 							<Item

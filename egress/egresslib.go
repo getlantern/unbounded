@@ -145,7 +145,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		if reason == refusedLegacyTeamClient {
 			w.WriteHeader(http.StatusUpgradeRequired)
 			w.Write([]byte("426 upgrade required: this client predates the current " +
-				"handshake and cannot be served; please update unbounded\n"))
+				"handshake and cannot be served; please update Action Mode\n"))
 		}
 
 		recordRefusal(reason)

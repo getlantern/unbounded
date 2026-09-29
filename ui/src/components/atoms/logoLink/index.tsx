@@ -1,10 +1,21 @@
-import {LogoLeft} from '../icons'
+import {useContext} from 'react'
+import {AppContext} from '../../../context'
+import {LOGO_STACK_BREAKPOINT} from '../../../constants'
+import {LogoHorizontal, LogoStacked} from '../icons'
+import {Wrapper} from './styles'
 
-const LogoLink = ({style = {}}) => {
+interface Props {
+	align?: 'left' | 'center'
+}
+
+const LogoLink = ({align = 'center'}: Props) => {
+	const {width} = useContext(AppContext)
 	return (
-		<a style={style} href={'https://unbounded.lantern.io'} target={'_blank'} rel={'noopener noreferrer'}>
-			<LogoLeft />
-		</a>
+		<Wrapper $align={align}>
+			<a href={'https://actionmode.lantern.io'} target={'_blank'} rel={'noopener noreferrer'} aria-label={'Lantern Action Mode'}>
+				{width < LOGO_STACK_BREAKPOINT ? <LogoStacked /> : <LogoHorizontal />}
+			</a>
+		</Wrapper>
 	)
 }
 
