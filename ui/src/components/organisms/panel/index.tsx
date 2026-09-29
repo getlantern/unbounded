@@ -15,7 +15,6 @@ import {useLatch} from '../../../hooks/useLatch'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import ExtensionCta from '../../molecules/extensionCta'
-import Love from '../../molecules/love'
 
 const Panel = () => {
 	const {width, settings} = useContext(AppContext)
@@ -67,9 +66,6 @@ const Panel = () => {
 								</CtaWrapper>
 							)
 						}
-						<div style={{marginTop: 16}}>
-							<Love/>
-						</div>
 						{
 							settings.collapse && settings.globe && (
 								<ExpandWrapper

@@ -16,7 +16,6 @@ import About from '../../molecules/about'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import ExtensionCta from '../../molecules/extensionCta'
-import Love from '../../molecules/love'
 
 const Floating = () => {
 	const {width, settings} = useContext(AppContext)
@@ -112,9 +111,6 @@ const Floating = () => {
 										</CtaWrapper>
 									)
 								}
-								<div style={{marginTop: 16}}>
-									<Love/>
-								</div>
 							</Col>
 						)
 					}

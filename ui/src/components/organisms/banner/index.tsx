@@ -16,7 +16,6 @@ import ExpandCollapse from '../../atoms/expandCollapse'
 import LogoLink from '../../atoms/logoLink'
 import Title from '../../molecules/title'
 import ExtensionCta from '../../molecules/extensionCta'
-import Love from '../../molecules/love'
 // import Tutorial from '../../atoms/tutorial' // removing this at request of nelson
 
 
@@ -145,9 +144,6 @@ const Banner = () => {
 										<ExtensionCta/>
 									)
 								}
-								<div style={{marginTop: 16}}>
-									<Love/>
-								</div>
 								<div
 									style={{width: '100%', height: !title && width > BREAKPOINT ? 80 : 24}}
 								/>
