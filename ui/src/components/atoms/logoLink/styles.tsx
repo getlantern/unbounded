@@ -1,4 +1,5 @@
 import styled from 'styled-components'
+import {COLORS} from '../../../constants'
 
 export const Wrapper = styled.div`
 	display: flex;
@@ -6,7 +7,14 @@ export const Wrapper = styled.div`
 	width: ${({$align}: {$align: 'left' | 'center'}) => $align === 'left' ? 'auto' : '100%'};
 	a {
 		display: flex;
-		outline: none;
 		cursor: pointer;
+		border-radius: 4px;
+	}
+	a:focus:not(:focus-visible) {
+		outline: none;
+	}
+	a:focus-visible {
+		outline: 2px solid ${COLORS.altBrand};
+		outline-offset: 4px;
 	}
 `
