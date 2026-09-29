@@ -51,13 +51,16 @@ bash demo-site/build.sh
 Produces `demo-site/dist/unbounded-by-lantern.zip` alongside the demo site,
 with `unbounded-by-lantern/` as the archive's top-level directory.
 
-The slug is generated from `Plugin Name:` in `unbounded.php`, not from the
-archive — wordpress.org derives it from that header at submission ("Unbounded by
-Lantern" → `unbounded-by-lantern`) and it is permanent once approved. Keep the
-directory name in step with it regardless: that name is what the update API
-matches against installed plugin folders. The slug is also the required text
-domain, so renaming the plugin means renaming the domain in every translated
-string.
+The slug and the display name are different things. The slug was derived by
+wordpress.org from the `Plugin Name:` header at first submission ("Unbounded by
+Lantern" → `unbounded-by-lantern`) and is permanent once approved. The display
+name (`Plugin Name:` and the `readme.txt` title) can change at any time without
+touching the slug, which is how the listing became "Lantern Action Mode". Keep
+the directory name in step with the slug regardless: that name is what the
+update API matches against installed plugin folders. The slug is also the
+required text domain, so the text domain stays `unbounded-by-lantern` whatever
+the display name says; only a plugin that has not yet been approved can still
+pick a different one.
 
 `build.sh` fails if `unbounded.php`'s `Version` and `readme.txt`'s `Stable tag`
 disagree, since wordpress.org serves whatever `Stable tag` points at.
