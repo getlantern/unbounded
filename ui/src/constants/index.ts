@@ -1,4 +1,5 @@
 export const BREAKPOINT = 800
+export const LOGO_STACK_BREAKPOINT = 480
 export const MAX_WIDTH = 1000
 export const COLORS = {
 	black: '#000000',
