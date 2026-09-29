@@ -15,7 +15,7 @@ export const Header = styled.div`
   align-items: center;
   width: 100%;
   min-height: 32px;
-  padding: 0 56px;
+  padding: 0 ${({$menu}: {$menu: boolean}) => $menu ? 56 : 32}px;
   box-sizing: border-box;
 `
 
