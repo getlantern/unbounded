@@ -15,10 +15,10 @@ import (
 )
 
 type connectionRecord struct {
-	mx           sync.Mutex
-	connection   *quic.Conn
-	lastMigrated time.Time
-	lastPath     *quic.Path
+	mx         sync.Mutex
+	connection *quic.Conn
+	transport  *quic.Transport
+	lastPath   *quic.Path
 }
 
 // migrationWindow: when migrating from WebSocket A to B, how long should we wait after WebSocket
@@ -38,40 +38,75 @@ type connectionManager struct {
 	probeTimeout    time.Duration
 }
 
-func (manager *connectionManager) deleteIfNotMigratedSince(csid string, t time.Time) {
-	manager.mx.Lock()
-
-	record, ok := manager.connections[csid]
-
-	if !ok {
+// lockRecord serializes one session without holding the map lock while waiting.
+// Recheck membership after taking the record lock: expiry or a failed dial may
+// have removed this record while we waited.
+func (manager *connectionManager) lockRecord(csid string) *connectionRecord {
+	for {
+		manager.mx.Lock()
+		record := manager.connections[csid]
+		if record == nil {
+			record = &connectionRecord{}
+			manager.connections[csid] = record
+		}
 		manager.mx.Unlock()
+		record.mx.Lock()
+		manager.mx.Lock()
+		current := manager.connections[csid] == record
+		manager.mx.Unlock()
+		if current {
+			return record
+		}
+		record.mx.Unlock()
+	}
+}
+
+// deleteIfCurrent ignores cleanup from superseded connections or donor transports.
+func (manager *connectionManager) deleteIfCurrent(csid string, conn *quic.Conn, donor *quic.Transport) {
+	if donor == nil {
 		return
 	}
+	manager.deleteConnection(csid, conn, donor)
+}
 
+// deleteOnQUICFailure removes only this connection, regardless of its current donor.
+func (manager *connectionManager) deleteOnQUICFailure(csid string, conn *quic.Conn) {
+	manager.deleteConnection(csid, conn, nil)
+}
+
+// Only QUIC-failure cleanup may omit the donor identity.
+func (manager *connectionManager) deleteConnection(csid string, conn *quic.Conn, donor *quic.Transport) {
+	manager.mx.Lock()
+	record := manager.connections[csid]
+	manager.mx.Unlock()
+	if record == nil {
+		return
+	}
 	record.mx.Lock()
-
-	if !record.lastMigrated.After(t) {
-		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
+	defer record.mx.Unlock()
+	manager.mx.Lock()
+	expired := manager.connections[csid] == record && record.connection != nil && record.connection == conn && (donor == nil || record.transport == donor)
+	if expired {
 		delete(manager.connections, csid)
+	}
+	manager.mx.Unlock()
+	if expired {
+		record.connection.CloseWithError(quic.ApplicationErrorCode(42069), "expired before migration")
 		slog.Debug("QUIC connection expired, closed, and deleted", "csid", csid, "total", atomic.AddUint64(&nQUICConnections, ^uint64(0)))
 	}
-
-	record.mx.Unlock()
-	manager.mx.Unlock()
 }
 
 // createOrMigrate accepts any net.PacketConn for the new transport. In
 // production this is always *errorlessWebSocketPacketConn (the WS-as-UDP
 // adapter), but tests inject in-memory or loopback-UDP pconns to exercise
 // the connection-migration paths without a real WebSocket handshake.
-func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, error) {
-	manager.mx.Lock()
-
+func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketConn) (*quic.Conn, *quic.Transport, error) {
+	record := manager.lockRecord(csid)
+	defer record.mx.Unlock()
 	transport := &quic.Transport{Conn: pconn}
-	record, ok := manager.connections[csid]
 
 	// Atomic creation path
-	if !ok {
+	if record.connection == nil {
 		slog.Debug("No existing QUIC connection, dialing...", "local_addr", pconn.LocalAddr(), "csid", csid)
 		newConn, err := transport.Dial(
 			context.Background(),
@@ -81,41 +116,51 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		)
 
 		if err != nil {
+			manager.mx.Lock()
+			delete(manager.connections, csid)
 			manager.mx.Unlock()
-			return nil, err
+			return nil, nil, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
-		manager.connections[csid] = &connectionRecord{connection: newConn, lastMigrated: time.Now()}
-		manager.mx.Unlock()
-		return newConn, nil
+		record.connection = newConn
+		record.transport = transport
+		return newConn, transport, nil
 	}
 	// Atomic migration path
+	recordMigration(migrationAttempt)
 	slog.Debug("Trying to migrate QUIC connection", "local_addr", pconn.LocalAddr(), "csid", csid)
 	t1 := time.Now()
-	record.mx.Lock()
-	manager.mx.Unlock()
-	defer record.mx.Unlock()
 
 	path, err := record.connection.AddPath(transport)
 	if err != nil {
-		return nil, fmt.Errorf("AddPath error: %v", err)
+		recordMigration(migrationAddPathError)
+		return nil, nil, fmt.Errorf("AddPath error: %w", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), manager.probeTimeout)
 	defer cancel()
 	err = path.Probe(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("path probe error: %v", err)
+		if closeErr := path.Close(); closeErr != nil {
+			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
+		}
+		recordMigration(migrationProbeError)
+		return nil, nil, fmt.Errorf("path probe error: %w", err)
 	}
 
 	err = path.Switch()
 	if err != nil {
-		return nil, fmt.Errorf("path switch error: %v", err)
+		if closeErr := path.Close(); closeErr != nil {
+			slog.Debug("Error closing failed migration path", "local_addr", pconn.LocalAddr(), "error", closeErr)
+		}
+		recordMigration(migrationSwitchError)
+		return nil, nil, fmt.Errorf("path switch error: %w", err)
 	}
 
 	t2 := time.Now()
+	recordMigration(migrationSuccess)
 	slog.Debug("Migrated a QUIC connection", "local_addr", pconn.LocalAddr(), "duration_s", t2.Sub(t1).Seconds())
-	record.lastMigrated = time.Now()
+	record.transport = transport
 
 	if record.lastPath != nil {
 		err = record.lastPath.Close()
@@ -129,5 +174,5 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 	}
 
 	record.lastPath = path
-	return record.connection, nil
+	return record.connection, transport, nil
 }

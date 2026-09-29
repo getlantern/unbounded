@@ -5,6 +5,9 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // withStubbedMetrics swaps in a stub initializer and resets the package-global
@@ -252,5 +255,30 @@ func TestStartMetrics_ReleaseReturnsTheSameErrorEveryTime(t *testing.T) {
 	// The shutdown itself must still only have run once.
 	if _, shutdowns := stub.counts(); shutdowns != 1 {
 		t.Errorf("shut down %d times, want 1", shutdowns)
+	}
+}
+
+// The telemetry pipeline requires proxy.io to arrive as DELTA (it merges
+// series with host identity stripped, and merging cumulative streams
+// corrupts rate() silently). Every OTHER instrument in this package is an
+// Observable* kind whose dashboard queries assume cumulative, so the
+// delta mapping must cover synchronous counters and nothing else. This
+// test is the tripwire for both directions of that contract.
+func TestCounterTemporality_DeltaOnlyForSyncCounters(t *testing.T) {
+	cases := []struct {
+		kind sdkmetric.InstrumentKind
+		want metricdata.Temporality
+	}{
+		{sdkmetric.InstrumentKindCounter, metricdata.DeltaTemporality},
+		{sdkmetric.InstrumentKindUpDownCounter, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindHistogram, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindObservableCounter, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindObservableUpDownCounter, metricdata.CumulativeTemporality},
+		{sdkmetric.InstrumentKindObservableGauge, metricdata.CumulativeTemporality},
+	}
+	for _, tc := range cases {
+		if got := counterTemporality(tc.kind); got != tc.want {
+			t.Errorf("counterTemporality(%v) = %v, want %v", tc.kind, got, tc.want)
+		}
 	}
 }

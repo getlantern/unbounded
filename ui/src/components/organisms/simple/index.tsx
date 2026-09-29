@@ -1,4 +1,4 @@
-import React, {lazy, Suspense, useContext} from 'react'
+import React, {useContext} from 'react'
 import {useTranslation} from 'react-i18next'
 import {AppContext} from '../../../context'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
@@ -6,11 +6,9 @@ import {connectionsEmitter} from '../../../utils/wasmInterface'
 import {useSharingToggle} from '../../../hooks/useSharingToggle'
 import Switch from '../../atoms/switch'
 import Modal from '../../molecules/modal'
-import GlobeSuspense from '../../molecules/globe/suspense'
-import Col from '../../atoms/col'
+import SafeGlobe from '../../molecules/globe/safe'
+import UnsupportedNote from '../../molecules/unsupportedNote'
 import {BarText, Container, OffPill, OnPanel, PanelLeft, PanelRow, SIMPLE_COLORS, StatusDot} from './styles'
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 const HeartIcon = () => (
 	<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -42,22 +40,21 @@ const Simple = () => {
 			<Modal isCensored={isCensored} onIgnore={onIgnore} />
 			{
 				settings.globe && (
-					<Col>
-						<Suspense fallback={<GlobeSuspense/>}>
-							<Globe target={settings.target}/>
-						</Suspense>
-					</Col>
+					<SafeGlobe target={settings.target}/>
 				)
 			}
 			{
 				!sharing ? (
-					<OffPill>
-						<PanelLeft>
-							<HeartIcon/>
-							<BarText>{t('enableActionMode')}</BarText>
-						</PanelLeft>
-						<Switch {...switchProps}/>
-					</OffPill>
+					<>
+						<OffPill>
+							<PanelLeft>
+								<HeartIcon/>
+								<BarText>{t('enableActionMode')}</BarText>
+							</PanelLeft>
+							<Switch {...switchProps}/>
+						</OffPill>
+						<UnsupportedNote style={{textAlign: 'center'}}/>
+					</>
 				) : (
 					<OnPanel>
 						<PanelRow>

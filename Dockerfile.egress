@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine
+FROM golang:1.26-alpine
 
 WORKDIR /usr/src/app
 
@@ -6,7 +6,10 @@ COPY go.mod go.sum ./
 RUN go mod download && go mod verify
 
 COPY . .
-RUN go build -v -o /usr/local/bin/egress ./egress/cmd/...
+RUN go build -v -o /usr/local/bin/egress ./egress/cmd/http
+
+RUN addgroup -S unbounded && adduser -S -G unbounded unbounded
+USER unbounded
 
 EXPOSE 8000/tcp
 

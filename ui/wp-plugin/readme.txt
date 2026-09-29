@@ -150,6 +150,9 @@ break every existing embed, so it stayed.
 = 1.3.0 =
 * Renamed from Unbounded to Lantern Action Mode. Settings, saved options and the widget element are unchanged.
 
+= 1.2.1 =
+* Added a plugin icon for the directory listing.
+
 = 1.2.0 =
 * Prepared for the WordPress Plugin Directory: license and plugin headers, translatable strings, uninstall cleanup.
 * Settings are now validated against an allowlist before being saved.
