@@ -1,6 +1,6 @@
-# Unbounded WordPress Plugin
+# Lantern Action Mode WordPress Plugin
 
-The WordPress front end for the Unbounded widget. It prints the widget element,
+The WordPress front end for the Action Mode widget. It prints the widget element,
 loads the widget bundle, and adds a settings screen and a per-page toggle.
 Everything else — peer discovery, transport, the WebAssembly proxy — happens in
 the service.
@@ -25,7 +25,7 @@ Then:
 
 - Activate at `http://localhost:8000/wp-admin/plugins.php`
 - Configure at `http://localhost:8000/wp-admin/admin.php?page=browsers-unbounded-settings`
-- Tick **Display on Homepage**, or edit a page and tick **Enable Unbounded on
+- Tick **Display on Homepage**, or edit a page and tick **Enable Action Mode on
   this page** in the editor sidebar
 - View the page; the widget renders with its switch off
 
@@ -73,7 +73,9 @@ name is the widget bundle's public API — `ui/src/index.tsx` matches only
 `browsers-unbounded` or the legacy `lantern-network` — so renaming it would
 render nothing. The prefixes stayed with it for consistency.
 
-The directory listing is "Unbounded by Lantern", not plain "Unbounded".
+The directory listing is now "Lantern Action Mode"; it was submitted as
+"Unbounded by Lantern", which fixed the slug. That name was chosen over plain
+"Unbounded" for the same reason the new one carries Lantern:
 Guideline 17 wants a distinctive name carrying the owning brand, and bare
 "Unbounded" sits close to live software-sector marks (UNBOUNDED SOLUTIONS, US
 reg. 5563892; UNBOUNDED AI) and to NLnet Labs' Unbound resolver. Qualifying it
