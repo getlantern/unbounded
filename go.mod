@@ -14,6 +14,7 @@ require (
 	github.com/getlantern/semconv v0.0.0-20260928193748-dd4a95ca2554
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
+	github.com/jellydator/ttlcache/v3 v3.4.1
 	github.com/pion/transport/v4 v4.0.1
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/quic-go/quic-go v0.62.0
@@ -54,7 +55,6 @@ require (
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
-	github.com/jellydator/ttlcache/v3 v3.4.1 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/mholt/archives v0.1.5 // indirect
