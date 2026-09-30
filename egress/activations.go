@@ -3,11 +3,11 @@ package egress
 import (
 	"context"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/getlantern/semconv"
+	"github.com/jellydator/ttlcache/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -76,48 +76,40 @@ func (a *activations) record(ctx context.Context, id, donorCC string) {
 }
 
 const (
-	activationIdleTTL       = 24 * time.Hour // forget an ID idle this long
-	maxActivations          = 1 << 18        // IDs are client-supplied
-	activationSweepInterval = time.Minute    // between expiry sweeps
+	activationIdleTTL = 24 * time.Hour // forget an ID idle this long
+	maxActivations    = 1 << 18        // IDs are client-supplied
 )
 
 // memoryActivations is an activationStore local to one egress process.
 // A restart forgets every ID, and a second egress keeps its own.
 type memoryActivations struct {
-	mu        sync.Mutex
-	lastSeen  map[string]time.Time
-	lastSweep time.Time
-	now       func() time.Time
+	cache *ttlcache.Cache[string, struct{}]
 }
 
+// newMemoryActivations starts the cache's expiry loop, which lives as
+// long as the process.
 func newMemoryActivations() *memoryActivations {
-	return &memoryActivations{lastSeen: map[string]time.Time{}, now: time.Now}
+	m := &memoryActivations{cache: ttlcache.New(
+		ttlcache.WithTTL[string, struct{}](activationIdleTTL),
+	)}
+	go m.cache.Start()
+	return m
 }
 
-// first treats an ID idle for longer than activationIdleTTL as new.
+// first treats an ID idle for longer than activationIdleTTL as new;
+// finding an ID refreshes its TTL.
+//
 // When the store is full, a new ID is neither stored nor reported new,
 // so a flood of IDs cannot inflate the count by evicting real ones.
+// That is why this checks Len rather than setting WithCapacity, which
+// evicts the least recently used ID. Concurrent callers can overshoot
+// the cap by at most one ID each.
 func (m *memoryActivations) first(_ context.Context, id string) (bool, error) {
-	now := m.now()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if now.Sub(m.lastSweep) >= activationSweepInterval {
-		for k, t := range m.lastSeen {
-			if now.Sub(t) > activationIdleTTL {
-				delete(m.lastSeen, k)
-			}
-		}
-		m.lastSweep = now
-	}
-
-	t, ok := m.lastSeen[id]
-	fresh := !ok || now.Sub(t) > activationIdleTTL
-	if !ok && len(m.lastSeen) >= maxActivations {
+	if m.cache.Len() >= maxActivations && !m.cache.Has(id) {
 		return false, nil
 	}
-	m.lastSeen[id] = now
-	return fresh, nil
+	_, found := m.cache.GetOrSet(id, struct{}{})
+	return !found, nil
 }
 
 // proxyActivationHandle wraps the counter interface so atomic.Pointer

@@ -10,10 +10,12 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/getlantern/semconv"
+	"github.com/jellydator/ttlcache/v3"
 	"github.com/quic-go/quic-go"
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -77,13 +79,19 @@ func activationCount(t *testing.T, reader *sdkmetric.ManualReader, donorCC strin
 	return total
 }
 
-// testActivations returns an in-memory store whose clock the test
-// advances by hand, and the wrapper that counts against it.
-func testActivations() (*activations, *memoryActivations, *time.Time) {
-	now := time.Unix(1_700_000_000, 0)
+// testActivations returns an in-memory store and the wrapper that
+// counts against it. It must run inside a synctest bubble, whose fake
+// clock the store's TTLs follow. Cleanup waits for the expiry loop to
+// block before stopping it: a Stop that lands before Start runs is a
+// no-op, and a loop left running keeps the bubble from exiting.
+func testActivations(t *testing.T) (*activations, *memoryActivations) {
+	t.Helper()
 	m := newMemoryActivations()
-	m.now = func() time.Time { return now }
-	return newActivations(m), m, &now
+	t.Cleanup(func() {
+		synctest.Wait()
+		m.cache.Stop()
+	})
+	return newActivations(m), m
 }
 
 // firstOK calls m.first, which never fails, and returns its answer.
@@ -139,31 +147,35 @@ func TestRecordActivation_NoCounterInstalledIsANoOp(t *testing.T) {
 }
 
 func TestActivations_CountsOncePerID(t *testing.T) {
-	reader := installTestActivationCounter(t)
-	s, _, _ := testActivations()
-	a, b := common.NewActivationID(), common.NewActivationID()
+	synctest.Test(t, func(t *testing.T) {
+		reader := installTestActivationCounter(t)
+		s, _ := testActivations(t)
+		a, b := common.NewActivationID(), common.NewActivationID()
 
-	for range 5 {
-		s.record(context.Background(), a, "SE")
-	}
-	s.record(context.Background(), b, "SE")
+		for range 5 {
+			s.record(context.Background(), a, "SE")
+		}
+		s.record(context.Background(), b, "SE")
 
-	if got := activationCount(t, reader, "SE"); got != 2 {
-		t.Fatalf("count = %d for two IDs seen six times, want 2", got)
-	}
+		if got := activationCount(t, reader, "SE"); got != 2 {
+			t.Fatalf("count = %d for two IDs seen six times, want 2", got)
+		}
+	})
 }
 
 func TestActivations_IgnoresMissingIDAndNilReceiver(t *testing.T) {
-	reader := installTestActivationCounter(t)
-	s, _, _ := testActivations()
+	synctest.Test(t, func(t *testing.T) {
+		reader := installTestActivationCounter(t)
+		s, _ := testActivations(t)
 
-	s.record(context.Background(), "", "SE")
-	var none *activations
-	none.record(context.Background(), common.NewActivationID(), "SE")
+		s.record(context.Background(), "", "SE")
+		var none *activations
+		none.record(context.Background(), common.NewActivationID(), "SE")
 
-	if got := activationCount(t, reader, "SE"); got != 0 {
-		t.Fatalf("count = %d, want 0", got)
-	}
+		if got := activationCount(t, reader, "SE"); got != 0 {
+			t.Fatalf("count = %d, want 0", got)
+		}
+	})
 }
 
 // Each sighting refreshes the entry, so a widget that stays on and
@@ -182,59 +194,67 @@ func TestActivations_StoreErrorSkipsCount(t *testing.T) {
 }
 
 func TestMemoryActivations_IdleExpiry(t *testing.T) {
-	reader := installTestActivationCounter(t)
-	s, _, now := testActivations()
-	id := common.NewActivationID()
+	synctest.Test(t, func(t *testing.T) {
+		reader := installTestActivationCounter(t)
+		s, _ := testActivations(t)
+		id := common.NewActivationID()
 
-	s.record(context.Background(), id, "SE")
-	for range 10 {
-		*now = now.Add(activationIdleTTL / 2)
 		s.record(context.Background(), id, "SE")
-	}
-	if got := activationCount(t, reader, "SE"); got != 1 {
-		t.Fatalf("count = %d for an ID active across five TTLs, want 1", got)
-	}
+		for range 10 {
+			time.Sleep(activationIdleTTL / 2)
+			s.record(context.Background(), id, "SE")
+		}
+		if got := activationCount(t, reader, "SE"); got != 1 {
+			t.Fatalf("count = %d for an ID active across five TTLs, want 1", got)
+		}
 
-	*now = now.Add(activationIdleTTL + time.Second)
-	s.record(context.Background(), id, "SE")
-	if got := activationCount(t, reader, "SE"); got != 2 {
-		t.Fatalf("count = %d after the ID was idle past the TTL, want 2", got)
-	}
+		time.Sleep(activationIdleTTL + time.Second)
+		s.record(context.Background(), id, "SE")
+		if got := activationCount(t, reader, "SE"); got != 2 {
+			t.Fatalf("count = %d after the ID was idle past the TTL, want 2", got)
+		}
+	})
 }
 
-func TestMemoryActivations_SweepsExpiredEntries(t *testing.T) {
-	_, m, now := testActivations()
-	for range 100 {
-		firstOK(t, m, common.NewActivationID())
-	}
+// Expired IDs must leave memory, not just stop answering, or a store
+// that lives as long as the egress grows without bound.
+func TestMemoryActivations_ExpiryLoopDeletesIdleIDs(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		_, m := testActivations(t)
+		for range 100 {
+			firstOK(t, m, common.NewActivationID())
+		}
 
-	*now = now.Add(activationIdleTTL + activationSweepInterval)
-	firstOK(t, m, common.NewActivationID())
+		time.Sleep(activationIdleTTL + time.Second)
+		synctest.Wait()
 
-	if n := len(m.lastSeen); n != 1 {
-		t.Fatalf("%d entries after the sweep, want 1", n)
-	}
+		if n := m.cache.Metrics().Evictions; n != 100 {
+			t.Fatalf("%d IDs deleted after the TTL, want 100", n)
+		}
+	})
 }
 
 // A flood of IDs must not evict real ones, or it could re-count every
 // live widget. A full store declines new IDs and keeps the old ones.
 func TestMemoryActivations_FullStoreDeclinesNewIDs(t *testing.T) {
-	_, m, _ := testActivations()
-	live := common.NewActivationID()
-	firstOK(t, m, live)
-	for len(m.lastSeen) < maxActivations {
-		m.lastSeen[common.NewActivationID()] = m.now()
-	}
+	synctest.Test(t, func(t *testing.T) {
+		_, m := testActivations(t)
+		live := common.NewActivationID()
+		firstOK(t, m, live)
+		for m.cache.Len() < maxActivations {
+			m.cache.Set(common.NewActivationID(), struct{}{}, ttlcache.DefaultTTL)
+		}
 
-	if firstOK(t, m, common.NewActivationID()) {
-		t.Error("a new ID counted into a full store")
-	}
-	if firstOK(t, m, live) {
-		t.Error("an ID already in the full store counted again")
-	}
-	if n := len(m.lastSeen); n != maxActivations {
-		t.Errorf("store grew to %d past maxActivations", n)
-	}
+		if firstOK(t, m, common.NewActivationID()) {
+			t.Error("a new ID counted into a full store")
+		}
+		if firstOK(t, m, live) {
+			t.Error("an ID already in the full store counted again")
+		}
+		if n := m.cache.Len(); n != maxActivations {
+			t.Errorf("store grew to %d past maxActivations", n)
+		}
+	})
 }
 
 // A donor whose path probe fails has proxied nothing for the consumer,
