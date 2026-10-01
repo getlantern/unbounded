@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/google/uuid"
 )
+
+var instanceID = uuid.NewString()
 
 type operation int
 
@@ -18,6 +22,7 @@ type Instruction struct {
 	Op   operation
 	Args []string
 	Tag  string
+	ID   string
 }
 
 func EncodeArgsOpConsumerState(args [][]string) []string {
@@ -41,6 +46,7 @@ func DecodeArgsOpConsumerState(args []string) [][]string {
 }
 
 func Exec(netstated string, inst *Instruction) error {
+	inst.ID = instanceID
 	serialized, err := json.Marshal(inst)
 	if err != nil {
 		return err
