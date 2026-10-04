@@ -2,10 +2,12 @@ package clientcore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strconv"
 	"time"
 )
@@ -88,8 +90,13 @@ func socks5Handshake(ctx context.Context, conn net.Conn, connectReq []byte) (err
 			return
 		}
 		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				err = ctxErr
+			switch {
+			case ctx.Err() != nil:
+				err = ctx.Err()
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				// The only deadline on conn is ctx's, and it can expire a
+				// read a moment before ctx itself reports done.
+				err = context.DeadlineExceeded
 			}
 			return
 		}
