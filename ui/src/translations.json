@@ -3,7 +3,7 @@
     "translation": {
       "intro": "Join our network of digital volunteers and help unblock the internet around the world.",
       "createdAt": "2024-10-10T11:03:23.027Z",
-      "updatedAt": "2024-11-25T17:11:13.719Z",
+      "updatedAt": "2026-09-29T15:41:56.547Z",
       "locale": "en",
       "title": "Fight global internet censorship",
       "status": "Status:",
@@ -19,9 +19,6 @@
       "installFirefox": "Install on Firefox",
       "installCta": "Help even more people by installing the extension",
       "waiting": "Waiting for connections",
-      "enableActionMode": "Enable Action Mode",
-      "peopleHelping": "People you're helping:",
-      "actionModeOn": "Action Mode is on",
       "installCtaBtnLg": "Get Action Mode for {{browser}}",
       "installCtaBtnSm": "Add to {{browser}}",
       "peer": "{{count}} person from {{country}}",
@@ -31,7 +28,10 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}",
+      "love": "Built with {{love}} by {{lantern}}",
+      "enableActionMode": "Enable Action Mode",
+      "peopleHelping": "People you're helping:",
+      "actionModeOn": "Action Mode is on",
       "unsupportedBrowser": "This browser can't share a connection because WebAssembly is turned off, for example by Lockdown Mode."
     }
   },
@@ -39,7 +39,7 @@
     "translation": {
       "intro": "加入我们的数字志愿者网络，帮助解锁全球互联网。",
       "createdAt": "2024-10-11T11:44:02.283Z",
-      "updatedAt": "2024-11-25T17:27:11.926Z",
+      "updatedAt": "2026-09-29T15:41:56.722Z",
       "locale": "zh-Hans",
       "title": "打击全球互联网审查",
       "status": "状态:",
@@ -71,7 +71,7 @@
     "translation": {
       "intro": "انضم إلى شبكتنا من المتطوعين الرقميين وساعد في إلغاء حظر الإنترنت حول العالم.",
       "createdAt": "2024-10-11T11:45:10.241Z",
-      "updatedAt": "2024-11-25T17:26:22.131Z",
+      "updatedAt": "2026-09-29T15:41:56.923Z",
       "locale": "ar",
       "title": "مكافحة الرقابة على الإنترنت على مستوى العالم",
       "status": "الحالة:",
@@ -103,7 +103,7 @@
     "translation": {
       "intro": "Присоединяйтесь к нашей сети цифровых волонтеров и помогайте разблокировать интернет по всему миру.",
       "createdAt": "2024-10-10T11:51:26.104Z",
-      "updatedAt": "2024-11-25T17:28:30.373Z",
+      "updatedAt": "2026-09-29T15:41:57.155Z",
       "locale": "ru",
       "title": "бороться с глобальной интернет-цензурой",
       "status": "Статус:",
@@ -135,7 +135,7 @@
     "translation": {
       "intro": "به شبکه داوطلبان دیجیتال ما بپیوندید و به رفع انسداد اینترنت در سراسر جهان کمک کنید.",
       "createdAt": "2024-10-11T11:45:43.471Z",
-      "updatedAt": "2024-11-25T17:29:52.934Z",
+      "updatedAt": "2026-09-29T15:41:57.325Z",
       "locale": "fa",
       "title": "مبارزه با سانسور اینترنت در سطح جهانی",
       "status": "وضعیت:",
@@ -167,7 +167,7 @@
     "translation": {
       "intro": "加入我們的數位志工網絡，協助解除全球的網路封鎖。",
       "createdAt": "2024-10-11T11:44:50.306Z",
-      "updatedAt": "2024-11-25T17:28:18.777Z",
+      "updatedAt": "2026-09-29T15:41:57.487Z",
       "locale": "zh-Hant-TW",
       "title": "打击全球互联网审查",
       "status": "狀態:",
@@ -199,7 +199,7 @@
     "translation": {
       "intro": "Únete a nuestra red de voluntarios digitales y ayuda a desbloquear el internet en todo el mundo.",
       "createdAt": "2024-10-11T11:46:09.716Z",
-      "updatedAt": "2024-11-25T17:30:08.663Z",
+      "updatedAt": "2026-09-29T15:41:57.645Z",
       "locale": "es-419",
       "title": "Lucha contra la censura global de internet",
       "status": "Estado:",
@@ -231,7 +231,7 @@
     "translation": {
       "intro": "Join our network of digital volunteers and help unblock the internet around the world.",
       "createdAt": "2024-10-10T11:03:23.027Z",
-      "updatedAt": "2024-11-25T17:11:13.719Z",
+      "updatedAt": "2026-09-29T15:41:56.547Z",
       "locale": "en",
       "title": "Fight global internet censorship",
       "status": "Status:",
@@ -256,14 +256,14 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Built with {{love}} by {{lantern}}"
     }
   },
   "en-US": {
     "translation": {
       "intro": "Join our network of digital volunteers and help unblock the internet around the world.",
       "createdAt": "2024-10-10T11:03:23.027Z",
-      "updatedAt": "2024-11-25T17:11:13.719Z",
+      "updatedAt": "2026-09-29T15:41:56.547Z",
       "locale": "en",
       "title": "Fight global internet censorship",
       "status": "Status:",
@@ -288,7 +288,7 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Built with {{love}} by {{lantern}}"
     }
   }
 }
