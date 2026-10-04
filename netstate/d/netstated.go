@@ -78,14 +78,16 @@ type publicPeerData struct {
 	Lat      float64   `json:"lat"`
 	Lon      float64   `json:"lon"`
 	City     string    `json:"city"`
+	Country  string    `json:"countryCode"`
 	LastSeen time.Time `json:"lastSeen"`
 	Edges    []int     `json:"edges"`
 }
 
 type uncensoredJoinEvent struct {
-	Lat  float64 `json:"lat"`
-	Lon  float64 `json:"lon"`
-	City string  `json:"city"`
+	Lat     float64 `json:"lat"`
+	Lon     float64 `json:"lon"`
+	City    string  `json:"city"`
+	Country string  `json:"countryCode"`
 }
 
 type streamBroadcaster struct {
@@ -140,6 +142,7 @@ type vertex struct {
 	lat      float64
 	lon      float64
 	city     string
+	country  string
 	t        clientType
 }
 
@@ -166,7 +169,7 @@ func newMultigraph() *multigraph {
 
 // Idempotently add a vertex; if this vertex already exists, just update all of its properties.
 // Returns true for new vertices
-func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, city string, t clientType) bool {
+func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, city, country string, t clientType) bool {
 	g.Lock()
 	defer g.Unlock()
 
@@ -180,6 +183,7 @@ func (g *multigraph) addVertex(v vertexLabel, lat, lon float64, city string, t c
 	vv.lat = lat
 	vv.lon = lon
 	vv.city = city
+	vv.country = country
 	vv.t = t
 	g.data[v] = vv
 
@@ -290,7 +294,7 @@ func (g *multigraph) toPublicPeerData() []publicPeerData {
 	ppd := make([]publicPeerData, len(peerIdx))
 
 	for vl, vertex := range g.data {
-		peerData := publicPeerData{T: int(vertex.t), Lat: vertex.lat, Lon: vertex.lon, City: vertex.city, LastSeen: vertex.lastSeen}
+		peerData := publicPeerData{T: int(vertex.t), Lat: vertex.lat, Lon: vertex.lon, City: vertex.city, Country: vertex.country, LastSeen: vertex.lastSeen}
 		peerEdges := []int{}
 
 		for _, e := range vertex.edges {
@@ -417,7 +421,13 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	localLabel := vertexLabel(fmt.Sprintf("%v (%v)", parsedAddr, inst.Tag))
+	if inst.ID == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400\n"))
+		return
+	}
+
+	localLabel := vertexLabel(fmt.Sprintf("%v (%v) [%v]", parsedAddr, inst.Tag, inst.ID))
 
 	// TODO: This switch is the interpreter, we could extract it into a function
 	switch inst.Op {
@@ -428,11 +438,11 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		// 2. Idempotently add a vertex representing each reported consumer, updating its lastSeen time and lat/lon
 		// 3. Replace the reporting node's edges with a new set of edges representing its current consumers
 
-		lat, lon, city := geolocate(geoDb, parsedAddr)
-		isNewPeer := world.addVertex(localLabel, lat, lon, city, clientTypeUncensored)
+		lat, lon, city, country := geolocate(geoDb, parsedAddr)
+		isNewPeer := world.addVertex(localLabel, lat, lon, city, country, clientTypeUncensored)
 
 		if isNewPeer {
-			go stream.broadcast(uncensoredJoinEvent{Lat: lat, Lon: lon, City: city})
+			go stream.broadcast(uncensoredJoinEvent{Lat: lat, Lon: lon, City: city, Country: country})
 		}
 
 		var newEdges []edge
@@ -445,9 +455,10 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			lat, lon, city := geolocate(geoDb, parsedIP)
+			// Only uncensored peers carry a country code
+			lat, lon, city, _ := geolocate(geoDb, parsedIP)
 			remoteLabel := vertexLabel(fmt.Sprintf("%v (%v)", remoteAddr, remoteTag))
-			world.addVertex(remoteLabel, lat, lon, city, clientTypeCensored)
+			world.addVertex(remoteLabel, lat, lon, city, "", clientTypeCensored)
 			newEdges = append(newEdges, edge{label: remoteLabel, id: workerIdx})
 		}
 
@@ -492,13 +503,14 @@ func enableCors(w *http.ResponseWriter) {
 	)
 }
 
-func geolocate(geoDb string, addr net.IP) (lat float64, lon float64, city string) {
+func geolocate(geoDb string, addr net.IP) (lat float64, lon float64, city string, country string) {
 	if geoDb != "" {
 		lat, lon = geolookup.LatLong(addr)
 		city, _ = geolookup.City(addr)
+		country = geolookup.CountryCode(addr)
 	}
 
-	return lat, lon, city
+	return lat, lon, city, country
 }
 
 func main() {
