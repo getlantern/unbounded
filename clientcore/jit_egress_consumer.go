@@ -11,7 +11,7 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
-func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM {
+func NewJITEgressConsumer(options *EgressOptions, act *activation, wg *sync.WaitGroup) *WorkerFSM {
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			slog.
@@ -76,16 +76,14 @@ func NewJITEgressConsumer(options *EgressOptions, wg *sync.WaitGroup) *WorkerFSM
 			defer cancel()
 
 			dialOpts := &websocket.DialOptions{
-				// The 4-element form when the consumer disclosed a country, the
-				// 3-element form when it did not — NewSubprotocolsRequestWithCountry
-				// decides, so this call site does not branch.
+				// The consumer's country when it disclosed one, and the activation
+				// ID while proxy mode is on. NewSubprotocolsRequestWithActivation
+				// omits whichever is absent, so this call site does not branch.
 				//
-				// Safe to emit now: an egress older than v2.3.5 requires exactly 3
-				// elements and would refuse 4, so #375 deliberately shipped the parser
-				// first and left this call site on the 3-element form. The fleet is a
-				// single host and it runs v2.3.7.
-				Subprotocols: common.NewSubprotocolsRequestWithCountry(
-					consumerInfoMsg.SessionID, common.Version, consumerInfoMsg.Country),
+				// An egress older than v2.3.17 refuses the list carrying both, so
+				// this must not ship until the fleet runs v2.3.17 or later.
+				Subprotocols: common.NewSubprotocolsRequestWithActivation(
+					consumerInfoMsg.SessionID, common.Version, consumerInfoMsg.Country, act.id()),
 			}
 			slog.
 				// Log only a short prefix of the CSID — enough to correlate
