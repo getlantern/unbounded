@@ -56,7 +56,7 @@ jobs:
       release:    ${{ steps.pick.outputs.release }}
       target_sha: ${{ steps.pick.outputs.target_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           # Use a token that can push back to main. GITHUB_TOKEN works
@@ -179,7 +179,7 @@ jobs:
         goos: [linux]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Pin to the exact SHA the version job operated on. Using
           # `ref: main` would pick up any commits landed after our
@@ -187,7 +187,7 @@ jobs:
           # than we just tagged.
           ref: ${{ needs.version.outputs.target_sha }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -205,7 +205,7 @@ jobs:
           sha256sum "$out" > "${out}.sha256"
           ls -lh "$out" "${out}.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: egress-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -219,14 +219,14 @@ jobs:
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Same pinning rationale as build: check out the exact SHA
           # we're about to release, not wherever main happens to be now.
           ref: ${{ needs.version.outputs.target_sha }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
