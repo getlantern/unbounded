@@ -27,6 +27,9 @@ type BroflakeEngine struct {
 	// engine ctx anyway. Per-engine rather than a package var so tests can shorten
 	// it without racing a concurrent stop().
 	stopGrace time.Duration
+	// activation is shared with the egress slots, which read its ID on
+	// every dial. nil for engines built without them.
+	activation *activation
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -47,6 +50,7 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 }
 
 func (b *BroflakeEngine) start() {
+	b.activation.begin()
 	b.cTable.Start()
 	b.pTable.Start()
 	slog.Debug("▶ Broflake started!")
@@ -88,6 +92,7 @@ func (b *BroflakeEngine) start() {
 const defaultStopGrace = 10 * time.Second
 
 func (b *BroflakeEngine) stop() {
+	b.activation.end()
 	b.cTable.Stop()
 	b.pTable.Stop()
 
@@ -156,6 +161,8 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// call onStartup and onReady. This dependency graph currently requires us to implement two
 	// switches on clientType during the boot process, which can probably be improved upon.
 
+	act := &activation{}
+
 	// Step 1: Build consumer table and producer table
 	switch bfOpt.ClientType {
 	case "desktop":
@@ -188,13 +195,14 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		// Widget peers consume connectivity from an egress server over WebSocket
 		var pfsms []WorkerFSM
 		for i := 0; i < bfOpt.PTableSize; i++ {
-			pfsms = append(pfsms, *NewJITEgressConsumer(egOpt, &wgReady))
+			pfsms = append(pfsms, *NewJITEgressConsumer(egOpt, act, &wgReady))
 		}
 		pTable = NewWorkerTable(pfsms)
 	}
 
 	// Step 2: Build Broflake
 	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag)
+	broflake.activation = act
 
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
