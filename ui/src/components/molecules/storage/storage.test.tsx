@@ -2,15 +2,17 @@ import React from 'react'
 import {act, render, cleanup, fireEvent, screen} from '@testing-library/react'
 import Storage from './index'
 import {defaultSettings, SIGNATURE, MessageTypes} from '../../../constants'
-import {servedConnectionsEmitter, lifetimeConnectionsEmitter} from '../../../utils/wasmInterface'
+import {servedConnectionsEmitter, lifetimeConnectionsEmitter, sharingEmitter} from '../../../utils/wasmInterface'
 jest.mock('../../../utils/wasmInterface', () => {
  const {StateEmitter} = jest.requireActual('../../../hooks/useStateEmitter')
  return {WasmInterface: class {}, servedConnectionsEmitter:new StateEmitter(0), lifetimeConnectionsEmitter:new StateEmitter(0), lifetimeChunksEmitter:new StateEmitter([]), sharingEmitter:new StateEmitter(false)}
 })
 beforeEach(()=> { process.env.REACT_APP_STORAGE_URL = 'https://storage.example.org/storage.html' })
-afterEach(cleanup)
+afterEach(()=>{cleanup();act(()=>sharingEmitter.update(false))})
 const connect = () => act(()=>servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1))
 const helped = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='helped')
+const sharing = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='sharing').map(c=>c[0].data.eventProperties.on)
+const share = (on: boolean) => act(()=>sharingEmitter.update(on))
 test('two ready embeds report one live event exactly once',()=>{
  render(<><Storage settings={defaultSettings}/><Storage settings={defaultSettings}/></>)
  const frames=screen.getAllByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement[]
@@ -54,4 +56,22 @@ test('restoration replies from other frames are ignored and own replies apply on
  expect(lifetimeConnectionsEmitter.state).toBe(before)
  for(let i=0;i<2;i++) act(()=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,data})))
  expect(lifetimeConnectionsEmitter.state).toBe(before+12)
+})
+test('sharing is reported only when it changes, never for the mount-time value',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ fireEvent.load(frame)
+ expect(sharing(spy)).toEqual([])
+ share(true);share(false)
+ expect(sharing(spy)).toEqual([true,false])
+})
+test('a toggle before iframe load is reported once it is ready',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ share(true)
+ expect(sharing(spy)).toEqual([])
+ fireEvent.load(frame)
+ expect(sharing(spy)).toEqual([true])
 })
