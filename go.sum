@@ -77,8 +77,8 @@ github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf h1:q8nsH0Lx9fP8HY6T
 github.com/getlantern/ops v0.0.0-20230424193308-26325dfed3cf/go.mod h1:R7HfJVLsnSeqaDWkiUlU+ANBjac4oYmXGrrps8vW7CM=
 github.com/getlantern/quic-go-unbounded-fork v0.62.1-unbounded h1:vH2G0xioKMdV6NpGI0MbNTeuof0qeOl5RragE3vejqk=
 github.com/getlantern/quic-go-unbounded-fork v0.62.1-unbounded/go.mod h1:RAro2j2yN9a9EiPACLHT9IB2NXCvGQmmo/alT0yYI0w=
-github.com/getlantern/semconv v0.0.0-20260911194252-22d64fe1dd0b h1:9GXRAvLP8S3jKCqzHW20tlHrr9DeRMRWK/Y1XvuOcks=
-github.com/getlantern/semconv v0.0.0-20260911194252-22d64fe1dd0b/go.mod h1:GkPT5P9JoOTIRXRmFWxYgu1hhXgTFFTNc2hoG7WQc3g=
+github.com/getlantern/semconv v0.0.0-20260928193748-dd4a95ca2554 h1:Cso88WRthLRv9bzcBIEJdJu5tKDlRLV20glLl/BWdVo=
+github.com/getlantern/semconv v0.0.0-20260928193748-dd4a95ca2554/go.mod h1:GkPT5P9JoOTIRXRmFWxYgu1hhXgTFFTNc2hoG7WQc3g=
 github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5 h1:6ITBYqNkLbVZ1tQNXwmH8N80rZtvyW6IZa8L6EAhBQo=
 github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5/go.mod h1:gx3dPUhZtQszPX5C+TshhxPXQHlY5t4gMnOOMA+viPA=
 github.com/go-gl/glfw v0.0.0-20190409004039-e6da0acd62b1/go.mod h1:vR7hzQXu2zJy9AVAgeJqvqgH9Q5CA+iKCZ2gyEVpxRU=
@@ -132,6 +132,8 @@ github.com/hashicorp/golang-lru v0.5.1/go.mod h1:/m3WP610KZHVQ1SGc6re/UDhFvYD7pJ
 github.com/hashicorp/golang-lru/v2 v2.0.7 h1:a+bsQ5rvGLjzHuww6tVxozPZFVghXaHOwFs4luLUK2k=
 github.com/hashicorp/golang-lru/v2 v2.0.7/go.mod h1:QeFd9opnmA6QUJc5vARoKUSoFhyfM2/ZepoAG6RGpeM=
 github.com/ianlancetaylor/demangle v0.0.0-20181102032728-5e5cf60278f6/go.mod h1:aSSvb/t6k1mPoxDqO4vJh6VOCGPwU4O0C2/Eqndh1Sc=
+github.com/jellydator/ttlcache/v3 v3.4.1 h1:bOdXmXiycyK6E6Qjyuj5vl+/vU3SCOoDs8a86NbHjAQ=
+github.com/jellydator/ttlcache/v3 v3.4.1/go.mod h1:j7LO12PNghFg5+0v9budMAT4rDK4JY969jb9vOdOBBk=
 github.com/jstemmer/go-junit-report v0.0.0-20190106144839-af01ea7f8024/go.mod h1:6v2b51hI/fHJwM22ozAgKL4VKDeJcHhJFhtBdhmNjmU=
 github.com/jstemmer/go-junit-report v0.9.1/go.mod h1:Brl9GWCQeLvo8nXZwPNNblvFj/XSXhF0NWZEnDohbsk=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=

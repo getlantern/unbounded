@@ -297,25 +297,19 @@ func SubprotocolsContainMagicCookie(s []string) bool {
 }
 
 // ParseSubprotocolsRequestWithCountry additionally returns the consumer country
-// when the peer supplied one; country is "" for the 3-element form.
+// when the peer supplied one; country is "" for the 3-element form. It
+// accepts everything ParseSubprotocolsRequestWithActivation does and
+// drops the activation ID.
+//
+// The magic cookie is validated, not only the arity. The first parser
+// checked length alone, so any 3-element Sec-Websocket-Protocol list
+// parsed as ok and the mismatch surfaced later as a vaguer
+// websocket.Accept failure. The cookie is a single shared constant that
+// has never changed, so nothing that has ever spoken this protocol is
+// affected by rejecting a wrong one.
 func ParseSubprotocolsRequestWithCountry(s []string) (csid, version, country string, ok bool) {
-	// Validate the magic cookie rather than only the arity. The previous parser
-	// checked length alone, so any 3-element Sec-Websocket-Protocol list parsed
-	// as ok and the mismatch surfaced later as a vaguer websocket.Accept failure.
-	// The cookie is a single shared constant that has never changed, so nothing
-	// that has ever spoken this protocol is affected by rejecting a wrong one.
-	if len(s) < 1 || s[0] != subprotocolsMagicCookie {
-		return "", "", "", false
-	}
-
-	switch len(s) {
-	case 3:
-		return s[1], s[2], "", true
-	case 4:
-		return s[1], s[2], normalizeCountry(s[3]), true
-	default:
-		return "", "", "", false
-	}
+	csid, version, country, _, ok = ParseSubprotocolsRequestWithActivation(s)
+	return csid, version, country, ok
 }
 
 // normalizeCountry bounds an untrusted country to a two-letter ISO-3166-1 alpha-2
