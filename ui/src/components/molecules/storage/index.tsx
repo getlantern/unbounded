@@ -129,8 +129,8 @@ const Storage = ({settings}: {settings: Settings}) => {
 
 	useEffect(() => {
 		// only report changes; the mount-time value is not a toggle
-		if (!ready || !iframe.current || sharing === reportedSharing.current) return
-		iframe.current.contentWindow?.postMessage({
+		if (!ready || !iframe.current?.contentWindow || sharing === reportedSharing.current) return
+		iframe.current.contentWindow.postMessage({
 			type: MessageTypes.EVENT,
 			[SIGNATURE]: true,
 			data: {
