@@ -25,6 +25,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
 	const [ready, setReady] = useState(false)
 	const loaded = useRef(false)
+	const reportedSharing = useRef(sharingEmitter.state)
 	const servedConnections = useEmitterState(servedConnectionsEmitter)
 	const iframe = useRef<HTMLIFrameElement>(null)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
@@ -127,8 +128,9 @@ const Storage = ({settings}: {settings: Settings}) => {
 	}, [ready, servedConnections, target, site])
 
 	useEffect(() => {
-		if (!ready || !iframe.current) return;
-		iframe.current.contentWindow?.postMessage({
+		// only report changes; the mount-time value is not a toggle
+		if (!ready || !iframe.current?.contentWindow || sharing === reportedSharing.current) return
+		iframe.current.contentWindow.postMessage({
 			type: MessageTypes.EVENT,
 			[SIGNATURE]: true,
 			data: {
@@ -136,6 +138,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 				eventProperties: {on: sharing}
 			}
 		}, '*')
+		reportedSharing.current = sharing
 	}, [ready, sharing, iframe])
 
 	return (
