@@ -29,17 +29,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@                                                       @")
-	slog.Warn("@ This standalone egress server does not use secure TLS @")
-	slog.Warn("@ at the QUIC layer!                                    @")
-	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
-
-	// And here's why it doesn't use secure TLS at the QUIC layer
-	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)
+	tlsConfig, err := egcmdcommon.TLSConfigFromEnv()
+	if err != nil {
+		panic(err)
+	}
 
 	ll, err := egress.NewListener(ctx, l, tlsConfig)
 	if err != nil {
