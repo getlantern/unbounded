@@ -85,7 +85,7 @@ var initDonorGeoOnce sync.Once
 //
 // The Country edition rather than City: it is a third the size and the egress only
 // ever reads CountryCode.
-const defaultGeoDBURL = "https://storage.googleapis.com/lanterngeo/GeoLite2-Country.mmdb.tar.gz"
+const defaultGeoDBURL = "https://lanterngeo.lantern.io/GeoLite2-Country.mmdb.tar.gz"
 
 // initDonorGeo configures donorGeo from the GEODB environment variable, falling
 // back to defaultGeoDBURL. GEODB should be a URL to a gzipped MaxMind tarball.
