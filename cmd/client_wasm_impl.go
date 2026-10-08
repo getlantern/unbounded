@@ -5,12 +5,14 @@ package main
 
 import (
 	"log/slog"
+	"os"
 	"syscall/js"
 
 	"github.com/getlantern/broflake/clientcore"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	slog.Debug("wasm client started...")
 
 	// A constructor is exposed to JS. Some (but not all) defaults are forcibly overridden by passing
