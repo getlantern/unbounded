@@ -339,7 +339,7 @@ func TestDefaultGeoDBURL(t *testing.T) {
 	if !ok {
 		t.Fatalf("the default GEODB URL does not parse: %q", defaultGeoDBURL)
 	}
-	// Verified against https://storage.googleapis.com/lanterngeo/GeoLite2-Country.mmdb.tar.gz,
+	// Verified against https://lanterngeo.lantern.io/GeoLite2-Country.mmdb.tar.gz,
 	// whose members are GeoLite2-Country_<date>/{GeoLite2-Country.mmdb,COPYRIGHT.txt,LICENSE.txt}.
 	if name != "GeoLite2-Country.mmdb" {
 		t.Errorf("derived member name = %q, want %q", name, "GeoLite2-Country.mmdb")
