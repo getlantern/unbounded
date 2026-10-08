@@ -3,8 +3,8 @@ name: Release egress binary
 # Every merge to main that changes egress-relevant code auto-bumps the
 # semver patch in common/version.go, tags the commit, and publishes a
 # GitHub Release with linux/amd64 + linux/arm64 egress binaries and
-# their sha256 sums. The lantern-cloud egress provisioner (cmd/api/vps/
-# cloudinit_egress.go) then fetches these at VM boot.
+# their sha256 sums. The deploy job then uploads them to lantern-cloud's
+# egress-artifacts buckets, and the egress hosts install them within 5 minutes.
 #
 # Path filter: we deliberately DON'T trigger on freddie-, clientcore-, UI-,
 # netstate-, or docs-only changes. Those have no effect on the egress binary.
@@ -254,3 +254,57 @@ jobs:
             dist/egress-linux-amd64.sha256 \
             dist/egress-linux-arm64 \
             dist/egress-linux-arm64.sha256
+
+  # Ships the release to the egress hosts the way lantern-box ships its image:
+  # upload it straight into lantern-cloud's egress-artifacts buckets, where each
+  # host's lantern-autoupdate installs it within 5 minutes. The tarball layout
+  # matches lantern-cloud's deploy-egress.yml, which stays for manual rollbacks.
+  # gha-unbounded-egress can write only those buckets, and only from main
+  # (lantern-cloud tf/_modules/foundation/lanternet/cicd.tf).
+  deploy:
+    needs: [version, release]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, prod]
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: egress-linux-${{ matrix.arch }}
+          path: release
+
+      - name: Package tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum -c "egress-linux-$ARCH.sha256")
+          working=$(mktemp -d)
+          install -D -m 0755 "release/egress-linux-$ARCH" "$working/$VERSION/bin/egress"
+          echo "$VERSION" > "$working/$VERSION/REVISION"
+          (cd "$working" && ln -s "$VERSION" latest)
+          mkdir -p build
+          (cd "$working" && tar czvf "$GITHUB_WORKSPACE/build/$VERSION.tar.gz" "$VERSION" latest)
+          sha256sum "$GITHUB_WORKSPACE/build/$VERSION.tar.gz" > "build/$VERSION.tar.gz.sha256"
+          ln "build/$VERSION.tar.gz" "build/latest.tar.gz"
+          ln "build/$VERSION.tar.gz.sha256" "build/latest.tar.gz.sha256"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/${{ matrix.environment == 'staging' && '203041302207' || '472305719257' }}/locations/global/workloadIdentityPools/github-actions/providers/ghactions-provider
+          service_account: ${{ matrix.environment == 'staging' && 'gha-unbounded-egress@lantern-cloud-staging.iam.gserviceaccount.com' || 'gha-unbounded-egress@lantern-cloud.iam.gserviceaccount.com' }}
+
+      - uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: build/
+          destination: ${{ matrix.environment == 'staging' && 'lantern-cloud-staging' || 'lantern-cloud' }}-egress-artifacts/egress/linux-${{ matrix.arch }}/
+          parent: false
