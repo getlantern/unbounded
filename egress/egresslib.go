@@ -62,6 +62,10 @@ const (
 	attrQUICStreams       = "broflake.session_quic_streams"
 	attrTeardownReason    = "broflake.teardown_reason"
 	attrProtocolVersion   = "broflake.protocol_version"
+	attrSessionDuration   = "broflake.session_duration_s"
+	attrConsumerTag       = "broflake.consumer_tag"
+	attrConsumerVersion   = "broflake.consumer_client_version"
+	attrConsumerPlatform  = "broflake.consumer_platform"
 )
 
 type proxyListener struct {
@@ -233,6 +237,9 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	var sessionBytes int64
 	var sessionStreams int64
 	var keepaliveFailed atomic.Bool
+	var donorCC string
+	var helloSlot *consumerHelloSlot
+	sessionStart := time.Now()
 	teardown := teardownWebSocketClosed
 	defer func() {
 		// A wedged peer is distinguishable from a disconnected one only by an
@@ -244,6 +251,17 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// it answers "what happened in this session" but cannot answer "how often does
 		// this happen" — which is the question a detector asks.
 		recordTeardown(teardown)
+		logSessionEnd(sessionSummary{
+			csid:            consumerSessionID,
+			protocolVersion: version,
+			consumerCountry: consumerCountry,
+			donorCountry:    donorCC,
+			ingressBytes:    atomic.LoadInt64(&sessionBytes),
+			quicStreams:     atomic.LoadInt64(&sessionStreams),
+			teardown:        teardown,
+			duration:        time.Since(sessionStart),
+			hello:           helloSlot.load(),
+		})
 		span.SetAttributes(
 			attribute.Int64(attrIngressBytes, atomic.LoadInt64(&sessionBytes)),
 			attribute.Int64(attrQUICStreams, atomic.LoadInt64(&sessionStreams)),
@@ -292,7 +310,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// donorGeoAddr, not tcpAddr: behind Caddy the transport peer is always loopback,
 	// which geolocates to nothing. tcpAddr stays the transport address for wspconn and
 	// netstate below, where loopback is the right answer.
-	donorCC := donorCountry(donorGeoAddr(r, tcpAddr))
+	donorCC = donorCountry(donorGeoAddr(r, tcpAddr))
 	stats := statsFor(donorCC)
 	span.SetAttributes(attribute.String(attrDonorCountry, donorCC))
 
@@ -321,6 +339,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
+	helloSlot = l.connectionManager.consumerHelloFor(conn)
 	l.activations.record(r.Context(), activationID, donorCC)
 
 	// Here we enter the steady state for the WebSocket tunnel and continue until there's some reason

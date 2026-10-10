@@ -44,9 +44,38 @@ type QUICLayer struct {
 	t            *quic.Transport
 	tlsConfig    *tls.Config
 	eventualConn *eventualConn
+	hello        *common.ConsumerHello
 	mx           sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
+}
+
+// consumerHelloTimeout bounds sending the hello. It is best-effort telemetry,
+// so a connection that cannot take it within this time just goes without.
+const consumerHelloTimeout = 10 * time.Second
+
+// SetConsumerHello makes the layer send h to the egress on every QUIC
+// connection it accepts. Call it before ListenAndMaintainQUICConnection.
+func (c *QUICLayer) SetConsumerHello(h common.ConsumerHello) {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+	c.hello = &h
+}
+
+func sendConsumerHello(ctx context.Context, conn *quic.Conn, h common.ConsumerHello) {
+	ctx, cancel := context.WithTimeout(ctx, consumerHelloTimeout)
+	defer cancel()
+	s, err := conn.OpenUniStreamSync(ctx)
+	if err != nil {
+		slog.Debug("Couldn't open consumer hello stream", "error", err)
+		return
+	}
+	if err := common.WriteConsumerHello(s, h); err != nil {
+		s.CancelWrite(0)
+		slog.Debug("Couldn't send consumer hello", "error", err)
+		return
+	}
+	_ = s.Close()
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {
@@ -92,7 +121,11 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 
 			c.mx.Lock()
 			c.eventualConn.set(conn)
+			hello := c.hello
 			c.mx.Unlock()
+			if hello != nil {
+				go sendConsumerHello(c.ctx, conn, *hello)
+			}
 			connStart := time.Now()
 			slog.Debug("QUIC connection established, ready to proxy!")
 

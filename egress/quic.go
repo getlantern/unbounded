@@ -36,6 +36,8 @@ type connectionManager struct {
 	tlsConfig       *tls.Config
 	migrationWindow time.Duration
 	probeTimeout    time.Duration
+	// hellos maps each live *quic.Conn to its *consumerHelloSlot.
+	hellos sync.Map
 }
 
 // lockRecord serializes one session without holding the map lock while waiting.
@@ -124,6 +126,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
 		record.connection = newConn
 		record.transport = transport
+		manager.trackConsumerHello(newConn)
 		return newConn, transport, nil
 	}
 	// Atomic migration path
