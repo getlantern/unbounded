@@ -432,7 +432,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	// add no information.
 	mux.HandleFunc(freezeReportPath, l.handleFreezeReport)
 
-	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws",
+	mux.Handle("/ws", otelhttp.NewHandler(withURLFull(http.HandlerFunc(l.handleWebsocket)), "/ws",
 		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider())))
 
 	srv := &http.Server{
