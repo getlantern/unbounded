@@ -121,6 +121,7 @@ type Freddie struct {
 	meter             metric.Meter
 	nConcurrentReqs   metric.Int64ObservableUpDownCounter
 	totalRequests     metric.Int64Counter
+	signalReplies     metric.Int64Counter
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
 }
@@ -162,6 +163,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.totalRequests, err = f.meter.Int64Counter("freddie.requests",
 		metric.WithDescription("total requests"),
 		metric.WithUnit("request"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.signalReplies, err = f.meter.Int64Counter("freddie.signal.replies",
+		metric.WithDescription("signaling replies, by message type and whether the reply was delivered"),
+		metric.WithUnit("reply"))
 	if err != nil {
 		return nil, err
 	}
@@ -349,8 +357,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
 		ok := signalTable.SendOnce(sendTo, string(msg))
+		delivered := attribute.Bool("reply.delivered", ok)
+		span.SetAttributes(delivered)
+		f.signalReplies.Add(ctx, 1, metric.WithAttributes(
+			delivered,
+			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
+		))
 		if !ok {
-			span.SetStatus(codes.Error, "recipient not found")
+			// Only the first reply to a request is delivered, and none after its TTL,
+			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
 			w.WriteHeader(http.StatusNotFound)
 			w.Write([]byte("404\n"))
 			return
