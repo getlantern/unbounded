@@ -4,7 +4,7 @@ Tags: censorship, privacy, proxy, volunteer, webrtc
 Requires at least: 5.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.0
+Stable tag: 1.4.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,6 +31,7 @@ editor to turn it on for a given page.
 * **Layout** — banner, panel, floating, or simple
 * **Theme** — light, dark, or follow the visitor's system preference
 * **Location** — top or bottom of the page
+* **Country to support** — preselect a censored country for visitors to help; visitors can change it, and their connection still goes wherever it is needed when nobody from that country is waiting
 * **Where it appears** — per page via the editor sidebar, on all posts, or on the homepage
 
 = Open source =
@@ -146,6 +147,9 @@ Action Mode. The element name is the widget's public API and renaming it would
 break every existing embed, so it stayed.
 
 == Changelog ==
+
+= 1.4.0 =
+* Added a "Country to support" setting that preselects which censored country the widget prefers to help.
 
 = 1.3.0 =
 * Renamed from Unbounded to Lantern Action Mode. Settings, saved options and the widget element are unchanged.

@@ -7,6 +7,7 @@ import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
 import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Stats, {Connections} from '../../molecules/stats'
 // import Footer from '../../molecules/footer'
 import ExpandCollapse from '../../atoms/expandCollapse'
@@ -95,6 +96,7 @@ const Floating = () => {
 									/>
 								</Row>
 								<UnsupportedNote/>
+								<SupportCountry/>
 								{
 									expanded && (
 										<>

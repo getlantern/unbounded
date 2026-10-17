@@ -5,6 +5,7 @@ package main
 
 import (
 	"log/slog"
+	"strings"
 	"syscall/js"
 
 	"github.com/getlantern/broflake/clientcore"
@@ -28,7 +29,10 @@ func main() {
 	//    WebRTCOptions.Tag
 	//    EgressOptions.Addr
 	//    EgressOptions.Endpoint
+	//    [WebRTCOptions.TargetCountries] (optional, comma-separated, e.g. "IR" or "IR,RU")
 	// )
+	//
+	// The target countries can also be changed later via the returned API's setTargetCountries().
 	//
 	// Returns a reference to a Broflake JS API impl (defined in ui_wasm_impl.go)
 	js.Global().Set(
@@ -47,6 +51,9 @@ func main() {
 			rtcOpt.Endpoint = args[6].String()
 			rtcOpt.STUNBatchSize = uint32(args[7].Int())
 			rtcOpt.Tag = args[8].String()
+			if len(args) > 11 && args[11].Type() == js.TypeString {
+				rtcOpt.SetTargetCountries(strings.Split(args[11].String(), ","))
+			}
 
 			egOpt := clientcore.NewDefaultEgressOptions()
 			egOpt.Addr = args[9].String()

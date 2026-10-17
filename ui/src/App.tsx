@@ -7,6 +7,7 @@ import Panel from './components/organisms/panel'
 import usePageVisibility from './hooks/usePageVisibility'
 import {useEmitterState} from './hooks/useStateEmitter'
 import {sharingEmitter, WasmInterface} from './utils/wasmInterface'
+import {resolveSupportCountry, supportCountryEmitter} from './utils/supportCountry'
 import {isMobile} from './utils/isMobile'
 import Editor from './components/organisms/editor'
 import Floating from "./components/organisms/floating";
@@ -34,6 +35,11 @@ const App = ({appId, embed}: Props) => {
   const [mobileBg, desktopBg] = [settings.mobileBg, settings.desktopBg]
   const wasmInterface = useRef<WasmInterface>()
   const [width, setWidth] = useState(0)
+
+  // seed the volunteer's country preference: their own stored choice, else the embed's preset
+  useEffect(() => {
+    supportCountryEmitter.update(resolveSupportCountry(settings.supportCountry))
+  }, [settings.supportCountry])
 
   useLayoutEffect(() => {
     if (wasmInterface.current) return // already initialized or initializing

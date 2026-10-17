@@ -2,6 +2,7 @@ import {useContext, useEffect, useState} from 'react'
 import {Layouts, Themes} from '../../../constants'
 import {StyledEditor} from './styles'
 import {AppContext} from '../../../context'
+import {censoredCountryCodes} from '../../../utils/countries'
 
 interface Props {
 	embed: HTMLElement
@@ -207,6 +208,20 @@ const Editor = ({embed}: Props) => {
 					/>
 					<label htmlFor="title">Title</label>
 				</div>
+			</fieldset>
+			<fieldset>
+				<legend>Support country</legend>
+				<select
+					id="supportCountry"
+					name="supportCountry"
+					value={state.supportCountry}
+					onChange={e => setState({...state, supportCountry: e.target.value})}
+				>
+					<option value="">Anyone, wherever needed</option>
+					{censoredCountryCodes.map(code => (
+						<option key={code} value={code}>{code}</option>
+					))}
+				</select>
 			</fieldset>
 		</StyledEditor>
 	)

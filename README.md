@@ -202,6 +202,7 @@ The "default" column shows the default value if the attribute is not set.
 | branding  | boolean to include logos                                  | true    |
 | mock      | boolean to use the mock wasm client data                  | false   |
 | target    | string "web", "extension-offscreen" or "extension-popup"  | web     |
+| support-country | ISO code of a censored country (see `censoredCountryCodes` in `ui/src/utils/countries.ts`) volunteers prefer to help; a visitor's own choice in the widget overrides it | "" (anywhere) |
 
 In development, these settings can be customized using the `REACT_APP_*` environment variables in the `.env` or in your terminal.
 For example, to run the widget in "panel" layout, you can run `REACT_APP_LAYOUT=panel yarn start`. To run the widget with mock data,

@@ -43,7 +43,7 @@ const (
 )
 
 var (
-	consumerTable = userTable{Data: make(map[string]chan string), BufferSz: 0}
+	consumerTable = newConsumerIndex(0)
 	signalTable   = userTable{Data: make(map[string]chan string), BufferSz: 1}
 )
 
@@ -108,6 +108,99 @@ func (t *userTable) Size() int {
 	return len(t.Data)
 }
 
+// Outcomes of a genesis broadcast, recorded as the "targeting" attribute on
+// freddie.genesis.broadcasts. A fixed set, so the attribute's cardinality is bounded no matter
+// which countries producers target.
+const (
+	genesisUntargeted = "untargeted" // producer expressed no country preference
+	genesisMatched    = "matched"    // delivered only to waiting consumers from a target country
+	genesisFallback   = "fallback"   // no waiting consumer from a target country took it, so sent to all
+)
+
+// A consumerIndex is a userTable which also indexes its users by self-declared country, so that
+// genesis messages can be steered toward consumers from the countries a producer wants to serve.
+// Users without a country are still in the table and still receive untargeted and fallback
+// broadcasts; they just can't be selected by country.
+type consumerIndex struct {
+	userTable
+	country   map[string]string              // userID -> country, only for users that declared one
+	byCountry map[string]map[string]struct{} // country -> set of userIDs
+}
+
+func newConsumerIndex(bufferSz int) *consumerIndex {
+	return &consumerIndex{
+		userTable: userTable{Data: make(map[string]chan string), BufferSz: bufferSz},
+		country:   make(map[string]string),
+		byCountry: make(map[string]map[string]struct{}),
+	}
+}
+
+// AddWithCountry is Add, plus indexing userID under country. country must already be normalized;
+// "" means the user declared no country and is not indexed.
+func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
+	t.Lock()
+	defer t.Unlock()
+	t.Data[userID] = make(chan string, t.BufferSz)
+	if country != "" {
+		t.country[userID] = country
+		users, ok := t.byCountry[country]
+		if !ok {
+			users = make(map[string]struct{})
+			t.byCountry[country] = users
+		}
+		users[userID] = struct{}{}
+	}
+	return t.Data[userID]
+}
+
+func (t *consumerIndex) Delete(userID string) {
+	t.Lock()
+	defer t.Unlock()
+	delete(t.Data, userID)
+	if country, ok := t.country[userID]; ok {
+		delete(t.country, userID)
+		delete(t.byCountry[country], userID)
+		if len(t.byCountry[country]) == 0 {
+			delete(t.byCountry, country)
+		}
+	}
+}
+
+// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to every user
+// indexed under one of countries. It returns the number of users the message was delivered to.
+func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int {
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	for _, country := range countries {
+		for userID := range t.byCountry[country] {
+			select {
+			case t.Data[userID] <- msg:
+				delivered++
+			default:
+			}
+		}
+	}
+	return delivered
+}
+
+// BroadcastGenesis broadcasts a genesis message, preferring consumers from targets. If any waiting
+// consumer from a target country takes the message, nobody else gets it; otherwise it falls back to
+// a plain Broadcast to everyone. Targeting is a preference, not a filter: a producer who targets a
+// country with no waiting consumers must keep receiving offers rather than sit idle. Returns which
+// of the genesis* outcomes occurred.
+func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
+	if len(targets) == 0 {
+		t.Broadcast(msg)
+		return genesisUntargeted
+	}
+	if t.broadcastToCountries(msg, targets) > 0 {
+		return genesisMatched
+	}
+	t.Broadcast(msg)
+	return genesisFallback
+}
+
 type Freddie struct {
 	TLSConfig *tls.Config
 
@@ -123,6 +216,7 @@ type Freddie struct {
 	totalRequests     metric.Int64Counter
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
+	genesisBroadcasts metric.Int64Counter
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -184,6 +278,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 			m.Observe(int64(signalTable.Size()))
 			return nil
 		}))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisBroadcasts, err = f.meter.Int64Counter("freddie.genesis.broadcasts",
+		metric.WithDescription("genesis messages broadcast, by country targeting outcome"),
+		metric.WithUnit("message"))
 	if err != nil {
 		return nil, err
 	}
@@ -271,14 +372,19 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	defer f.currentGets.Add(-1)
 
 	consumerID := uuid.NewString()
-	span.SetAttributes(attribute.String("consumer.id", consumerID))
+	// Self-declared and unverifiable, like OfferMsg.Country. All a false claim buys a consumer is a
+	// better chance of hearing from producers who asked to serve the claimed country.
+	country := common.NormalizeCountry(r.URL.Query().Get(common.ConsumerCountryParam))
+	span.SetAttributes(
+		attribute.String("consumer.id", consumerID),
+		attribute.String("consumer.country", country),
+	)
 
-	consumerChan := consumerTable.Add(consumerID)
+	consumerChan := consumerTable.AddWithCountry(consumerID, country)
 	defer consumerTable.Delete(consumerID)
 
-	// TODO: Matchmaking would happen here. (Just be selective about which consumers you broadcast
-	// to, and you've implemented matchmaking!) If consumerTable was an indexed datastore, we could
-	// select slices of consumers in O(1) based on some deterministic function
+	// Matchmaking is country preference only, applied when genesis messages are broadcast: see
+	// consumerIndex.BroadcastGenesis.
 	w.WriteHeader(http.StatusOK)
 	timeoutChan := time.After(consumerTTL * time.Second)
 
@@ -288,6 +394,11 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
 		case <-timeoutChan:
+			return
+		case <-ctx.Done():
+			// The consumer hung up. Leave the table now rather than at consumerTTL: a departed
+			// consumer still accepts broadcasts, and under country targeting it would count as a
+			// match and swallow genesis messages that should have fallen back to everyone else.
 			return
 		}
 	}
@@ -343,8 +454,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	}
 
 	if sendTo == "genesis" {
-		// It's a genesis message, so let's broadcast it to all consumers
-		consumerTable.Broadcast(string(msg))
+		// It's a genesis message, so let's broadcast it, preferring consumers from the producer's
+		// target countries if it named any
+		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
+		outcome := consumerTable.BroadcastGenesis(string(msg), targets)
+		span.SetAttributes(
+			attribute.StringSlice("genesis.target_countries", targets),
+			attribute.String("genesis.targeting", outcome),
+		)
+		f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)

@@ -6,11 +6,13 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/pion/transport/v4"
 
+	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/covertdtls"
 )
 
@@ -39,7 +41,19 @@ type WebRTCOptions struct {
 	// consumer's public address from the remote ICE candidates and the widget
 	// geolocates it for the UI globe. The marginal disclosure is to the *egress*,
 	// which otherwise cannot know.
+	//
+	// A consumer also declares it to Freddie when subscribing to the genesis stream, so Freddie
+	// can steer genesis messages from producers who target that country (see TargetCountries).
 	ConsumerCountry string
+	// TargetCountries optionally lists ISO-3166-1 alpha-2 countries whose consumers this
+	// *producer* prefers to serve. Freddie delivers this producer's genesis messages only to
+	// waiting consumers from these countries when there are any, and to everyone otherwise, so a
+	// targeting producer is never left idle. Empty means no preference, which is byte-identical on
+	// the wire to releases before this field existed. Producer-side only.
+	//
+	// Set it before NewBroflake; to change it on a running instance use SetTargetCountries, which
+	// takes effect from each worker's next genesis message.
+	TargetCountries []string
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
@@ -67,6 +81,27 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		// stable mode: each handshake picks a random real-browser fingerprint.
 		CovertDTLS: covertdtls.Config{Randomize: true, Mimic: true},
 	}
+}
+
+// targetCountriesMu guards WebRTCOptions.TargetCountries, which producer workers read on every
+// genesis message while SetTargetCountries may write it. Package-level rather than a struct field
+// so WebRTCOptions stays safe to copy.
+var targetCountriesMu sync.RWMutex
+
+// SetTargetCountries replaces TargetCountries on a live instance. Invalid codes are dropped. Each
+// producer worker picks up the change with its next genesis message; established connections are
+// unaffected.
+func (o *WebRTCOptions) SetTargetCountries(countries []string) {
+	normalized := common.NormalizeCountries(countries)
+	targetCountriesMu.Lock()
+	defer targetCountriesMu.Unlock()
+	o.TargetCountries = normalized
+}
+
+func (o *WebRTCOptions) targetCountries() []string {
+	targetCountriesMu.RLock()
+	defer targetCountriesMu.RUnlock()
+	return common.NormalizeCountries(o.TargetCountries)
 }
 
 type EgressOptions struct {

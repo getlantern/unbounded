@@ -1,6 +1,7 @@
 import {Body, BodyWrapper, Container, Header, HeaderRight, HeaderWrapper, Item} from './styles'
 import Control from '../../molecules/control'
 import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Menu from '../../molecules/menu'
 import React, {useContext, useEffect, useState} from 'react'
 import Col from '../../atoms/col'
@@ -139,6 +140,7 @@ const Banner = () => {
 									</>
 								</Row>
 								<UnsupportedNote/>
+								<SupportCountry/>
 								<Stats/>
 								{
 									!menu && (target === Targets.WEB) && (

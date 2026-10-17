@@ -4,6 +4,7 @@ import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
 import {installFreezeWatchdog} from './freezeWatchdog'
+import {sanitizeSupportCountry, supportCountryEmitter} from './supportCountry'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -70,6 +71,11 @@ export interface WasmClient extends EventTarget {
 
 	debug(): void
 
+	// setTargetCountries names the countries (comma-separated ISO codes, '' for none) whose
+	// people this volunteer prefers to help; it applies from each worker's next connection
+	// attempt. Optional because older wasm builds and MockWasmClient lack it.
+	setTargetCountries?(countries: string): void
+
 	// liveness returns the Go-side heartbeat (see clientcore/watchdog_wasm_impl.go).
 	// Optional because the wasm binary deployed to embed.lantern.io can predate it —
 	// it does today — and because MockWasmClient has no Go runtime to report on.
@@ -91,6 +97,7 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
+		targetCountries?: string,
 	): WasmClient;
 }
 
@@ -143,6 +150,8 @@ export class WasmInterface {
 			sharing: () => sharingEmitter.state,
 		})
 
+		supportCountryEmitter.on(this.applySupportCountry)
+
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
 			this.instance = {} as WebAssemblyInstance
@@ -178,9 +187,24 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				supportCountryEmitter.state
 			)
 		}
+	}
+
+	// Safe to call while sharing: the client applies it from each worker's next connection
+	// attempt and leaves established connections alone, so no restart is needed.
+	applySupportCountry = (country: any) => {
+		if (typeof country !== 'string') return
+		if (this.target === Targets.EXTENSION_POPUP) {
+			window.parent.postMessage({
+				type: MessageTypes.WASM_SUPPORT_COUNTRY,
+				[SIGNATURE]: true,
+				data: {supportCountry: country}
+			}, '*')
+		}
+		else this.wasmClient?.setTargetCountries?.(country)
 	}
 
 	start = () => {
@@ -191,10 +215,11 @@ export class WasmInterface {
 			window.parent.postMessage({
 				type: MessageTypes.WASM_START,
 				[SIGNATURE]: true,
-				data: {}
+				data: {supportCountry: supportCountryEmitter.state}
 			}, '*')
 		}
 		else {
+			this.wasmClient.setTargetCountries?.(supportCountryEmitter.state)
 			this.wasmClient.start()
 			sharingEmitter.update(true)
 		}
@@ -283,7 +308,11 @@ export class WasmInterface {
 		if (!messageCheck(message)) return
 		switch (message.type) {
 			case MessageTypes.WASM_START:
+				if (message.data?.supportCountry !== undefined) supportCountryEmitter.update(sanitizeSupportCountry(message.data.supportCountry))
 				this.start()
+				break
+			case MessageTypes.WASM_SUPPORT_COUNTRY:
+				supportCountryEmitter.update(sanitizeSupportCountry(message.data?.supportCountry))
 				break
 			case MessageTypes.WASM_STOP:
 				this.stop()

@@ -181,6 +181,11 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				"send-to": {options.GenesisAddr},
 				"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 			}
+			// A form field rather than part of the genesis payload, so Freddie needn't parse
+			// signaling messages to honor it. Omitted entirely when there's no preference.
+			for _, c := range options.targetCountries() {
+				form.Add(common.TargetCountryField, c)
+			}
 
 			req, err := http.NewRequestWithContext(
 				ctx,
