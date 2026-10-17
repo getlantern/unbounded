@@ -4,9 +4,12 @@ package clientcore
 
 import (
 	"context"
+	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/getlantern/broflake/common"
 )
 
 func TestUpstreamUIHandlerBatchesBytesPerWorker(t *testing.T) {
@@ -76,5 +79,36 @@ func TestUpstreamUIHandlerFlushesPendingOnCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pending upstream bytes were dropped on cancel")
+	}
+}
+
+func TestUpstreamUIHandlerDeliversPendingBeforeConnectionChange(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var events []string
+	ui := UIImpl{
+		OnUpstreamChunkFunc: func(size, _ int) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, "chunk")
+		},
+		OnConnectionChangeFunc: func(_ int, _ int, _ net.IP) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, "conn")
+		},
+	}
+
+	handle := UpstreamUIHandler(ctx, ui, "", "")
+	handle(IPCMsg{IpcType: ChunkIPC, Data: make([]byte, 10), Wid: 2})
+	handle(IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}, Wid: 2})
+	defer connectedConsumers.set(2, common.ConsumerInfo{})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 2 || events[0] != "chunk" || events[1] != "conn" {
+		t.Fatalf("expected pending bytes delivered before the connection change, got %v", events)
 	}
 }

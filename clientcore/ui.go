@@ -115,8 +115,13 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 	// event per chunk, since every event crosses the JS boundary on wasm
 	var mu sync.Mutex
 	pending := make(map[workerID]int)
+	// deliverMu orders batch delivery against connection changes, so bytes relayed for a
+	// worker slot are never delivered after that slot's next consumer has connected
+	var deliverMu sync.Mutex
 
 	flush := func() {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
 		mu.Lock()
 		batch := pending
 		pending = make(map[workerID]int, len(batch))
@@ -148,6 +153,15 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 			pending[msg.Wid] += len(msg.Data.([]byte))
 			mu.Unlock()
 		case ConsumerInfoIPC:
+			deliverMu.Lock()
+			mu.Lock()
+			size := pending[msg.Wid]
+			delete(pending, msg.Wid)
+			mu.Unlock()
+			if size > 0 {
+				ui.OnUpstreamChunk(size, int(msg.Wid))
+			}
+
 			ci := msg.Data.(common.ConsumerInfo)
 
 			// Fire a UI event for the consumer delta
@@ -157,6 +171,7 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 			}
 
 			ui.OnConsumerConnectionChange(state, int(msg.Wid), ci.Addr)
+			deliverMu.Unlock()
 
 			// Update our cumulative local state for all connected consumers
 			connectedConsumers.set(msg.Wid, ci)
