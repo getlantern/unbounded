@@ -211,6 +211,8 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	if bfOpt.OnConnectionChangeFunc != nil {
 		ui.OnConnectionChangeFunc = bfOpt.OnConnectionChangeFunc
 	}
+	ui.OnDownstreamChunkFunc = bfOpt.OnDownstreamChunkFunc
+	ui.OnUpstreamChunkFunc = bfOpt.OnUpstreamChunkFunc
 
 	// Step 4: Set up the bus, bind upstream and downstream UI handlers
 	var bus = NewIpcObserver(
