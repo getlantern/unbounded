@@ -1,5 +1,15 @@
 import React, {useCallback, useContext, useEffect, useRef, useState} from 'react'
-import {Chunk, servedConnectionsEmitter, lifetimeChunksEmitter, lifetimeConnectionsEmitter, sharingEmitter} from '../../../utils/wasmInterface'
+import {
+	Chunk,
+	CountryStat,
+	countryStatsEmitter,
+	lifetimeChunksEmitter,
+	lifetimeConnectionsEmitter,
+	lifetimeUploadBytesEmitter,
+	mergeCountryStats,
+	servedConnectionsEmitter,
+	sharingEmitter
+} from '../../../utils/wasmInterface'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {SIGNATURE, MessageTypes, Settings} from '../../../constants'
 import {messageCheck} from '../../../utils/messages'
@@ -14,6 +24,8 @@ import {AppContext} from '../../../context'
 enum StorageKeys {
 	LIFETIME_CONNECTIONS = 'lifetimeConnections',
 	LIFETIME_CHUNKS = 'lifetimeChunks',
+	LIFETIME_UPLOAD_BYTES = 'lifetimeUploadBytes',
+	COUNTRY_STATS = 'countryStats',
 }
 
 let reportedConnections = 0
@@ -22,7 +34,12 @@ const Storage = ({settings}: {settings: Settings}) => {
 	const {target} = settings
 	const site = window.location.hostname
 	const {wasmInterface} = useContext(AppContext)
-	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
+	const synced = useRef({
+		[StorageKeys.LIFETIME_CONNECTIONS]: false,
+		[StorageKeys.LIFETIME_CHUNKS]: false,
+		[StorageKeys.LIFETIME_UPLOAD_BYTES]: false,
+		[StorageKeys.COUNTRY_STATS]: false,
+	})
 	const [ready, setReady] = useState(false)
 	const loaded = useRef(false)
 	const reportedSharing = useRef(sharingEmitter.state)
@@ -30,6 +47,8 @@ const Storage = ({settings}: {settings: Settings}) => {
 	const iframe = useRef<HTMLIFrameElement>(null)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
 	const lifetimeChunks = useEmitterState(lifetimeChunksEmitter)
+	const lifetimeUploadBytes = useEmitterState(lifetimeUploadBytesEmitter)
+	const countryStats = useEmitterState(countryStatsEmitter)
 	const sharing = useEmitterState(sharingEmitter)
 
 	const onMessage = useCallback((event: MessageEvent) => {
@@ -56,6 +75,23 @@ const Storage = ({settings}: {settings: Settings}) => {
 					value.forEach((chunk: Chunk) => wasmInterface && wasmInterface.handleChunk({detail: chunk}))
 					synced.current[StorageKeys.LIFETIME_CHUNKS] = true
 				}
+				if (keys.includes(StorageKeys.LIFETIME_UPLOAD_BYTES)) {
+					if (synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
+					const value = parseInt(message.data[StorageKeys.LIFETIME_UPLOAD_BYTES]) || 0
+					synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES] = true
+					lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + value)
+				}
+				if (keys.includes(StorageKeys.COUNTRY_STATS)) {
+					if (synced.current[StorageKeys.COUNTRY_STATS]) return
+					let value: CountryStat[] = []
+					try {
+						value = JSON.parse(message.data[StorageKeys.COUNTRY_STATS]) || []
+					} catch (e) {
+						console.error(e)
+					}
+					synced.current[StorageKeys.COUNTRY_STATS] = true
+					countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, value))
+				}
 				break
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -75,6 +111,20 @@ const Storage = ({settings}: {settings: Settings}) => {
 			[SIGNATURE]: true,
 			data: {
 				key: StorageKeys.LIFETIME_CONNECTIONS
+			}
+		}, '*')
+		iframe.current?.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_GET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.LIFETIME_UPLOAD_BYTES
+			}
+		}, '*')
+		iframe.current?.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_GET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.COUNTRY_STATS
 			}
 		}, '*')
 	}, [iframe])
@@ -111,6 +161,30 @@ const Storage = ({settings}: {settings: Settings}) => {
 			}
 		}, '*')
 	}, [lifetimeChunks])
+
+	useEffect(() => {
+		if (!iframe.current || !synced.current?.[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
+		iframe.current.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_SET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.LIFETIME_UPLOAD_BYTES,
+				value: lifetimeUploadBytes
+			}
+		}, '*')
+	}, [lifetimeUploadBytes])
+
+	useEffect(() => {
+		if (!iframe.current || !synced.current?.[StorageKeys.COUNTRY_STATS]) return
+		iframe.current.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_SET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.COUNTRY_STATS,
+				value: JSON.stringify(countryStats)
+			}
+		}, '*')
+	}, [countryStats])
 
 	useEffect(() => {
 		if (!ready || !iframe.current?.contentWindow) return

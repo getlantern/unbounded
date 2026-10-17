@@ -72,6 +72,8 @@ type UI interface {
 
 	OnDownstreamThroughput(bytesPerSec int)
 
+	OnUpstreamChunk(size int, workerIdx int)
+
 	OnConsumerConnectionChange(state int, workerIdx int, addr net.IP)
 }
 
@@ -108,9 +110,37 @@ func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) 
 	}
 }
 
-func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+	// Upstream bytes are batched per worker and flushed at uiRefreshHz rather than firing a UI
+	// event per chunk, since every event crosses the JS boundary on wasm
+	var mu sync.Mutex
+	pending := make(map[workerID]int)
+
+	go func() {
+		ticker := time.NewTicker(time.Second / uiRefreshHz)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				mu.Lock()
+				flush := pending
+				pending = make(map[workerID]int, len(flush))
+				mu.Unlock()
+				for wid, size := range flush {
+					ui.OnUpstreamChunk(size, int(wid))
+				}
+			}
+		}
+	}()
+
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
+		case ChunkIPC:
+			mu.Lock()
+			pending[msg.Wid] += len(msg.Data.([]byte))
+			mu.Unlock()
 		case ConsumerInfoIPC:
 			ci := msg.Data.(common.ConsumerInfo)
 

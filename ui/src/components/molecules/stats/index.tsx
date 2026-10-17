@@ -1,9 +1,8 @@
 import {Text} from '../../atoms/typography'
 import Row from '../../atoms/row'
-import React, {useContext} from 'react'
+import React, {useContext, useState} from 'react'
 import {AppContext} from '../../../context'
 // import {BREAKPOINT} from '../../../constants'
-// import {formatBytes, getIndex} from '../../../hooks/useBytesFormatLatch'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {connectionsEmitter, lifetimeConnectionsEmitter} from '../../../utils/wasmInterface'
 import {humanizeCount} from '../../../utils/humanize'
@@ -11,7 +10,8 @@ import {LifetimeConnectionsWrapper} from './styles'
 // import {Layouts} from '../../../constants'
 import {useTranslation} from 'react-i18next'
 // import TwitterLink from '../../atoms/twitterLink'
-// import useSample from '../../../hooks/useSample'
+import AdvancedStats from '../advancedStats'
+import {Chevron, ToggleButton} from '../advancedStats/styles'
 
 export const Connections = () => {
 	const {t} = useTranslation()
@@ -33,15 +33,11 @@ export const Connections = () => {
 const Stats = () => {
 	const {t} = useTranslation()
 	const {settings} = useContext(AppContext)
-	const {menu} = settings
+	const {menu, theme} = settings
+	const [advanced, setAdvanced] = useState(false)
 	const connections = useEmitterState(connectionsEmitter)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
-	// const sampledThroughput = useSample({emitter: averageThroughputEmitter, ms: 500})
-	// const sampledLifetimeChunks = useSample({emitter: lifetimeChunksEmitter, ms: 500})
-	// const formattedThroughput = formatBytes(sampledThroughput, getIndex(sampledThroughput))
 	const currentConnections = connections.filter(c => c.state === 1).length
-	// const totalChunks = sampledLifetimeChunks.map(c => c.size).reduce((p, c) => p + c, 0)
-	// const formattedTotalChunks = formatBytes(totalChunks, getIndex(totalChunks))
 
 	// const fontSize = layout === Layouts.BANNER ? 14 : 12
 	const fontSize = 14
@@ -54,12 +50,6 @@ const Stats = () => {
 				<Text style={{fontSize}}>{(t('now'))}</Text>
 				<Text style={{fontSize}}>{currentConnections}</Text>
 			</Row>
-			{/*<Row*/}
-			{/*	borderBottom*/}
-			{/*>*/}
-			{/*	<Text>Current throughput</Text>*/}
-			{/*	<Text>{formattedThroughput}/sec</Text>*/}
-			{/*</Row>*/}
 			<Row
 				borderBottom
 			>
@@ -80,12 +70,16 @@ const Stats = () => {
 				}
 				<Text style={{fontSize}}>{humanizeCount(lifetimeConnections)}</Text>
 			</Row>
-			{/*<Row*/}
-			{/*	borderBottom*/}
-			{/*>*/}
-			{/*	<Text>Lifetime data proxied</Text>*/}
-			{/*	<Text>{formattedTotalChunks.toUpperCase()}</Text>*/}
-			{/*</Row>*/}
+			{advanced && <AdvancedStats/>}
+			<ToggleButton
+				theme={theme}
+				onClick={() => setAdvanced(!advanced)}
+				aria-expanded={advanced}
+				aria-controls={'advanced-stats'}
+			>
+				{t(advanced ? 'hideAdvancedStats' : 'advancedStats')}
+				<Chevron open={advanced} aria-hidden>▾</Chevron>
+			</ToggleButton>
 		</>
 	)
 }

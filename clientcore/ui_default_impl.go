@@ -45,6 +45,10 @@ func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 	// TODO: do something?
 }
 
+func (ui UIImpl) OnUpstreamChunk(size int, workerIdx int) {
+	// TODO: do something?
+}
+
 func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.IP) {
 	if ui.OnConnectionChangeFunc != nil {
 		ui.OnConnectionChangeFunc(state, workerIdx, addr)

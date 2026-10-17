@@ -5,7 +5,7 @@ import {defaultSettings, SIGNATURE, MessageTypes} from '../../../constants'
 import {servedConnectionsEmitter, lifetimeConnectionsEmitter, sharingEmitter} from '../../../utils/wasmInterface'
 jest.mock('../../../utils/wasmInterface', () => {
  const {StateEmitter} = jest.requireActual('../../../hooks/useStateEmitter')
- return {WasmInterface: class {}, servedConnectionsEmitter:new StateEmitter(0), lifetimeConnectionsEmitter:new StateEmitter(0), lifetimeChunksEmitter:new StateEmitter([]), sharingEmitter:new StateEmitter(false)}
+ return {WasmInterface: class {}, servedConnectionsEmitter:new StateEmitter(0), lifetimeConnectionsEmitter:new StateEmitter(0), lifetimeChunksEmitter:new StateEmitter([]), lifetimeUploadBytesEmitter:new StateEmitter(0), countryStatsEmitter:new StateEmitter([]), mergeCountryStats:(a: any[], b: any[])=>[...a, ...b], sharingEmitter:new StateEmitter(false)}
 })
 beforeEach(()=> { process.env.REACT_APP_STORAGE_URL = 'https://storage.example.org/storage.html' })
 afterEach(()=>{cleanup();act(()=>sharingEmitter.update(false))})

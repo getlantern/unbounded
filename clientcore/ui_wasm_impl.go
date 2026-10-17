@@ -95,6 +95,14 @@ func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 	ui.fireEvent("downstreamThroughput", detail)
 }
 
+// 'upstreamChunk' fires up to uiRefreshHz times per second for each connection slot that sent
+// data upstream since the last event. 'size' is the number of bytes sent since then, 'workerIdx'
+// is the 0-indexed ID of the connection slot
+func (ui UIImpl) OnUpstreamChunk(size int, workerIdx int) {
+	detail := map[string]interface{}{"size": size, "workerIdx": workerIdx}
+	ui.fireEvent("upstreamChunk", detail)
+}
+
 // 'consumerConnectionChange' fires when a consumer connects or disconnects. 'state' is 1 or -1,
 // representing connection or disconnection; 'workerIdx' is the 0-indexed ID of the connection slot;
 // 'addr' is a string which, when state == 1, represents the IPv4 or IPv6 address of the new

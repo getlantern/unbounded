@@ -4,6 +4,7 @@ import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
 import {installFreezeWatchdog} from './freezeWatchdog'
+import {lookupPeerCountry} from './geo'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -22,12 +23,36 @@ export interface Throughput {
 	bytesPerSec: number
 }
 
+// down is data relayed to the people being helped, up is data they sent through the volunteer
+export interface Bytes {
+	down: number
+	up: number
+}
+
+// iso is '' when the peer's country could not be determined
+export interface CountryStat extends Bytes {
+	iso: string
+	people: number
+}
+
+interface Peer {
+	iso: string
+	resolved: boolean
+	pending: Bytes
+}
+
+const STATS_FLUSH_MS = 1000
+
 // create state emitters
 export const connectionsEmitter = new StateEmitter<Connection[]>([])
 export const averageThroughputEmitter = new StateEmitter<number>(0)
 export const servedConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeChunksEmitter = new StateEmitter<Chunk[]>([])
+export const lifetimeUploadBytesEmitter = new StateEmitter<number>(0)
+export const sessionBytesEmitter = new StateEmitter<Bytes>({down: 0, up: 0})
+export const uploadThroughputEmitter = new StateEmitter<number>(0)
+export const countryStatsEmitter = new StateEmitter<CountryStat[]>([])
 export const readyEmitter = new StateEmitter<boolean>(false)
 export const sharingEmitter = new StateEmitter<boolean>(false)
 
@@ -36,6 +61,7 @@ export interface WasmClientEventMap {
 	'ready': CustomEvent;
 	'downstreamChunk': { detail: Chunk };
 	'downstreamThroughput': { detail: Throughput };
+	'upstreamChunk': { detail: Chunk };
 	'consumerConnectionChange': { detail: Connection };
 }
 
@@ -99,6 +125,18 @@ interface Config {
 	target: Targets
 }
 
+export const mergeCountryStats = (stats: CountryStat[], deltas: CountryStat[]): CountryStat[] => {
+	const merged = stats.map(s => ({...s}))
+	deltas.forEach(delta => {
+		const found = merged.find(s => s.iso === delta.iso)
+		if (!found) return merged.push({...delta})
+		found.down += delta.down
+		found.up += delta.up
+		found.people += delta.people
+	})
+	return merged
+}
+
 export class WasmInterface {
 	go: typeof go
 	wasmClient: WasmClient | undefined
@@ -108,6 +146,12 @@ export class WasmInterface {
 	throughput: Throughput
 	// smoothed and agg data
 	connections: Connection[]
+	// per-session byte accounting, flushed to the emitters every STATS_FLUSH_MS so chunk-rate
+	// events don't re-render the UI or rewrite storage on every chunk
+	peers: { [key: number]: Peer }
+	bytesAccum: Bytes
+	countryAccum: { [iso: string]: CountryStat }
+	statsInterval: ReturnType<typeof setInterval> | undefined
 	// states
 	ready: boolean
 	initializing: boolean
@@ -119,6 +163,9 @@ export class WasmInterface {
 		this.connectionMap = {}
 		this.throughput = {bytesPerSec: 0}
 		this.connections = []
+		this.peers = {}
+		this.bytesAccum = {down: 0, up: 0}
+		this.countryAccum = {}
 		this.go = go
 		this.target = Targets.WEB
 	}
@@ -195,6 +242,7 @@ export class WasmInterface {
 			}, '*')
 		}
 		else {
+			sessionBytesEmitter.update({down: 0, up: 0})
 			this.wasmClient.start()
 			sharingEmitter.update(true)
 		}
@@ -215,6 +263,8 @@ export class WasmInterface {
 			readyEmitter.update(this.ready)
 			this.wasmClient.stop()
 			sharingEmitter.update(false)
+			this.flushStats()
+			uploadThroughputEmitter.update(0)
 			// mark every connection disconnected so arcs and the helping count
 			// clear on stop instead of lingering until the workers wind down.
 			// (emitting an empty array would NOT clear arcs: useGeo's updateArcs
@@ -240,6 +290,63 @@ export class WasmInterface {
 			return acc
 		}, [])
 		lifetimeChunksEmitter.update(chunks)
+	}
+
+	handleDownstreamChunk = (e: { detail: Chunk }) => {
+		this.handleChunk(e)
+		this.accumulate(e.detail.workerIdx, {down: e.detail.size, up: 0})
+	}
+
+	handleUpstreamChunk = (e: { detail: Chunk }) => {
+		this.accumulate(e.detail.workerIdx, {down: 0, up: e.detail.size})
+	}
+
+	accumulate = (workerIdx: number, bytes: Bytes) => {
+		this.bytesAccum.down += bytes.down
+		this.bytesAccum.up += bytes.up
+		const peer = this.peers[workerIdx]
+		if (!peer) return
+		if (peer.resolved) this.addCountry(peer.iso, bytes, 0)
+		else {
+			peer.pending.down += bytes.down
+			peer.pending.up += bytes.up
+		}
+	}
+
+	addCountry = (iso: string, bytes: Bytes, people: number) => {
+		const stat = this.countryAccum[iso] || {iso, down: 0, up: 0, people: 0}
+		stat.down += bytes.down
+		stat.up += bytes.up
+		stat.people += people
+		this.countryAccum[iso] = stat
+	}
+
+	// a slot is reused for each new person, so each connection gets its own Peer; a lookup that
+	// resolves after the slot moved on still credits the person it was started for
+	trackPeer = ({workerIdx, addr}: Connection) => {
+		const peer: Peer = {iso: '', resolved: false, pending: {down: 0, up: 0}}
+		this.peers[workerIdx] = peer
+		lookupPeerCountry(addr).then(iso => {
+			peer.iso = iso || ''
+			peer.resolved = true
+			this.addCountry(peer.iso, peer.pending, 1)
+			peer.pending = {down: 0, up: 0}
+		})
+	}
+
+	flushStats = () => {
+		const {down, up} = this.bytesAccum
+		if (uploadThroughputEmitter.state !== up) uploadThroughputEmitter.update(up)
+		if (down || up) {
+			const session = sessionBytesEmitter.state
+			sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
+			if (up) lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + up)
+			this.bytesAccum = {down: 0, up: 0}
+		}
+		const deltas = Object.values(this.countryAccum)
+		if (!deltas.length) return
+		this.countryAccum = {}
+		countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, deltas))
 	}
 
 	handleThroughput = (e: { detail: Throughput }) => {
@@ -268,6 +375,7 @@ export class WasmInterface {
 		// emit state
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
+			this.trackPeer(connection)
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
 			servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1)
 		}
@@ -298,9 +406,12 @@ export class WasmInterface {
 		if (this.target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
 
 		// register listeners
-		this.wasmClient.addEventListener('downstreamChunk', this.handleChunk)
+		this.wasmClient.addEventListener('downstreamChunk', this.handleDownstreamChunk)
+		this.wasmClient.addEventListener('upstreamChunk', this.handleUpstreamChunk)
 		this.wasmClient.addEventListener('downstreamThroughput', this.handleThroughput)
 		this.wasmClient.addEventListener('consumerConnectionChange', this.handleConnection)
 		this.wasmClient.addEventListener('ready', this.handleReady)
+
+		if (!this.statsInterval) this.statsInterval = setInterval(this.flushStats, STATS_FLUSH_MS)
 	}
 }
