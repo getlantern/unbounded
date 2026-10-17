@@ -137,6 +137,30 @@ export const mergeCountryStats = (stats: CountryStat[], deltas: CountryStat[]): 
 	return merged
 }
 
+// Byte accounting flushed to the emitters every STATS_FLUSH_MS, so chunk-rate events don't
+// re-render the UI or rewrite storage on every chunk. It is page-wide, like the emitters: each
+// embed has its own WasmInterface, and per-instance timers would overwrite each other's rates.
+const pageStats = {
+	bytes: {down: 0, up: 0} as Bytes,
+	countries: {} as { [iso: string]: CountryStat },
+	interval: undefined as ReturnType<typeof setInterval> | undefined,
+}
+
+const flushPageStats = () => {
+	const {down, up} = pageStats.bytes
+	if (uploadThroughputEmitter.state !== up) uploadThroughputEmitter.update(up)
+	if (down || up) {
+		const session = sessionBytesEmitter.state
+		sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
+		if (up) lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + up)
+		pageStats.bytes = {down: 0, up: 0}
+	}
+	const deltas = Object.values(pageStats.countries)
+	if (!deltas.length) return
+	pageStats.countries = {}
+	countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, deltas))
+}
+
 export class WasmInterface {
 	go: typeof go
 	wasmClient: WasmClient | undefined
@@ -146,12 +170,7 @@ export class WasmInterface {
 	throughput: Throughput
 	// smoothed and agg data
 	connections: Connection[]
-	// per-session byte accounting, flushed to the emitters every STATS_FLUSH_MS so chunk-rate
-	// events don't re-render the UI or rewrite storage on every chunk
 	peers: { [key: number]: Peer }
-	bytesAccum: Bytes
-	countryAccum: { [iso: string]: CountryStat }
-	statsInterval: ReturnType<typeof setInterval> | undefined
 	// states
 	ready: boolean
 	initializing: boolean
@@ -164,8 +183,6 @@ export class WasmInterface {
 		this.throughput = {bytesPerSec: 0}
 		this.connections = []
 		this.peers = {}
-		this.bytesAccum = {down: 0, up: 0}
-		this.countryAccum = {}
 		this.go = go
 		this.target = Targets.WEB
 	}
@@ -302,8 +319,8 @@ export class WasmInterface {
 	}
 
 	accumulate = (workerIdx: number, bytes: Bytes) => {
-		this.bytesAccum.down += bytes.down
-		this.bytesAccum.up += bytes.up
+		pageStats.bytes.down += bytes.down
+		pageStats.bytes.up += bytes.up
 		const peer = this.peers[workerIdx]
 		if (!peer) return
 		if (peer.resolved) this.addCountry(peer.iso, bytes, 0)
@@ -314,11 +331,11 @@ export class WasmInterface {
 	}
 
 	addCountry = (iso: string, bytes: Bytes, people: number) => {
-		const stat = this.countryAccum[iso] || {iso, down: 0, up: 0, people: 0}
+		const stat = pageStats.countries[iso] || {iso, down: 0, up: 0, people: 0}
 		stat.down += bytes.down
 		stat.up += bytes.up
 		stat.people += people
-		this.countryAccum[iso] = stat
+		pageStats.countries[iso] = stat
 	}
 
 	// a slot is reused for each new person, so each connection gets its own Peer; a lookup that
@@ -334,20 +351,7 @@ export class WasmInterface {
 		})
 	}
 
-	flushStats = () => {
-		const {down, up} = this.bytesAccum
-		if (uploadThroughputEmitter.state !== up) uploadThroughputEmitter.update(up)
-		if (down || up) {
-			const session = sessionBytesEmitter.state
-			sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
-			if (up) lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + up)
-			this.bytesAccum = {down: 0, up: 0}
-		}
-		const deltas = Object.values(this.countryAccum)
-		if (!deltas.length) return
-		this.countryAccum = {}
-		countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, deltas))
-	}
+	flushStats = () => flushPageStats()
 
 	handleThroughput = (e: { detail: Throughput }) => {
 		const {detail} = e
@@ -414,6 +418,6 @@ export class WasmInterface {
 
 		// the popup receives these stats synced from the offscreen window; flushing its own empty
 		// accumulators would overwrite them
-		if (this.target !== Targets.EXTENSION_POPUP && !this.statsInterval) this.statsInterval = setInterval(this.flushStats, STATS_FLUSH_MS)
+		if (this.target !== Targets.EXTENSION_POPUP && !pageStats.interval) pageStats.interval = setInterval(flushPageStats, STATS_FLUSH_MS)
 	}
 }

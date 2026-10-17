@@ -12,6 +12,7 @@ import {
 	lifetimeChunksEmitter,
 	lifetimeUploadBytesEmitter,
 	sessionBytesEmitter,
+	sharingEmitter,
 	uploadThroughputEmitter,
 } from '../../../utils/wasmInterface'
 import {Heading, Panel, StatRow, Value} from './styles'
@@ -27,9 +28,13 @@ export const formatData = (bytes: number) => {
 const AdvancedStats = () => {
 	const {t} = useTranslation()
 	const {theme} = useContext(AppContext).settings
-	const downSpeed = useSample({emitter: averageThroughputEmitter, ms: SAMPLE_MS})
+	const sharing = useEmitterState(sharingEmitter)
+	// throughput events can still arrive while the client winds down, so a stopped widget shows zero
+	const sampledDown = useSample({emitter: averageThroughputEmitter, ms: SAMPLE_MS})
 	const lifetimeChunks = useSample({emitter: lifetimeChunksEmitter, ms: SAMPLE_MS})
-	const upSpeed = useEmitterState(uploadThroughputEmitter)
+	const latestUp = useEmitterState(uploadThroughputEmitter)
+	const downSpeed = sharing ? sampledDown : 0
+	const upSpeed = sharing ? latestUp : 0
 	const session = useEmitterState(sessionBytesEmitter)
 	const lifetimeUp = useEmitterState(lifetimeUploadBytesEmitter)
 	const countryStats = useEmitterState(countryStatsEmitter)

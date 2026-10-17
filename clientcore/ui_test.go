@@ -112,3 +112,26 @@ func TestUpstreamUIHandlerDeliversPendingBeforeConnectionChange(t *testing.T) {
 		t.Fatalf("expected pending bytes delivered before the connection change, got %v", events)
 	}
 }
+
+func TestUpstreamUIHandlerDeliversChunkArrivingAfterCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var mu sync.Mutex
+	total := 0
+	ui := UIImpl{OnUpstreamChunkFunc: func(size, _ int) {
+		mu.Lock()
+		defer mu.Unlock()
+		total += size
+	}}
+
+	handle := UpstreamUIHandler(ctx, ui, "", "")
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	handle(IPCMsg{IpcType: ChunkIPC, Data: make([]byte, 9), Wid: 0})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if total != 9 {
+		t.Fatalf("expected a chunk handled after cancel to be delivered, got %d bytes", total)
+	}
+}

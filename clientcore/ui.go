@@ -152,6 +152,11 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 			mu.Lock()
 			pending[msg.Wid] += len(msg.Data.([]byte))
 			mu.Unlock()
+			// the bus can deliver a chunk it picked up before cancellation after the batching
+			// goroutine's final flush, which would otherwise strand it in pending
+			if ctx.Err() != nil {
+				flush()
+			}
 		case ConsumerInfoIPC:
 			deliverMu.Lock()
 			mu.Lock()

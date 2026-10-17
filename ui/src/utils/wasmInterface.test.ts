@@ -86,4 +86,16 @@ describe('WasmInterface byte accounting', () => {
 		wi.flushStats()
 		expect(countryStatsEmitter.state).toEqual([{iso: '', down: 0, up: 7, people: 1}])
 	})
+
+	it('sums upload rates across embeds instead of letting an idle one zero them', () => {
+		const active = new WasmInterface()
+		const idle = new WasmInterface()
+		active.handleUpstreamChunk({detail: {size: 40, workerIdx: 0}})
+		idle.flushStats()
+		expect(uploadThroughputEmitter.state).toBe(40)
+		active.handleUpstreamChunk({detail: {size: 5, workerIdx: 0}})
+		idle.handleUpstreamChunk({detail: {size: 3, workerIdx: 0}})
+		active.flushStats()
+		expect(uploadThroughputEmitter.state).toBe(8)
+	})
 })

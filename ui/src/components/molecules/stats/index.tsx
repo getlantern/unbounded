@@ -72,6 +72,7 @@ const Stats = () => {
 			</Row>
 			{advanced && <AdvancedStats/>}
 			<ToggleButton
+				type={'button'}
 				theme={theme}
 				onClick={() => setAdvanced(!advanced)}
 				aria-expanded={advanced}
