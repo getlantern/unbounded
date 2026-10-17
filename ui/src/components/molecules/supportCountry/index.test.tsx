@@ -2,7 +2,7 @@ import React from 'react'
 import {fireEvent, render, screen} from '@testing-library/react'
 import SupportCountry from './index'
 import {AppContextProvider} from '../../../context'
-import {defaultSettings} from '../../../constants'
+import {defaultSettings, Targets} from '../../../constants'
 import {ANYWHERE, resolveSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
 
 jest.mock('react-i18next', () => ({
@@ -10,10 +10,11 @@ jest.mock('react-i18next', () => ({
 }))
 
 // context.tsx's default value reaches the Go wasm glue, which throws in jsdom.
-jest.mock('../../../utils/wasmInterface', () => ({WasmInterface: class {}}))
+jest.mock('../../../utils/wasmInterface', () => ({WasmInterface: class {}, sendSupportCountry: jest.fn()}))
+const {sendSupportCountry} = jest.requireMock('../../../utils/wasmInterface')
 
-const renderPicker = () => render(
-	<AppContextProvider value={{width: 0, setWidth: () => {}, settings: {...defaultSettings, mock: true}, wasmInterface: undefined as any}}>
+const renderPicker = (target = defaultSettings.target) => render(
+	<AppContextProvider value={{width: 0, setWidth: () => {}, settings: {...defaultSettings, mock: true, target}, wasmInterface: undefined as any}}>
 		<SupportCountry />
 	</AppContextProvider>
 )
@@ -21,6 +22,7 @@ const renderPicker = () => render(
 afterEach(() => {
 	window.localStorage.clear()
 	supportCountryEmitter.update(ANYWHERE)
+	sendSupportCountry.mockClear()
 })
 
 describe('support country picker', () => {
@@ -39,5 +41,21 @@ describe('support country picker', () => {
 		fireEvent.change(screen.getByRole('combobox'), {target: {value: 'IR'}})
 		expect(supportCountryEmitter.state).toBe('IR')
 		expect(resolveSupportCountry('RU')).toBe('IR')
+	})
+
+	test('in the extension popup only a viewer choice is sent to the offscreen client', () => {
+		renderPicker(Targets.EXTENSION_POPUP)
+		fireEvent.change(screen.getByRole('combobox'), {target: {value: 'IR'}})
+		expect(sendSupportCountry).toHaveBeenCalledTimes(1)
+		expect(sendSupportCountry).toHaveBeenCalledWith('IR')
+		// state mirrored back from the offscreen client must not be re-sent
+		supportCountryEmitter.update('RU')
+		expect(sendSupportCountry).toHaveBeenCalledTimes(1)
+	})
+
+	test('outside the popup nothing is sent', () => {
+		renderPicker()
+		fireEvent.change(screen.getByRole('combobox'), {target: {value: 'IR'}})
+		expect(sendSupportCountry).not.toHaveBeenCalled()
 	})
 })

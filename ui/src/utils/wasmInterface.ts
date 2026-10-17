@@ -106,6 +106,13 @@ interface Config {
 	target: Targets
 }
 
+// Forwards a viewer's choice from the extension popup to the offscreen client that runs the wasm.
+export const sendSupportCountry = (country: string) => window.parent.postMessage({
+	type: MessageTypes.WASM_SUPPORT_COUNTRY,
+	[SIGNATURE]: true,
+	data: {supportCountry: country}
+}, '*')
+
 export class WasmInterface {
 	go: typeof go
 	wasmClient: WasmClient | undefined
@@ -194,17 +201,12 @@ export class WasmInterface {
 	}
 
 	// Safe to call while sharing: the client applies it from each worker's next connection
-	// attempt and leaves established connections alone, so no restart is needed.
+	// attempt and leaves established connections alone, so no restart is needed. The popup has
+	// no client of its own: its emitter mirrors the offscreen client's, and only a viewer's
+	// choice is sent there (sendSupportCountry), so mirrored updates never echo back.
 	applySupportCountry = (country: any) => {
-		if (typeof country !== 'string') return
-		if (this.target === Targets.EXTENSION_POPUP) {
-			window.parent.postMessage({
-				type: MessageTypes.WASM_SUPPORT_COUNTRY,
-				[SIGNATURE]: true,
-				data: {supportCountry: country}
-			}, '*')
-		}
-		else this.wasmClient?.setTargetCountries?.(country)
+		if (typeof country !== 'string' || this.target === Targets.EXTENSION_POPUP) return
+		this.wasmClient?.setTargetCountries?.(country)
 	}
 
 	start = () => {

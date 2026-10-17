@@ -5,6 +5,8 @@ import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {canShare} from '../../../utils/capabilities'
 import {censoredCountryCodes, countries} from '../../../utils/countries'
 import {ANYWHERE, storeSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
+import {sendSupportCountry} from '../../../utils/wasmInterface'
+import {Targets} from '../../../constants'
 import {Select, Wrapper} from './styles'
 
 // Localized country names where the browser can supply them, else the English names we ship.
@@ -22,7 +24,7 @@ const countryName = (code: string, displayNames?: Intl.DisplayNames) => {
 // needs no restart: the client applies it from each worker's next connection attempt.
 const SupportCountry = ({style}: {style?: CSSProperties}) => {
 	const {t, i18n} = useTranslation()
-	const {theme, mock} = useContext(AppContext).settings
+	const {theme, mock, target} = useContext(AppContext).settings
 	const supportCountry = useEmitterState(supportCountryEmitter)
 
 	const options = useMemo(() => {
@@ -48,6 +50,7 @@ const SupportCountry = ({style}: {style?: CSSProperties}) => {
 				onChange={e => {
 					storeSupportCountry(e.target.value)
 					supportCountryEmitter.update(e.target.value)
+					if (target === Targets.EXTENSION_POPUP) sendSupportCountry(e.target.value)
 				}}
 			>
 				<option value={ANYWHERE}>{t('supportAnywhere')}</option>
