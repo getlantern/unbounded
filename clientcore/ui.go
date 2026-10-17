@@ -116,21 +116,27 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 	var mu sync.Mutex
 	pending := make(map[workerID]int)
 
+	flush := func() {
+		mu.Lock()
+		batch := pending
+		pending = make(map[workerID]int, len(batch))
+		mu.Unlock()
+		for wid, size := range batch {
+			ui.OnUpstreamChunk(size, int(wid))
+		}
+	}
+
 	go func() {
 		ticker := time.NewTicker(time.Second / uiRefreshHz)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
+				// deliver bytes already relayed since the last tick so they aren't lost on stop
+				flush()
 				return
 			case <-ticker.C:
-				mu.Lock()
-				flush := pending
-				pending = make(map[workerID]int, len(flush))
-				mu.Unlock()
-				for wid, size := range flush {
-					ui.OnUpstreamChunk(size, int(wid))
-				}
+				flush()
 			}
 		}
 	}()

@@ -58,3 +58,23 @@ func TestDownstreamChunkForwardsToCallback(t *testing.T) {
 		t.Fatalf("expected (42, 5), got (%d, %d)", size, wid)
 	}
 }
+
+func TestUpstreamUIHandlerFlushesPendingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	got := make(chan int, 1)
+	ui := UIImpl{OnUpstreamChunkFunc: func(size, _ int) { got <- size }}
+
+	handle := UpstreamUIHandler(ctx, ui, "", "")
+	handle(IPCMsg{IpcType: ChunkIPC, Data: make([]byte, 64), Wid: 1})
+	cancel()
+
+	select {
+	case size := <-got:
+		if size != 64 {
+			t.Fatalf("expected 64 pending bytes, got %d", size)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("pending upstream bytes were dropped on cancel")
+	}
+}

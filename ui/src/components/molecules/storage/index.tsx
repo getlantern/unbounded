@@ -29,6 +29,15 @@ enum StorageKeys {
 }
 
 let reportedConnections = 0
+// The emitters are shared by every embed on the page, so stored totals are added once per page
+// load, not once per embed; each embed still marks its own key synced so it can persist updates.
+const hydrated = new Set<StorageKeys>()
+const hydrateOnce = (key: StorageKeys, apply: () => void) => {
+	if (hydrated.has(key)) return
+	hydrated.add(key)
+	apply()
+}
+export const resetStorageHydration = () => hydrated.clear()
 
 const Storage = ({settings}: {settings: Settings}) => {
 	const {target} = settings
@@ -62,24 +71,25 @@ const Storage = ({settings}: {settings: Settings}) => {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_CONNECTIONS]) || 0
 					if (synced.current[StorageKeys.LIFETIME_CONNECTIONS]) return
 					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
-					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
+					hydrateOnce(StorageKeys.LIFETIME_CONNECTIONS, () => lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value))
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
+					if (synced.current[StorageKeys.LIFETIME_CHUNKS]) return
 					let value = []
 					try {
 						value = JSON.parse(message.data[StorageKeys.LIFETIME_CHUNKS]) || []
 					} catch (e) {
 						console.error(e)
 					}
-					value.forEach((chunk: Chunk) => wasmInterface && wasmInterface.handleChunk({detail: chunk}))
+					hydrateOnce(StorageKeys.LIFETIME_CHUNKS, () => value.forEach((chunk: Chunk) => wasmInterface && wasmInterface.handleChunk({detail: chunk})))
 					synced.current[StorageKeys.LIFETIME_CHUNKS] = true
 				}
 				if (keys.includes(StorageKeys.LIFETIME_UPLOAD_BYTES)) {
 					if (synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
 					const value = parseInt(message.data[StorageKeys.LIFETIME_UPLOAD_BYTES]) || 0
 					synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES] = true
-					lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + value)
+					hydrateOnce(StorageKeys.LIFETIME_UPLOAD_BYTES, () => lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + value))
 				}
 				if (keys.includes(StorageKeys.COUNTRY_STATS)) {
 					if (synced.current[StorageKeys.COUNTRY_STATS]) return
@@ -90,7 +100,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 						console.error(e)
 					}
 					synced.current[StorageKeys.COUNTRY_STATS] = true
-					countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, value))
+					hydrateOnce(StorageKeys.COUNTRY_STATS, () => countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, value)))
 				}
 				break
 		}

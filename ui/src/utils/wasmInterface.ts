@@ -412,6 +412,8 @@ export class WasmInterface {
 		this.wasmClient.addEventListener('consumerConnectionChange', this.handleConnection)
 		this.wasmClient.addEventListener('ready', this.handleReady)
 
-		if (!this.statsInterval) this.statsInterval = setInterval(this.flushStats, STATS_FLUSH_MS)
+		// the popup receives these stats synced from the offscreen window; flushing its own empty
+		// accumulators would overwrite them
+		if (this.target !== Targets.EXTENSION_POPUP && !this.statsInterval) this.statsInterval = setInterval(this.flushStats, STATS_FLUSH_MS)
 	}
 }

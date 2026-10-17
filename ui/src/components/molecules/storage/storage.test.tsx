@@ -1,14 +1,14 @@
 import React from 'react'
 import {act, render, cleanup, fireEvent, screen} from '@testing-library/react'
-import Storage from './index'
+import Storage, {resetStorageHydration} from './index'
 import {defaultSettings, SIGNATURE, MessageTypes} from '../../../constants'
-import {servedConnectionsEmitter, lifetimeConnectionsEmitter, sharingEmitter} from '../../../utils/wasmInterface'
+import {servedConnectionsEmitter, lifetimeConnectionsEmitter, lifetimeUploadBytesEmitter, sharingEmitter} from '../../../utils/wasmInterface'
 jest.mock('../../../utils/wasmInterface', () => {
  const {StateEmitter} = jest.requireActual('../../../hooks/useStateEmitter')
  return {WasmInterface: class {}, servedConnectionsEmitter:new StateEmitter(0), lifetimeConnectionsEmitter:new StateEmitter(0), lifetimeChunksEmitter:new StateEmitter([]), lifetimeUploadBytesEmitter:new StateEmitter(0), countryStatsEmitter:new StateEmitter([]), mergeCountryStats:(a: any[], b: any[])=>[...a, ...b], sharingEmitter:new StateEmitter(false)}
 })
 beforeEach(()=> { process.env.REACT_APP_STORAGE_URL = 'https://storage.example.org/storage.html' })
-afterEach(()=>{cleanup();act(()=>sharingEmitter.update(false))})
+afterEach(()=>{cleanup();resetStorageHydration();act(()=>sharingEmitter.update(false))})
 const connect = () => act(()=>servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1))
 const helped = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='helped')
 const sharing = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='sharing').map(c=>c[0].data.eventProperties.on)
@@ -74,4 +74,13 @@ test('a toggle before iframe load is reported once it is ready',()=>{
  expect(sharing(spy)).toEqual([])
  fireEvent.load(frame)
  expect(sharing(spy)).toEqual([true])
+})
+test('stored totals are added once per page, not once per embed',()=>{
+ render(<><Storage settings={defaultSettings}/><Storage settings={defaultSettings}/></>)
+ const frames=screen.getAllByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement[]
+ frames.forEach(f=>fireEvent.load(f))
+ const before=lifetimeUploadBytesEmitter.state
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeUploadBytes:'500'}}
+ frames.forEach(f=>act(()=>window.dispatchEvent(new MessageEvent('message',{source:f.contentWindow,data}))))
+ expect(lifetimeUploadBytesEmitter.state).toBe(before+500)
 })
