@@ -1,6 +1,14 @@
-import {ANYWHERE, resolveSupportCountry, sanitizeSupportCountry, storeSupportCountry} from './supportCountry'
+import {
+	ANYWHERE,
+	applySupportCountryPreset,
+	resolveSupportCountry,
+	sanitizeSupportCountry,
+	storeSupportCountry,
+	supportCountryEmitter,
+} from './supportCountry'
 
 afterEach(() => {
+	supportCountryEmitter.update(ANYWHERE)
 	window.localStorage.clear()
 	jest.restoreAllMocks()
 })
@@ -42,5 +50,31 @@ describe('resolveSupportCountry', () => {
 		jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
 		expect(() => storeSupportCountry('IR')).not.toThrow()
 		expect(resolveSupportCountry('RU')).toBe('RU')
+	})
+})
+
+describe('applySupportCountryPreset', () => {
+	test("an embed without a preset doesn't erase another embed's, in either mount order", () => {
+		applySupportCountryPreset('IR')
+		applySupportCountryPreset(undefined)
+		expect(supportCountryEmitter.state).toBe('IR')
+
+		supportCountryEmitter.update(ANYWHERE)
+		applySupportCountryPreset('')
+		applySupportCountryPreset('IR')
+		expect(supportCountryEmitter.state).toBe('IR')
+	})
+
+	test('clearing an embed preset resets to anywhere', () => {
+		applySupportCountryPreset('IR')
+		applySupportCountryPreset('', 'IR')
+		expect(supportCountryEmitter.state).toBe(ANYWHERE)
+	})
+
+	test("the viewer's stored choice still wins over every embed", () => {
+		storeSupportCountry('CN')
+		applySupportCountryPreset('IR')
+		applySupportCountryPreset(undefined)
+		expect(supportCountryEmitter.state).toBe('CN')
 	})
 })

@@ -8,6 +8,7 @@ import {
 	readyEmitter,
 	sharingEmitter,
 } from '../utils/wasmInterface'
+import {supportCountryEmitter} from '../utils/supportCountry'
 import {messageCheck} from '../utils/messages'
 
 const emitterMap = {
@@ -16,7 +17,8 @@ const emitterMap = {
 	lifetimeConnectionsEmitter,
 	averageThroughputEmitter,
 	lifetimeChunksEmitter,
-	readyEmitter
+	readyEmitter,
+	supportCountryEmitter
 }
 
 type EmitterKey = keyof typeof emitterMap

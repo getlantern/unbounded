@@ -136,7 +136,7 @@ function browsers_unbounded_register_settings() {
     add_settings_field('browsers_unbounded_layout', __('Layout', 'unbounded-by-lantern'), 'browsers_unbounded_layout_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
     add_settings_field('browsers_unbounded_theme', __('Theme', 'unbounded-by-lantern'), 'browsers_unbounded_theme_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
     add_settings_field('browsers_unbounded_location', __('Location', 'unbounded-by-lantern'), 'browsers_unbounded_location_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
-    add_settings_field('browsers_unbounded_support_country', __('Country to Support', 'unbounded-by-lantern'), 'browsers_unbounded_support_country_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_support_country', __('Country to Support', 'unbounded-by-lantern'), 'browsers_unbounded_support_country_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section', array('label_for' => 'browsers_unbounded_support_country'));
     add_settings_field('browsers_unbounded_homepage', __('Display on Homepage', 'unbounded-by-lantern'), 'browsers_unbounded_homepage_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
     add_settings_field('browsers_unbounded_posts', __('Display on Posts', 'unbounded-by-lantern'), 'browsers_unbounded_posts_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
 }

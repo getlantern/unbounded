@@ -43,3 +43,12 @@ export const resolveSupportCountry = (preset: unknown): string => {
 	const stored = readStoredSupportCountry()
 	return stored !== null ? stored : sanitizeSupportCountry(preset)
 }
+
+// Seeds the shared emitter from one embed's preset. Every embed on a page shares the emitter, so
+// an embed with no preset must not erase another embed's; it only resets the emitter when its own
+// preset was just cleared (the editor does this).
+export const applySupportCountryPreset = (preset: unknown, previousPreset: unknown = ANYWHERE) => {
+	const country = resolveSupportCountry(preset)
+	if (country === ANYWHERE && sanitizeSupportCountry(previousPreset) === ANYWHERE) return
+	supportCountryEmitter.update(country)
+}

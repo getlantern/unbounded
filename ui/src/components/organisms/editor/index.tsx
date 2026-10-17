@@ -213,6 +213,7 @@ const Editor = ({embed}: Props) => {
 				<legend>Support country</legend>
 				<select
 					id="supportCountry"
+					aria-label="Support country"
 					name="supportCountry"
 					value={state.supportCountry}
 					onChange={e => setState({...state, supportCountry: e.target.value})}
