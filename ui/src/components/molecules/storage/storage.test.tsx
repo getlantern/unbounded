@@ -84,3 +84,15 @@ test('stored totals are added once per page, not once per embed',()=>{
  frames.forEach(f=>act(()=>window.dispatchEvent(new MessageEvent('message',{source:f.contentWindow,data}))))
  expect(lifetimeUploadBytesEmitter.state).toBe(before+500)
 })
+test('a total counted before the stored reply is persisted even when the stored value adds nothing',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ fireEvent.load(frame)
+ act(()=>lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + 42))
+ const total=lifetimeUploadBytesEmitter.state
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeUploadBytes:''}}
+ act(()=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,data})))
+ const sets=spy.mock.calls.filter(c=>c[0]?.type===MessageTypes.STORAGE_SET&&c[0]?.data?.key==='lifetimeUploadBytes')
+ expect(sets.map(c=>c[0].data.value)).toEqual([total])
+})

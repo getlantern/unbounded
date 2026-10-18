@@ -60,6 +60,14 @@ const Storage = ({settings}: {settings: Settings}) => {
 	const countryStats = useEmitterState(countryStatsEmitter)
 	const sharing = useEmitterState(sharingEmitter)
 
+	// a hydration that adds nothing leaves the emitter unchanged, so its persist effect never reruns;
+	// write the current total once the key is synced so bytes counted before the reply are saved
+	const persist = (key: StorageKeys, value: number | string) => iframe.current?.contentWindow?.postMessage({
+		type: MessageTypes.STORAGE_SET,
+		[SIGNATURE]: true,
+		data: {key, value}
+	}, '*')
+
 	const onMessage = useCallback((event: MessageEvent) => {
 		const message = event.data
 		if (event.source !== iframe.current?.contentWindow || !messageCheck(message)) return
@@ -72,6 +80,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 					if (synced.current[StorageKeys.LIFETIME_CONNECTIONS]) return
 					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
 					hydrateOnce(StorageKeys.LIFETIME_CONNECTIONS, () => lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value))
+					persist(StorageKeys.LIFETIME_CONNECTIONS, lifetimeConnectionsEmitter.state)
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
@@ -90,6 +99,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_UPLOAD_BYTES]) || 0
 					synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES] = true
 					hydrateOnce(StorageKeys.LIFETIME_UPLOAD_BYTES, () => lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + value))
+					persist(StorageKeys.LIFETIME_UPLOAD_BYTES, lifetimeUploadBytesEmitter.state)
 				}
 				if (keys.includes(StorageKeys.COUNTRY_STATS)) {
 					if (synced.current[StorageKeys.COUNTRY_STATS]) return
@@ -101,6 +111,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 					}
 					synced.current[StorageKeys.COUNTRY_STATS] = true
 					hydrateOnce(StorageKeys.COUNTRY_STATS, () => countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, value)))
+					persist(StorageKeys.COUNTRY_STATS, JSON.stringify(countryStatsEmitter.state))
 				}
 				break
 		}

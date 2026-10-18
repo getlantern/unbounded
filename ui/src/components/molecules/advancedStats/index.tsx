@@ -7,8 +7,8 @@ import {useEmitterState} from '../../../hooks/useStateEmitter'
 import useSample from '../../../hooks/useSample'
 import {countries} from '../../../utils/countries'
 import {
-	averageThroughputEmitter,
 	countryStatsEmitter,
+	downloadThroughputEmitter,
 	lifetimeChunksEmitter,
 	lifetimeUploadBytesEmitter,
 	sessionBytesEmitter,
@@ -25,15 +25,15 @@ export const formatData = (bytes: number) => {
 	return formatBytes(bytes, getIndex(bytes)).toUpperCase()
 }
 
-const AdvancedStats = () => {
+const AdvancedStats = ({id}: {id: string}) => {
 	const {t} = useTranslation()
 	const {theme} = useContext(AppContext).settings
 	const sharing = useEmitterState(sharingEmitter)
 	// throughput events can still arrive while the client winds down, so a stopped widget shows zero
-	const sampledDown = useSample({emitter: averageThroughputEmitter, ms: SAMPLE_MS})
 	const lifetimeChunks = useSample({emitter: lifetimeChunksEmitter, ms: SAMPLE_MS})
+	const latestDown = useEmitterState(downloadThroughputEmitter)
 	const latestUp = useEmitterState(uploadThroughputEmitter)
-	const downSpeed = sharing ? sampledDown : 0
+	const downSpeed = sharing ? latestDown : 0
 	const upSpeed = sharing ? latestUp : 0
 	const session = useEmitterState(sessionBytesEmitter)
 	const lifetimeUp = useEmitterState(lifetimeUploadBytesEmitter)
@@ -51,7 +51,7 @@ const AdvancedStats = () => {
 	}
 
 	return (
-		<Panel id={'advanced-stats'}>
+		<Panel id={id}>
 			<StatRow theme={theme}>
 				<Text style={{fontSize: 12}}>{t('currentSpeed')}</Text>
 				<Text style={{fontSize: 12}}>

@@ -52,6 +52,7 @@ export const lifetimeChunksEmitter = new StateEmitter<Chunk[]>([])
 export const lifetimeUploadBytesEmitter = new StateEmitter<number>(0)
 export const sessionBytesEmitter = new StateEmitter<Bytes>({down: 0, up: 0})
 export const uploadThroughputEmitter = new StateEmitter<number>(0)
+export const downloadThroughputEmitter = new StateEmitter<number>(0)
 export const countryStatsEmitter = new StateEmitter<CountryStat[]>([])
 export const readyEmitter = new StateEmitter<boolean>(false)
 export const sharingEmitter = new StateEmitter<boolean>(false)
@@ -148,7 +149,9 @@ const pageStats = {
 
 const flushPageStats = () => {
 	const {down, up} = pageStats.bytes
-	if (uploadThroughputEmitter.state !== up) uploadThroughputEmitter.update(up)
+	// both speeds are the bytes accumulated over one STATS_FLUSH_MS interval, i.e. bytes per second
+	uploadThroughputEmitter.update(up)
+	downloadThroughputEmitter.update(down)
 	if (down || up) {
 		const session = sessionBytesEmitter.state
 		sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
@@ -259,6 +262,8 @@ export class WasmInterface {
 			}, '*')
 		}
 		else {
+			// credit bytes from the previous session's teardown to lifetime totals before resetting the session
+			this.flushStats()
 			sessionBytesEmitter.update({down: 0, up: 0})
 			this.wasmClient.start()
 			sharingEmitter.update(true)
@@ -282,6 +287,7 @@ export class WasmInterface {
 			sharingEmitter.update(false)
 			this.flushStats()
 			uploadThroughputEmitter.update(0)
+			downloadThroughputEmitter.update(0)
 			// mark every connection disconnected so arcs and the helping count
 			// clear on stop instead of lingering until the workers wind down.
 			// (emitting an empty array would NOT clear arcs: useGeo's updateArcs

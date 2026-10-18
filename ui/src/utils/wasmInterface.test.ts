@@ -1,9 +1,12 @@
 import {
 	WasmInterface,
 	countryStatsEmitter,
+	downloadThroughputEmitter,
 	lifetimeUploadBytesEmitter,
 	mergeCountryStats,
+	readyEmitter,
 	sessionBytesEmitter,
+	sharingEmitter,
 	uploadThroughputEmitter,
 } from './wasmInterface'
 import {lookupPeerCountry} from './geo'
@@ -36,6 +39,7 @@ describe('WasmInterface byte accounting', () => {
 		sessionBytesEmitter.update({down: 0, up: 0})
 		lifetimeUploadBytesEmitter.update(0)
 		uploadThroughputEmitter.update(0)
+		downloadThroughputEmitter.update(0)
 		mockLookup.mockReset()
 	})
 
@@ -97,5 +101,29 @@ describe('WasmInterface byte accounting', () => {
 		idle.handleUpstreamChunk({detail: {size: 3, workerIdx: 0}})
 		active.flushStats()
 		expect(uploadThroughputEmitter.state).toBe(8)
+	})
+
+	it('reports download speed as the bytes relayed in one flush interval', () => {
+		const wi = new WasmInterface()
+		wi.handleDownstreamChunk({detail: {size: 300, workerIdx: 0}})
+		wi.handleDownstreamChunk({detail: {size: 200, workerIdx: 1}})
+		wi.flushStats()
+		expect(downloadThroughputEmitter.state).toBe(500)
+		wi.flushStats()
+		expect(downloadThroughputEmitter.state).toBe(0)
+	})
+
+	it('credits teardown bytes from the previous session to lifetime totals, not the restarted session', () => {
+		const wi = new WasmInterface()
+		wi.wasmClient = {start: jest.fn(), stop: jest.fn()} as any
+		wi.ready = true
+		wi.handleUpstreamChunk({detail: {size: 9, workerIdx: 0}})
+		wi.start()
+		expect(lifetimeUploadBytesEmitter.state).toBe(9)
+		expect(sessionBytesEmitter.state).toEqual({down: 0, up: 0})
+		wi.flushStats()
+		expect(sessionBytesEmitter.state).toEqual({down: 0, up: 0})
+		sharingEmitter.update(false)
+		readyEmitter.update(false)
 	})
 })

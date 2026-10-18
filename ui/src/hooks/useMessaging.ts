@@ -4,6 +4,7 @@ import {
 	averageThroughputEmitter,
 	connectionsEmitter,
 	countryStatsEmitter,
+	downloadThroughputEmitter,
 	lifetimeChunksEmitter,
 	lifetimeConnectionsEmitter,
 	lifetimeUploadBytesEmitter,
@@ -24,6 +25,7 @@ const emitterMap = {
 	lifetimeUploadBytesEmitter,
 	sessionBytesEmitter,
 	uploadThroughputEmitter,
+	downloadThroughputEmitter,
 	countryStatsEmitter
 }
 

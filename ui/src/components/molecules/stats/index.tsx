@@ -1,6 +1,6 @@
 import {Text} from '../../atoms/typography'
 import Row from '../../atoms/row'
-import React, {useContext, useState} from 'react'
+import React, {useContext, useId, useState} from 'react'
 import {AppContext} from '../../../context'
 // import {BREAKPOINT} from '../../../constants'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
@@ -35,6 +35,7 @@ const Stats = () => {
 	const {settings} = useContext(AppContext)
 	const {menu, theme} = settings
 	const [advanced, setAdvanced] = useState(false)
+	const panelId = useId()
 	const connections = useEmitterState(connectionsEmitter)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
 	const currentConnections = connections.filter(c => c.state === 1).length
@@ -70,13 +71,13 @@ const Stats = () => {
 				}
 				<Text style={{fontSize}}>{humanizeCount(lifetimeConnections)}</Text>
 			</Row>
-			{advanced && <AdvancedStats/>}
+			{advanced && <AdvancedStats id={panelId}/>}
 			<ToggleButton
 				type={'button'}
 				theme={theme}
 				onClick={() => setAdvanced(!advanced)}
 				aria-expanded={advanced}
-				aria-controls={'advanced-stats'}
+				aria-controls={panelId}
 			>
 				{t(advanced ? 'hideAdvancedStats' : 'advancedStats')}
 				<Chevron open={advanced} aria-hidden>▾</Chevron>
