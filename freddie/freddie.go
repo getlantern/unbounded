@@ -117,13 +117,13 @@ const (
 	genesisFallback   = "fallback"   // no waiting consumer from a target country took it, so sent to all
 )
 
-// A consumerIndex is a userTable which also indexes its users by self-declared country, so that
+// A consumerIndex is a userTable which also indexes its users by server-derived country, so that
 // genesis messages can be steered toward consumers from the countries a producer wants to serve.
-// Users without a country are still in the table and still receive untargeted and fallback
+// Users whose country is unknown are still in the table and still receive untargeted and fallback
 // broadcasts; they just can't be selected by country.
 type consumerIndex struct {
 	userTable
-	country   map[string]string              // userID -> country, only for users that declared one
+	country   map[string]string              // userID -> country, only for users whose country is known
 	byCountry map[string]map[string]struct{} // country -> set of userIDs
 }
 
@@ -136,7 +136,7 @@ func newConsumerIndex(bufferSz int) *consumerIndex {
 }
 
 // AddWithCountry is Add, plus indexing userID under country. country must already be normalized;
-// "" means the user declared no country and is not indexed.
+// "" means the user's country is unknown and it is not indexed.
 func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
 	t.Lock()
 	defer t.Unlock()
@@ -204,6 +204,16 @@ func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
 type Freddie struct {
 	TLSConfig *tls.Config
 
+	// ConsumerCountry, if non-nil, returns the ISO 3166-1 alpha-2 country of the consumer making
+	// r, a GET /v1/signal, or "" when it is unknown. Freddie indexes the consumer under the
+	// (normalized) result so producers who target that country can prefer it. It must derive the
+	// country server-side and must not trust client-controlled input: a consumer who could claim
+	// a country would absorb every genesis message targeted at it. nil, or a "" result, leaves the
+	// consumer untargeted: it still receives untargeted and fallback broadcasts, but is never
+	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
+	// is read without synchronization by concurrent request handlers.
+	ConsumerCountry func(r *http.Request) string
+
 	ctx context.Context
 	srv *http.Server
 
@@ -217,6 +227,7 @@ type Freddie struct {
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
 	genesisBroadcasts metric.Int64Counter
+	consumerSubs      metric.Int64Counter
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -285,6 +296,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.genesisBroadcasts, err = f.meter.Int64Counter("freddie.genesis.broadcasts",
 		metric.WithDescription("genesis messages broadcast, by country targeting outcome"),
 		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.consumerSubs, err = f.meter.Int64Counter("freddie.consumer.subscribes",
+		metric.WithDescription("consumers subscribed to the genesis stream, by whether their country is known"),
+		metric.WithUnit("subscription"))
 	if err != nil {
 		return nil, err
 	}
@@ -372,9 +390,12 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	defer f.currentGets.Add(-1)
 
 	consumerID := uuid.NewString()
-	// Self-declared and unverifiable, like OfferMsg.Country. All a false claim buys a consumer is a
-	// better chance of hearing from producers who asked to serve the claimed country.
-	country := common.NormalizeCountry(r.URL.Query().Get(common.ConsumerCountryParam))
+	// Never taken from the request's own claims: see Freddie.ConsumerCountry.
+	var country string
+	if f.ConsumerCountry != nil {
+		country = common.NormalizeCountry(f.ConsumerCountry(r))
+	}
+	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(attribute.Bool("country_known", country != "")))
 	span.SetAttributes(
 		attribute.String("consumer.id", consumerID),
 		attribute.String("consumer.country", country),

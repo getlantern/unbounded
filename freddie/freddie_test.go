@@ -111,31 +111,45 @@ func TestConsumerIndex_DeleteCleansIndex(t *testing.T) {
 	}
 }
 
-// End to end through the HTTP handlers: consumers declare a country on GET, a producer targets
-// one on the genesis POST, and old clients that send neither still interoperate.
-func TestHandleSignal_TargetedGenesis(t *testing.T) {
+// testCountryHeader carries a consumer's country to the test hook. Production hooks must derive the
+// country server-side; a header is fine here because the test controls every request.
+const testCountryHeader = "X-Test-Country"
+
+// newTestServer starts Freddie over HTTP with a fresh consumer table and the given hook, and
+// returns helpers to subscribe consumers and post genesis messages.
+func newTestServer(t *testing.T, hook func(*http.Request) string) (
+	subscribe func(country, query string) chan string,
+	genesis func(targets ...string),
+	expect func(name string, ch chan string, want bool),
+	waitForConsumers func(n int),
+) {
+	t.Helper()
 	consumerTable = newConsumerIndex(0)
 
 	f, err := New(context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	f.ConsumerCountry = hook
 	srv := httptest.NewServer(f.srv.Handler)
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
-	subscribe := func(country string) chan string {
+	subscribe = func(country, query string) chan string {
 		u := srv.URL + "/v1/signal"
-		if country != "" {
-			u += "?" + url.Values{common.ConsumerCountryParam: {country}}.Encode()
+		if query != "" {
+			u += "?" + query
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		req.Header.Set(common.VersionHeader, common.Version)
+		if country != "" {
+			req.Header.Set(testCountryHeader, country)
+		}
 		msgs := make(chan string, 16)
 		go func() {
 			res, err := http.DefaultClient.Do(req)
@@ -151,7 +165,7 @@ func TestHandleSignal_TargetedGenesis(t *testing.T) {
 		return msgs
 	}
 
-	genesis := func(targets ...string) {
+	genesis = func(targets ...string) {
 		form := url.Values{
 			"data":    {"{}"},
 			"send-to": {"genesis"},
@@ -175,7 +189,7 @@ func TestHandleSignal_TargetedGenesis(t *testing.T) {
 		}
 	}
 
-	expect := func(name string, ch chan string, want bool) {
+	expect = func(name string, ch chan string, want bool) {
 		t.Helper()
 		select {
 		case <-ch:
@@ -189,33 +203,136 @@ func TestHandleSignal_TargetedGenesis(t *testing.T) {
 		}
 	}
 
-	ir := subscribe("ir") // lowercase on purpose: freddie normalizes
-	ru := subscribe("RU")
-	legacy := subscribe("")
-
-	deadline := time.Now().Add(5 * time.Second)
-	for consumerTable.Size() < 3 {
-		if time.Now().After(deadline) {
-			t.Fatal("consumers never registered")
+	waitForConsumers = func(n int) {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for consumerTable.Size() < n {
+			if time.Now().After(deadline) {
+				t.Fatal("consumers never registered")
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
+		// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
+		// receivers
+		time.Sleep(100 * time.Millisecond)
 	}
-	// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
-	// receivers
-	time.Sleep(100 * time.Millisecond)
+	return subscribe, genesis, expect, waitForConsumers
+}
+
+func headerHook(r *http.Request) string { return r.Header.Get(testCountryHeader) }
+
+// indexed snapshots consumerTable's userID -> country index.
+func indexed() map[string]string {
+	consumerTable.RLock()
+	defer consumerTable.RUnlock()
+	out := make(map[string]string, len(consumerTable.country))
+	for id, c := range consumerTable.country {
+		out[id] = c
+	}
+	return out
+}
+
+// End to end through the HTTP handlers: the hook assigns consumers a country, a producer targets
+// one on the genesis POST, and old clients that send no targets still interoperate.
+func TestHandleSignal_TargetedGenesis(t *testing.T) {
+	subscribe, genesis, expect, waitForConsumers := newTestServer(t, headerHook)
+
+	ir := subscribe("ir", "") // lowercase on purpose: freddie normalizes the hook's result
+	ru := subscribe("RU", "")
+	unknown := subscribe("", "")
+	waitForConsumers(3)
 
 	genesis("IR")
 	expect("IR", ir, true)
 	expect("RU", ru, false)
-	expect("legacy", legacy, false)
+	expect("unknown", unknown, false)
 
 	genesis("CN")
 	expect("IR", ir, true)
 	expect("RU", ru, true)
-	expect("legacy", legacy, true)
+	expect("unknown", unknown, true)
 
 	genesis()
 	expect("IR", ir, true)
 	expect("RU", ru, true)
-	expect("legacy", legacy, true)
+	expect("unknown", unknown, true)
+}
+
+// A consumer's ?country= claim must not influence matching, whatever the hook says.
+func TestHandleSignal_IgnoresCountryQueryParam(t *testing.T) {
+	subscribe, genesis, expect, waitForConsumers := newTestServer(t, headerHook)
+
+	spoofer := subscribe("", url.Values{"country": {"IR"}}.Encode())
+	ru := subscribe("RU", url.Values{"country": {"IR"}}.Encode())
+	waitForConsumers(2)
+
+	// Nobody is really in IR, so the targeted genesis must fall back to everyone rather than be
+	// absorbed by the consumers claiming IR.
+	genesis("IR")
+	expect("spoofer", spoofer, true)
+	expect("RU", ru, true)
+
+	genesis("RU")
+	expect("spoofer", spoofer, false)
+	expect("RU", ru, true)
+
+	for _, c := range indexed() {
+		if c == "IR" {
+			t.Error("a consumer is indexed under its claimed country IR")
+		}
+	}
+}
+
+// With no hook, no consumer is indexed by country, so every targeted genesis falls back.
+func TestHandleSignal_NilHookLeavesConsumersUntargeted(t *testing.T) {
+	subscribe, genesis, expect, waitForConsumers := newTestServer(t, nil)
+
+	a := subscribe("IR", url.Values{"country": {"IR"}}.Encode())
+	b := subscribe("", "")
+	waitForConsumers(2)
+
+	genesis("IR")
+	expect("a", a, true)
+	expect("b", b, true)
+	if got := indexed(); len(got) != 0 {
+		t.Errorf("indexed %v with a nil hook, want nothing", got)
+	}
+}
+
+// The hook's result is normalized, and a result that isn't a country code counts as unknown.
+func TestHandleSignal_HookResultNormalized(t *testing.T) {
+	for _, tc := range []struct {
+		hookResult string
+		want       string
+	}{
+		{"ir", "IR"},
+		{"Ir", "IR"},
+		{"", ""},
+		{"IRN", ""},
+		{"1R", ""},
+	} {
+		t.Run(tc.hookResult, func(t *testing.T) {
+			subscribe, _, _, waitForConsumers := newTestServer(t, func(*http.Request) string {
+				return tc.hookResult
+			})
+			subscribe("", "")
+			waitForConsumers(1)
+
+			got := indexed()
+			if tc.want == "" {
+				if len(got) != 0 {
+					t.Errorf("hook returned %q: indexed %v, want nothing", tc.hookResult, got)
+				}
+				return
+			}
+			if len(got) != 1 {
+				t.Fatalf("hook returned %q: indexed %v, want one consumer", tc.hookResult, got)
+			}
+			for _, c := range got {
+				if c != tc.want {
+					t.Errorf("hook returned %q: indexed under %q, want %q", tc.hookResult, c, tc.want)
+				}
+			}
+		})
+	}
 }

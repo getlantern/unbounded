@@ -168,13 +168,6 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			req.Header.Add(common.VersionHeader, common.Version)
-			// Declare our country so Freddie can match us with producers who target it. An old
-			// Freddie ignores the parameter; with no country we send none, as before.
-			if country := common.NormalizeCountry(options.ConsumerCountry); country != "" {
-				q := req.URL.Query()
-				q.Set(common.ConsumerCountryParam, country)
-				req.URL.RawQuery = q.Encode()
-			}
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
