@@ -1,5 +1,6 @@
-import React, {useCallback, useContext, useEffect, useRef, useState} from 'react'
+import React, {useCallback, useEffect, useRef, useState} from 'react'
 import {
+	addLifetimeChunks,
 	Chunk,
 	CountryStat,
 	countryStatsEmitter,
@@ -13,7 +14,6 @@ import {
 import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {SIGNATURE, MessageTypes, Settings} from '../../../constants'
 import {messageCheck} from '../../../utils/messages'
-import {AppContext} from '../../../context'
 
 /***
 	Since the widget can be embeded in any website, this iframe is used to
@@ -42,7 +42,6 @@ export const resetStorageHydration = () => hydrated.clear()
 const Storage = ({settings}: {settings: Settings}) => {
 	const {target} = settings
 	const site = window.location.hostname
-	const {wasmInterface} = useContext(AppContext)
 	const synced = useRef({
 		[StorageKeys.LIFETIME_CONNECTIONS]: false,
 		[StorageKeys.LIFETIME_CHUNKS]: false,
@@ -91,8 +90,9 @@ const Storage = ({settings}: {settings: Settings}) => {
 					} catch (e) {
 						console.error(e)
 					}
-					hydrateOnce(StorageKeys.LIFETIME_CHUNKS, () => value.forEach((chunk: Chunk) => wasmInterface && wasmInterface.handleChunk({detail: chunk})))
 					synced.current[StorageKeys.LIFETIME_CHUNKS] = true
+					hydrateOnce(StorageKeys.LIFETIME_CHUNKS, () => addLifetimeChunks(value as Chunk[]))
+					persist(StorageKeys.LIFETIME_CHUNKS, JSON.stringify(lifetimeChunksEmitter.state))
 				}
 				if (keys.includes(StorageKeys.LIFETIME_UPLOAD_BYTES)) {
 					if (synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
@@ -116,7 +116,7 @@ const Storage = ({settings}: {settings: Settings}) => {
 				break
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [!!wasmInterface])
+	}, [])
 
 	const onLoad = useCallback(() => {
 		setReady(true)

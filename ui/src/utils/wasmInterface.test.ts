@@ -34,7 +34,11 @@ describe('mergeCountryStats', () => {
 })
 
 describe('WasmInterface byte accounting', () => {
+	let clock = 0
+	const advance = (ms: number) => { clock += ms }
+
 	beforeEach(() => {
+		jest.spyOn(performance, 'now').mockImplementation(() => clock)
 		countryStatsEmitter.update([])
 		sessionBytesEmitter.update({down: 0, up: 0})
 		lifetimeUploadBytesEmitter.update(0)
@@ -111,6 +115,31 @@ describe('WasmInterface byte accounting', () => {
 		expect(downloadThroughputEmitter.state).toBe(500)
 		wi.flushStats()
 		expect(downloadThroughputEmitter.state).toBe(0)
+	})
+
+	it('normalizes speeds by the time elapsed when the flush timer runs late', () => {
+		const wi = new WasmInterface()
+		wi.flushStats()
+		wi.handleDownstreamChunk({detail: {size: 3000, workerIdx: 0}})
+		wi.handleUpstreamChunk({detail: {size: 600, workerIdx: 0}})
+		advance(3000)
+		wi.flushStats()
+		expect(downloadThroughputEmitter.state).toBe(1000)
+		expect(uploadThroughputEmitter.state).toBe(200)
+		expect(sessionBytesEmitter.state).toEqual({down: 3000, up: 600})
+	})
+
+	it('measures a partial interval from the previous flush and never spikes on an early one', () => {
+		const wi = new WasmInterface()
+		wi.flushStats()
+		advance(400)
+		wi.handleDownstreamChunk({detail: {size: 300, workerIdx: 0}})
+		wi.flushStats()
+		expect(downloadThroughputEmitter.state).toBe(300)
+		wi.handleDownstreamChunk({detail: {size: 1500, workerIdx: 0}})
+		advance(1500)
+		wi.flushStats()
+		expect(downloadThroughputEmitter.state).toBe(1000)
 	})
 
 	it('credits teardown bytes from the previous session to lifetime totals, not the restarted session', () => {

@@ -145,13 +145,18 @@ const pageStats = {
 	bytes: {down: 0, up: 0} as Bytes,
 	countries: {} as { [iso: string]: CountryStat },
 	interval: undefined as ReturnType<typeof setInterval> | undefined,
+	lastFlushAt: performance.now(),
 }
 
 const flushPageStats = () => {
 	const {down, up} = pageStats.bytes
-	// both speeds are the bytes accumulated over one STATS_FLUSH_MS interval, i.e. bytes per second
-	uploadThroughputEmitter.update(up)
-	downloadThroughputEmitter.update(down)
+	// a throttled or stalled timer flushes late, so speeds are normalized by the time actually
+	// elapsed; it is floored at one interval so an early flush from start()/stop() can't spike them
+	const now = performance.now()
+	const seconds = Math.max(now - pageStats.lastFlushAt, STATS_FLUSH_MS) / 1000
+	pageStats.lastFlushAt = now
+	uploadThroughputEmitter.update(Math.round(up / seconds))
+	downloadThroughputEmitter.update(Math.round(down / seconds))
 	if (down || up) {
 		const session = sessionBytesEmitter.state
 		sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
@@ -162,6 +167,18 @@ const flushPageStats = () => {
 	if (!deltas.length) return
 	pageStats.countries = {}
 	countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, deltas))
+}
+
+// lifetime download bytes are kept per connection slot; restored totals from storage merge the
+// same way as live chunks
+export const addLifetimeChunks = (added: Chunk[]) => {
+	const chunks = [...lifetimeChunksEmitter.state.map(c => ({...c})), ...added].reduce((acc: Chunk[], chunk) => {
+		const found = acc.find((c: Chunk) => c.workerIdx === chunk.workerIdx)
+		if (found) found.size += chunk.size
+		else acc.push({...chunk})
+		return acc
+	}, [])
+	lifetimeChunksEmitter.update(chunks)
 }
 
 export class WasmInterface {
@@ -304,16 +321,7 @@ export class WasmInterface {
 		return Object.keys(map).map(idx => map[parseInt(idx)])
 	}
 
-	handleChunk = (e: { detail: Chunk }) => {
-		const {detail} = e
-		const chunks = [...lifetimeChunksEmitter.state, detail].reduce((acc: Chunk[], chunk) => {
-			const found = acc.find((c: Chunk) => c.workerIdx === chunk.workerIdx)
-			if (found) found.size += chunk.size
-			else acc.push(chunk)
-			return acc
-		}, [])
-		lifetimeChunksEmitter.update(chunks)
-	}
+	handleChunk = (e: { detail: Chunk }) => addLifetimeChunks([e.detail])
 
 	handleDownstreamChunk = (e: { detail: Chunk }) => {
 		this.handleChunk(e)
