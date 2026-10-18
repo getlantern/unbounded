@@ -3,10 +3,15 @@ import {MessageTypes, SIGNATURE, Targets} from '../constants'
 import {
 	averageThroughputEmitter,
 	connectionsEmitter,
+	countryStatsEmitter,
+	downloadThroughputEmitter,
 	lifetimeChunksEmitter,
 	lifetimeConnectionsEmitter,
+	lifetimeUploadBytesEmitter,
 	readyEmitter,
+	sessionBytesEmitter,
 	sharingEmitter,
+	uploadThroughputEmitter,
 } from '../utils/wasmInterface'
 import {messageCheck} from '../utils/messages'
 
@@ -16,7 +21,12 @@ const emitterMap = {
 	lifetimeConnectionsEmitter,
 	averageThroughputEmitter,
 	lifetimeChunksEmitter,
-	readyEmitter
+	readyEmitter,
+	lifetimeUploadBytesEmitter,
+	sessionBytesEmitter,
+	uploadThroughputEmitter,
+	downloadThroughputEmitter,
+	countryStatsEmitter
 }
 
 type EmitterKey = keyof typeof emitterMap

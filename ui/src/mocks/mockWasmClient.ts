@@ -44,7 +44,8 @@ class MockWasmClient implements WasmClient {
 			// fire fake chunk events
 			chunks.forEach(chunk => {
 				throughput += chunk.size
-				this.wasmInterface.handleChunk({detail: chunk})
+				this.wasmInterface.handleDownstreamChunk({detail: chunk})
+				this.wasmInterface.handleUpstreamChunk({detail: {...chunk, size: Math.round(chunk.size / 8)}})
 			})
 			// fire fake throughput events
 			this.wasmInterface.handleThroughput({detail: {bytesPerSec: throughput}})

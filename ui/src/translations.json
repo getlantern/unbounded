@@ -32,7 +32,16 @@
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
       "love": "Made with {{love}} by {{lantern}}",
-      "unsupportedBrowser": "This browser can't share a connection because WebAssembly is turned off, for example by Lockdown Mode."
+      "unsupportedBrowser": "This browser can't share a connection because WebAssembly is turned off, for example by Lockdown Mode.",
+      "advancedStats": "Advanced stats",
+      "hideAdvancedStats": "Hide advanced stats",
+      "currentSpeed": "Current speed",
+      "sessionData": "Data relayed this session",
+      "lifetimeData": "Data relayed all time",
+      "countriesHelped": "Countries you've helped",
+      "countryData_one": "{{data}} · {{count}} person",
+      "countryData_other": "{{data}} · {{count}} people",
+      "unknownCountry": "Unknown location"
     }
   },
   "zh-Hans": {

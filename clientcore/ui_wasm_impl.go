@@ -18,6 +18,8 @@ type UIImpl struct {
 	BroflakeEngine         *BroflakeEngine
 	ID                     string
 	OnConnectionChangeFunc ConnectionChangeFunc
+	OnDownstreamChunkFunc  ChunkFunc
+	OnUpstreamChunkFunc    ChunkFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {
@@ -84,6 +86,9 @@ func (ui UIImpl) OnStartup() {
 // 'downstreamChunk' fires once for each chunk of data received
 // 'size' is the size of the chunk in bytes, 'workerIdx' is the 0-indexed ID of the connection slot
 func (ui UIImpl) OnDownstreamChunk(size int, workerIdx int) {
+	if ui.OnDownstreamChunkFunc != nil {
+		ui.OnDownstreamChunkFunc(size, workerIdx)
+	}
 	detail := map[string]interface{}{"size": size, "workerIdx": workerIdx}
 	ui.fireEvent("downstreamChunk", detail)
 }
@@ -93,6 +98,17 @@ func (ui UIImpl) OnDownstreamChunk(size int, workerIdx int) {
 func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 	detail := map[string]interface{}{"bytesPerSec": bytesPerSec}
 	ui.fireEvent("downstreamThroughput", detail)
+}
+
+// 'upstreamChunk' fires up to uiRefreshHz times per second for each connection slot that sent
+// data upstream since the last event. 'size' is the number of bytes sent since then, 'workerIdx'
+// is the 0-indexed ID of the connection slot
+func (ui UIImpl) OnUpstreamChunk(size int, workerIdx int) {
+	if ui.OnUpstreamChunkFunc != nil {
+		ui.OnUpstreamChunkFunc(size, workerIdx)
+	}
+	detail := map[string]interface{}{"size": size, "workerIdx": workerIdx}
+	ui.fireEvent("upstreamChunk", detail)
 }
 
 // 'consumerConnectionChange' fires when a consumer connects or disconnects. 'state' is 1 or -1,
