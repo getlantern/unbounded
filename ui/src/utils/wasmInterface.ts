@@ -140,7 +140,7 @@ export const sendSupportCountry = (country: string) => window.parent.postMessage
 	data: {supportCountry: country}
 }, '*')
 
-// A choice sent before the offscreen client was listening is lost, so the popup re-sends its
+// A choice sent before the offscreen window was listening is lost, so the popup re-sends its
 // viewer's latest choice each time the offscreen client reports ready. Only the viewer's own
 // choice is sent, never the mirrored emitter, which may still hold an older echo.
 export const resendSupportCountryChoice = () => {
@@ -250,6 +250,11 @@ export class WasmInterface {
 		})
 
 		supportCountryEmitter.on(this.applySupportCountry)
+
+		// In an extension offscreen window, listen for the popup's commands now rather than after
+		// the wasm loads: a country choice sent meanwhile is kept for the client built below,
+		// even if the popup closes before it could re-send it.
+		if (target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
 
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
@@ -463,9 +468,6 @@ export class WasmInterface {
 
 	initListeners = () => {
 		if (!this.wasmClient) return console.warn('Wasm client has not been initialized, aborting listener init.')
-
-		// if the widget is running in an extension offscreen window, listen for messages from the popup (start/stop)
-		if (this.target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
 
 		// register listeners
 		this.wasmClient.addEventListener('downstreamChunk', this.handleDownstreamChunk)

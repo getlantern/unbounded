@@ -17,11 +17,12 @@ import {
 	storeSupportCountry,
 	supportCountryEmitter,
 } from './supportCountry'
-import {MessageTypes, Targets} from '../constants'
+import {MessageTypes, SIGNATURE, Targets} from '../constants'
 import {lookupPeerCountry} from './geo'
 
 jest.mock('./geo', () => ({lookupPeerCountry: jest.fn()}))
 jest.mock('./goWasmExec', () => ({}))
+jest.mock('./freezeWatchdog', () => ({installFreezeWatchdog: jest.fn()}))
 
 const mockLookup = lookupPeerCountry as jest.MockedFunction<typeof lookupPeerCountry>
 
@@ -214,5 +215,20 @@ describe('extension support country commands', () => {
 		expect(resolveSupportCountry('CN')).toBe('RU')
 		expect(offscreen.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('RU')
 		sharingEmitter.update(false)
+	})
+
+	it('keeps a choice sent while the offscreen client is still loading its wasm', () => {
+		jest.spyOn(WebAssembly, 'instantiateStreaming').mockReturnValue(new Promise(() => {}))
+		const fetchMock = jest.fn()
+		Object.defineProperty(window, 'fetch', {value: fetchMock, configurable: true})
+		const offscreen = new WasmInterface()
+		offscreen.initialize({mock: false, target: Targets.EXTENSION_OFFSCREEN})
+		window.dispatchEvent(new MessageEvent('message', {
+			data: {type: MessageTypes.WASM_SUPPORT_COUNTRY, [SIGNATURE]: true, data: {supportCountry: 'RU'}}
+		}))
+		window.removeEventListener('message', offscreen.onMessage)
+		supportCountryEmitter.off(offscreen.applySupportCountry)
+		expect(supportCountryEmitter.state).toBe('RU')
+		expect(resolveSupportCountry('CN')).toBe('RU')
 	})
 })
