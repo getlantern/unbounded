@@ -1,6 +1,7 @@
 import {
 	ANYWHERE,
 	applySupportCountryPreset,
+	forgetSupportCountryChoice,
 	resolveSupportCountry,
 	sanitizeSupportCountry,
 	storeSupportCountry,
@@ -10,6 +11,7 @@ import {
 afterEach(() => {
 	supportCountryEmitter.update(ANYWHERE)
 	window.localStorage.clear()
+	forgetSupportCountryChoice()
 	jest.restoreAllMocks()
 })
 
@@ -48,8 +50,9 @@ describe('resolveSupportCountry', () => {
 	test('survives storage that throws', () => {
 		jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
 		jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
-		expect(() => storeSupportCountry('IR')).not.toThrow()
 		expect(resolveSupportCountry('RU')).toBe('RU')
+		expect(() => storeSupportCountry('IR')).not.toThrow()
+		expect(resolveSupportCountry('RU')).toBe('IR')
 	})
 })
 
@@ -76,5 +79,22 @@ describe('applySupportCountryPreset', () => {
 		applySupportCountryPreset('IR')
 		applySupportCountryPreset(undefined)
 		expect(supportCountryEmitter.state).toBe('CN')
+	})
+
+	test("with storage blocked, changing or clearing a preset keeps the viewer's choice", () => {
+		jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('denied') })
+		jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('denied') })
+		applySupportCountryPreset('IR')
+		storeSupportCountry('RU')
+		supportCountryEmitter.update('RU')
+		applySupportCountryPreset('', 'IR')
+		expect(supportCountryEmitter.state).toBe('RU')
+		applySupportCountryPreset('CN', '')
+		expect(supportCountryEmitter.state).toBe('RU')
+
+		storeSupportCountry(ANYWHERE)
+		supportCountryEmitter.update(ANYWHERE)
+		applySupportCountryPreset('IR', 'CN')
+		expect(supportCountryEmitter.state).toBe(ANYWHERE)
 	})
 })

@@ -18,24 +18,33 @@ export const sanitizeSupportCountry = (value: unknown): string => {
 	return censoredCountryCodes.includes(code) ? code : ANYWHERE
 }
 
+// The viewer's choice for this page view. It keeps the choice when storage is unavailable
+// (private mode, blocked third-party storage), so a later preset change can't overwrite it.
+let pageChoice: string | null = null
+
 // null means this viewer has never chosen, which is different from choosing ANYWHERE: only the
-// former defers to the site owner's preset. Storage can be unavailable (private mode, blocked
-// third-party storage), in which case the viewer's choice lasts for the page view only.
+// former defers to the site owner's preset.
 const readStoredSupportCountry = (): string | null => {
 	try {
 		const stored = window.localStorage.getItem(STORAGE_KEY)
-		return stored === null ? null : sanitizeSupportCountry(stored)
+		if (stored !== null) return sanitizeSupportCountry(stored)
 	} catch {
-		return null
+		// fall back to this page view's choice
 	}
+	return pageChoice
 }
 
 export const storeSupportCountry = (country: string) => {
+	pageChoice = sanitizeSupportCountry(country)
 	try {
-		window.localStorage.setItem(STORAGE_KEY, sanitizeSupportCountry(country))
+		window.localStorage.setItem(STORAGE_KEY, pageChoice)
 	} catch {
-		// see readStoredSupportCountry
+		// see pageChoice
 	}
+}
+
+export const forgetSupportCountryChoice = () => {
+	pageChoice = null
 }
 
 // The viewer's own choice wins; otherwise the embed's data-support-country preset applies.

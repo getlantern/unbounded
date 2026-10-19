@@ -3,7 +3,7 @@ import {fireEvent, render, screen} from '@testing-library/react'
 import SupportCountry from './index'
 import {AppContextProvider} from '../../../context'
 import {defaultSettings, Targets} from '../../../constants'
-import {ANYWHERE, resolveSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
+import {ANYWHERE, forgetSupportCountryChoice, resolveSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
 
 jest.mock('react-i18next', () => ({
 	useTranslation: () => ({t: (key: string) => key, i18n: {language: 'en'}}),
@@ -21,6 +21,7 @@ const renderPicker = (target = defaultSettings.target) => render(
 
 afterEach(() => {
 	window.localStorage.clear()
+	forgetSupportCountryChoice()
 	supportCountryEmitter.update(ANYWHERE)
 	sendSupportCountry.mockClear()
 })
