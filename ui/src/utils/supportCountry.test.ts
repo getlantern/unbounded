@@ -97,4 +97,14 @@ describe('applySupportCountryPreset', () => {
 		applySupportCountryPreset('IR', 'CN')
 		expect(supportCountryEmitter.state).toBe(ANYWHERE)
 	})
+
+	test('a failed write still beats an older stored choice', () => {
+		storeSupportCountry('RU')
+		jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+		storeSupportCountry('IR')
+		supportCountryEmitter.update('IR')
+		applySupportCountryPreset('CN')
+		expect(supportCountryEmitter.state).toBe('IR')
+		expect(resolveSupportCountry('CN')).toBe('IR')
+	})
 })
