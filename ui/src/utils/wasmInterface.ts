@@ -5,7 +5,7 @@ import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants
 import {messageCheck} from './messages'
 import {installFreezeWatchdog} from './freezeWatchdog'
 import {lookupPeerCountry} from './geo'
-import {sanitizeSupportCountry, supportCountryEmitter} from './supportCountry'
+import {sanitizeSupportCountry, storeSupportCountry, supportCountryChoice, supportCountryEmitter} from './supportCountry'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -139,6 +139,14 @@ export const sendSupportCountry = (country: string) => window.parent.postMessage
 	[SIGNATURE]: true,
 	data: {supportCountry: country}
 }, '*')
+
+// A choice sent before the offscreen client was listening is lost, so the popup re-sends its
+// viewer's latest choice each time the offscreen client reports ready. Only the viewer's own
+// choice is sent, never the mirrored emitter, which may still hold an older echo.
+export const resendSupportCountryChoice = () => {
+	const country = supportCountryChoice()
+	if (country !== null) sendSupportCountry(country)
+}
 
 export const mergeCountryStats = (stats: CountryStat[], deltas: CountryStat[]): CountryStat[] => {
 	const merged = stats.map(s => ({...s}))
@@ -287,7 +295,8 @@ export class WasmInterface {
 	// Safe to call while sharing: the client applies it from each worker's next connection
 	// attempt and leaves established connections alone, so no restart is needed. The popup has
 	// no client of its own: its emitter mirrors the offscreen client's, and only a viewer's
-	// choice is sent there (sendSupportCountry), so mirrored updates never echo back.
+	// choice is sent there (sendSupportCountry), so mirrored updates never echo back. Start
+	// carries no country for the same reason: the popup's emitter may hold a stale echo.
 	applySupportCountry = (country: any) => {
 		if (typeof country !== 'string' || this.target === Targets.EXTENSION_POPUP) return
 		this.wasmClient?.setTargetCountries?.(country)
@@ -301,7 +310,7 @@ export class WasmInterface {
 			window.parent.postMessage({
 				type: MessageTypes.WASM_START,
 				[SIGNATURE]: true,
-				data: {supportCountry: supportCountryEmitter.state}
+				data: {}
 			}, '*')
 		}
 		else {
@@ -436,12 +445,16 @@ export class WasmInterface {
 		if (!messageCheck(message)) return
 		switch (message.type) {
 			case MessageTypes.WASM_START:
-				if (message.data?.supportCountry !== undefined) supportCountryEmitter.update(sanitizeSupportCountry(message.data.supportCountry))
 				this.start()
 				break
-			case MessageTypes.WASM_SUPPORT_COUNTRY:
-				supportCountryEmitter.update(sanitizeSupportCountry(message.data?.supportCountry))
+			case MessageTypes.WASM_SUPPORT_COUNTRY: {
+				// the offscreen client owns the choice, so it persists it too: a later preset
+				// re-apply here must not revert it when storage is unavailable
+				const country = sanitizeSupportCountry(message.data?.supportCountry)
+				storeSupportCountry(country)
+				supportCountryEmitter.update(country)
 				break
+			}
 			case MessageTypes.WASM_STOP:
 				this.stop()
 				break

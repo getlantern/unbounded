@@ -6,9 +6,18 @@ import {
 	mergeCountryStats,
 	readyEmitter,
 	sessionBytesEmitter,
+	sendSupportCountry,
 	sharingEmitter,
 	uploadThroughputEmitter,
 } from './wasmInterface'
+import {
+	ANYWHERE,
+	forgetSupportCountryChoice,
+	resolveSupportCountry,
+	storeSupportCountry,
+	supportCountryEmitter,
+} from './supportCountry'
+import {MessageTypes, Targets} from '../constants'
 import {lookupPeerCountry} from './geo'
 
 jest.mock('./geo', () => ({lookupPeerCountry: jest.fn()}))
@@ -154,5 +163,56 @@ describe('WasmInterface byte accounting', () => {
 		expect(sessionBytesEmitter.state).toEqual({down: 0, up: 0})
 		sharingEmitter.update(false)
 		readyEmitter.update(false)
+	})
+})
+
+describe('extension support country commands', () => {
+	let posted: any[]
+
+	beforeEach(() => {
+		posted = []
+		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
+	})
+
+	afterEach(() => {
+		jest.restoreAllMocks()
+		window.localStorage.clear()
+		forgetSupportCountryChoice()
+		supportCountryEmitter.update(ANYWHERE)
+	})
+
+	const pick = (country: string) => {
+		storeSupportCountry(country)
+		supportCountryEmitter.update(country)
+		sendSupportCountry(country)
+	}
+
+	it('keeps the latest choice when a stale echo reaches the popup before Start', () => {
+		const popup = new WasmInterface()
+		popup.target = Targets.EXTENSION_POPUP
+		popup.wasmClient = {} as any
+		popup.ready = true
+		pick('IR')
+		pick('RU')
+		supportCountryEmitter.update('IR') // offscreen's delayed echo of the first pick
+		popup.start()
+		expect(posted.map(m => m.type)).toEqual([MessageTypes.WASM_SUPPORT_COUNTRY, MessageTypes.WASM_SUPPORT_COUNTRY, MessageTypes.WASM_START])
+		expect(posted[2].data.supportCountry).toBeUndefined()
+
+		// replay the popup's commands in a fresh offscreen context
+		forgetSupportCountryChoice()
+		window.localStorage.clear()
+		supportCountryEmitter.update(ANYWHERE)
+		const offscreen = new WasmInterface()
+		offscreen.target = Targets.EXTENSION_OFFSCREEN
+		offscreen.wasmClient = {start: jest.fn(), stop: jest.fn(), setTargetCountries: jest.fn()} as any
+		offscreen.ready = true
+		supportCountryEmitter.on(offscreen.applySupportCountry)
+		posted.forEach(data => offscreen.onMessage({data} as MessageEvent))
+		supportCountryEmitter.off(offscreen.applySupportCountry)
+		expect(supportCountryEmitter.state).toBe('RU')
+		expect(resolveSupportCountry('CN')).toBe('RU')
+		expect(offscreen.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('RU')
+		sharingEmitter.update(false)
 	})
 })

@@ -9,6 +9,7 @@ import {
 	lifetimeConnectionsEmitter,
 	lifetimeUploadBytesEmitter,
 	readyEmitter,
+	resendSupportCountryChoice,
 	sessionBytesEmitter,
 	sharingEmitter,
 	uploadThroughputEmitter,
@@ -66,6 +67,8 @@ const useMessaging = (target: Targets) => {
 				// @ts-ignore
 				emitter.update(message.data.value)
 			}
+			// the offscreen client attaches its command listener before reporting ready
+			if (message.data.emitter === 'readyEmitter' && message.data.value === true) resendSupportCountryChoice()
 		}
 
 		if (target === Targets.EXTENSION_POPUP) {

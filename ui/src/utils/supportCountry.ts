@@ -43,6 +43,10 @@ export const storeSupportCountry = (country: string) => {
 	}
 }
 
+// The choice the viewer made in this page view, or null if they haven't made one. Unlike the
+// emitter, it is never overwritten by state mirrored from elsewhere.
+export const supportCountryChoice = (): string | null => pageChoice
+
 export const forgetSupportCountryChoice = () => {
 	pageChoice = null
 }
