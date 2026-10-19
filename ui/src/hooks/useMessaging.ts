@@ -3,10 +3,15 @@ import {MessageTypes, SIGNATURE, Targets} from '../constants'
 import {
 	averageThroughputEmitter,
 	connectionsEmitter,
+	countryStatsEmitter,
+	downloadThroughputEmitter,
 	lifetimeChunksEmitter,
 	lifetimeConnectionsEmitter,
+	lifetimeUploadBytesEmitter,
 	readyEmitter,
+	sessionBytesEmitter,
 	sharingEmitter,
+	uploadThroughputEmitter,
 } from '../utils/wasmInterface'
 import {supportCountryEmitter} from '../utils/supportCountry'
 import {messageCheck} from '../utils/messages'
@@ -18,6 +23,11 @@ const emitterMap = {
 	averageThroughputEmitter,
 	lifetimeChunksEmitter,
 	readyEmitter,
+	lifetimeUploadBytesEmitter,
+	sessionBytesEmitter,
+	uploadThroughputEmitter,
+	downloadThroughputEmitter,
+	countryStatsEmitter,
 	supportCountryEmitter
 }
 

@@ -11,6 +11,8 @@ type UIImpl struct {
 	UI
 	BroflakeEngine         *BroflakeEngine
 	OnConnectionChangeFunc ConnectionChangeFunc
+	OnDownstreamChunkFunc  ChunkFunc
+	OnUpstreamChunkFunc    ChunkFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {
@@ -38,11 +40,19 @@ func (ui UIImpl) OnStartup() {
 }
 
 func (ui UIImpl) OnDownstreamChunk(size int, workerIdx int) {
-	// TODO: do something?
+	if ui.OnDownstreamChunkFunc != nil {
+		ui.OnDownstreamChunkFunc(size, workerIdx)
+	}
 }
 
 func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 	// TODO: do something?
+}
+
+func (ui UIImpl) OnUpstreamChunk(size int, workerIdx int) {
+	if ui.OnUpstreamChunkFunc != nil {
+		ui.OnUpstreamChunkFunc(size, workerIdx)
+	}
 }
 
 func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.IP) {

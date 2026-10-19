@@ -35,7 +35,16 @@
       "unsupportedBrowser": "This browser can't share a connection because WebAssembly is turned off, for example by Lockdown Mode.",
       "supportCountry": "Support a specific country:",
       "supportAnywhere": "Anyone, wherever needed",
-      "supportCountryHint": "You'll be matched with people from this country first. When nobody there needs help, your connection still goes wherever it's needed."
+      "supportCountryHint": "You'll be matched with people from this country first. When nobody there needs help, your connection still goes wherever it's needed.",
+      "advancedStats": "Advanced stats",
+      "hideAdvancedStats": "Hide advanced stats",
+      "currentSpeed": "Current speed",
+      "sessionData": "Data relayed this session",
+      "lifetimeData": "Data relayed all time",
+      "countriesHelped": "Countries you've helped",
+      "countryData_one": "{{data}} · {{count}} person",
+      "countryData_other": "{{data}} · {{count}} people",
+      "unknownCountry": "Unknown location"
     }
   },
   "zh-Hans": {

@@ -126,6 +126,12 @@ func NewDefaultEgressOptions() *EgressOptions {
 // When state == -1 (disconnected), addr may be nil and should not be assumed to be non-nil.
 type ConnectionChangeFunc func(state int, workerIdx int, addr net.IP)
 
+// ChunkFunc is a callback for data relayed for a consumer. size is in bytes; workerIdx is the
+// consumer's connection slot, matching the workerIdx passed to ConnectionChangeFunc. Downstream
+// callbacks fire once per chunk on the data path, so implementations must be cheap and
+// non-blocking (e.g. an atomic add); upstream callbacks are batched per slot at uiRefreshHz.
+type ChunkFunc func(size int, workerIdx int)
+
 type BroflakeOptions struct {
 	ClientType             string
 	CTableSize             int
@@ -133,6 +139,10 @@ type BroflakeOptions struct {
 	BusBufferSz            int
 	Netstated              string
 	OnConnectionChangeFunc ConnectionChangeFunc
+	// OnDownstreamChunkFunc receives bytes relayed from the egress to a consumer
+	OnDownstreamChunkFunc ChunkFunc
+	// OnUpstreamChunkFunc receives bytes relayed from a consumer to the egress
+	OnUpstreamChunkFunc ChunkFunc
 }
 
 func NewDefaultBroflakeOptions() *BroflakeOptions {
