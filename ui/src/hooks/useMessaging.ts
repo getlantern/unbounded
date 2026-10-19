@@ -15,6 +15,7 @@ import {
 	uploadThroughputEmitter,
 } from '../utils/wasmInterface'
 import {supportCountryEmitter} from '../utils/supportCountry'
+import {supportCountryEnabledEmitter} from '../utils/featureFlags'
 import {messageCheck} from '../utils/messages'
 
 const emitterMap = {
@@ -29,7 +30,8 @@ const emitterMap = {
 	uploadThroughputEmitter,
 	downloadThroughputEmitter,
 	countryStatsEmitter,
-	supportCountryEmitter
+	supportCountryEmitter,
+	supportCountryEnabledEmitter
 }
 
 type EmitterKey = keyof typeof emitterMap
@@ -67,8 +69,10 @@ const useMessaging = (target: Targets) => {
 				// @ts-ignore
 				emitter.update(message.data.value)
 			}
-			// the offscreen client attaches its command listener before reporting ready
-			if (message.data.emitter === 'readyEmitter' && message.data.value === true) resendSupportCountryChoice()
+			// the offscreen client attaches its command listener before reporting ready; it also
+			// drops a choice sent while the feature is off, so one is re-sent when it turns on
+			const {emitter, value} = message.data
+			if ((emitter === 'readyEmitter' || emitter === 'supportCountryEnabledEmitter') && value === true) resendSupportCountryChoice()
 		}
 
 		if (target === Targets.EXTENSION_POPUP) {

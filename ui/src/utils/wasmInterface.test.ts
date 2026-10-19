@@ -5,6 +5,7 @@ import {
 	lifetimeUploadBytesEmitter,
 	mergeCountryStats,
 	readyEmitter,
+	resendSupportCountryChoice,
 	sessionBytesEmitter,
 	sendSupportCountry,
 	sharingEmitter,
@@ -18,6 +19,7 @@ import {
 	supportCountryEmitter,
 } from './supportCountry'
 import {MessageTypes, SIGNATURE, Targets} from '../constants'
+import {supportCountryEnabledEmitter} from './featureFlags'
 import {lookupPeerCountry} from './geo'
 
 jest.mock('./geo', () => ({lookupPeerCountry: jest.fn()}))
@@ -172,6 +174,7 @@ describe('extension support country commands', () => {
 
 	beforeEach(() => {
 		posted = []
+		supportCountryEnabledEmitter.update(true)
 		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
 	})
 
@@ -180,6 +183,7 @@ describe('extension support country commands', () => {
 		window.localStorage.clear()
 		forgetSupportCountryChoice()
 		supportCountryEmitter.update(ANYWHERE)
+		supportCountryEnabledEmitter.update(false)
 	})
 
 	const pick = (country: string) => {
@@ -230,5 +234,82 @@ describe('extension support country commands', () => {
 		supportCountryEmitter.off(offscreen.applySupportCountry)
 		expect(supportCountryEmitter.state).toBe('RU')
 		expect(resolveSupportCountry('CN')).toBe('RU')
+	})
+})
+
+describe('support country feature flag', () => {
+	const client = () => ({start: jest.fn(), stop: jest.fn(), setTargetCountries: jest.fn()})
+	const listening: WasmInterface[] = []
+
+	const offscreen = () => {
+		const wasm = new WasmInterface()
+		wasm.target = Targets.EXTENSION_OFFSCREEN
+		wasm.wasmClient = client() as any
+		wasm.ready = true
+		supportCountryEmitter.on(wasm.applySupportCountry)
+		supportCountryEnabledEmitter.on(wasm.applySupportCountryEnabled)
+		listening.push(wasm)
+		return wasm
+	}
+
+	afterEach(() => {
+		listening.splice(0).forEach(wasm => {
+			supportCountryEmitter.off(wasm.applySupportCountry)
+			supportCountryEnabledEmitter.off(wasm.applySupportCountryEnabled)
+		})
+		window.localStorage.clear()
+		forgetSupportCountryChoice()
+		supportCountryEmitter.update(ANYWHERE)
+		supportCountryEnabledEmitter.update(false)
+		sharingEmitter.update(false)
+	})
+
+	it('drops a popup\'s country command while off, without storing it', () => {
+		const wasm = offscreen()
+		wasm.onMessage({data: {type: MessageTypes.WASM_SUPPORT_COUNTRY, [SIGNATURE]: true, data: {supportCountry: 'IR'}}} as MessageEvent)
+		expect(supportCountryEmitter.state).toBe(ANYWHERE)
+		expect(resolveSupportCountry('')).toBe(ANYWHERE)
+		expect(wasm.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+	})
+
+	it('applies no country and starts with none while off, whatever the emitter holds', () => {
+		const wasm = offscreen()
+		supportCountryEmitter.update('IR')
+		expect(wasm.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+		wasm.start()
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenCalledTimes(1)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenCalledWith('')
+	})
+
+	it('applies the country when the flag turns on and clears it when it turns off', () => {
+		const wasm = offscreen()
+		supportCountryEmitter.update('IR')
+		supportCountryEnabledEmitter.update(true)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('IR')
+		supportCountryEnabledEmitter.update(false)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('')
+	})
+
+	it('never applies a country from the popup itself', () => {
+		const popup = new WasmInterface()
+		popup.target = Targets.EXTENSION_POPUP
+		popup.wasmClient = client() as any
+		supportCountryEnabledEmitter.on(popup.applySupportCountryEnabled)
+		supportCountryEmitter.update('IR')
+		supportCountryEnabledEmitter.update(true)
+		supportCountryEnabledEmitter.off(popup.applySupportCountryEnabled)
+		expect(popup.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+	})
+
+	it('does not re-send the popup viewer\'s choice while off', () => {
+		const posted: any[] = []
+		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
+		storeSupportCountry('IR')
+		resendSupportCountryChoice()
+		expect(posted).toEqual([])
+		supportCountryEnabledEmitter.update(true)
+		resendSupportCountryChoice()
+		expect(posted.map(m => m.data.supportCountry)).toEqual(['IR'])
+		jest.restoreAllMocks()
 	})
 })

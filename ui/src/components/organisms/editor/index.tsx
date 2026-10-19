@@ -3,6 +3,8 @@ import {Layouts, Themes} from '../../../constants'
 import {StyledEditor} from './styles'
 import {AppContext} from '../../../context'
 import {censoredCountryCodes} from '../../../utils/countries'
+import {useEmitterState} from '../../../hooks/useStateEmitter'
+import {supportCountryEnabledEmitter} from '../../../utils/featureFlags'
 
 interface Props {
 	embed: HTMLElement
@@ -10,6 +12,7 @@ interface Props {
 const Editor = ({embed}: Props) => {
 	const {settings} = useContext(AppContext)
 	const [state, setState] = useState(settings)
+	const supportCountryEnabled = useEmitterState(supportCountryEnabledEmitter)
 
 	useEffect(() => {
 		Object.keys(state).forEach(key => {
@@ -209,7 +212,7 @@ const Editor = ({embed}: Props) => {
 					<label htmlFor="title">Title</label>
 				</div>
 			</fieldset>
-			<fieldset>
+			{supportCountryEnabled && <fieldset>
 				<legend>Support country</legend>
 				<select
 					id="supportCountry"
@@ -223,7 +226,7 @@ const Editor = ({embed}: Props) => {
 						<option key={code} value={code}>{code}</option>
 					))}
 				</select>
-			</fieldset>
+			</fieldset>}
 		</StyledEditor>
 	)
 }

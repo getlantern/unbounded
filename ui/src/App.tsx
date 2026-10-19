@@ -7,7 +7,8 @@ import Panel from './components/organisms/panel'
 import usePageVisibility from './hooks/usePageVisibility'
 import {useEmitterState} from './hooks/useStateEmitter'
 import {sharingEmitter, WasmInterface} from './utils/wasmInterface'
-import {applySupportCountryPreset} from './utils/supportCountry'
+import {loadFeatureFlags} from './utils/featureFlags'
+import useSupportCountryPreset from './hooks/useSupportCountryPreset'
 import {isMobile} from './utils/isMobile'
 import Editor from './components/organisms/editor'
 import Floating from "./components/organisms/floating";
@@ -36,12 +37,13 @@ const App = ({appId, embed}: Props) => {
   const wasmInterface = useRef<WasmInterface>()
   const [width, setWidth] = useState(0)
 
-  // seed the volunteer's country preference: their own stored choice, else the embed's preset
-  const previousSupportCountry = useRef<string>()
+  // Fetched without waiting on it, so rendering and wasm init never do. The extension popup
+  // has no client of its own and mirrors the offscreen window's flags instead (useMessaging).
   useEffect(() => {
-    applySupportCountryPreset(settings.supportCountry, previousSupportCountry.current)
-    previousSupportCountry.current = settings.supportCountry
-  }, [settings.supportCountry])
+    if (target !== Targets.EXTENSION_POPUP) loadFeatureFlags()
+  }, [target])
+
+  useSupportCountryPreset(settings.supportCountry)
 
   useLayoutEffect(() => {
     if (wasmInterface.current) return // already initialized or initializing

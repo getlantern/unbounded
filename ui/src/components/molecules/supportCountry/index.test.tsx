@@ -1,9 +1,10 @@
 import React from 'react'
-import {fireEvent, render, screen} from '@testing-library/react'
+import {act, fireEvent, render, screen} from '@testing-library/react'
 import SupportCountry from './index'
 import {AppContextProvider} from '../../../context'
 import {defaultSettings, Targets} from '../../../constants'
 import {ANYWHERE, forgetSupportCountryChoice, resolveSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
+import {supportCountryEnabledEmitter} from '../../../utils/featureFlags'
 
 jest.mock('react-i18next', () => ({
 	useTranslation: () => ({t: (key: string) => key, i18n: {language: 'en'}}),
@@ -19,7 +20,12 @@ const renderPicker = (target = defaultSettings.target) => render(
 	</AppContextProvider>
 )
 
+beforeEach(() => {
+	supportCountryEnabledEmitter.update(true)
+})
+
 afterEach(() => {
+	supportCountryEnabledEmitter.update(false)
 	window.localStorage.clear()
 	forgetSupportCountryChoice()
 	supportCountryEmitter.update(ANYWHERE)
@@ -27,6 +33,16 @@ afterEach(() => {
 })
 
 describe('support country picker', () => {
+	test('is hidden while the feature is off and appears when it turns on', () => {
+		supportCountryEnabledEmitter.update(false)
+		renderPicker()
+		expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+		act(() => supportCountryEnabledEmitter.update(true))
+		expect(screen.getByRole('combobox')).toBeInTheDocument()
+		act(() => supportCountryEnabledEmitter.update(false))
+		expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+	})
+
 	test('defaults to anywhere and offers only censored countries', () => {
 		renderPicker()
 		const select = screen.getByRole('combobox') as HTMLSelectElement

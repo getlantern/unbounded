@@ -5,7 +5,8 @@ import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants
 import {messageCheck} from './messages'
 import {installFreezeWatchdog} from './freezeWatchdog'
 import {lookupPeerCountry} from './geo'
-import {sanitizeSupportCountry, storeSupportCountry, supportCountryChoice, supportCountryEmitter} from './supportCountry'
+import {ANYWHERE, sanitizeSupportCountry, storeSupportCountry, supportCountryChoice, supportCountryEmitter} from './supportCountry'
+import {supportCountryEnabledEmitter} from './featureFlags'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -144,6 +145,7 @@ export const sendSupportCountry = (country: string) => window.parent.postMessage
 // viewer's latest choice each time the offscreen client reports ready. Only the viewer's own
 // choice is sent, never the mirrored emitter, which may still hold an older echo.
 export const resendSupportCountryChoice = () => {
+	if (!supportCountryEnabledEmitter.state) return
 	const country = supportCountryChoice()
 	if (country !== null) sendSupportCountry(country)
 }
@@ -203,6 +205,10 @@ export const addLifetimeChunks = (added: Chunk[]) => {
 	lifetimeChunksEmitter.update(chunks)
 }
 
+// The country the client may be given: none at all while the feature is switched off, whatever
+// the emitter holds.
+export const effectiveSupportCountry = () => supportCountryEnabledEmitter.state ? supportCountryEmitter.state : ANYWHERE
+
 export class WasmInterface {
 	go: typeof go
 	wasmClient: WasmClient | undefined
@@ -250,6 +256,7 @@ export class WasmInterface {
 		})
 
 		supportCountryEmitter.on(this.applySupportCountry)
+		supportCountryEnabledEmitter.on(this.applySupportCountryEnabled)
 
 		// In an extension offscreen window, listen for the popup's commands now rather than after
 		// the wasm loads: a country choice sent meanwhile is kept for the client built below,
@@ -292,7 +299,7 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
 				WASM_CLIENT_CONFIG.egressEndpoint,
-				supportCountryEmitter.state
+				effectiveSupportCountry()
 			)
 		}
 	}
@@ -304,7 +311,15 @@ export class WasmInterface {
 	// carries no country for the same reason: the popup's emitter may hold a stale echo.
 	applySupportCountry = (country: any) => {
 		if (typeof country !== 'string' || this.target === Targets.EXTENSION_POPUP) return
+		if (!supportCountryEnabledEmitter.state) return
 		this.wasmClient?.setTargetCountries?.(country)
+	}
+
+	// Switching the feature off clears any country already applied; switching it on applies the
+	// current one.
+	applySupportCountryEnabled = () => {
+		if (this.target === Targets.EXTENSION_POPUP) return
+		this.wasmClient?.setTargetCountries?.(effectiveSupportCountry())
 	}
 
 	start = () => {
@@ -322,7 +337,7 @@ export class WasmInterface {
 			// credit bytes from the previous session's teardown to lifetime totals before resetting the session
 			this.flushStats()
 			sessionBytesEmitter.update({down: 0, up: 0})
-			this.wasmClient.setTargetCountries?.(supportCountryEmitter.state)
+			this.wasmClient.setTargetCountries?.(effectiveSupportCountry())
 			this.wasmClient.start()
 			sharingEmitter.update(true)
 		}
@@ -453,6 +468,8 @@ export class WasmInterface {
 				this.start()
 				break
 			case MessageTypes.WASM_SUPPORT_COUNTRY: {
+				// a popup may not apply, or store, a country while the feature is off
+				if (!supportCountryEnabledEmitter.state) break
 				// the offscreen client owns the choice, so it persists it too: a later preset
 				// re-apply here must not revert it when storage is unavailable
 				const country = sanitizeSupportCountry(message.data?.supportCountry)

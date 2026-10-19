@@ -3,6 +3,7 @@ import useMessaging from './useMessaging'
 import {MessageTypes, SIGNATURE, Targets} from '../constants'
 import {ANYWHERE, forgetSupportCountryChoice, storeSupportCountry, supportCountryEmitter} from '../utils/supportCountry'
 import {readyEmitter} from '../utils/wasmInterface'
+import {supportCountryEnabledEmitter} from '../utils/featureFlags'
 
 jest.mock('../utils/goWasmExec', () => ({}))
 
@@ -15,6 +16,7 @@ describe('popup messaging', () => {
 
 	beforeEach(() => {
 		posted = []
+		supportCountryEnabledEmitter.update(true)
 		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
 	})
 
@@ -24,6 +26,7 @@ describe('popup messaging', () => {
 		forgetSupportCountryChoice()
 		supportCountryEmitter.update(ANYWHERE)
 		readyEmitter.update(false)
+		supportCountryEnabledEmitter.update(false)
 	})
 
 	const countryCommands = () => posted.filter(m => m.type === MessageTypes.WASM_SUPPORT_COUNTRY).map(m => m.data.supportCountry)
@@ -34,6 +37,20 @@ describe('popup messaging', () => {
 		storeSupportCountry('RU') // both sends were lost: offscreen wasn't listening yet
 		fromOffscreen('supportCountryEmitter', 'IR')
 		fromOffscreen('readyEmitter', true)
+		expect(countryCommands()).toEqual(['RU'])
+		unmount()
+	})
+
+	it('mirrors the offscreen flag and sends no choice while the feature is off', () => {
+		supportCountryEnabledEmitter.update(false)
+		const {unmount} = renderHook(() => useMessaging(Targets.EXTENSION_POPUP))
+		storeSupportCountry('RU')
+		fromOffscreen('supportCountryEnabledEmitter', false)
+		fromOffscreen('readyEmitter', true)
+		expect(countryCommands()).toEqual([])
+		// the offscreen client dropped any earlier send, so the choice goes once the flag turns on
+		fromOffscreen('supportCountryEnabledEmitter', true)
+		expect(supportCountryEnabledEmitter.state).toBe(true)
 		expect(countryCommands()).toEqual(['RU'])
 		unmount()
 	})

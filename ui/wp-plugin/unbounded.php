@@ -245,7 +245,7 @@ function browsers_unbounded_support_country_callback() {
             <option value='<?php echo esc_attr($code); ?>' <?php selected($support_country, $code); ?>><?php echo esc_html($name); ?></option>
         <?php endforeach; ?>
     </select>
-    <p class="description"><?php esc_html_e('Preselect a country for visitors to support. Visitors can still change it, and when nobody from that country needs help their connection goes wherever it is needed.', 'unbounded-by-lantern'); ?></p>
+    <p class="description"><?php esc_html_e('Preselect a country for visitors to support. Visitors can still change it, and when nobody from that country needs help their connection goes wherever it is needed. Takes effect only once Lantern enables country support for the network; until then it is saved but has no effect.', 'unbounded-by-lantern'); ?></p>
     <?php
 }
 

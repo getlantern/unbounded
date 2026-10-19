@@ -5,6 +5,7 @@ import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {canShare} from '../../../utils/capabilities'
 import {censoredCountryCodes, countries} from '../../../utils/countries'
 import {ANYWHERE, storeSupportCountry, supportCountryEmitter} from '../../../utils/supportCountry'
+import {supportCountryEnabledEmitter} from '../../../utils/featureFlags'
 import {sendSupportCountry} from '../../../utils/wasmInterface'
 import {Targets} from '../../../constants'
 import {Select, Wrapper} from './styles'
@@ -26,6 +27,7 @@ const SupportCountry = ({style}: {style?: CSSProperties}) => {
 	const {t, i18n} = useTranslation()
 	const {theme, mock, target} = useContext(AppContext).settings
 	const supportCountry = useEmitterState(supportCountryEmitter)
+	const enabled = useEmitterState(supportCountryEnabledEmitter)
 
 	const options = useMemo(() => {
 		let displayNames: Intl.DisplayNames | undefined
@@ -39,7 +41,7 @@ const SupportCountry = ({style}: {style?: CSSProperties}) => {
 			.sort((a, b) => a.name.localeCompare(b.name, i18n.language))
 	}, [i18n.language])
 
-	if (!canShare(mock)) return null
+	if (!enabled || !canShare(mock)) return null
 
 	return (
 		<Wrapper theme={theme} style={style} title={t('supportCountryHint')}>
