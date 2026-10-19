@@ -68,7 +68,7 @@ their browser contacts:
   trimmed by that site's referrer policy. Plausible is cookieless and keeps no
   persistent identifier for the visitor; Lantern uses the counts to report how
   many sites run the widget and how many visitors volunteer.
-* **Lantern's feature-flag service** -- one HTTPS GET, with no cookies,
+* **api.iantem.io** -- Lantern's feature-flag service: one HTTPS GET, with no cookies,
   identifiers or page details attached, asking which optional widget features
   are switched on, such as the "Country to support" picker. It lets Lantern
   hold back a feature until the network can honor it, and turn one off again
