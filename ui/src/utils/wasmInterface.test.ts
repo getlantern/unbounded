@@ -5,14 +5,26 @@ import {
 	lifetimeUploadBytesEmitter,
 	mergeCountryStats,
 	readyEmitter,
+	resendSupportCountryChoice,
 	sessionBytesEmitter,
+	sendSupportCountry,
 	sharingEmitter,
 	uploadThroughputEmitter,
 } from './wasmInterface'
+import {
+	ANYWHERE,
+	forgetSupportCountryChoice,
+	resolveSupportCountry,
+	storeSupportCountry,
+	supportCountryEmitter,
+} from './supportCountry'
+import {MessageTypes, SIGNATURE, Targets} from '../constants'
+import {supportCountryEnabledEmitter} from './featureFlags'
 import {lookupPeerCountry} from './geo'
 
 jest.mock('./geo', () => ({lookupPeerCountry: jest.fn()}))
 jest.mock('./goWasmExec', () => ({}))
+jest.mock('./freezeWatchdog', () => ({installFreezeWatchdog: jest.fn()}))
 
 const mockLookup = lookupPeerCountry as jest.MockedFunction<typeof lookupPeerCountry>
 
@@ -154,5 +166,150 @@ describe('WasmInterface byte accounting', () => {
 		expect(sessionBytesEmitter.state).toEqual({down: 0, up: 0})
 		sharingEmitter.update(false)
 		readyEmitter.update(false)
+	})
+})
+
+describe('extension support country commands', () => {
+	let posted: any[]
+
+	beforeEach(() => {
+		posted = []
+		supportCountryEnabledEmitter.update(true)
+		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
+	})
+
+	afterEach(() => {
+		jest.restoreAllMocks()
+		window.localStorage.clear()
+		forgetSupportCountryChoice()
+		supportCountryEmitter.update(ANYWHERE)
+		supportCountryEnabledEmitter.update(false)
+	})
+
+	const pick = (country: string) => {
+		storeSupportCountry(country)
+		supportCountryEmitter.update(country)
+		sendSupportCountry(country)
+	}
+
+	it('keeps the latest choice when a stale echo reaches the popup before Start', () => {
+		const popup = new WasmInterface()
+		popup.target = Targets.EXTENSION_POPUP
+		popup.wasmClient = {} as any
+		popup.ready = true
+		pick('IR')
+		pick('RU')
+		supportCountryEmitter.update('IR') // offscreen's delayed echo of the first pick
+		popup.start()
+		expect(posted.map(m => m.type)).toEqual([MessageTypes.WASM_SUPPORT_COUNTRY, MessageTypes.WASM_SUPPORT_COUNTRY, MessageTypes.WASM_START])
+		expect(posted[2].data.supportCountry).toBeUndefined()
+
+		// replay the popup's commands in a fresh offscreen context
+		forgetSupportCountryChoice()
+		window.localStorage.clear()
+		supportCountryEmitter.update(ANYWHERE)
+		const offscreen = new WasmInterface()
+		offscreen.target = Targets.EXTENSION_OFFSCREEN
+		offscreen.wasmClient = {start: jest.fn(), stop: jest.fn(), setTargetCountries: jest.fn()} as any
+		offscreen.ready = true
+		supportCountryEmitter.on(offscreen.applySupportCountry)
+		posted.forEach(data => offscreen.onMessage({data} as MessageEvent))
+		supportCountryEmitter.off(offscreen.applySupportCountry)
+		expect(supportCountryEmitter.state).toBe('RU')
+		expect(resolveSupportCountry('CN')).toBe('RU')
+		expect(offscreen.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('RU')
+		sharingEmitter.update(false)
+	})
+
+	it('keeps a choice sent while the offscreen client is still loading its wasm', () => {
+		jest.spyOn(WebAssembly, 'instantiateStreaming').mockReturnValue(new Promise(() => {}))
+		const fetchMock = jest.fn()
+		Object.defineProperty(window, 'fetch', {value: fetchMock, configurable: true})
+		const offscreen = new WasmInterface()
+		offscreen.initialize({mock: false, target: Targets.EXTENSION_OFFSCREEN})
+		window.dispatchEvent(new MessageEvent('message', {
+			data: {type: MessageTypes.WASM_SUPPORT_COUNTRY, [SIGNATURE]: true, data: {supportCountry: 'RU'}}
+		}))
+		window.removeEventListener('message', offscreen.onMessage)
+		supportCountryEmitter.off(offscreen.applySupportCountry)
+		expect(supportCountryEmitter.state).toBe('RU')
+		expect(resolveSupportCountry('CN')).toBe('RU')
+	})
+})
+
+describe('support country feature flag', () => {
+	const client = () => ({start: jest.fn(), stop: jest.fn(), setTargetCountries: jest.fn()})
+	const listening: WasmInterface[] = []
+
+	const offscreen = () => {
+		const wasm = new WasmInterface()
+		wasm.target = Targets.EXTENSION_OFFSCREEN
+		wasm.wasmClient = client() as any
+		wasm.ready = true
+		supportCountryEmitter.on(wasm.applySupportCountry)
+		supportCountryEnabledEmitter.on(wasm.applySupportCountryEnabled)
+		listening.push(wasm)
+		return wasm
+	}
+
+	afterEach(() => {
+		listening.splice(0).forEach(wasm => {
+			supportCountryEmitter.off(wasm.applySupportCountry)
+			supportCountryEnabledEmitter.off(wasm.applySupportCountryEnabled)
+		})
+		window.localStorage.clear()
+		forgetSupportCountryChoice()
+		supportCountryEmitter.update(ANYWHERE)
+		supportCountryEnabledEmitter.update(false)
+		sharingEmitter.update(false)
+	})
+
+	it('drops a popup\'s country command while off, without storing it', () => {
+		const wasm = offscreen()
+		wasm.onMessage({data: {type: MessageTypes.WASM_SUPPORT_COUNTRY, [SIGNATURE]: true, data: {supportCountry: 'IR'}}} as MessageEvent)
+		expect(supportCountryEmitter.state).toBe(ANYWHERE)
+		expect(resolveSupportCountry('')).toBe(ANYWHERE)
+		expect(wasm.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+	})
+
+	it('applies no country and starts with none while off, whatever the emitter holds', () => {
+		const wasm = offscreen()
+		supportCountryEmitter.update('IR')
+		expect(wasm.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+		wasm.start()
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenCalledTimes(1)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenCalledWith('')
+	})
+
+	it('applies the country when the flag turns on and clears it when it turns off', () => {
+		const wasm = offscreen()
+		supportCountryEmitter.update('IR')
+		supportCountryEnabledEmitter.update(true)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('IR')
+		supportCountryEnabledEmitter.update(false)
+		expect(wasm.wasmClient!.setTargetCountries).toHaveBeenLastCalledWith('')
+	})
+
+	it('never applies a country from the popup itself', () => {
+		const popup = new WasmInterface()
+		popup.target = Targets.EXTENSION_POPUP
+		popup.wasmClient = client() as any
+		supportCountryEnabledEmitter.on(popup.applySupportCountryEnabled)
+		supportCountryEmitter.update('IR')
+		supportCountryEnabledEmitter.update(true)
+		supportCountryEnabledEmitter.off(popup.applySupportCountryEnabled)
+		expect(popup.wasmClient!.setTargetCountries).not.toHaveBeenCalled()
+	})
+
+	it('does not re-send the popup viewer\'s choice while off', () => {
+		const posted: any[] = []
+		jest.spyOn(window.parent, 'postMessage').mockImplementation((message: any) => { posted.push(message) })
+		storeSupportCountry('IR')
+		resendSupportCountryChoice()
+		expect(posted).toEqual([])
+		supportCountryEnabledEmitter.update(true)
+		resendSupportCountryChoice()
+		expect(posted.map(m => m.data.supportCountry)).toEqual(['IR'])
+		jest.restoreAllMocks()
 	})
 })

@@ -5,6 +5,8 @@ import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants
 import {messageCheck} from './messages'
 import {installFreezeWatchdog} from './freezeWatchdog'
 import {lookupPeerCountry} from './geo'
+import {ANYWHERE, sanitizeSupportCountry, storeSupportCountry, supportCountryChoice, supportCountryEmitter} from './supportCountry'
+import {supportCountryEnabledEmitter} from './featureFlags'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -97,6 +99,11 @@ export interface WasmClient extends EventTarget {
 
 	debug(): void
 
+	// setTargetCountries names the countries (comma-separated ISO codes, '' for none) whose
+	// people this volunteer prefers to help; it applies from each worker's next connection
+	// attempt. Optional because older wasm builds and MockWasmClient lack it.
+	setTargetCountries?(countries: string): void
+
 	// liveness returns the Go-side heartbeat (see clientcore/watchdog_wasm_impl.go).
 	// Optional because the wasm binary deployed to embed.lantern.io can predate it —
 	// it does today — and because MockWasmClient has no Go runtime to report on.
@@ -118,12 +125,29 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
+		targetCountries?: string,
 	): WasmClient;
 }
 
 interface Config {
 	mock: boolean
 	target: Targets
+}
+
+// Forwards a viewer's choice from the extension popup to the offscreen client that runs the wasm.
+export const sendSupportCountry = (country: string) => window.parent.postMessage({
+	type: MessageTypes.WASM_SUPPORT_COUNTRY,
+	[SIGNATURE]: true,
+	data: {supportCountry: country}
+}, '*')
+
+// A choice sent before the offscreen window was listening is lost, so the popup re-sends its
+// viewer's latest choice each time the offscreen client reports ready. Only the viewer's own
+// choice is sent, never the mirrored emitter, which may still hold an older echo.
+export const resendSupportCountryChoice = () => {
+	if (!supportCountryEnabledEmitter.state) return
+	const country = supportCountryChoice()
+	if (country !== null) sendSupportCountry(country)
 }
 
 export const mergeCountryStats = (stats: CountryStat[], deltas: CountryStat[]): CountryStat[] => {
@@ -181,6 +205,10 @@ export const addLifetimeChunks = (added: Chunk[]) => {
 	lifetimeChunksEmitter.update(chunks)
 }
 
+// The country the client may be given: none at all while the feature is switched off, whatever
+// the emitter holds.
+export const effectiveSupportCountry = () => supportCountryEnabledEmitter.state ? supportCountryEmitter.state : ANYWHERE
+
 export class WasmInterface {
 	go: typeof go
 	wasmClient: WasmClient | undefined
@@ -227,6 +255,14 @@ export class WasmInterface {
 			sharing: () => sharingEmitter.state,
 		})
 
+		supportCountryEmitter.on(this.applySupportCountry)
+		supportCountryEnabledEmitter.on(this.applySupportCountryEnabled)
+
+		// In an extension offscreen window, listen for the popup's commands now rather than after
+		// the wasm loads: a country choice sent meanwhile is kept for the client built below,
+		// even if the popup closes before it could re-send it.
+		if (target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
+
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
 			this.instance = {} as WebAssemblyInstance
@@ -262,9 +298,28 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				effectiveSupportCountry()
 			)
 		}
+	}
+
+	// Safe to call while sharing: the client applies it from each worker's next connection
+	// attempt and leaves established connections alone, so no restart is needed. The popup has
+	// no client of its own: its emitter mirrors the offscreen client's, and only a viewer's
+	// choice is sent there (sendSupportCountry), so mirrored updates never echo back. Start
+	// carries no country for the same reason: the popup's emitter may hold a stale echo.
+	applySupportCountry = (country: any) => {
+		if (typeof country !== 'string' || this.target === Targets.EXTENSION_POPUP) return
+		if (!supportCountryEnabledEmitter.state) return
+		this.wasmClient?.setTargetCountries?.(country)
+	}
+
+	// Switching the feature off clears any country already applied; switching it on applies the
+	// current one.
+	applySupportCountryEnabled = () => {
+		if (this.target === Targets.EXTENSION_POPUP) return
+		this.wasmClient?.setTargetCountries?.(effectiveSupportCountry())
 	}
 
 	start = () => {
@@ -282,6 +337,7 @@ export class WasmInterface {
 			// credit bytes from the previous session's teardown to lifetime totals before resetting the session
 			this.flushStats()
 			sessionBytesEmitter.update({down: 0, up: 0})
+			this.wasmClient.setTargetCountries?.(effectiveSupportCountry())
 			this.wasmClient.start()
 			sharingEmitter.update(true)
 		}
@@ -411,6 +467,16 @@ export class WasmInterface {
 			case MessageTypes.WASM_START:
 				this.start()
 				break
+			case MessageTypes.WASM_SUPPORT_COUNTRY: {
+				// a popup may not apply, or store, a country while the feature is off
+				if (!supportCountryEnabledEmitter.state) break
+				// the offscreen client owns the choice, so it persists it too: a later preset
+				// re-apply here must not revert it when storage is unavailable
+				const country = sanitizeSupportCountry(message.data?.supportCountry)
+				storeSupportCountry(country)
+				supportCountryEmitter.update(country)
+				break
+			}
 			case MessageTypes.WASM_STOP:
 				this.stop()
 				break
@@ -419,9 +485,6 @@ export class WasmInterface {
 
 	initListeners = () => {
 		if (!this.wasmClient) return console.warn('Wasm client has not been initialized, aborting listener init.')
-
-		// if the widget is running in an extension offscreen window, listen for messages from the popup (start/stop)
-		if (this.target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
 
 		// register listeners
 		this.wasmClient.addEventListener('downstreamChunk', this.handleDownstreamChunk)

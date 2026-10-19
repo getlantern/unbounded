@@ -4,7 +4,7 @@ Tags: censorship, privacy, proxy, volunteer, webrtc
 Requires at least: 5.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.0
+Stable tag: 1.4.0
 License: GPL-3.0-or-later
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -31,6 +31,7 @@ editor to turn it on for a given page.
 * **Layout** — banner, panel, floating, or simple
 * **Theme** — light, dark, or follow the visitor's system preference
 * **Location** — top or bottom of the page
+* **Country to support** — preselect a censored country for visitors to help; visitors can change it, and their connection still goes wherever it is needed when nobody from that country is waiting. This takes effect only once Lantern switches the feature on for the network; until then the widget ignores it and shows visitors no country picker
 * **Where it appears** — per page via the editor sidebar, on all posts, or on the homepage
 
 = Open source =
@@ -67,6 +68,13 @@ their browser contacts:
   trimmed by that site's referrer policy. Plausible is cookieless and keeps no
   persistent identifier for the visitor; Lantern uses the counts to report how
   many sites run the widget and how many visitors volunteer.
+* **api.iantem.io** -- Lantern's feature-flag service: one HTTPS GET, with no cookies,
+  identifiers or page details attached, asking which optional widget features
+  are switched on, such as the "Country to support" picker. It lets Lantern
+  hold back a feature until the network can honor it, and turn one off again
+  without every site updating. Like any web request it necessarily reveals the
+  visitor's IP address to the service. If it fails or is slow, those features
+  simply stay off.
 
 Nothing else is contacted until a visitor turns the switch on. After that:
 
@@ -146,6 +154,10 @@ Action Mode. The element name is the widget's public API and renaming it would
 break every existing embed, so it stayed.
 
 == Changelog ==
+
+= 1.4.0 =
+* Added a "Country to support" setting that preselects which censored country the widget prefers to help. It takes effect once Lantern switches the feature on.
+* The widget now asks Lantern's feature-flag service which optional features are on when it renders; see External services.
 
 = 1.3.0 =
 * Renamed from Unbounded to Lantern Action Mode. Settings, saved options and the widget element are unchanged.

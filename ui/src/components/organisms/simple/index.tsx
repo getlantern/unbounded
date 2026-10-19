@@ -8,6 +8,7 @@ import Switch from '../../atoms/switch'
 import Modal from '../../molecules/modal'
 import SafeGlobe from '../../molecules/globe/safe'
 import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import {BarText, Container, OffPill, OnPanel, PanelLeft, PanelRow, SIMPLE_COLORS, StatusDot} from './styles'
 
 const HeartIcon = () => (
@@ -54,6 +55,7 @@ const Simple = () => {
 							<Switch {...switchProps}/>
 						</OffPill>
 						<UnsupportedNote style={{textAlign: 'center'}}/>
+						<SupportCountry style={{justifyContent: 'center', padding: 0}}/>
 					</>
 				) : (
 					<OnPanel>

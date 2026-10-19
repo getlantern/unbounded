@@ -46,6 +46,21 @@ func (ui *UIImpl) Init(bf *BroflakeEngine) {
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} { ui.Debug(); return nil }),
 	)
 
+	// setTargetCountries("IR") or setTargetCountries("IR,RU") names the countries whose consumers
+	// this widget prefers to serve; "" clears the preference. Safe to call at any time: each
+	// worker picks it up with its next genesis message.
+	js.Global().Get(ui.ID).Set(
+		"setTargetCountries",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			csv := ""
+			if len(args) > 0 && args[0].Type() == js.TypeString {
+				csv = args[0].String()
+			}
+			ui.BroflakeEngine.setTargetCountries(strings.Split(csv, ","))
+			return nil
+		}),
+	)
+
 	// Exposes liveness() so the page can tell a wedged Go runtime apart from a
 	// wedged browser main thread. See watchdog_wasm_impl.go for why that
 	// distinction is the one that matters.

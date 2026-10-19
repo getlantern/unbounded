@@ -7,6 +7,7 @@ import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
 import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Stats from '../../molecules/stats'
 import About from '../../molecules/about'
 // import Footer from '../../molecules/footer'
@@ -59,6 +60,7 @@ const Panel = () => {
 							/>
 						</Row>
 						<UnsupportedNote/>
+						<SupportCountry/>
 						<Stats/>
 						{
 							!menu && (target === Targets.WEB) && (

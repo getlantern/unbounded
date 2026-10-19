@@ -38,6 +38,7 @@ export enum MessageTypes {
 	STORAGE_SET = 'storageSet',
 	WASM_START = 'wasmStart',
 	WASM_STOP = 'wasmStop',
+	WASM_SUPPORT_COUNTRY = 'wasmSupportCountry',
 	HYDRATE_STATE = 'hydrateState',
 	STATE_UPDATE = 'stateUpdate',
 	POPUP_OPENED = 'popupOpened',
@@ -81,6 +82,7 @@ export interface Settings {
 	title: boolean
 	share: boolean
 	infoLink: string
+	supportCountry: string
 }
 
 export const defaultSettings: Settings = {
@@ -100,7 +102,8 @@ export const defaultSettings: Settings = {
 	menu: false, // @todo make true after extension is ready
 	title: false,
 	share: false,
-	infoLink: ''
+	infoLink: '',
+	supportCountry: '' // ISO code from censoredCountryCodes the viewer defaults to helping; '' = anywhere
 }
 
 export const POPUP = 'popup'

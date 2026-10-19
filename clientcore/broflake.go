@@ -30,6 +30,8 @@ type BroflakeEngine struct {
 	// activation is shared with the egress slots, which read its ID on
 	// every dial. nil for engines built without them.
 	activation *activation
+	// rtcOpt is shared with the WebRTC workers; kept so the UI can retarget a live instance.
+	rtcOpt *WebRTCOptions
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -125,6 +127,14 @@ func (b *BroflakeEngine) stop() {
 	}()
 }
 
+func (b *BroflakeEngine) setTargetCountries(countries []string) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetTargetCountries(countries)
+	slog.Debug("Target countries set", "countries", b.rtcOpt.targetCountries())
+}
+
 func (b *BroflakeEngine) debug() {
 	slog.Debug("NumGoroutine", "goroutines", runtime.NumGoroutine())
 }
@@ -203,6 +213,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// Step 2: Build Broflake
 	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag)
 	broflake.activation = act
+	broflake.rtcOpt = rtcOpt
 
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
