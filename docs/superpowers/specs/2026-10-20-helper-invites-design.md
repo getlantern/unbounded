@@ -64,7 +64,10 @@ a different app; that defeats it, but v1 does not enforce it.
 1. Sara taps "Invite someone to help me". Her app generates a 32-byte random
    secret `s`.
 2. The app registers `H(s)` (SHA-256) with lantern-cloud, authenticated by
-   its device ID, with an expiry of 48 hours.
+   its device ID, with an expiry of 48 hours. It also registers the public
+   half of an **approval keypair** derived from `s`
+   (`Ed25519(seed = HKDF(s, "lantern-helper-invite-v1/approve"))`), so the
+   server can later verify an approval without ever learning `s`.
 3. The link is `https://lantern.io/help/#<base64url(s)>`. The secret is in the
    URL fragment, so browsers and link-preview fetchers never send it to any
    server.
@@ -104,9 +107,10 @@ refused with "already claimed", and the claiming app shows that prominently.
    never has `s`.
 3. Sara and the volunteer compare codes. The app suggests a call or a
    different app where possible.
-4. Sara taps **Approve** or **Reject**. Approval carries
-   `HMAC-SHA256(K, "approve" || H(s) || volunteer_public_key)`, so only a
-   device holding `s` can approve. Sara's device must also be the one that
+4. Sara taps **Approve** or **Reject**. Approval carries a signature by the
+   approval key over `"approve" || H(s) || volunteer_public_key`, which
+   lantern-cloud checks against the registered public key. Only a device
+   holding `s` can produce it, and Sara's device must also be the one that
    created the invite.
 5. On approval, lantern-cloud creates a random 128-bit **pairing ID**, marks the
    invite used, and stores `pairing ID → (inviter device or account, volunteer device)`.
