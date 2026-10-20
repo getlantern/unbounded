@@ -35,7 +35,7 @@
 | Name-blob keys | `K_v = HKDF(s, "lantern-helper-invite-v1/volunteer-name")`, `K_i = HKDF(s, "lantern-helper-invite-v1/inviter-name")`; ChaCha20-Poly1305, blob = 12-byte random nonce ‖ ciphertext. Encrypted on the devices only; the server stores bytes |
 | Matching code | `HMAC-SHA256(K, "code" ‖ volunteer_pubkey)`, first 4 bytes as big-endian uint32, mod 10000, zero-padded to 4 digits |
 | Approval signature | Ed25519 signature by the approval key over `"approve" ‖ invite_hash ‖ volunteer_pubkey` |
-| Ticket | `base64url(payload) + "." + base64url(ed25519 signature over the payload bytes)`. Payload is compact JSON `{"v":1,"p":"<pairing uuid>","d":"<device id>","r":"inviter"\|"volunteer","e":<unix seconds>}` |
+| Ticket | `base64url(payload) + "." + base64url(ed25519 signature over the payload bytes)`. Payload is compact JSON `{"v":1,"p":"<pairing uuid>","r":"inviter"\|"volunteer","e":<unix seconds>}`. No device ID (final-review ruling F1: verifiers must not learn the API credential; the Task 2 code below predates this and the branch drops `DeviceID`) |
 
 ## File Structure
 

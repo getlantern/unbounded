@@ -89,8 +89,9 @@ The volunteer opens the link:
 The volunteer's app:
 
 1. Creates a device keypair (Ed25519) if it has none.
-2. Derives `K = HKDF-SHA256(s, info = "lantern-helper-invite-v1")`.
-3. Encrypts the volunteer's display name with `K` (AEAD).
+2. Derives the name key `K_v` from `s` with HKDF-SHA256 (the plan 1 wire-format
+   table and `testdata/vectors.json` are normative for every derivation).
+3. Encrypts the volunteer's display name with `K_v` (AEAD).
 4. Sends lantern-cloud a claim: `H(s)`, its public key, its device ID and the
    encrypted name.
 
@@ -148,8 +149,10 @@ All limits are configuration and are expected to change after the pilot.
 
 ### Pairing tickets
 
-lantern-cloud issues short-lived signed **pairing tickets**: "device D may use
-pairing P until T". Lifetime is 15 minutes. freddie and the volunteer's proxy
+lantern-cloud issues short-lived signed **pairing tickets**: "the bearer may use
+pairing P, in role R, until T". Lifetime is 15 minutes. Tickets carry no device
+ID: verifiers see them, and a device ID is the credential the HelperService API
+accepts, so putting it in a ticket would let a verifier act as that device. freddie and the volunteer's proxy
 verify tickets with lantern-cloud's public key and need no database. Revocation
 means lantern-cloud stops issuing tickets for the pairing and pushes a
 revocation notice where it can.
