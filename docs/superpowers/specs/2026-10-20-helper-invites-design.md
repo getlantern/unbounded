@@ -34,7 +34,8 @@ must not reveal who is helping whom.
 | Multiple pairings | A volunteer can accept many invites; an inviter can have many volunteers |
 | Links | Branded (`lantern.io/help/…`), shared through any channel or as a QR code |
 | Server knowledge | Blind: the server stores opaque pairing IDs and device IDs, never names or the invite secret |
-| Allowlist | The existing residential-peer allowlist applies to paired and pool traffic alike |
+| Allowlist | The existing residential-peer allowlist applies to paired and pool traffic alike. Paired users never bypass it |
+| Pro rewards | Earned by helping, not by signing up: a welcome week, then a week per 30 active days, capped. An account is needed only to claim |
 | Rollout | Production pilot behind a feature flag; no staging phase |
 
 ## Threat model
@@ -228,14 +229,36 @@ friend's computer is a single point of failure.
 
 1. **The invite is the ad.** The landing page tells the human story and leads
    to an install with a reason to keep the app running.
-2. **Volunteering earns Pro.** Built on the existing referral rewards, for
-   example a week of Pro for every month of helping. The exact rate is a
-   product decision.
+2. **Volunteering earns Pro** (see "Pro rewards" below).
 3. **A share card** for social media ("I'm keeping someone in Iran online with
    Lantern") that links to general volunteering. It never includes the paired
    person's name or anything that identifies her.
 4. **Pro offers at natural moments,** such as an earned trial ending, never
    during onboarding.
+
+### Pro rewards
+
+Rewards are earned by helping, not by creating an account, so pairing with a
+second phone of one's own earns nothing.
+
+1. **Welcome week.** One week of Pro once the volunteer has an approved
+   pairing, has been helping for 24 hours, and the paired person has connected
+   through them from a censored country.
+2. **Ongoing.** One more week for every 30 active days. A day counts when the
+   volunteer was online for at least 6 hours. Capped at 12 weeks a year.
+3. **Claiming.** Volunteering needs no account. Claiming a reward does: the app
+   shows "you've earned a free week — create an account to claim it". This is
+   where volunteers are asked for an account (and an email for marketing), and
+   it lets the Pro survive a reinstall. Unclaimed weeks wait on the device.
+4. **Abuse guard.** Only pairings whose paired person connects from a censored
+   country count, and at most 3 pairings per volunteer count toward rewards. A
+   volunteer can still help up to 20 people.
+
+lantern-cloud checks eligibility without learning identities: the pairing
+exists, the volunteer's heartbeats report its uptime, and the paired client's
+country comes from its IP at config fetch. Only the outcome ("eligible for a
+week") is stored against the volunteer, not which pairing or country earned it.
+Rewards are granted through the existing referral-reward mechanism.
 
 ## Section 4: Abuse, privacy and testing
 
@@ -247,7 +270,8 @@ friend's computer is a single point of failure.
 | Guessing or enumerating invites | 256-bit secret; the server sees only its hash; rate limits |
 | Adversary as volunteer collecting IPs | Can only pair through an invite the inviter approves. Pool volunteers already see client IPs; that is unchanged |
 | Adversary as inviter harvesting volunteer IPs to block | Invite and pairing caps. Direct-mode IPs are already discoverable by any client they serve |
-| Paired user abusing the volunteer's connection | The existing allowlist applies; the volunteer can revoke |
+| Paired user abusing the volunteer's connection | The existing allowlist applies, with no bypass for paired users; the volunteer can revoke |
+| Farming Pro rewards with self-pairings | Rewards require the paired person to connect from a censored country; at most 3 pairings count; yearly cap |
 | Inviter's phone seized | Helper names encrypted at rest; a "remove all helpers" action |
 | lantern-cloud breach | Only opaque pairing IDs and device IDs; rotate the ticket key |
 | Ticket key compromise | An attacker could join rooms or use routes, but learns no identities; rotate the key and reissue |
@@ -268,6 +292,9 @@ account. Spans for invite, claim and approval record outcomes and timings only.
   revocation at the volunteer's inbound.
 - **Routing:** paired routes always included in the inviter's config; routes
   without `everyone` absent from the bandit catalog; paired users get slots first.
+- **Rewards:** welcome-week and 30-day eligibility, the 6-hour active-day rule,
+  the censored-country and 3-pairing conditions, the yearly cap, and claiming
+  an unclaimed week after creating an account.
 - **Production pilot checks:** a deliberately leaked link claimed first is
   caught by the code comparison; revocation time is measured.
 
@@ -281,15 +308,13 @@ account. Spans for invite, claim and approval record outcomes and timings only.
 
 | Component | Change |
 |---|---|
-| lantern-cloud | Invite, claim, approve, revoke and pairing APIs; pairing tickets and per-pairing credentials; route audiences; config-new includes paired routes |
+| lantern-cloud | Invite, claim, approve, revoke and pairing APIs; pairing tickets and per-pairing credentials; route audiences; config-new includes paired routes; reward eligibility and grants |
 | freddie | Rooms keyed by pairing ID; ticket verification; scoped genesis delivery |
 | radiance | Volunteer: pairings, tickets, room announcements, paired-first slots, per-pairing credentials on the samizdat inbound. Client: room subscription and paired routes |
-| lantern (app) | Invite creation and sharing, QR, claim and approval UI with matching codes, helper lists, browser-to-app handoff, Pro rewards |
+| lantern (app) | Invite creation and sharing, QR, claim and approval UI with matching codes, helper lists, browser-to-app handoff, earned-reward prompts and claiming |
 | Web | `lantern.io/help` landing page with the browser fallback |
 
 ## Open questions
 
-- The Pro reward rate for volunteering.
-- Whether a paired user should ever get past the allowlist. v1 says no.
 - Whether to add a "discreet" link style without Lantern branding, if pilot
   partners say branded links put senders at risk.
