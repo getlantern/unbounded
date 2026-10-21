@@ -166,8 +166,11 @@ revocation notice where it can.
   the bandit's selections, so her helpers do not depend on exploration weights.
 - A route whose audience does not include `everyone` is left out of the bandit
   catalog. A route that includes it enters the pool as today.
-- The per-peer client cap reserves slots for paired users first, so the pool
-  cannot crowd them out.
+- Paired users always get their helpers' routes. They skip the per-peer slot
+  reservation but count toward the volunteer's reported clients, so they push
+  pool clients out, never the other way round. A volunteer's total can briefly
+  exceed the pool cap. Holding it strictly would mean telling paired from pool
+  clients before the samizdat handshake, which the protocol can't do.
 - Paired clients authenticate to the volunteer's samizdat inbound with
   **per-pairing credentials** that lantern-cloud issues to both sides and
   rotates on the ticket lifetime. This needs no change to the samizdat
