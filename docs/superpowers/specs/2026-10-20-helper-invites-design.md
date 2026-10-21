@@ -172,9 +172,11 @@ revocation notice where it can.
   exceed the pool cap. Holding it strictly would mean telling paired from pool
   clients before the samizdat handshake, which the protocol can't do.
 - Paired clients authenticate to the volunteer's samizdat inbound with
-  **per-pairing credentials** that lantern-cloud issues to both sides and
-  rotates on the ticket lifetime. This needs no change to the samizdat
-  protocol, and revoking a pairing simply stops its credentials being renewed.
+  **per-pairing credentials**: a samizdat short ID derived per pairing and per
+  24-hour epoch, issued to both sides. Each rotation ends the paired sessions
+  still using the old ID, so the epoch is long. Revocation doesn't depend on it:
+  the volunteer drops an ended pairing's IDs at its next heartbeat. This needs
+  no change to the samizdat protocol.
 
 ### Unbounded
 
@@ -199,10 +201,11 @@ normal Lantern. A pairing adds capacity and is never a single point of failure.
 ### Revocation
 
 lantern-cloud stops issuing tickets for the pairing. In direct mode the route
-drops from Sara's config at the next fetch, and the volunteer's inbound rejects
-her pairing credentials once they expire. In Unbounded, freddie drops the room membership.
-Access ends within one ticket lifetime (15 minutes) at most, and within seconds
-where a revocation can be pushed.
+drops from Sara's config at the next fetch, and the volunteer's inbound drops
+her pairing credentials at its next heartbeat (150 s), ending her open sessions.
+In Unbounded, freddie drops the room membership. Access ends within one ticket
+lifetime (15 minutes) at most, and within seconds where a revocation can be
+pushed.
 
 ## Section 3: Volunteer experience and marketing
 
