@@ -288,6 +288,7 @@ Rewards are granted through the existing referral-reward mechanism.
 | Inviter's phone seized | Helper names encrypted at rest; a "remove all helpers" action |
 | lantern-cloud breach | Only opaque pairing IDs and device IDs; rotate the ticket key |
 | Ticket key compromise | An attacker could join rooms or use routes, but learns no identities; rotate the key and reissue |
+| Leaked volunteer ticket (bearer) | Its holder could post a pairings-only genesis for that room and receive the inviter's offer, learning her IP, for up to one ticket lifetime (15 min). Accepted for v1: the same exposure class as device-ID bearer auth, and tickets travel only over TLS to lantern-cloud and freddie. Follow-up: bind tickets to a key held by the volunteer and require proof of possession at genesis |
 
 ### Telemetry
 
