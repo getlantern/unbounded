@@ -44,23 +44,37 @@ func NormalizeRoomTickets(tickets []string) []string {
 		if len(out) == MaxRoomTickets {
 			break
 		}
-		tk = strings.TrimSpace(tk)
-		if !wellFormedRoomTicket(tk) || slices.Contains(out, tk) {
-			continue
-		}
-		out = append(out, tk)
+		out = appendRoomTicket(out, tk)
 	}
 	return out
 }
 
 // ParseRoomTicketsHeader splits every value of RoomTicketsHeader at commas
-// and normalizes the result.
+// and normalizes the result, as NormalizeRoomTickets. It is on Freddie's
+// request path, so it stops reading once it has MaxRoomTickets tickets.
 func ParseRoomTicketsHeader(values []string) []string {
-	var all []string
+	var out []string
 	for _, v := range values {
-		all = append(all, strings.Split(v, ",")...)
+		for len(out) < MaxRoomTickets {
+			tk, rest, more := strings.Cut(v, ",")
+			out = appendRoomTicket(out, tk)
+			if !more {
+				break
+			}
+			v = rest
+		}
 	}
-	return NormalizeRoomTickets(all)
+	return out
+}
+
+// appendRoomTicket appends tk, trimmed, to out unless it is malformed or
+// already there.
+func appendRoomTicket(out []string, tk string) []string {
+	tk = strings.TrimSpace(tk)
+	if !wellFormedRoomTicket(tk) || slices.Contains(out, tk) {
+		return out
+	}
+	return append(out, tk)
 }
 
 func wellFormedRoomTicket(tk string) bool {

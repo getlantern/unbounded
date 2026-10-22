@@ -115,14 +115,18 @@ func TestConsumerIndex_DeleteCleansIndex(t *testing.T) {
 // country server-side; a header is fine here because the test controls every request.
 const testCountryHeader = "X-Test-Country"
 
-// newTestServer starts Freddie over HTTP with a fresh consumer table and the given hook, and
-// returns helpers to subscribe consumers and post genesis messages.
-func newTestServer(t *testing.T, hook func(*http.Request) string) (
-	subscribe func(country, query string) chan string,
-	genesis func(targets ...string),
-	expect func(name string, ch chan string, want bool),
-	waitForConsumers func(n int),
-) {
+// testServer is Freddie over HTTP with a fresh consumer table.
+type testServer struct {
+	t      *testing.T
+	f      *Freddie
+	url    string
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// startTestServer starts Freddie over HTTP with a fresh consumer table and the given country hook.
+// Set s.f.RoomTicket before subscribing to enable rooms.
+func startTestServer(t *testing.T, hook func(*http.Request) string) *testServer {
 	t.Helper()
 	consumerTable = newConsumerIndex(0)
 
@@ -136,87 +140,131 @@ func newTestServer(t *testing.T, hook func(*http.Request) string) (
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	return &testServer{t: t, f: f, url: srv.URL, ctx: ctx, cancel: cancel}
+}
 
-	subscribe = func(country, query string) chan string {
-		u := srv.URL + "/v1/signal"
-		if query != "" {
-			u += "?" + query
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set(common.VersionHeader, common.Version)
-		if country != "" {
-			req.Header.Set(testCountryHeader, country)
-		}
-		msgs := make(chan string, 16)
-		go func() {
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return
-			}
-			defer res.Body.Close()
-			scanner := bufio.NewScanner(res.Body)
-			for scanner.Scan() {
-				msgs <- scanner.Text()
-			}
-		}()
-		return msgs
+// subscribe opens a consumer's genesis stream and returns the messages it receives. tickets, if
+// any, go comma-separated in the room tickets header.
+func (s *testServer) subscribe(country, query string, tickets ...string) chan string {
+	u := s.url + "/v1/signal"
+	if query != "" {
+		u += "?" + query
 	}
-
-	genesis = func(targets ...string) {
-		form := url.Values{
-			"data":    {"{}"},
-			"send-to": {"genesis"},
-			"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, u, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	req.Header.Set(common.VersionHeader, common.Version)
+	if country != "" {
+		req.Header.Set(testCountryHeader, country)
+	}
+	if len(tickets) > 0 {
+		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
+	}
+	msgs := make(chan string, 16)
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return
 		}
+		defer res.Body.Close()
+		scanner := bufio.NewScanner(res.Body)
+		for scanner.Scan() {
+			msgs <- scanner.Text()
+		}
+	}()
+	return msgs
+}
+
+// genesis posts a genesis message with extra's fields added to the required ones.
+func (s *testServer) genesis(extra url.Values) {
+	form := url.Values{
+		"data":    {"{}"},
+		"send-to": {"genesis"},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	for k, vs := range extra {
+		for _, v := range vs {
+			form.Add(k, v)
+		}
+	}
+	// Nobody answers a genesis message here, so don't wait out its TTL
+	pctx, pcancel := context.WithTimeout(s.ctx, 200*time.Millisecond)
+	defer pcancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost, s.url+"/v1/signal",
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(common.VersionHeader, common.Version)
+	if res, err := http.DefaultClient.Do(req); err == nil {
+		res.Body.Close()
+	}
+}
+
+func (s *testServer) expect(name string, ch chan string, want bool) {
+	s.t.Helper()
+	select {
+	case <-ch:
+		if !want {
+			s.t.Errorf("%s consumer received a genesis message it should not have", name)
+		}
+	case <-time.After(300 * time.Millisecond):
+		if want {
+			s.t.Errorf("%s consumer did not receive a genesis message", name)
+		}
+	}
+}
+
+func (s *testServer) waitForConsumers(n int) {
+	s.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for consumerTable.Size() < n {
+		if time.Now().After(deadline) {
+			s.t.Fatal("consumers never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
+	// receivers
+	time.Sleep(100 * time.Millisecond)
+}
+
+// hangUp ends every open subscription and waits for Freddie to drop them.
+func (s *testServer) hangUp() {
+	s.t.Helper()
+	s.cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for consumerTable.Size() > 0 {
+		if time.Now().After(deadline) {
+			s.t.Fatal("subscriptions never ended")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The handler's span ends after its deferred Delete
+	time.Sleep(50 * time.Millisecond)
+}
+
+// newTestServer starts Freddie over HTTP with a fresh consumer table and the given hook, and
+// returns helpers to subscribe consumers and post genesis messages.
+func newTestServer(t *testing.T, hook func(*http.Request) string) (
+	subscribe func(country, query string) chan string,
+	genesis func(targets ...string),
+	expect func(name string, ch chan string, want bool),
+	waitForConsumers func(n int),
+) {
+	t.Helper()
+	s := startTestServer(t, hook)
+	subscribe = func(country, query string) chan string { return s.subscribe(country, query) }
+	genesis = func(targets ...string) {
+		form := url.Values{}
 		for _, c := range targets {
 			form.Add(common.TargetCountryField, c)
 		}
-		// Nobody answers a genesis message here, so don't wait out its TTL
-		pctx, pcancel := context.WithTimeout(ctx, 200*time.Millisecond)
-		defer pcancel()
-		req, err := http.NewRequestWithContext(pctx, http.MethodPost, srv.URL+"/v1/signal",
-			strings.NewReader(form.Encode()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set(common.VersionHeader, common.Version)
-		if res, err := http.DefaultClient.Do(req); err == nil {
-			res.Body.Close()
-		}
+		s.genesis(form)
 	}
-
-	expect = func(name string, ch chan string, want bool) {
-		t.Helper()
-		select {
-		case <-ch:
-			if !want {
-				t.Errorf("%s consumer received a genesis message it should not have", name)
-			}
-		case <-time.After(300 * time.Millisecond):
-			if want {
-				t.Errorf("%s consumer did not receive a genesis message", name)
-			}
-		}
-	}
-
-	waitForConsumers = func(n int) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for consumerTable.Size() < n {
-			if time.Now().After(deadline) {
-				t.Fatal("consumers never registered")
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
-		// receivers
-		time.Sleep(100 * time.Millisecond)
-	}
-	return subscribe, genesis, expect, waitForConsumers
+	return subscribe, genesis, s.expect, s.waitForConsumers
 }
 
 func headerHook(r *http.Request) string { return r.Header.Get(testCountryHeader) }
@@ -424,6 +472,8 @@ func TestConsumerIndex_UndeliverableRoomMatch(t *testing.T) {
 
 // A consumer in several of the producer's rooms gets the message once.
 func TestConsumerIndex_RoomMessageOncePerConsumer(t *testing.T) {
+	// A buffer of 2 is what makes a duplicate visible: with 1, a second send would be dropped by
+	// the non-blocking select and the test would pass even if broadcastToRooms sent twice.
 	idx := newConsumerIndex(2)
 	ch := idx.AddConsumer("u", "", []string{"room-a", "room-b"})
 	if n := idx.broadcastToRooms("r", []string{"room-a", "room-b"}); n != 1 {

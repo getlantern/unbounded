@@ -175,6 +175,18 @@ func Peek(token string) (Role, string) {
 	return w.R, w.P
 }
 
+// Expiry returns the expiry token claims, without verifying it, or false if
+// it cannot be read. Like Peek's, nothing may trust it on its own: Freddie
+// reads it only from a ticket its verifier has just accepted, to bound how
+// long it keeps that result.
+func Expiry(token string) (time.Time, bool) {
+	_, _, w, err := decode(token)
+	if err != nil || w.E == 0 {
+		return time.Time{}, false
+	}
+	return time.Unix(w.E, 0), true
+}
+
 // RoomFunc returns a hook for freddie.Freddie.RoomTicket that verifies tickets
 // against keys() at now(), requires role, and returns the pairing ID.
 func RoomFunc(keys func() []Key, now func() time.Time) func(token string, role Role) (string, bool) {

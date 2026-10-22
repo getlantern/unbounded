@@ -36,6 +36,53 @@ func TestParseRoomTicketsHeader(t *testing.T) {
 	}
 }
 
+// ParseRoomTicketsHeader is NormalizeRoomTickets of every comma-separated
+// piece, however the pieces are spread over values.
+func TestParseRoomTicketsHeaderMatchesNormalize(t *testing.T) {
+	var many []string
+	for i := 0; i < MaxRoomTickets+5; i++ {
+		many = append(many, fmt.Sprintf("t%d.x", i))
+	}
+	for _, values := range [][]string{
+		{""},
+		{",,,"},
+		{" a.b ,bad ticket, a.b", "c.d"},
+		{strings.Join(many, ",")},
+		{strings.Join(many[:10], ","), "t0.x,t3.x", strings.Join(many[10:], ",")},
+		{strings.Join(append([]string{"bad!", "a.b", "a.b"}, many...), ", ")},
+		{strings.Repeat("a.b,", 50), "c.d"},
+	} {
+		var pieces []string
+		for _, v := range values {
+			pieces = append(pieces, strings.Split(v, ",")...)
+		}
+		if got, want := ParseRoomTicketsHeader(values), NormalizeRoomTickets(pieces); !slices.Equal(got, want) {
+			t.Errorf("ParseRoomTicketsHeader(%q) = %q, want %q", values, got, want)
+		}
+	}
+}
+
+// Parsing stops at MaxRoomTickets tickets: whatever follows them, however
+// long, costs nothing.
+func TestParseRoomTicketsHeaderStopsEarly(t *testing.T) {
+	var many []string
+	for i := 0; i < MaxRoomTickets; i++ {
+		many = append(many, fmt.Sprintf("t%d.x", i))
+	}
+	full := strings.Join(many, ",")
+	short := []string{full + strings.Repeat(",junk.x", 10)}
+	long := []string{full + strings.Repeat(",junk.x", 100_000), strings.Repeat("more.x,", 100_000)}
+	if got := ParseRoomTicketsHeader(long); !slices.Equal(got, many) {
+		t.Fatalf("got %d tickets, want the first %d", len(got), MaxRoomTickets)
+	}
+	allocs := func(values []string) float64 {
+		return testing.AllocsPerRun(10, func() { ParseRoomTicketsHeader(values) })
+	}
+	if s, l := allocs(short), allocs(long); l > s {
+		t.Errorf("a long tail after %d tickets cost %v allocations, a short one %v", MaxRoomTickets, l, s)
+	}
+}
+
 func TestSignalMsgRoom(t *testing.T) {
 	plain, _ := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}"})
 	if strings.Contains(string(plain), "Room") {

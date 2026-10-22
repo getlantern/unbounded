@@ -220,3 +220,15 @@ func FuzzVerify(f *testing.F) {
 		}
 	})
 }
+
+func TestExpiry(t *testing.T) {
+	v := vectors(t)
+	if exp, ok := Expiry(v["token"]); !ok || !exp.Equal(unixAt(t, v["expired_at_unix"])) {
+		t.Errorf("Expiry(token) = %v, %v; want %s", exp, ok, v["expired_at_unix"])
+	}
+	for _, junk := range []string{"", "x", "!!.!!", base64.RawURLEncoding.EncodeToString([]byte(`{"v":1}`)) + ".x"} {
+		if _, ok := Expiry(junk); ok {
+			t.Errorf("Expiry(%q) claimed an expiry", junk)
+		}
+	}
+}
