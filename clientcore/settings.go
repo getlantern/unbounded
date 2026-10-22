@@ -75,7 +75,10 @@ type WebRTCOptions struct {
 	// RoomsOnly, on a producer, tells Freddie to offer its genesis messages
 	// to the consumers in its rooms and nobody else. The zero value serves
 	// everyone, as every release before rooms did, and sends nothing new on
-	// the wire. On a running instance use SetServePool.
+	// the wire. A Freddie that predates rooms refuses a rooms-only
+	// producer's genesis messages rather than broadcast them (see
+	// common.SignalSendToGenesisRooms), so it is offered to nobody there.
+	// On a running instance use SetServePool.
 	RoomsOnly bool
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net

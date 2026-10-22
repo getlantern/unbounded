@@ -22,8 +22,25 @@ const (
 	// carrying one of the producer's volunteer tickets.
 	RoomTicketField = "room-ticket"
 
-	// PoolField on a genesis POST is "0" when the producer serves only its
-	// rooms. Absent, or any other value, means it also serves everyone.
+	// SignalSendToGenesis is the send-to of a genesis POST that may reach
+	// everyone: Freddie offers it to the producer's rooms first, then to
+	// its target countries, then to all.
+	SignalSendToGenesis = "genesis"
+
+	// SignalSendToGenesisRooms is the send-to of a genesis POST from a
+	// producer that serves only its rooms. Freddie offers it to the
+	// consumers in the producer's rooms and to nobody else, whatever
+	// PoolField says. It is a send-to value rather than a form field so that
+	// it fails closed: a Freddie that predates rooms treats an unknown
+	// send-to as a reply to a request ID, finds none, and returns 404
+	// without broadcasting.
+	SignalSendToGenesisRooms = "genesis-rooms"
+
+	// PoolField on a SignalSendToGenesis POST is "0" when the producer
+	// serves only its rooms. Absent, or any other value, means it also
+	// serves everyone. Freddie still honors it, but clients send
+	// SignalSendToGenesisRooms instead: a Freddie that predates rooms
+	// ignores this field and would broadcast the genesis to everyone.
 	PoolField = "pool"
 
 	// MaxRoomTickets bounds how many tickets Freddie verifies per request.

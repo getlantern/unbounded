@@ -5,8 +5,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -64,18 +66,47 @@ func startRoomServer(t *testing.T, k *roomKeys) *testServer {
 	return s
 }
 
-// roomGenesis posts a genesis message carrying volunteer tickets, with pool=0 unless pool, and
-// target countries.
+// roomGenesis posts a genesis message carrying volunteer tickets and target countries, as a
+// client does: to SignalSendToGenesis if pool, else to SignalSendToGenesisRooms.
 func (s *testServer) roomGenesis(tickets []string, pool bool, targets ...string) {
+	form := roomGenesisForm(tickets, targets)
+	if !pool {
+		form.Set("send-to", common.SignalSendToGenesisRooms)
+	}
+	s.genesis(form)
+}
+
+func roomGenesisForm(tickets, targets []string) url.Values {
 	form := url.Values{}
 	for _, tk := range tickets {
 		form.Add(common.RoomTicketField, tk)
 	}
-	if !pool {
-		form.Set(common.PoolField, "0")
-	}
 	for _, c := range targets {
 		form.Add(common.TargetCountryField, c)
+	}
+	return form
+}
+
+// roomsOnlyForms are the ways a producer can ask Freddie to offer its genesis to its rooms and
+// nobody else: what clients send, the same with a contradictory pool field, which send-to
+// overrides, and the pool=0 form the first room-aware clients sent.
+var roomsOnlyForms = map[string]url.Values{
+	"genesis-rooms":        {"send-to": {common.SignalSendToGenesisRooms}},
+	"genesis-rooms pool=1": {"send-to": {common.SignalSendToGenesisRooms}, common.PoolField: {"1"}},
+	"genesis pool=0":       {"send-to": {common.SignalSendToGenesis}, common.PoolField: {"0"}},
+}
+
+// roomsOnlyGenesis posts a genesis message in the rooms-only form named by mode (see
+// roomsOnlyForms), carrying volunteer tickets and target countries.
+func (s *testServer) roomsOnlyGenesis(mode string, tickets []string, targets ...string) {
+	s.t.Helper()
+	extra, ok := roomsOnlyForms[mode]
+	if !ok {
+		s.t.Fatalf("unknown rooms-only form %q", mode)
+	}
+	form := roomGenesisForm(tickets, targets)
+	for k, vs := range extra {
+		form[k] = vs
 	}
 	s.genesis(form)
 }
@@ -123,24 +154,47 @@ func TestHandleSignal_RoomPrecedence(t *testing.T) {
 	s.expectFrom("other", other, false)
 }
 
-// pool=0: the room or nobody.
+// Rooms only, in every form: the room or nobody, never a country or everyone.
 func TestHandleSignal_PoolOffHasNoFallback(t *testing.T) {
+	for mode := range roomsOnlyForms {
+		t.Run(mode, func(t *testing.T) {
+			k := newRoomKeys(t)
+			s := startRoomServer(t, k)
+			paired := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+			pool := s.subscribe("IR", "")
+			s.waitForConsumers(2)
+
+			s.roomsOnlyGenesis(mode, []string{k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)}, "IR")
+			s.expect("paired", paired, false)
+			s.expect("pool", pool, false)
+
+			s.roomsOnlyGenesis(mode, nil)
+			s.expect("paired", paired, false)
+			s.expect("pool", pool, false)
+
+			s.roomsOnlyGenesis(mode, []string{k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)}, "IR")
+			s.expectFrom("paired", paired, true)
+			s.expect("pool", pool, false)
+		})
+	}
+}
+
+// A Freddie that predates rooms routes a genesis-rooms POST down the path every unknown send-to
+// takes: a reply to a request ID it can't find. This Freddie still routes unknown send-to values
+// that way, so this shows the old path: 404, and nobody, in a room or not, gets the message.
+func TestHandleSignal_UnknownSendToFailsClosed(t *testing.T) {
 	k := newRoomKeys(t)
 	s := startRoomServer(t, k)
 	paired := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
-	pool := s.subscribe("IR", "")
+	pool := s.subscribe("", "")
 	s.waitForConsumers(2)
 
-	s.roomGenesis([]string{k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)}, false, "IR")
+	form := roomGenesisForm([]string{k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)}, nil)
+	form.Set("send-to", "genesis-from-the-future")
+	if status := s.postGenesis(form); status != http.StatusNotFound {
+		t.Errorf("unknown send-to: status %d, want 404", status)
+	}
 	s.expect("paired", paired, false)
-	s.expect("pool", pool, false)
-
-	s.roomGenesis(nil, false)
-	s.expect("paired", paired, false)
-	s.expect("pool", pool, false)
-
-	s.roomGenesis([]string{k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)}, false)
-	s.expectFrom("paired", paired, true)
 	s.expect("pool", pool, false)
 }
 
@@ -235,9 +289,15 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 	volQ := k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)
 	paired := s.subscribe("", "", inv, expired)
 	s.waitForConsumers(1)
+	// Rooms only, room-matched; serving the pool, room-matched; serving the pool, unmatched room;
+	// no rooms at all.
 	s.roomGenesis([]string{vol}, false)
 	s.expectFrom("paired", paired, true)
+	s.roomGenesis([]string{vol}, true)
+	s.expectFrom("paired", paired, true)
 	s.roomGenesis([]string{volQ, "junk"}, true)
+	s.expectFrom("paired", paired, false)
+	s.genesis(nil)
 	s.expectFrom("paired", paired, false)
 	s.hangUp()
 	// Each genesis POST waits defaultMsgTTL for an offer nobody sends here, and its span ends
@@ -271,6 +331,38 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 	}
 	check("log", logs.String())
 
+	// A genesis span carries the same attribute keys, and the same recipient, whether or not the
+	// producer is paired, so a span doesn't single out a paired volunteer.
+	var genesisKeys []string
+	genesisSpans := 0
+	for _, sp := range ended {
+		attrs := map[string]string{}
+		for _, kv := range sp.Attributes() {
+			attrs[string(kv.Key)] = kv.Value.Emit()
+		}
+		if sp.Name() != "handleSignalPost" || attrs["msg_type"] != common.SignalMsgGenesis.String() {
+			continue
+		}
+		genesisSpans++
+		keys := slices.Sorted(maps.Keys(attrs))
+		if genesisKeys == nil {
+			genesisKeys = keys
+		} else if !slices.Equal(keys, genesisKeys) {
+			t.Errorf("genesis span attribute keys %v, another has %v", keys, genesisKeys)
+		}
+		switch got := attrs["genesis.targeting"]; got {
+		case genesisUntargeted, genesisMatched, genesisFallback:
+		default:
+			t.Errorf("genesis span genesis.targeting %q, want one an ordinary genesis gets", got)
+		}
+		if got := attrs["recipient.id"]; got != common.SignalSendToGenesis {
+			t.Errorf("genesis span recipient.id %q, want %q", got, common.SignalSendToGenesis)
+		}
+	}
+	if genesisSpans != 4 {
+		t.Errorf("recorded %d genesis spans, want 4", genesisSpans)
+	}
+
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatal(err)
@@ -295,8 +387,27 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 			}
 		}
 	}
-	if roomMatches != 2 {
-		t.Errorf("room_match counted %d genesis messages, want 2 (one matched, one not)", roomMatches)
+	if roomMatches != 3 {
+		t.Errorf("room_match counted %d genesis messages, want 3 (two matched, one not)", roomMatches)
+	}
+}
+
+// A genesis that skipped the pool step is traced with a value an ordinary genesis with the same
+// targets also gets.
+func TestSpanTargeting(t *testing.T) {
+	for _, tc := range []struct {
+		outcome string
+		targets []string
+		want    string
+	}{
+		{genesisFallback, []string{"IR"}, genesisFallback},
+		{genesisUntargeted, nil, genesisUntargeted},
+		{"", nil, genesisUntargeted},
+		{"", []string{"IR"}, genesisMatched},
+	} {
+		if got := spanTargeting(tc.outcome, tc.targets); got != tc.want {
+			t.Errorf("spanTargeting(%q, %v) = %q, want %q", tc.outcome, tc.targets, got, tc.want)
+		}
 	}
 }
 

@@ -200,12 +200,19 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 			defer res.Body.Close()
 
-			// Freddie never returns 404s for genesis messages, so we're not catching that case here
-
 			// Handle bad protocol version
 			if res.StatusCode == http.StatusTeapot {
 				slog.Debug("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
+
+			// A Freddie that predates rooms answers a rooms-only genesis (see
+			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and
+			// try again, as for any other refusal, rather than decode the error body as an offer.
+			if res.StatusCode != http.StatusOK {
+				slog.Debug("Genesis message refused", "status_code", res.StatusCode)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -694,15 +701,22 @@ func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Conf
 }
 
 // genesisForm is a genesis POST's form: the genesis message g, plus the
-// producer's target countries, room tickets and pool preference. Each of
-// those is omitted when it says nothing, so a producer that uses none of them
-// sends exactly what releases before them did. They are form fields rather
-// than part of the payload so Freddie needn't parse signaling messages to
-// honor them.
+// producer's target countries and room tickets. Each of those is omitted when
+// it says nothing, so a producer that uses none of them sends exactly what
+// releases before them did. They are form fields rather than part of the
+// payload so Freddie needn't parse signaling messages to honor them.
+//
+// A producer that serves only its rooms posts to
+// common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
+// that predates rooms refuses the genesis instead of broadcasting it.
 func genesisForm(options *WebRTCOptions, g []byte) url.Values {
+	sendTo := options.GenesisAddr
+	if !options.ServesPool() {
+		sendTo = common.SignalSendToGenesisRooms
+	}
 	form := url.Values{
 		"data":    {string(g)},
-		"send-to": {options.GenesisAddr},
+		"send-to": {sendTo},
 		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 	}
 	for _, c := range options.targetCountries() {
@@ -710,9 +724,6 @@ func genesisForm(options *WebRTCOptions, g []byte) url.Values {
 	}
 	for _, tk := range options.CurrentRoomTickets() {
 		form.Add(common.RoomTicketField, tk)
-	}
-	if !options.ServesPool() {
-		form.Set(common.PoolField, "0")
 	}
 	return form
 }

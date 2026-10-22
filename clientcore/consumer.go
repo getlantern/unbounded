@@ -41,8 +41,13 @@ func sleepOrDone(ctx context.Context, d time.Duration) {
 }
 
 func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
+	return newConsumerWebRTC(options, wg, newRoomPreference(time.Now))
+}
+
+// newConsumerWebRTC is NewConsumerWebRTC with the worker's room preference
+// supplied, so tests can observe it.
+func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference) *WorkerFSM {
 	var scache STUNCache
-	rooms := newRoomPreference(time.Now)
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -262,7 +267,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			replyTo := rooms.pick(genesisCandidates, roomCandidates)
+			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
 			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{
@@ -289,6 +294,17 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
 			slog.Debug("Consumer state 2...")
+
+			// Until Freddie accepts our offer, the attempt hasn't tested the genesis's producer: a
+			// 404 means another consumer won the genesis race, which is ordinary contention between
+			// workers, not a failure of a room helper. So an attempt that ends here is abandoned
+			// rather than failed. See roomPreference.
+			offerAccepted := false
+			defer func() {
+				if !offerAccepted {
+					rooms.abandoned()
+				}
+			}()
 
 			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag, Country: options.ConsumerCountry})
 			if err != nil {
@@ -335,6 +351,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			case http.StatusOK:
 				// We won the connection, proceed
+				offerAccepted = true
 			default:
 				slog.Debug("Unexpected http status code", "status_code", res.StatusCode)
 				sleepOrDone(ctx, options.ErrorBackoff)
@@ -694,23 +711,26 @@ const (
 )
 
 // roomPreference is one consumer worker's room preference, bounded across
-// failed attempts. pick is called once per attempt; an attempt that hasn't
-// reached succeeded by the next pick failed, whatever state it failed in.
+// failed attempts. pick is called once per attempt. An attempt that reaches
+// neither succeeded nor abandoned by the next pick failed, whatever state it
+// failed in. An attempt whose ctx is cancelled is abandoned.
 type roomPreference struct {
 	mu             sync.Mutex
 	now            func() time.Time
 	pending        bool // the current attempt answered a room-picked genesis
 	failures       int  // consecutive failed room-picked attempts
 	suspendedUntil time.Time
+	attempt        uint64      // counts room-picked attempts, so a stale cancel is ignored
+	stopWatch      func() bool // stops the current attempt's cancel watch
 }
 
 func newRoomPreference(now func() time.Time) *roomPreference {
 	return &roomPreference{now: now}
 }
 
-// pick picks the genesis to answer: as pickGenesis, except that room
-// preference is ignored while suspended.
-func (p *roomPreference) pick(all, room []string) string {
+// pick picks the genesis to answer for an attempt that runs under ctx: as
+// pickGenesis, except that room preference is ignored while suspended.
+func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
@@ -722,10 +742,16 @@ func (p *roomPreference) pick(all, room []string) string {
 			slog.Debug("Room genesis attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
 		}
 	}
+	p.clearLocked()
 	if now.Before(p.suspendedUntil) {
 		room = nil
 	}
-	p.pending = len(room) > 0
+	if len(room) > 0 {
+		p.pending = true
+		p.attempt++
+		attempt := p.attempt
+		p.stopWatch = context.AfterFunc(ctx, func() { p.cancelled(attempt) })
+	}
 	return pickGenesis(all, room)
 }
 
@@ -733,6 +759,33 @@ func (p *roomPreference) pick(all, room []string) string {
 func (p *roomPreference) succeeded() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pending = false
+	p.clearLocked()
 	p.failures = 0
+}
+
+// abandoned records that the current attempt ended without testing its
+// producer, such as by losing the genesis race. It counts neither as a
+// failure nor as a success.
+func (p *roomPreference) abandoned() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.clearLocked()
+}
+
+// cancelled abandons attempt, if it is still the current one, because its ctx
+// was cancelled.
+func (p *roomPreference) cancelled(attempt uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.attempt == attempt {
+		p.clearLocked()
+	}
+}
+
+func (p *roomPreference) clearLocked() {
+	if p.stopWatch != nil {
+		p.stopWatch()
+		p.stopWatch = nil
+	}
+	p.pending = false
 }

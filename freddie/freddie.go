@@ -120,6 +120,23 @@ const (
 	genesisFallback   = "fallback"   // no waiting consumer from a target country took it, so sent to all
 )
 
+// spanTargeting is the genesis.targeting span attribute for a genesis message whose pool step had
+// outcome, "" when it did not run (a room consumer took the message, or the producer serves only
+// its rooms). Every genesis span carries the attribute, and one that skipped the pool step gets
+// a value an ordinary genesis with the same targets also gets: untargeted without targets, matched
+// with them. So the attribute never singles out a paired producer. The metric
+// freddie.genesis.broadcasts is not affected: it counts only real pool steps.
+func spanTargeting(outcome string, targets []string) string {
+	switch {
+	case outcome != "":
+		return outcome
+	case len(targets) == 0:
+		return genesisUntargeted
+	default:
+		return genesisMatched
+	}
+}
+
 // A consumerIndex is a userTable which also indexes its users by server-derived country, so that
 // genesis messages can be steered toward consumers from the countries a producer wants to serve,
 // and by helper pairing room, so that a producer's genesis messages reach the consumers it is
@@ -300,8 +317,8 @@ type Freddie struct {
 	// common.RoomTicketField, send its genesis messages to those rooms' consumers first. It must
 	// check the signature, the key, the expiry and the role, and must not log, trace or count the
 	// ticket or the room. helperticket.RoomFunc is one. nil disables rooms: tickets are ignored, so
-	// a producer that sends pool=0 is offered to nobody. Set it after New and before serving; it is
-	// read without synchronization by concurrent request handlers.
+	// a producer that serves only its rooms is offered to nobody. Set it after New and before
+	// serving; it is read without synchronization by concurrent request handlers.
 	//
 	// Freddie caches each ticket it accepts until the ticket's own expiry, so RoomTicket runs once
 	// per distinct valid ticket rather than at every subscribe and genesis. See KnownKeyID.
@@ -733,8 +750,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
+	isGenesis := sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms
+	// A rooms-only genesis is traced as an ordinary one, so the span doesn't mark the producer as
+	// paired.
+	recipient := sendTo
+	if isGenesis {
+		recipient = common.SignalSendToGenesis
+	}
 	span.SetAttributes(
-		attribute.String("recipient.id", sendTo),
+		attribute.String("recipient.id", recipient),
 		attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 	)
 
@@ -751,11 +775,13 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
-	if sendTo == "genesis" {
+	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
-		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis.
+		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
+		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
+		// first room-aware clients did, to SignalSendToGenesis with pool=0.
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
-		servePool := r.Form.Get(common.PoolField) != "0"
+		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
 		var roomMsg []byte
 		if len(rooms) > 0 {
@@ -772,12 +798,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
 		}
 		if outcome != "" {
-			span.SetAttributes(
-				attribute.StringSlice("genesis.target_countries", targets),
-				attribute.String("genesis.targeting", outcome),
-			)
 			f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
 		}
+		span.SetAttributes(
+			attribute.StringSlice("genesis.target_countries", targets),
+			attribute.String("genesis.targeting", spanTargeting(outcome, targets)),
+		)
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)

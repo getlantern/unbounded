@@ -178,12 +178,22 @@ func (s *testServer) subscribe(country, query string, tickets ...string) chan st
 
 // genesis posts a genesis message with extra's fields added to the required ones.
 func (s *testServer) genesis(extra url.Values) {
+	s.postGenesis(extra)
+}
+
+// postGenesis posts a genesis message with send-to "genesis", unless extra sets send-to, plus
+// extra's fields. It returns the response status, or 0 when the request timed out before Freddie
+// answered.
+func (s *testServer) postGenesis(extra url.Values) int {
 	form := url.Values{
 		"data":    {"{}"},
-		"send-to": {"genesis"},
+		"send-to": {common.SignalSendToGenesis},
 		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 	}
 	for k, vs := range extra {
+		if k == "send-to" {
+			form.Del(k)
+		}
 		for _, v := range vs {
 			form.Add(k, v)
 		}
@@ -198,9 +208,12 @@ func (s *testServer) genesis(extra url.Values) {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set(common.VersionHeader, common.Version)
-	if res, err := http.DefaultClient.Do(req); err == nil {
-		res.Body.Close()
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
 	}
+	res.Body.Close()
+	return res.StatusCode
 }
 
 func (s *testServer) expect(name string, ch chan string, want bool) {
