@@ -205,7 +205,10 @@ drops from Sara's config at the next fetch, and the volunteer's inbound drops
 her pairing credentials at its next heartbeat (150 s), ending her open sessions.
 In Unbounded, freddie drops the room membership. Access ends within one ticket
 lifetime (15 minutes) at most, and within seconds where a revocation can be
-pushed.
+pushed. One exception in direct mode: a volunteer that can't reach lantern-cloud
+(or keeps getting failed heartbeats) keeps its last authoritative set, so a
+revoked pairing's IDs stay accepted until the volunteer's 48-hour
+unconfirmed-set expiry.
 
 ## Section 3: Volunteer experience and marketing
 
