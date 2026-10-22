@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -122,7 +123,7 @@ func TestSubscribeRequestCarriesTickets(t *testing.T) {
 	if req.Header.Get(common.VersionHeader) != common.Version {
 		t.Error("missing version header")
 	}
-	if _, ok := req.Header[common.RoomTicketsHeader]; ok {
+	if v := req.Header.Values(common.RoomTicketsHeader); len(v) > 0 {
 		t.Error("a consumer without tickets must not send the header")
 	}
 
@@ -150,4 +151,86 @@ func TestPickGenesisPrefersRooms(t *testing.T) {
 	if len(seen) != 3 {
 		t.Errorf("without rooms the pick must stay random over all; saw %v", seen)
 	}
+}
+
+// An unreachable room helper must not keep the consumer from the pool: each
+// pick is one connection attempt, and an attempt that never reaches
+// succeeded failed (state 4's NAT timeout returns to state 0, then state 1
+// picks again). After roomPreferenceMaxFailures such attempts the consumer
+// picks among all for roomPreferenceCooldown, then prefers rooms again.
+func TestRoomPreferenceFallsBackToPoolAfterFailures(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := newRoomPreference(func() time.Time { return now })
+	all := []string{"helper", "p1", "p2", "p3"}
+	room := []string{"helper"}
+
+	// The first attempt and the retries up to the threshold go to the helper.
+	for i := 0; i < roomPreferenceMaxFailures; i++ {
+		if got := p.pick(all, room); got != "helper" {
+			t.Fatalf("attempt %d picked %q, want the room helper", i+1, got)
+		}
+	}
+
+	// The next pick records the threshold-th failure: from here on, the
+	// helper competes with the pool rather than winning every window.
+	seen := map[string]bool{}
+	for i := 0; i < 200; i++ {
+		seen[p.pick(all, room)] = true
+		now = now.Add(roomPreferenceCooldown / 400)
+	}
+	if len(seen) != len(all) {
+		t.Fatalf("during cooldown the pick must be random over all; saw %v", seen)
+	}
+
+	// After the cooldown, room preference resumes.
+	now = now.Add(roomPreferenceCooldown)
+	for i := 0; i < 20; i++ {
+		got := p.pick(all, room)
+		if got != "helper" {
+			t.Fatalf("after cooldown picked %q, want the room helper", got)
+		}
+		p.succeeded()
+	}
+}
+
+func TestRoomPreferenceSuccessResetsFailures(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	p := newRoomPreference(func() time.Time { return now })
+	all := []string{"helper", "p1", "p2", "p3"}
+	room := []string{"helper"}
+
+	// Fail once short of the threshold, connect, and repeat: failures are
+	// consecutive, so preference is never suspended.
+	for round := 0; round < 5; round++ {
+		for i := 0; i < roomPreferenceMaxFailures; i++ {
+			if got := p.pick(all, room); got != "helper" {
+				t.Fatalf("round %d attempt %d picked %q", round, i+1, got)
+			}
+		}
+		p.succeeded()
+	}
+
+	// Pool-picked failures don't count against rooms.
+	p = newRoomPreference(func() time.Time { return now })
+	for i := 0; i < 10; i++ {
+		p.pick(all, nil)
+	}
+	if got := p.pick(all, room); got != "helper" {
+		t.Errorf("picked %q after pool-only failures, want the room helper", got)
+	}
+}
+
+func TestRoomPreferenceIsRaceFree(t *testing.T) {
+	p := newRoomPreference(time.Now)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1000; i++ {
+			p.succeeded()
+		}
+	}()
+	for i := 0; i < 1000; i++ {
+		p.pick([]string{"a", "b"}, []string{"a"})
+	}
+	<-done
 }

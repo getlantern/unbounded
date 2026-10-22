@@ -42,6 +42,7 @@ func sleepOrDone(ctx context.Context, d time.Duration) {
 
 func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
+	rooms := newRoomPreference(time.Now)
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -261,7 +262,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			replyTo := pickGenesis(genesisCandidates, roomCandidates)
+			replyTo := rooms.pick(genesisCandidates, roomCandidates)
 			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{
@@ -552,6 +553,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			d := input[1].(*webrtc.DataChannel)
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
+			rooms.succeeded()
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -678,4 +680,59 @@ func pickGenesis(all, room []string) string {
 		return room[rand.Intn(len(room))]
 	}
 	return all[rand.Intn(len(all))]
+}
+
+const (
+	// roomPreferenceMaxFailures is how many consecutive attempts with a
+	// room-picked genesis may fail before a consumer worker stops preferring
+	// room genesis messages for roomPreferenceCooldown. Without this bound,
+	// a paired helper that keeps advertising but can never complete WebRTC
+	// with this consumer (incompatible NATs, say) would be picked in every
+	// Patience window it appears in, starving the pool.
+	roomPreferenceMaxFailures = 2
+	roomPreferenceCooldown    = 2 * time.Minute
+)
+
+// roomPreference is one consumer worker's room preference, bounded across
+// failed attempts. pick is called once per attempt; an attempt that hasn't
+// reached succeeded by the next pick failed, whatever state it failed in.
+type roomPreference struct {
+	mu             sync.Mutex
+	now            func() time.Time
+	pending        bool // the current attempt answered a room-picked genesis
+	failures       int  // consecutive failed room-picked attempts
+	suspendedUntil time.Time
+}
+
+func newRoomPreference(now func() time.Time) *roomPreference {
+	return &roomPreference{now: now}
+}
+
+// pick picks the genesis to answer: as pickGenesis, except that room
+// preference is ignored while suspended.
+func (p *roomPreference) pick(all, room []string) string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := p.now()
+	if p.pending {
+		p.failures++
+		if p.failures >= roomPreferenceMaxFailures {
+			p.failures = 0
+			p.suspendedUntil = now.Add(roomPreferenceCooldown)
+			slog.Debug("Room genesis attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
+		}
+	}
+	if now.Before(p.suspendedUntil) {
+		room = nil
+	}
+	p.pending = len(room) > 0
+	return pickGenesis(all, room)
+}
+
+// succeeded records that the current attempt connected.
+func (p *roomPreference) succeeded() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pending = false
+	p.failures = 0
 }
