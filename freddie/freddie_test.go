@@ -336,3 +336,119 @@ func TestHandleSignal_HookResultNormalized(t *testing.T) {
 		})
 	}
 }
+
+// recv returns the message waiting on ch, or "" without blocking.
+func recv(ch chan string) string {
+	select {
+	case m := <-ch:
+		return m
+	default:
+		return ""
+	}
+}
+
+// Precedence per genesis message: room, then (only when the producer serves
+// the pool) country, then everyone.
+func TestConsumerIndex_RoomsFirst(t *testing.T) {
+	idx := newConsumerIndex(1)
+	paired := idx.AddConsumer("paired", "RU", []string{"room-a"})
+	ir := idx.AddConsumer("ir", "IR", nil)
+	other := idx.AddWithCountry("other", "")
+
+	matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, []string{"IR"})
+	if !matched || outcome != "" {
+		t.Fatalf("room-a: matched=%v outcome=%q, want a room match and no pool step", matched, outcome)
+	}
+	if got := recv(paired); got != "r" {
+		t.Errorf("paired consumer got %q, want the room message", got)
+	}
+	if received(ir) || received(other) {
+		t.Error("a room match still reached pool consumers")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"IR"})
+	if matched || outcome != genesisMatched {
+		t.Fatalf("room-b, IR: matched=%v outcome=%q, want the country step", matched, outcome)
+	}
+	if recv(ir) != "m" || received(paired) || received(other) {
+		t.Error("with nobody in room-b the IR consumer, and only it, should get the plain message")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"CN"})
+	if matched || outcome != genesisFallback {
+		t.Fatalf("room-b, CN: matched=%v outcome=%q, want the fallback", matched, outcome)
+	}
+	if recv(paired) != "m" || recv(ir) != "m" || recv(other) != "m" {
+		t.Error("the fallback must reach everyone with the plain message, room members included")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, false, []string{"IR"})
+	if matched || outcome != "" {
+		t.Fatalf("pool=0, nobody in room-b: matched=%v outcome=%q, want no delivery", matched, outcome)
+	}
+	matched, outcome = idx.DeliverGenesis("m", "r", nil, false, nil)
+	if matched || outcome != "" {
+		t.Fatalf("pool=0, no rooms: matched=%v outcome=%q, want no delivery", matched, outcome)
+	}
+	if received(paired) || received(ir) || received(other) {
+		t.Error("a pool=0 genesis with no room consumer reached someone")
+	}
+
+	matched, _ = idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil)
+	if !matched || recv(paired) != "r" {
+		t.Error("pool=0 must still reach the room")
+	}
+}
+
+// A room member that can't take the message right now is not a match: a
+// producer serving the pool falls back, and one that doesn't reaches nobody.
+func TestConsumerIndex_UndeliverableRoomMatch(t *testing.T) {
+	idx := newConsumerIndex(1)
+	paired := idx.AddConsumer("paired", "", []string{"room-a"})
+	pool := idx.AddWithCountry("pool", "")
+	paired <- "already full"
+
+	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, nil); matched || outcome != genesisUntargeted {
+		t.Fatalf("matched=%v outcome=%q, want an untargeted pool broadcast", matched, outcome)
+	}
+	if recv(pool) != "m" {
+		t.Error("the pool consumer did not get the fallback")
+	}
+	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil); matched || outcome != "" {
+		t.Fatalf("pool=0: matched=%v outcome=%q, want nothing", matched, outcome)
+	}
+	if received(pool) {
+		t.Error("a pool=0 genesis reached the pool")
+	}
+}
+
+// A consumer in several of the producer's rooms gets the message once.
+func TestConsumerIndex_RoomMessageOncePerConsumer(t *testing.T) {
+	idx := newConsumerIndex(2)
+	ch := idx.AddConsumer("u", "", []string{"room-a", "room-b"})
+	if n := idx.broadcastToRooms("r", []string{"room-a", "room-b"}); n != 1 {
+		t.Errorf("delivered %d times, want 1", n)
+	}
+	if len(ch) != 1 {
+		t.Errorf("%d messages queued, want 1", len(ch))
+	}
+}
+
+func TestConsumerIndex_DeleteCleansRooms(t *testing.T) {
+	idx := newConsumerIndex(1)
+	idx.AddConsumer("a", "IR", []string{"room-a", "room-b"})
+	idx.AddConsumer("b", "", []string{"room-a"})
+
+	idx.Delete("a")
+	if _, ok := idx.byRoom["room-b"]; ok {
+		t.Error("an empty room was not removed")
+	}
+	if len(idx.byRoom["room-a"]) != 1 {
+		t.Errorf("room-a has %d members, want 1", len(idx.byRoom["room-a"]))
+	}
+	idx.Delete("b")
+	if idx.Size() != 0 || len(idx.rooms) != 0 || len(idx.byRoom) != 0 || len(idx.byCountry) != 0 {
+		t.Errorf("index not empty after deleting everyone: size=%d rooms=%d byRoom=%d byCountry=%d",
+			idx.Size(), len(idx.rooms), len(idx.byRoom), len(idx.byCountry))
+	}
+}

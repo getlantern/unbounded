@@ -118,13 +118,18 @@ const (
 )
 
 // A consumerIndex is a userTable which also indexes its users by server-derived country, so that
-// genesis messages can be steered toward consumers from the countries a producer wants to serve.
-// Users whose country is unknown are still in the table and still receive untargeted and fallback
-// broadcasts; they just can't be selected by country.
+// genesis messages can be steered toward consumers from the countries a producer wants to serve,
+// and by helper pairing room, so that a producer's genesis messages reach the consumers it is
+// paired with first. Users whose country is unknown, or who are in no room, are still in the
+// table and still receive untargeted and fallback broadcasts.
+//
+// Rooms are opaque pairing IDs from verified tickets. They are never logged, traced or counted.
 type consumerIndex struct {
 	userTable
 	country   map[string]string              // userID -> country, only for users whose country is known
 	byCountry map[string]map[string]struct{} // country -> set of userIDs
+	rooms     map[string][]string            // userID -> rooms, only for users in at least one
+	byRoom    map[string]map[string]struct{} // room -> set of userIDs
 }
 
 func newConsumerIndex(bufferSz int) *consumerIndex {
@@ -132,12 +137,20 @@ func newConsumerIndex(bufferSz int) *consumerIndex {
 		userTable: userTable{Data: make(map[string]chan string), BufferSz: bufferSz},
 		country:   make(map[string]string),
 		byCountry: make(map[string]map[string]struct{}),
+		rooms:     make(map[string][]string),
+		byRoom:    make(map[string]map[string]struct{}),
 	}
 }
 
-// AddWithCountry is Add, plus indexing userID under country. country must already be normalized;
-// "" means the user's country is unknown and it is not indexed.
+// AddWithCountry is AddConsumer in no room.
 func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
+	return t.AddConsumer(userID, country, nil)
+}
+
+// AddConsumer is Add, plus indexing userID under country and under each of rooms. country must
+// already be normalized; "" means the user's country is unknown and it is not indexed. rooms must
+// come from verified tickets.
+func (t *consumerIndex) AddConsumer(userID, country string, rooms []string) chan string {
 	t.Lock()
 	defer t.Unlock()
 	t.Data[userID] = make(chan string, t.BufferSz)
@@ -149,6 +162,17 @@ func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
 			t.byCountry[country] = users
 		}
 		users[userID] = struct{}{}
+	}
+	if len(rooms) > 0 {
+		t.rooms[userID] = rooms
+		for _, room := range rooms {
+			users, ok := t.byRoom[room]
+			if !ok {
+				users = make(map[string]struct{})
+				t.byRoom[room] = users
+			}
+			users[userID] = struct{}{}
+		}
 	}
 	return t.Data[userID]
 }
@@ -164,6 +188,13 @@ func (t *consumerIndex) Delete(userID string) {
 			delete(t.byCountry, country)
 		}
 	}
+	for _, room := range t.rooms[userID] {
+		delete(t.byRoom[room], userID)
+		if len(t.byRoom[room]) == 0 {
+			delete(t.byRoom, room)
+		}
+	}
+	delete(t.rooms, userID)
 }
 
 // broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to every user
@@ -199,6 +230,46 @@ func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
 	}
 	t.Broadcast(msg)
 	return genesisFallback
+}
+
+// broadcastToRooms sends msg, with Broadcast's unreliable delivery semantics, to every user indexed
+// under one of rooms, at most once per user. It returns the number of users the message was
+// delivered to.
+func (t *consumerIndex) broadcastToRooms(msg string, rooms []string) int {
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	seen := make(map[string]struct{})
+	for _, room := range rooms {
+		for userID := range t.byRoom[room] {
+			if _, dup := seen[userID]; dup {
+				continue
+			}
+			seen[userID] = struct{}{}
+			select {
+			case t.Data[userID] <- msg:
+				delivered++
+			default:
+			}
+		}
+	}
+	return delivered
+}
+
+// DeliverGenesis delivers a genesis message from a producer in rooms. A waiting consumer in one of
+// rooms comes first: if any takes roomMsg, nobody else gets the genesis. Otherwise, if servePool, it
+// goes on to BroadcastGenesis(msg, targets), the country-then-everyone step. Without servePool it
+// goes nowhere: the producer waits out its TTL and its slot loops, so a waiting room consumer gets
+// the next free slot of a producer before any pool consumer does. roomMatched reports whether a
+// room consumer took it; outcome is BroadcastGenesis's, or "" when the pool step did not run.
+func (t *consumerIndex) DeliverGenesis(msg, roomMsg string, rooms []string, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	if len(rooms) > 0 && t.broadcastToRooms(roomMsg, rooms) > 0 {
+		return true, ""
+	}
+	if !servePool {
+		return false, ""
+	}
+	return false, t.BroadcastGenesis(msg, targets)
 }
 
 type Freddie struct {
