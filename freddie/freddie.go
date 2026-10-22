@@ -535,6 +535,10 @@ const (
 
 	// ticketCacheSweep is how often the cache drops expired entries nobody has looked up again.
 	ticketCacheSweep = time.Minute
+
+	// ticketCacheFullSweep is the least time between sweeps of a full cache. A full cache of live
+	// entries would otherwise be swept, under the lock, by every new ticket that misses it.
+	ticketCacheFullSweep = time.Second
 )
 
 // A ticketCache remembers the tickets Freddie's verifier accepted, keyed by the ticket's SHA-256,
@@ -545,13 +549,15 @@ const (
 //
 // Only accepted tickets are cached, so a client cannot fill the cache, or push good entries out
 // of it, without tickets lantern-cloud signed. When the cache is full it sweeps out expired
-// entries and, failing that, leaves the new ticket uncached: it never evicts a live entry.
+// entries, at most once per ticketCacheFullSweep, and, failing that, leaves the new ticket
+// uncached: it never evicts a live entry.
 type ticketCache struct {
 	mu        sync.Mutex
 	entries   map[[sha256.Size]byte]cachedTicket
 	max       int
 	now       func() time.Time
 	lastSweep time.Time
+	sweeps    int // for tests
 }
 
 type cachedTicket struct {
@@ -628,13 +634,15 @@ func (c *ticketCache) flush() {
 func (c *ticketCache) add(key [sha256.Size]byte, e cachedTicket, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.entries) >= c.max || now.Sub(c.lastSweep) >= ticketCacheSweep {
+	sinceSweep := now.Sub(c.lastSweep)
+	if sinceSweep >= ticketCacheSweep || (len(c.entries) >= c.max && sinceSweep >= ticketCacheFullSweep) {
 		for k, old := range c.entries {
 			if !now.Before(old.expires) {
 				delete(c.entries, k)
 			}
 		}
 		c.lastSweep = now
+		c.sweeps++
 	}
 	if len(c.entries) < c.max {
 		c.entries[key] = e

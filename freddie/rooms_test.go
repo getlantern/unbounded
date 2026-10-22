@@ -444,6 +444,10 @@ func TestTicketCache_Bound(t *testing.T) {
 	if n := calls.Load(); n != 0 {
 		t.Errorf("a full cache evicted good entries (%d re-verifications)", n)
 	}
+	c.room(extra, helperticket.RoleVolunteer, verify, known)
+	if n := calls.Load(); n != 1 {
+		t.Errorf("extra was verified %d times on its second lookup, want 1: a full cache must leave it uncached", n)
+	}
 
 	// Once short expires, a full cache makes room by sweeping it out.
 	clock.add(3 * time.Minute)
@@ -460,6 +464,40 @@ func TestTicketCache_Bound(t *testing.T) {
 	c.room(k.ticket(pairingQ, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify, known)
 	if len(c.entries) != 1 {
 		t.Errorf("%d entries after the sweep interval, want the expired one swept", len(c.entries))
+	}
+}
+
+// A full cache of live entries is swept at most once per ticketCacheFullSweep, however many new
+// tickets miss it, so a flood of misses can't hold the lock for a full sweep each.
+func TestTicketCache_FullSweepRateLimited(t *testing.T) {
+	k := newRoomKeys(t)
+	var calls atomic.Int32
+	verify, known := countingHook(k, &calls)
+	clock := newFakeClock()
+	c := newTicketCache(2, clock.now)
+	c.room(k.ticket(pairingP, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify, known)
+	c.room(k.ticket(pairingQ, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify, known)
+
+	clock.add(ticketCacheFullSweep + time.Millisecond)
+	miss := func() {
+		t.Helper()
+		if _, ok := c.room(k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK+time.Duration(calls.Load())*time.Second),
+			helperticket.RoleVolunteer, verify, known); !ok {
+			t.Fatal("a ticket was refused because the cache is full")
+		}
+	}
+	miss()
+	miss()
+	if c.sweeps != 1 {
+		t.Errorf("two misses within the floor swept %d times, want 1", c.sweeps)
+	}
+	clock.add(ticketCacheFullSweep)
+	miss()
+	if c.sweeps != 2 {
+		t.Errorf("a miss after the floor: %d sweeps, want 2", c.sweeps)
+	}
+	if len(c.entries) != 2 {
+		t.Errorf("%d entries, want the bound of 2", len(c.entries))
 	}
 }
 
