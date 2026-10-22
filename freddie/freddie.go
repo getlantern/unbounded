@@ -304,8 +304,15 @@ type Freddie struct {
 	// read without synchronization by concurrent request handlers.
 	//
 	// Freddie caches each ticket it accepts until the ticket's own expiry, so RoomTicket runs once
-	// per distinct valid ticket rather than at every subscribe and genesis.
+	// per distinct valid ticket rather than at every subscribe and genesis. See KnownKeyID.
 	RoomTicket func(ticket string, role helperticket.Role) (room string, ok bool)
+
+	// KnownKeyID reports whether kid names a key RoomTicket currently trusts. Freddie asks it on
+	// every cache hit, and a ticket whose key is no longer trusted is dropped and refused, so a
+	// key that leaves RoomTicket's set stops admitting anyone at once. nil disables the cache:
+	// every ticket is verified by RoomTicket every time. helperticket.KnownKeyFunc is one. Set it
+	// with RoomTicket, after New and before serving.
+	KnownKeyID func(kid string) bool
 
 	ctx context.Context
 	srv *http.Server
@@ -514,7 +521,7 @@ func (f *Freddie) verifyRoomTickets(tickets []string, role helperticket.Role) []
 	}
 	var rooms []string
 	for _, tk := range tickets {
-		if room, ok := f.tickets.room(tk, role, f.RoomTicket); ok && room != "" && !slices.Contains(rooms, room) {
+		if room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID); ok && room != "" && !slices.Contains(rooms, room) {
 			rooms = append(rooms, room)
 		}
 	}
@@ -550,6 +557,7 @@ type ticketCache struct {
 type cachedTicket struct {
 	room    string
 	role    helperticket.Role
+	kid     string
 	expires time.Time
 }
 
@@ -566,34 +574,55 @@ func ticketCacheKey(ticket string) [sha256.Size]byte {
 	return sha256.Sum256([]byte(ticket))
 }
 
-// room returns the room ticket admits role to, from the cache while the ticket is unexpired, else
-// from verify. A cached ticket presented for another role is refused without asking verify.
-func (c *ticketCache) room(ticket string, role helperticket.Role, verify func(string, helperticket.Role) (string, bool)) (string, bool) {
+// room returns the room ticket admits role to, from the cache while the ticket is unexpired and
+// known still names its key, else from verify. A cached ticket presented for another role is
+// refused without asking verify, and so is one whose key known no longer trusts: its entry is
+// dropped, so it is verified afresh, against the current keys, if presented again. With a nil
+// known nothing is cached.
+func (c *ticketCache) room(ticket string, role helperticket.Role, verify func(string, helperticket.Role) (string, bool), known func(string) bool) (string, bool) {
 	key := ticketCacheKey(ticket)
 	now := c.now()
-	c.mu.Lock()
-	e, hit := c.entries[key]
-	if hit && !now.Before(e.expires) {
-		delete(c.entries, key)
-		hit = false
-	}
-	c.mu.Unlock()
-	if hit {
-		if e.role != role {
-			return "", false
+	if known != nil {
+		c.mu.Lock()
+		e, hit := c.entries[key]
+		if hit && !now.Before(e.expires) {
+			delete(c.entries, key)
+			hit = false
 		}
-		return e.room, true
+		c.mu.Unlock()
+		if hit {
+			if !known(e.kid) {
+				c.drop(key)
+				return "", false
+			}
+			if e.role != role {
+				return "", false
+			}
+			return e.room, true
+		}
 	}
 
 	room, ok := verify(ticket, role)
 	if !ok {
 		return "", false
 	}
-	// The verifier has accepted ticket, so the expiry it claims is genuine.
-	if expires, ok := helperticket.Expiry(ticket); ok && now.Before(expires) {
-		c.add(key, cachedTicket{room: room, role: role, expires: expires}, now)
+	// The verifier has accepted ticket, so what it claims is genuine.
+	if claims, ok := helperticket.Claims(ticket); ok && known != nil && known(claims.KeyID) && now.Before(claims.Expires) {
+		c.add(key, cachedTicket{room: room, role: role, kid: claims.KeyID, expires: claims.Expires}, now)
 	}
 	return room, true
+}
+
+func (c *ticketCache) drop(key [sha256.Size]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *ticketCache) flush() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.entries)
 }
 
 func (c *ticketCache) add(key [sha256.Size]byte, e cachedTicket, now time.Time) {
@@ -610,6 +639,12 @@ func (c *ticketCache) add(key [sha256.Size]byte, e cachedTicket, now time.Time) 
 	if len(c.entries) < c.max {
 		c.entries[key] = e
 	}
+}
+
+// FlushRoomTicketCache forgets every verified room ticket, so each is verified afresh the next
+// time it is presented. Call it when the set of trusted ticket keys changes.
+func (f *Freddie) FlushRoomTicketCache() {
+	f.tickets.flush()
 }
 
 // GET /v1/signal is the producer advertisement stream

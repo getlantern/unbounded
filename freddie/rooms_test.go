@@ -58,7 +58,9 @@ func startRoomServer(t *testing.T, k *roomKeys) *testServer {
 	t.Helper()
 	s := startTestServer(t, headerHook)
 	key := helperticket.NewKey(k.priv.Public().(ed25519.PublicKey))
-	s.f.RoomTicket = helperticket.RoomFunc(func() []helperticket.Key { return []helperticket.Key{key} }, time.Now)
+	keys := func() []helperticket.Key { return []helperticket.Key{key} }
+	s.f.RoomTicket = helperticket.RoomFunc(keys, time.Now)
+	s.f.KnownKeyID = helperticket.KnownKeyFunc(keys)
 	return s
 }
 
@@ -298,14 +300,39 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 	}
 }
 
-// countingHook is k's RoomFunc, counting the verifications it does.
-func countingHook(k *roomKeys, calls *atomic.Int32) func(string, helperticket.Role) (string, bool) {
-	key := helperticket.NewKey(k.priv.Public().(ed25519.PublicKey))
-	verify := helperticket.RoomFunc(func() []helperticket.Key { return []helperticket.Key{key} }, time.Now)
+// A keyring is a trusted key set that tests can revoke keys from, standing in for Freddie's
+// fetched key list.
+type keyring struct {
+	keys atomic.Pointer[[]helperticket.Key]
+}
+
+func newKeyring(ks ...*roomKeys) *keyring {
+	r := &keyring{}
+	var keys []helperticket.Key
+	for _, k := range ks {
+		keys = append(keys, helperticket.NewKey(k.priv.Public().(ed25519.PublicKey)))
+	}
+	r.keys.Store(&keys)
+	return r
+}
+
+func (r *keyring) get() []helperticket.Key  { return *r.keys.Load() }
+func (r *keyring) revokeAll()               { r.keys.Store(&[]helperticket.Key{}) }
+func (r *keyring) known() func(string) bool { return helperticket.KnownKeyFunc(r.get) }
+
+// countingHook is the keyring's RoomFunc, counting the verifications it does.
+func (r *keyring) countingHook(calls *atomic.Int32) func(string, helperticket.Role) (string, bool) {
+	verify := helperticket.RoomFunc(r.get, time.Now)
 	return func(tk string, role helperticket.Role) (string, bool) {
 		calls.Add(1)
 		return verify(tk, role)
 	}
+}
+
+// countingHook is k's RoomFunc, counting the verifications it does, and k's KnownKeyID.
+func countingHook(k *roomKeys, calls *atomic.Int32) (func(string, helperticket.Role) (string, bool), func(string) bool) {
+	r := newKeyring(k)
+	return r.countingHook(calls), r.known()
 }
 
 // fakeClock is a settable time for the ticket cache.
@@ -326,20 +353,20 @@ func (c *fakeClock) now() time.Time      { return *c.t.Load() }
 func TestTicketCache_Hits(t *testing.T) {
 	k := newRoomKeys(t)
 	var calls atomic.Int32
-	verify := countingHook(k, &calls)
+	verify, known := countingHook(k, &calls)
 	clock := newFakeClock()
 	c := newTicketCache(10, clock.now)
 	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
 
 	for i := 0; i < 5; i++ {
-		if room, ok := c.room(inv, helperticket.RoleInviter, verify); !ok || room != pairingP {
+		if room, ok := c.room(inv, helperticket.RoleInviter, verify, known); !ok || room != pairingP {
 			t.Fatalf("lookup %d: room=%q ok=%v", i, room, ok)
 		}
 	}
 	if n := calls.Load(); n != 1 {
 		t.Errorf("verified %d times, want 1", n)
 	}
-	if _, ok := c.room(inv, helperticket.RoleVolunteer, verify); ok {
+	if _, ok := c.room(inv, helperticket.RoleVolunteer, verify, known); ok {
 		t.Error("a cached inviter ticket admitted a volunteer")
 	}
 	if n := calls.Load(); n != 1 {
@@ -347,10 +374,10 @@ func TestTicketCache_Hits(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		if _, ok := c.room("not-a-ticket", helperticket.RoleInviter, verify); ok {
+		if _, ok := c.room("not-a-ticket", helperticket.RoleInviter, verify, known); ok {
 			t.Fatal("garbage admitted")
 		}
-		if _, ok := c.room(k.ticket(pairingQ, helperticket.RoleInviter, -time.Minute), helperticket.RoleInviter, verify); ok {
+		if _, ok := c.room(k.ticket(pairingQ, helperticket.RoleInviter, -time.Minute), helperticket.RoleInviter, verify, known); ok {
 			t.Fatal("an expired ticket admitted")
 		}
 	}
@@ -371,16 +398,17 @@ func TestTicketCache_Expiry(t *testing.T) {
 	// The verifier accepts anything, so only the cache's own expiry check can refuse it.
 	var calls atomic.Int32
 	lenient := func(string, helperticket.Role) (string, bool) { calls.Add(1); return pairingP, true }
+	known := newKeyring(k).known()
 
-	if _, ok := c.room(inv, helperticket.RoleInviter, lenient); !ok {
+	if _, ok := c.room(inv, helperticket.RoleInviter, lenient, known); !ok {
 		t.Fatal("not admitted")
 	}
 	clock.add(ticketOK - 2*time.Second)
-	if _, ok := c.room(inv, helperticket.RoleInviter, lenient); !ok || calls.Load() != 1 {
+	if _, ok := c.room(inv, helperticket.RoleInviter, lenient, known); !ok || calls.Load() != 1 {
 		t.Fatalf("before expiry: ok=%v calls=%d, want a cache hit", ok, calls.Load())
 	}
 	clock.add(3 * time.Second)
-	if _, ok := c.room(inv, helperticket.RoleInviter, func(string, helperticket.Role) (string, bool) { return "", false }); ok {
+	if _, ok := c.room(inv, helperticket.RoleInviter, func(string, helperticket.Role) (string, bool) { return "", false }, known); ok {
 		t.Error("a cached ticket was admitted at its expiry")
 	}
 	if _, ok := c.entries[ticketCacheKey(inv)]; ok {
@@ -394,7 +422,7 @@ func TestTicketCache_Expiry(t *testing.T) {
 func TestTicketCache_Bound(t *testing.T) {
 	k := newRoomKeys(t)
 	var calls atomic.Int32
-	verify := countingHook(k, &calls)
+	verify, known := countingHook(k, &calls)
 	clock := newFakeClock()
 	c := newTicketCache(2, clock.now)
 
@@ -402,17 +430,17 @@ func TestTicketCache_Bound(t *testing.T) {
 	long := k.ticket(pairingQ, helperticket.RoleInviter, ticketOK)
 	extra := k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)
 	for _, tk := range []string{short, long} {
-		c.room(tk, helperticket.RoleInviter, verify)
+		c.room(tk, helperticket.RoleInviter, verify, known)
 	}
-	if _, ok := c.room(extra, helperticket.RoleVolunteer, verify); !ok {
+	if _, ok := c.room(extra, helperticket.RoleVolunteer, verify, known); !ok {
 		t.Fatal("a ticket was refused because the cache is full")
 	}
 	if len(c.entries) != 2 {
 		t.Fatalf("%d entries, want the bound of 2", len(c.entries))
 	}
 	calls.Store(0)
-	c.room(short, helperticket.RoleInviter, verify)
-	c.room(long, helperticket.RoleInviter, verify)
+	c.room(short, helperticket.RoleInviter, verify, known)
+	c.room(long, helperticket.RoleInviter, verify, known)
 	if n := calls.Load(); n != 0 {
 		t.Errorf("a full cache evicted good entries (%d re-verifications)", n)
 	}
@@ -420,16 +448,16 @@ func TestTicketCache_Bound(t *testing.T) {
 	// Once short expires, a full cache makes room by sweeping it out.
 	clock.add(3 * time.Minute)
 	fresh := k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)
-	c.room(fresh, helperticket.RoleVolunteer, verify)
+	c.room(fresh, helperticket.RoleVolunteer, verify, known)
 	if _, ok := c.entries[ticketCacheKey(fresh)]; !ok || len(c.entries) != 2 {
 		t.Errorf("after short expired: fresh cached=%v, %d entries; want it cached in short's place", ok, len(c.entries))
 	}
 
 	// The periodic sweep drops expired entries even when the cache isn't full.
 	c = newTicketCache(100, clock.now)
-	c.room(k.ticket(pairingP, helperticket.RoleInviter, time.Minute), helperticket.RoleInviter, verify)
+	c.room(k.ticket(pairingP, helperticket.RoleInviter, time.Minute), helperticket.RoleInviter, verify, known)
 	clock.add(ticketCacheSweep + time.Minute)
-	c.room(k.ticket(pairingQ, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify)
+	c.room(k.ticket(pairingQ, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify, known)
 	if len(c.entries) != 1 {
 		t.Errorf("%d entries after the sweep interval, want the expired one swept", len(c.entries))
 	}
@@ -441,7 +469,7 @@ func TestHandleSignal_TicketsVerifiedOnce(t *testing.T) {
 	k := newRoomKeys(t)
 	var calls atomic.Int32
 	s := startTestServer(t, headerHook)
-	s.f.RoomTicket = countingHook(k, &calls)
+	s.f.RoomTicket, s.f.KnownKeyID = countingHook(k, &calls)
 	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
 	vol := k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)
 
@@ -509,4 +537,112 @@ func TestHandleSignal_RoomsDisabledMetric(t *testing.T) {
 			t.Errorf("with a hook rooms.disabled rose to %d, want it to stay 2", n)
 		}
 	})
+}
+
+// A cached ticket whose key has left the trusted set is refused at once, without re-verifying it,
+// and its entry is dropped; presented again, it is verified afresh against the current keys.
+func TestTicketCache_KeyRevoked(t *testing.T) {
+	k := newRoomKeys(t)
+	keys := newKeyring(k)
+	var calls atomic.Int32
+	verify, known := keys.countingHook(&calls), keys.known()
+	c := newTicketCache(10, newFakeClock().now)
+	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
+
+	if _, ok := c.room(inv, helperticket.RoleInviter, verify, known); !ok {
+		t.Fatal("not admitted")
+	}
+	keys.revokeAll()
+	if _, ok := c.room(inv, helperticket.RoleInviter, verify, known); ok {
+		t.Error("a cached ticket was admitted after its key was revoked")
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("verified %d times, want 1: a revoked key must be caught from the cache", n)
+	}
+	if len(c.entries) != 0 {
+		t.Error("the revoked ticket's entry was not dropped")
+	}
+	if _, ok := c.room(inv, helperticket.RoleInviter, verify, known); ok || calls.Load() != 2 {
+		t.Errorf("presented again: ok=%v after %d verifications, want a fresh, failing one", ok, calls.Load())
+	}
+	if len(c.entries) != 0 {
+		t.Error("a ticket was cached under an untrusted key")
+	}
+}
+
+// Without KnownKeyID nothing is cached, since a revoked key could not be noticed.
+func TestTicketCache_NoKnownKeyNoCache(t *testing.T) {
+	k := newRoomKeys(t)
+	var calls atomic.Int32
+	verify, _ := countingHook(k, &calls)
+	c := newTicketCache(10, newFakeClock().now)
+	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
+	for i := 0; i < 3; i++ {
+		if _, ok := c.room(inv, helperticket.RoleInviter, verify, nil); !ok {
+			t.Fatal("not admitted")
+		}
+	}
+	if n := calls.Load(); n != 3 || len(c.entries) != 0 {
+		t.Errorf("%d verifications, %d entries; want 3 and none", n, len(c.entries))
+	}
+}
+
+// End to end: once a cached ticket's key is revoked, the next subscribe with it joins no room,
+// though the verifier itself (lenient here) would still accept it.
+func TestHandleSignal_RevokedKeyDropsCachedTickets(t *testing.T) {
+	k := newRoomKeys(t)
+	keys := newKeyring(k)
+	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
+	vol := k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)
+	var invCalls atomic.Int32
+	s := startTestServer(t, headerHook)
+	s.f.RoomTicket = func(tk string, role helperticket.Role) (string, bool) {
+		if tk == inv {
+			invCalls.Add(1)
+		}
+		return pairingP, true
+	}
+	s.f.KnownKeyID = keys.known()
+
+	first := s.subscribe("", "", inv)
+	s.waitForConsumers(1)
+	s.roomGenesis([]string{vol}, false)
+	s.expectFrom("before revocation", first, true)
+	s.hangUp()
+
+	keys.revokeAll()
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	t.Cleanup(s.cancel)
+	second := s.subscribe("", "", inv)
+	s.waitForConsumers(1)
+	s.roomGenesis([]string{vol}, false)
+	s.expect("after revocation", second, false)
+	if n := invCalls.Load(); n != 1 {
+		t.Errorf("the inviter ticket was verified %d times, want 1: revocation must be caught from the cache", n)
+	}
+}
+
+// FlushRoomTicketCache forgets every cached ticket, so the next presentation is verified afresh.
+func TestFreddie_FlushRoomTicketCache(t *testing.T) {
+	k := newRoomKeys(t)
+	f, err := New(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	f.RoomTicket, f.KnownKeyID = countingHook(k, &calls)
+	inv := []string{k.ticket(pairingP, helperticket.RoleInviter, ticketOK)}
+
+	f.verifyRoomTickets(inv, helperticket.RoleInviter)
+	f.verifyRoomTickets(inv, helperticket.RoleInviter)
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("verified %d times before the flush, want 1", n)
+	}
+	f.FlushRoomTicketCache()
+	if rooms := f.verifyRoomTickets(inv, helperticket.RoleInviter); len(rooms) != 1 || rooms[0] != pairingP {
+		t.Errorf("after the flush: rooms %v", rooms)
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("verified %d times after the flush, want 2", n)
+	}
 }

@@ -221,14 +221,29 @@ func FuzzVerify(f *testing.F) {
 	})
 }
 
-func TestExpiry(t *testing.T) {
+func TestClaims(t *testing.T) {
 	v := vectors(t)
-	if exp, ok := Expiry(v["token"]); !ok || !exp.Equal(unixAt(t, v["expired_at_unix"])) {
-		t.Errorf("Expiry(token) = %v, %v; want %s", exp, ok, v["expired_at_unix"])
+	tk, ok := Claims(v["token"])
+	if !ok || !tk.Expires.Equal(unixAt(t, v["expired_at_unix"])) || tk.KeyID != v["kid"] || tk.PairingID != v["pairing_id"] || tk.Role != RoleVolunteer {
+		t.Errorf("Claims(token) = %+v, %v", tk, ok)
 	}
-	for _, junk := range []string{"", "x", "!!.!!", base64.RawURLEncoding.EncodeToString([]byte(`{"v":1}`)) + ".x"} {
-		if _, ok := Expiry(junk); ok {
-			t.Errorf("Expiry(%q) claimed an expiry", junk)
+	for _, junk := range []string{"", "x", "!!.!!", base64.RawURLEncoding.EncodeToString([]byte(`{"v":1}`)) + ".x",
+		base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"e":1800000060}`)) + ".x"} {
+		if _, ok := Claims(junk); ok {
+			t.Errorf("Claims(%q) read claims", junk)
 		}
+	}
+}
+
+func TestKnownKeyFunc(t *testing.T) {
+	v := vectors(t)
+	keys := []Key{NewKey(pubFromHex(t, v["public_key_hex"]))}
+	known := KnownKeyFunc(func() []Key { return keys })
+	if !known(v["kid"]) || known(v["previous_kid"]) {
+		t.Error("KnownKeyFunc must report exactly the current keys")
+	}
+	keys = nil
+	if known(v["kid"]) {
+		t.Error("KnownKeyFunc must follow keys() as it changes")
 	}
 }

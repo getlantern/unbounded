@@ -175,16 +175,29 @@ func Peek(token string) (Role, string) {
 	return w.R, w.P
 }
 
-// Expiry returns the expiry token claims, without verifying it, or false if
-// it cannot be read. Like Peek's, nothing may trust it on its own: Freddie
-// reads it only from a ticket its verifier has just accepted, to bound how
-// long it keeps that result.
-func Expiry(token string) (time.Time, bool) {
+// Claims returns what token claims, without verifying it, or false if it
+// cannot be read. Like Peek's, nothing may trust it on its own: Freddie reads
+// it only from a ticket its verifier has just accepted, to remember which key
+// signed it and how long it may keep that result.
+func Claims(token string) (Ticket, bool) {
 	_, _, w, err := decode(token)
-	if err != nil || w.E == 0 {
-		return time.Time{}, false
+	if err != nil || w.K == "" || w.E == 0 {
+		return Ticket{}, false
 	}
-	return time.Unix(w.E, 0), true
+	return Ticket{KeyID: w.K, PairingID: w.P, Role: w.R, Expires: time.Unix(w.E, 0)}, true
+}
+
+// KnownKeyFunc returns a hook for freddie.Freddie.KnownKeyID that reports
+// whether a key ID is in keys().
+func KnownKeyFunc(keys func() []Key) func(kid string) bool {
+	return func(kid string) bool {
+		for _, k := range keys() {
+			if k.ID == kid {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // RoomFunc returns a hook for freddie.Freddie.RoomTicket that verifies tickets
