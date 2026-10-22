@@ -457,13 +457,23 @@ func TestTicketCache_Bound(t *testing.T) {
 		t.Errorf("after short expired: fresh cached=%v, %d entries; want it cached in short's place", ok, len(c.entries))
 	}
 
-	// The periodic sweep drops expired entries even when the cache isn't full.
+	// The periodic sweep drops expired entries even when the cache isn't full. Tickets expire by
+	// real time, so the clock, moved on above, comes back to it first.
+	clock.set(time.Now())
 	c = newTicketCache(100, clock.now)
-	c.room(k.ticket(pairingP, helperticket.RoleInviter, time.Minute), helperticket.RoleInviter, verify, known)
+	soon := k.ticket(pairingP, helperticket.RoleInviter, time.Minute)
+	later := k.ticket(pairingQ, helperticket.RoleInviter, ticketOK)
+	c.room(soon, helperticket.RoleInviter, verify, known)
+	if _, ok := c.entries[ticketCacheKey(soon)]; !ok {
+		t.Fatal("the short-lived ticket was not cached")
+	}
 	clock.add(ticketCacheSweep + time.Minute)
-	c.room(k.ticket(pairingQ, helperticket.RoleInviter, ticketOK), helperticket.RoleInviter, verify, known)
-	if len(c.entries) != 1 {
-		t.Errorf("%d entries after the sweep interval, want the expired one swept", len(c.entries))
+	c.room(later, helperticket.RoleInviter, verify, known)
+	if _, ok := c.entries[ticketCacheKey(soon)]; ok {
+		t.Error("the periodic sweep left an expired entry in a cache that isn't full")
+	}
+	if _, ok := c.entries[ticketCacheKey(later)]; !ok || len(c.entries) != 1 {
+		t.Errorf("later cached=%v, %d entries; want only later", ok, len(c.entries))
 	}
 }
 
