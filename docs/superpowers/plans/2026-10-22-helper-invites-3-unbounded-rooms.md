@@ -4550,6 +4550,7 @@ Open the PR with `skills:create-pr`, with base `main`, or `fisk/helper-direct-mo
 
 - [ ] **Step 6: [Human] Merge and release.**
   - Merge after the lantern-cloud PR (Task 9) is deployed and the lantern-box tag (Task 11) is published.
+  - Browser consumers must not get room tickets until the new freddie is deployed. An old freddie's CORS preflight doesn't allow `X-BF-Room-Tickets`, so the browser would block the consumer's whole subscribe. Native lantern-box consumers are unaffected.
   - Until a client turns the `helper_invites` flag on, `/v1/helper/tickets` returns 404, the sources back off for an hour, and nothing changes on the wire.
   - Shipping radiance in a lantern app release (a radiance bump in `lantern`) is a production step.
   - Enabling `helper_invites` for the pilot is also a production step. The flag targets by IP and country, so it must cover volunteers abroad as well as inviters, because volunteers fetch tickets through the same gate.
