@@ -176,16 +176,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			// Signal the genesis message
-			form := url.Values{
-				"data":    {string(g)},
-				"send-to": {options.GenesisAddr},
-				"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
-			}
-			// A form field rather than part of the genesis payload, so Freddie needn't parse
-			// signaling messages to honor it. Omitted entirely when there's no preference.
-			for _, c := range options.targetCountries() {
-				form.Add(common.TargetCountryField, c)
-			}
+			form := genesisForm(options, g)
 
 			req, err := http.NewRequestWithContext(
 				ctx,
@@ -700,4 +691,28 @@ func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Conf
 		return nil, err
 	}
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config)
+}
+
+// genesisForm is a genesis POST's form: the genesis message g, plus the
+// producer's target countries, room tickets and pool preference. Each of
+// those is omitted when it says nothing, so a producer that uses none of them
+// sends exactly what releases before them did. They are form fields rather
+// than part of the payload so Freddie needn't parse signaling messages to
+// honor them.
+func genesisForm(options *WebRTCOptions, g []byte) url.Values {
+	form := url.Values{
+		"data":    {string(g)},
+		"send-to": {options.GenesisAddr},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	for _, c := range options.targetCountries() {
+		form.Add(common.TargetCountryField, c)
+	}
+	for _, tk := range options.CurrentRoomTickets() {
+		form.Add(common.RoomTicketField, tk)
+	}
+	if !options.ServesPool() {
+		form.Set(common.PoolField, "0")
+	}
+	return form
 }

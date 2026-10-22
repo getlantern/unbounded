@@ -156,18 +156,11 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Consumer state 1...")
 
 			// Listen for genesis messages
-			req, err := http.NewRequestWithContext(
-				ctx,
-				"GET",
-				options.DiscoverySrv+options.Endpoint,
-				nil,
-			)
+			req, err := newSubscribeRequest(ctx, options)
 			if err != nil {
 				slog.Debug("Error constructing request", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-
-			req.Header.Add(common.VersionHeader, common.Version)
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {
@@ -195,6 +188,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			patienceExpired := make(<-chan time.Time)
 			doneListening := make(chan struct{}, 1)
 			genesisCandidates := []string{}
+			// Genesis messages Freddie delivered through one of our rooms:
+			// they come from our own helpers, so they are answered first.
+			roomCandidates := []string{}
 
 		listenLoop:
 			for {
@@ -237,6 +233,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 					// TODO: post-MVP, evaluate the genesis message for suitability!
 					genesisCandidates = append(genesisCandidates, rt)
+					if common.IsRoomGenesis(rawMsg) {
+						roomCandidates = append(roomCandidates, rt)
+					}
 					if len(genesisCandidates) == 1 {
 						patienceExpired = time.After(options.Patience)
 					}
@@ -262,9 +261,8 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			idx := rand.Intn(len(genesisCandidates))
-			replyTo := genesisCandidates[idx]
-			slog.Debug("Sending offer for genesis message", "index", idx+1, "total", len(genesisCandidates), "patience", options.Patience)
+			replyTo := pickGenesis(genesisCandidates, roomCandidates)
+			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{
 				peerConnection,
@@ -655,4 +653,29 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			return 0, []interface{}{}
 		}),
 	})
+}
+
+// newSubscribeRequest builds a consumer's GET of the genesis stream. It
+// carries the consumer's room tickets in RoomTicketsHeader when it has any,
+// and is otherwise unchanged from releases before rooms.
+func newSubscribeRequest(ctx context.Context, options *WebRTCOptions) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", options.DiscoverySrv+options.Endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Add(common.VersionHeader, common.Version)
+	if tickets := options.CurrentRoomTickets(); len(tickets) > 0 {
+		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
+	}
+	return req, nil
+}
+
+// pickGenesis picks the genesis message to answer: a random one of those
+// delivered through one of our rooms if there are any, and a random one of
+// all otherwise.
+func pickGenesis(all, room []string) string {
+	if len(room) > 0 {
+		return room[rand.Intn(len(room))]
+	}
+	return all[rand.Intn(len(all))]
 }
