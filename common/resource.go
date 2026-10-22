@@ -132,6 +132,11 @@ type SignalMsg struct {
 	ReplyTo string
 	Type    SignalMsgType
 	Payload string
+	// Room is set by Freddie on a genesis message it delivered to this
+	// consumer through one of its rooms, so the consumer can prefer its own
+	// helpers. Producers cannot set it: they only supply Payload. Omitted
+	// otherwise, so every other message is unchanged on the wire.
+	Room bool `json:",omitempty"`
 }
 
 // TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?

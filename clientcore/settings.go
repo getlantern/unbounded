@@ -54,6 +54,29 @@ type WebRTCOptions struct {
 	// Set it before NewBroflake; to change it on a running instance use SetTargetCountries, which
 	// takes effect from each worker's next genesis message.
 	TargetCountries []string
+	// RoomTickets optionally lists helper pairing tickets (see
+	// common/helperticket) for pairings this client belongs to. A producer
+	// sends its volunteer tickets with every genesis message, and Freddie
+	// offers that genesis to the consumers waiting in those pairings' rooms
+	// before anyone else. A consumer sends its inviter tickets when it
+	// subscribes, and Freddie puts it in those rooms. Freddie verifies every
+	// ticket and ignores invalid ones. Empty is byte-identical on the wire to
+	// releases before this field.
+	//
+	// Set it before NewBroflake; on a running instance use SetRoomTickets,
+	// which takes effect from each worker's next genesis message or
+	// subscribe. RoomTicketSource, when set, takes precedence.
+	RoomTickets []string
+	// RoomTicketSource, if non-nil, is called for the current tickets at each
+	// genesis message and each subscribe instead of reading RoomTickets. It
+	// runs on the signaling path, so it must be cheap and must not block. Set
+	// it before NewBroflake.
+	RoomTicketSource func() []string
+	// RoomsOnly, on a producer, tells Freddie to offer its genesis messages
+	// to the consumers in its rooms and nobody else. The zero value serves
+	// everyone, as every release before rooms did, and sends nothing new on
+	// the wire. On a running instance use SetServePool.
+	RoomsOnly bool
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
@@ -102,6 +125,50 @@ func (o *WebRTCOptions) targetCountries() []string {
 	targetCountriesMu.RLock()
 	defer targetCountriesMu.RUnlock()
 	return common.NormalizeCountries(o.TargetCountries)
+}
+
+// roomsMu guards RoomTickets and RoomsOnly, which workers read on every
+// genesis message and subscribe while SetRoomTickets and SetServePool may
+// write them. Package-level, like targetCountriesMu, so WebRTCOptions stays
+// safe to copy.
+var roomsMu sync.RWMutex
+
+// SetRoomTickets replaces RoomTickets on a live instance. Malformed tickets
+// are dropped. Tickets expire after 15 minutes, so the caller renews them;
+// each worker picks up the change with its next genesis message or subscribe.
+func (o *WebRTCOptions) SetRoomTickets(tickets []string) {
+	normalized := common.NormalizeRoomTickets(tickets)
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+	o.RoomTickets = normalized
+}
+
+// SetServePool sets whether a producer's genesis messages may go to consumers
+// outside its rooms. Each producer worker picks up the change with its next
+// genesis message; established connections are unaffected.
+func (o *WebRTCOptions) SetServePool(serve bool) {
+	roomsMu.Lock()
+	defer roomsMu.Unlock()
+	o.RoomsOnly = !serve
+}
+
+// CurrentRoomTickets returns the tickets the next genesis message or subscribe
+// will carry: RoomTicketSource's if it is set, else RoomTickets.
+func (o *WebRTCOptions) CurrentRoomTickets() []string {
+	if src := o.RoomTicketSource; src != nil {
+		return common.NormalizeRoomTickets(src())
+	}
+	roomsMu.RLock()
+	defer roomsMu.RUnlock()
+	return common.NormalizeRoomTickets(o.RoomTickets)
+}
+
+// ServesPool reports whether a producer's genesis messages may go to consumers
+// outside its rooms.
+func (o *WebRTCOptions) ServesPool() bool {
+	roomsMu.RLock()
+	defer roomsMu.RUnlock()
+	return !o.RoomsOnly
 }
 
 type EgressOptions struct {
