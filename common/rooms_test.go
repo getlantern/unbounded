@@ -52,6 +52,15 @@ func TestSignalMsgRoom(t *testing.T) {
 	if rt, _, err := DecodeSignalMsg(room); err != nil || rt != "r" {
 		t.Errorf("DecodeSignalMsg(room) = %q, %v", rt, err)
 	}
+	for raw, want := range map[string]bool{string(room): true, string(plain): false, string(offer): false} {
+		msg, _, err := DecodeSignal([]byte(raw))
+		if err != nil || msg.ReplyTo != "r" || msg.IsRoomGenesis() != want {
+			t.Errorf("DecodeSignal(%s) = %+v, %v; want IsRoomGenesis %v", raw, msg, err, want)
+		}
+	}
+	if msg, _, err := DecodeSignal([]byte("not json")); err == nil || msg != (SignalMsg{}) {
+		t.Errorf("DecodeSignal(not json) = %+v, %v", msg, err)
+	}
 }
 
 // Old and new forms must decode both ways: a pre-rooms struct (as an old

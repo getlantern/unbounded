@@ -79,7 +79,14 @@ func wellFormedRoomTicket(tk string) bool {
 
 // IsRoomGenesis reports whether raw, a signaling message from Freddie, is a
 // genesis message Freddie delivered through one of the consumer's rooms.
+// A caller that has already decoded raw uses SignalMsg.IsRoomGenesis.
 func IsRoomGenesis(raw []byte) bool {
 	var msg SignalMsg
-	return json.Unmarshal(raw, &msg) == nil && msg.Type == SignalMsgGenesis && msg.Room
+	return json.Unmarshal(raw, &msg) == nil && msg.IsRoomGenesis()
+}
+
+// IsRoomGenesis reports whether msg is a genesis message Freddie delivered
+// through one of the consumer's rooms.
+func (msg SignalMsg) IsRoomGenesis() bool {
+	return msg.Type == SignalMsgGenesis && msg.Room
 }

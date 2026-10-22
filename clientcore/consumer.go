@@ -217,7 +217,7 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 						return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 					}
 
-					rt, _, err := common.DecodeSignalMsg(rawMsg)
+					msg, _, err := common.DecodeSignal(rawMsg)
 					if err != nil {
 						slog.Debug("Error decoding signal message", "error", err, "msg", string(rawMsg))
 						sleepOrDone(ctx, options.ErrorBackoff)
@@ -232,9 +232,9 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					}
 
 					// TODO: post-MVP, evaluate the genesis message for suitability!
-					genesisCandidates = append(genesisCandidates, rt)
-					if common.IsRoomGenesis(rawMsg) {
-						roomCandidates = append(roomCandidates, rt)
+					genesisCandidates = append(genesisCandidates, msg.ReplyTo)
+					if msg.IsRoomGenesis() {
+						roomCandidates = append(roomCandidates, msg.ReplyTo)
 					}
 					if len(genesisCandidates) == 1 {
 						patienceExpired = time.After(options.Patience)

@@ -53,15 +53,29 @@ func preRoomsSubscribeRequest(ctx context.Context, options *WebRTCOptions) (*htt
 }
 
 // With no tickets and serve-pool on, the wire is byte-identical to releases
-// before rooms, with and without target countries.
+// before rooms: for untouched default options (no setter called), for zero
+// options, and with serve-pool set explicitly, with and without target
+// countries.
 func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 	g := []byte(`{"PathAssertion":{"Allow":null,"Deny":null}}`)
+	cases := []func() *WebRTCOptions{
+		// Untouched defaults: no setter called at all.
+		NewDefaultWebRTCOptions,
+		func() *WebRTCOptions { return &WebRTCOptions{} },
+	}
 	for _, countries := range [][]string{nil, {"IR", "RU"}} {
-		o := NewDefaultWebRTCOptions()
-		o.SetTargetCountries(countries)
-		o.SetServePool(true)
+		cases = append(cases, func() *WebRTCOptions {
+			o := NewDefaultWebRTCOptions()
+			o.SetTargetCountries(countries)
+			o.SetServePool(true)
+			return o
+		})
+	}
+	for i, newOptions := range cases {
+		o := newOptions()
+		countries := o.targetCountries()
 		if got, want := genesisForm(o, g).Encode(), preRoomsGenesisForm(o, g).Encode(); got != want {
-			t.Errorf("countries %v: form %s, want %s", countries, got, want)
+			t.Errorf("case %d (countries %v): form %s, want %s", i, countries, got, want)
 		}
 
 		got, err := newSubscribeRequest(context.Background(), o)
@@ -75,7 +89,7 @@ func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 		if got.Method != want.Method || got.URL.String() != want.URL.String() ||
 			!reflect.DeepEqual(got.Header, want.Header) || got.Body != want.Body ||
 			got.ContentLength != want.ContentLength {
-			t.Errorf("request %s %s %v, want %s %s %v", got.Method, got.URL, got.Header, want.Method, want.URL, want.Header)
+			t.Errorf("case %d: request %s %s %v, want %s %s %v", i, got.Method, got.URL, got.Header, want.Method, want.URL, want.Header)
 		}
 	}
 }
