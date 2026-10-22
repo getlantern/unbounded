@@ -2,11 +2,13 @@ package freddie
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -20,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // About these TTL values: Freddie models each segment of the signaling handshake as a request and
@@ -117,14 +120,36 @@ const (
 	genesisFallback   = "fallback"   // no waiting consumer from a target country took it, so sent to all
 )
 
+// spanTargeting is the genesis.targeting span attribute for a genesis message whose pool step had
+// outcome, "" when it did not run (a room consumer took the message, or the producer serves only
+// its rooms). Every genesis span carries the attribute, and one that skipped the pool step gets
+// a value an ordinary genesis with the same targets also gets: untargeted without targets, matched
+// with them. So the attribute never singles out a paired producer. The metric
+// freddie.genesis.broadcasts is not affected: it counts only real pool steps.
+func spanTargeting(outcome string, targets []string) string {
+	switch {
+	case outcome != "":
+		return outcome
+	case len(targets) == 0:
+		return genesisUntargeted
+	default:
+		return genesisMatched
+	}
+}
+
 // A consumerIndex is a userTable which also indexes its users by server-derived country, so that
-// genesis messages can be steered toward consumers from the countries a producer wants to serve.
-// Users whose country is unknown are still in the table and still receive untargeted and fallback
-// broadcasts; they just can't be selected by country.
+// genesis messages can be steered toward consumers from the countries a producer wants to serve,
+// and by helper pairing room, so that a producer's genesis messages reach the consumers it is
+// paired with first. Users whose country is unknown, or who are in no room, are still in the
+// table and still receive untargeted and fallback broadcasts.
+//
+// Rooms are opaque pairing IDs from verified tickets. They are never logged, traced or counted.
 type consumerIndex struct {
 	userTable
 	country   map[string]string              // userID -> country, only for users whose country is known
 	byCountry map[string]map[string]struct{} // country -> set of userIDs
+	rooms     map[string][]string            // userID -> rooms, only for users in at least one
+	byRoom    map[string]map[string]struct{} // room -> set of userIDs
 }
 
 func newConsumerIndex(bufferSz int) *consumerIndex {
@@ -132,12 +157,20 @@ func newConsumerIndex(bufferSz int) *consumerIndex {
 		userTable: userTable{Data: make(map[string]chan string), BufferSz: bufferSz},
 		country:   make(map[string]string),
 		byCountry: make(map[string]map[string]struct{}),
+		rooms:     make(map[string][]string),
+		byRoom:    make(map[string]map[string]struct{}),
 	}
 }
 
-// AddWithCountry is Add, plus indexing userID under country. country must already be normalized;
-// "" means the user's country is unknown and it is not indexed.
+// AddWithCountry is AddConsumer in no room.
 func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
+	return t.AddConsumer(userID, country, nil)
+}
+
+// AddConsumer is Add, plus indexing userID under country and under each of rooms. country must
+// already be normalized; "" means the user's country is unknown and it is not indexed. rooms must
+// come from verified tickets. The index keeps its own copy of rooms.
+func (t *consumerIndex) AddConsumer(userID, country string, rooms []string) chan string {
 	t.Lock()
 	defer t.Unlock()
 	t.Data[userID] = make(chan string, t.BufferSz)
@@ -149,6 +182,18 @@ func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
 			t.byCountry[country] = users
 		}
 		users[userID] = struct{}{}
+	}
+	if len(rooms) > 0 {
+		rooms = slices.Clone(rooms)
+		t.rooms[userID] = rooms
+		for _, room := range rooms {
+			users, ok := t.byRoom[room]
+			if !ok {
+				users = make(map[string]struct{})
+				t.byRoom[room] = users
+			}
+			users[userID] = struct{}{}
+		}
 	}
 	return t.Data[userID]
 }
@@ -164,6 +209,13 @@ func (t *consumerIndex) Delete(userID string) {
 			delete(t.byCountry, country)
 		}
 	}
+	for _, room := range t.rooms[userID] {
+		delete(t.byRoom[room], userID)
+		if len(t.byRoom[room]) == 0 {
+			delete(t.byRoom, room)
+		}
+	}
+	delete(t.rooms, userID)
 }
 
 // broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to every user
@@ -201,6 +253,51 @@ func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
 	return genesisFallback
 }
 
+// broadcastToRooms sends msg, with Broadcast's unreliable delivery semantics, to every user indexed
+// under one of rooms, at most once per user. It returns the number of users the message was
+// delivered to.
+func (t *consumerIndex) broadcastToRooms(msg string, rooms []string) int {
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	seen := make(map[string]struct{})
+	for _, room := range rooms {
+		for userID := range t.byRoom[room] {
+			if _, dup := seen[userID]; dup {
+				continue
+			}
+			seen[userID] = struct{}{}
+			select {
+			case t.Data[userID] <- msg:
+				delivered++
+			default:
+			}
+		}
+	}
+	return delivered
+}
+
+// DeliverGenesis delivers a genesis message from a producer in rooms. A waiting consumer in one of
+// rooms comes first: if any takes roomMsg, nobody else gets the genesis. Otherwise, if servePool, it
+// goes on to BroadcastGenesis(msg, targets), the country-then-everyone step. Without servePool it
+// goes nowhere: the producer waits out its TTL and its slot loops, so a waiting room consumer gets
+// the next free slot of a producer before any pool consumer does. roomMatched reports whether a
+// room consumer took it; outcome is BroadcastGenesis's, or "" when the pool step did not run.
+//
+// The room step and the pool step take the read lock separately, on purpose. Precedence is per
+// message, not atomic across the table: a consumer that joins between the two steps may get the
+// message from either. Holding the read lock across both would mean nesting read locks, which
+// deadlocks once a writer is waiting between them.
+func (t *consumerIndex) DeliverGenesis(msg, roomMsg string, rooms []string, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	if len(rooms) > 0 && t.broadcastToRooms(roomMsg, rooms) > 0 {
+		return true, ""
+	}
+	if !servePool {
+		return false, ""
+	}
+	return false, t.BroadcastGenesis(msg, targets)
+}
+
 type Freddie struct {
 	TLSConfig *tls.Config
 
@@ -213,6 +310,26 @@ type Freddie struct {
 	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
 	// is read without synchronization by concurrent request handlers.
 	ConsumerCountry func(r *http.Request) string
+
+	// RoomTicket, if non-nil, verifies a helper pairing ticket presented for role and returns the
+	// room it admits to, the pairing's opaque ID, or ok=false. A consumer's inviter tickets, in
+	// common.RoomTicketsHeader, put it in their rooms; a producer's volunteer tickets, in
+	// common.RoomTicketField, send its genesis messages to those rooms' consumers first. It must
+	// check the signature, the key, the expiry and the role, and must not log, trace or count the
+	// ticket or the room. helperticket.RoomFunc is one. nil disables rooms: tickets are ignored, so
+	// a producer that serves only its rooms is offered to nobody. Set it after New and before
+	// serving; it is read without synchronization by concurrent request handlers.
+	//
+	// Freddie caches each ticket it accepts until the ticket's own expiry, so RoomTicket runs once
+	// per distinct valid ticket rather than at every subscribe and genesis. See KnownKeyID.
+	RoomTicket func(ticket string, role helperticket.Role) (room string, ok bool)
+
+	// KnownKeyID reports whether kid names a key RoomTicket currently trusts. Freddie asks it on
+	// every cache hit, and a ticket whose key is no longer trusted is dropped and refused, so a
+	// key that leaves RoomTicket's set stops admitting anyone at once. nil disables the cache:
+	// every ticket is verified by RoomTicket every time. helperticket.KnownKeyFunc is one. Set it
+	// with RoomTicket, after New and before serving.
+	KnownKeyID func(kid string) bool
 
 	ctx context.Context
 	srv *http.Server
@@ -229,6 +346,10 @@ type Freddie struct {
 	signalTableSize   metric.Int64ObservableUpDownCounter
 	genesisBroadcasts metric.Int64Counter
 	consumerSubs      metric.Int64Counter
+	roomMatches       metric.Int64Counter
+	roomsDisabled     metric.Int64Counter
+
+	tickets *ticketCache
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -246,6 +367,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		currentPosts: atomic.Int64{},
 		tracer:       otel.Tracer("github.com/getlantern/broflake/freddie"),
 		meter:        otel.Meter("github.com/getlantern/broflake/freddie"),
+		tickets:      newTicketCache(maxCachedTickets, time.Now),
 	}
 
 	var err error
@@ -315,6 +437,20 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		return nil, err
 	}
 
+	f.roomMatches, err = f.meter.Int64Counter("freddie.genesis.room_match",
+		metric.WithDescription("genesis messages from producers with valid room tickets, by whether a consumer in one of their rooms took it"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.roomsDisabled, err = f.meter.Int64Counter("freddie.rooms.disabled",
+		metric.WithDescription("signaling requests served with helper pairing rooms disabled, because no room ticket verifier is configured"),
+		metric.WithUnit("request"))
+	if err != nil {
+		return nil, err
+	}
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "freddie (%v)\n", common.Version)
@@ -366,7 +502,8 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
 			"Access-Control-Allow-Headers, Origin, Accept, X-Requested-With, Content-Type, "+
-				"Access-Control-Request-Method, Access-Control-Request-Headers, "+common.VersionHeader,
+				"Access-Control-Request-Method, Access-Control-Request-Headers, "+common.VersionHeader+", "+
+				common.RoomTicketsHeader,
 		)
 
 		w.WriteHeader(http.StatusOK)
@@ -380,6 +517,9 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.totalRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("method", r.Method)))
+	if f.RoomTicket == nil {
+		f.roomsDisabled.Add(ctx, 1)
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -387,6 +527,149 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		f.handleSignalPost(ctx, w, r)
 	}
+}
+
+// verifyRoomTickets returns the distinct rooms that tickets, already normalized, admit a client in
+// role to. Invalid tickets are dropped without a trace: neither they nor the rooms are logged,
+// traced or counted, and every kind of failure looks the same.
+func (f *Freddie) verifyRoomTickets(tickets []string, role helperticket.Role) []string {
+	if f.RoomTicket == nil {
+		return nil
+	}
+	var rooms []string
+	for _, tk := range tickets {
+		if room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID); ok && room != "" && !slices.Contains(rooms, room) {
+			rooms = append(rooms, room)
+		}
+	}
+	return rooms
+}
+
+const (
+	// maxCachedTickets bounds the verified ticket cache. An entry is under 200 bytes, and a
+	// ticket lives 15 minutes, so this is room for far more pairings than one Freddie serves.
+	maxCachedTickets = 1 << 16
+
+	// ticketCacheSweep is how often the cache drops expired entries nobody has looked up again.
+	ticketCacheSweep = time.Minute
+
+	// ticketCacheFullSweep is the least time between sweeps of a full cache. A full cache of live
+	// entries would otherwise be swept, under the lock, by every new ticket that misses it.
+	ticketCacheFullSweep = time.Second
+)
+
+// A ticketCache remembers the tickets Freddie's verifier accepted, keyed by the ticket's SHA-256,
+// until each ticket's own expiry. A consumer re-subscribes every consumerTTL with the same tickets,
+// and each request can carry common.MaxRoomTickets of them, so without it every subscribe would
+// cost that many signature checks. A ticket has exactly one accepted encoding, so its hash names
+// it.
+//
+// Only accepted tickets are cached, so a client cannot fill the cache, or push good entries out
+// of it, without tickets lantern-cloud signed. When the cache is full it sweeps out expired
+// entries, at most once per ticketCacheFullSweep, and, failing that, leaves the new ticket
+// uncached: it never evicts a live entry.
+type ticketCache struct {
+	mu        sync.Mutex
+	entries   map[[sha256.Size]byte]cachedTicket
+	max       int
+	now       func() time.Time
+	lastSweep time.Time
+	sweeps    int // for tests
+}
+
+type cachedTicket struct {
+	room    string
+	role    helperticket.Role
+	kid     string
+	expires time.Time
+}
+
+func newTicketCache(max int, now func() time.Time) *ticketCache {
+	return &ticketCache{
+		entries:   make(map[[sha256.Size]byte]cachedTicket),
+		max:       max,
+		now:       now,
+		lastSweep: now(),
+	}
+}
+
+func ticketCacheKey(ticket string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(ticket))
+}
+
+// room returns the room ticket admits role to, from the cache while the ticket is unexpired and
+// known still names its key, else from verify. A cached ticket presented for another role is
+// refused without asking verify, and so is one whose key known no longer trusts: its entry is
+// dropped, so it is verified afresh, against the current keys, if presented again. With a nil
+// known nothing is cached.
+func (c *ticketCache) room(ticket string, role helperticket.Role, verify func(string, helperticket.Role) (string, bool), known func(string) bool) (string, bool) {
+	key := ticketCacheKey(ticket)
+	now := c.now()
+	if known != nil {
+		c.mu.Lock()
+		e, hit := c.entries[key]
+		if hit && !now.Before(e.expires) {
+			delete(c.entries, key)
+			hit = false
+		}
+		c.mu.Unlock()
+		if hit {
+			if !known(e.kid) {
+				c.drop(key)
+				return "", false
+			}
+			if e.role != role {
+				return "", false
+			}
+			return e.room, true
+		}
+	}
+
+	room, ok := verify(ticket, role)
+	if !ok {
+		return "", false
+	}
+	// The verifier has accepted ticket, so what it claims is genuine.
+	if claims, ok := helperticket.Claims(ticket); ok && known != nil && known(claims.KeyID) && now.Before(claims.Expires) {
+		c.add(key, cachedTicket{room: room, role: role, kid: claims.KeyID, expires: claims.Expires}, now)
+	}
+	return room, true
+}
+
+func (c *ticketCache) drop(key [sha256.Size]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *ticketCache) flush() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.entries)
+}
+
+func (c *ticketCache) add(key [sha256.Size]byte, e cachedTicket, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sinceSweep := now.Sub(c.lastSweep)
+	if sinceSweep >= ticketCacheSweep || (len(c.entries) >= c.max && sinceSweep >= ticketCacheFullSweep) {
+		for k, old := range c.entries {
+			if !now.Before(old.expires) {
+				delete(c.entries, k)
+			}
+		}
+		c.lastSweep = now
+		c.sweeps++
+	}
+	if len(c.entries) < c.max {
+		c.entries[key] = e
+	}
+}
+
+// FlushRoomTicketCache forgets every verified room ticket, so each is verified afresh the next
+// time it is presented. Call it when the set of trusted ticket keys changes.
+func (f *Freddie) FlushRoomTicketCache() {
+	f.tickets.flush()
 }
 
 // GET /v1/signal is the producer advertisement stream
@@ -409,7 +692,10 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 		attribute.String("consumer.country", country),
 	)
 
-	consumerChan := consumerTable.AddWithCountry(consumerID, country)
+	// Verified at every subscribe, so an ended pairing's consumer leaves its room within one
+	// ticket lifetime plus one consumerTTL. Rooms are never put on the span.
+	rooms := f.verifyRoomTickets(common.ParseRoomTicketsHeader(r.Header.Values(common.RoomTicketsHeader)), helperticket.RoleInviter)
+	consumerChan := consumerTable.AddConsumer(consumerID, country, rooms)
 	defer consumerTable.Delete(consumerID)
 
 	// Matchmaking is country preference only, applied when genesis messages are broadcast: see
@@ -464,8 +750,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
+	isGenesis := sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms
+	// A rooms-only genesis is traced as an ordinary one, so the span doesn't mark the producer as
+	// paired.
+	recipient := sendTo
+	if isGenesis {
+		recipient = common.SignalSendToGenesis
+	}
 	span.SetAttributes(
-		attribute.String("recipient.id", sendTo),
+		attribute.String("recipient.id", recipient),
 		attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 	)
 
@@ -482,16 +775,35 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
-	if sendTo == "genesis" {
-		// It's a genesis message, so let's broadcast it, preferring consumers from the producer's
-		// target countries if it named any
+	if isGenesis {
+		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
+		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
+		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
+		// first room-aware clients did, to SignalSendToGenesis with pool=0.
+		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
+		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
-		outcome := consumerTable.BroadcastGenesis(string(msg), targets)
+		var roomMsg []byte
+		if len(rooms) > 0 {
+			roomMsg, err = json.Marshal(common.SignalMsg{ReplyTo: reqID, Type: common.SignalMsgType(msgType), Payload: data, Room: true})
+			if err != nil {
+				span.SetStatus(codes.Error, "malformed request")
+				w.WriteHeader(http.StatusBadRequest)
+				w.Write([]byte("400\n"))
+				return
+			}
+		}
+		matched, outcome := consumerTable.DeliverGenesis(string(msg), string(roomMsg), rooms, servePool, targets)
+		if len(rooms) > 0 {
+			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
+		}
+		if outcome != "" {
+			f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
+		}
 		span.SetAttributes(
 			attribute.StringSlice("genesis.target_countries", targets),
-			attribute.String("genesis.targeting", outcome),
+			attribute.String("genesis.targeting", spanTargeting(outcome, targets)),
 		)
-		f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)

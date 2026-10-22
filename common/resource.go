@@ -132,6 +132,11 @@ type SignalMsg struct {
 	ReplyTo string
 	Type    SignalMsgType
 	Payload string
+	// Room is set by Freddie on a genesis message it delivered to this
+	// consumer through one of its rooms, so the consumer can prefer its own
+	// helpers. Producers cannot set it: they only supply Payload. Omitted
+	// otherwise, so every other message is unchanged on the wire.
+	Room bool `json:",omitempty"`
 }
 
 // TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?
@@ -184,6 +189,15 @@ func fallBackIceCandidatesDecoder(raw []byte) ([]webrtc.ICECandidate, error) {
 */
 
 func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
+	msg, payload, err := DecodeSignal(raw)
+	return msg.ReplyTo, payload, err
+}
+
+// DecodeSignal is DecodeSignalMsg returning the whole envelope rather than
+// only its ReplyTo, so callers can read its other fields (such as Room)
+// without decoding raw twice. The envelope is zero whenever DecodeSignalMsg
+// would return an empty ReplyTo.
+func DecodeSignal(raw []byte) (SignalMsg, interface{}, error) {
 	var err error
 	var msg SignalMsg
 
@@ -194,23 +208,23 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 		case SignalMsgGenesis:
 			var genesis GenesisMsg
 			err = json.Unmarshal([]byte(msg.Payload), &genesis)
-			return msg.ReplyTo, genesis, err
+			return msg, genesis, err
 		case SignalMsgOffer:
 			var offer OfferMsg
 			err := json.Unmarshal([]byte(msg.Payload), &offer)
-			return msg.ReplyTo, offer, err
+			return msg, offer, err
 		case SignalMsgAnswer:
 			var answer webrtc.SessionDescription
 			err := json.Unmarshal([]byte(msg.Payload), &answer)
-			return msg.ReplyTo, answer, err
+			return msg, answer, err
 		case SignalMsgICE:
 			var iceMsg ICEMsg
 			err := json.Unmarshal([]byte(msg.Payload), &iceMsg)
-			return msg.ReplyTo, iceMsg, err
+			return msg, iceMsg, err
 		}
 	}
 
-	return "", nil, err
+	return SignalMsg{}, nil, err
 }
 
 // We need to pass a few different data items from uncensored peer to egress server at WebSocket

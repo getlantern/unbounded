@@ -115,14 +115,18 @@ func TestConsumerIndex_DeleteCleansIndex(t *testing.T) {
 // country server-side; a header is fine here because the test controls every request.
 const testCountryHeader = "X-Test-Country"
 
-// newTestServer starts Freddie over HTTP with a fresh consumer table and the given hook, and
-// returns helpers to subscribe consumers and post genesis messages.
-func newTestServer(t *testing.T, hook func(*http.Request) string) (
-	subscribe func(country, query string) chan string,
-	genesis func(targets ...string),
-	expect func(name string, ch chan string, want bool),
-	waitForConsumers func(n int),
-) {
+// testServer is Freddie over HTTP with a fresh consumer table.
+type testServer struct {
+	t      *testing.T
+	f      *Freddie
+	url    string
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// startTestServer starts Freddie over HTTP with a fresh consumer table and the given country hook.
+// Set s.f.RoomTicket before subscribing to enable rooms.
+func startTestServer(t *testing.T, hook func(*http.Request) string) *testServer {
 	t.Helper()
 	consumerTable = newConsumerIndex(0)
 
@@ -136,87 +140,144 @@ func newTestServer(t *testing.T, hook func(*http.Request) string) (
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	return &testServer{t: t, f: f, url: srv.URL, ctx: ctx, cancel: cancel}
+}
 
-	subscribe = func(country, query string) chan string {
-		u := srv.URL + "/v1/signal"
-		if query != "" {
-			u += "?" + query
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set(common.VersionHeader, common.Version)
-		if country != "" {
-			req.Header.Set(testCountryHeader, country)
-		}
-		msgs := make(chan string, 16)
-		go func() {
-			res, err := http.DefaultClient.Do(req)
-			if err != nil {
-				return
-			}
-			defer res.Body.Close()
-			scanner := bufio.NewScanner(res.Body)
-			for scanner.Scan() {
-				msgs <- scanner.Text()
-			}
-		}()
-		return msgs
+// subscribe opens a consumer's genesis stream and returns the messages it receives. tickets, if
+// any, go comma-separated in the room tickets header.
+func (s *testServer) subscribe(country, query string, tickets ...string) chan string {
+	u := s.url + "/v1/signal"
+	if query != "" {
+		u += "?" + query
 	}
-
-	genesis = func(targets ...string) {
-		form := url.Values{
-			"data":    {"{}"},
-			"send-to": {"genesis"},
-			"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, u, nil)
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	req.Header.Set(common.VersionHeader, common.Version)
+	if country != "" {
+		req.Header.Set(testCountryHeader, country)
+	}
+	if len(tickets) > 0 {
+		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
+	}
+	msgs := make(chan string, 16)
+	go func() {
+		res, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return
 		}
+		defer res.Body.Close()
+		scanner := bufio.NewScanner(res.Body)
+		for scanner.Scan() {
+			msgs <- scanner.Text()
+		}
+	}()
+	return msgs
+}
+
+// genesis posts a genesis message with extra's fields added to the required ones.
+func (s *testServer) genesis(extra url.Values) {
+	s.postGenesis(extra)
+}
+
+// postGenesis posts a genesis message with send-to "genesis", unless extra sets send-to, plus
+// extra's fields. It returns the response status, or 0 when the request timed out before Freddie
+// answered.
+func (s *testServer) postGenesis(extra url.Values) int {
+	form := url.Values{
+		"data":    {"{}"},
+		"send-to": {common.SignalSendToGenesis},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	for k, vs := range extra {
+		if k == "send-to" {
+			form.Del(k)
+		}
+		for _, v := range vs {
+			form.Add(k, v)
+		}
+	}
+	// Nobody answers a genesis message here, so don't wait out its TTL
+	pctx, pcancel := context.WithTimeout(s.ctx, 200*time.Millisecond)
+	defer pcancel()
+	req, err := http.NewRequestWithContext(pctx, http.MethodPost, s.url+"/v1/signal",
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(common.VersionHeader, common.Version)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0
+	}
+	res.Body.Close()
+	return res.StatusCode
+}
+
+func (s *testServer) expect(name string, ch chan string, want bool) {
+	s.t.Helper()
+	select {
+	case <-ch:
+		if !want {
+			s.t.Errorf("%s consumer received a genesis message it should not have", name)
+		}
+	case <-time.After(300 * time.Millisecond):
+		if want {
+			s.t.Errorf("%s consumer did not receive a genesis message", name)
+		}
+	}
+}
+
+func (s *testServer) waitForConsumers(n int) {
+	s.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for consumerTable.Size() < n {
+		if time.Now().After(deadline) {
+			s.t.Fatal("consumers never registered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
+	// receivers
+	time.Sleep(100 * time.Millisecond)
+}
+
+// hangUp ends every open subscription and waits for Freddie to drop them.
+func (s *testServer) hangUp() {
+	s.t.Helper()
+	s.cancel()
+	deadline := time.Now().Add(5 * time.Second)
+	for consumerTable.Size() > 0 {
+		if time.Now().After(deadline) {
+			s.t.Fatal("subscriptions never ended")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The handler's span ends after its deferred Delete
+	time.Sleep(50 * time.Millisecond)
+}
+
+// newTestServer starts Freddie over HTTP with a fresh consumer table and the given hook, and
+// returns helpers to subscribe consumers and post genesis messages.
+func newTestServer(t *testing.T, hook func(*http.Request) string) (
+	subscribe func(country, query string) chan string,
+	genesis func(targets ...string),
+	expect func(name string, ch chan string, want bool),
+	waitForConsumers func(n int),
+) {
+	t.Helper()
+	s := startTestServer(t, hook)
+	subscribe = func(country, query string) chan string { return s.subscribe(country, query) }
+	genesis = func(targets ...string) {
+		form := url.Values{}
 		for _, c := range targets {
 			form.Add(common.TargetCountryField, c)
 		}
-		// Nobody answers a genesis message here, so don't wait out its TTL
-		pctx, pcancel := context.WithTimeout(ctx, 200*time.Millisecond)
-		defer pcancel()
-		req, err := http.NewRequestWithContext(pctx, http.MethodPost, srv.URL+"/v1/signal",
-			strings.NewReader(form.Encode()))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set(common.VersionHeader, common.Version)
-		if res, err := http.DefaultClient.Do(req); err == nil {
-			res.Body.Close()
-		}
+		s.genesis(form)
 	}
-
-	expect = func(name string, ch chan string, want bool) {
-		t.Helper()
-		select {
-		case <-ch:
-			if !want {
-				t.Errorf("%s consumer received a genesis message it should not have", name)
-			}
-		case <-time.After(300 * time.Millisecond):
-			if want {
-				t.Errorf("%s consumer did not receive a genesis message", name)
-			}
-		}
-	}
-
-	waitForConsumers = func(n int) {
-		t.Helper()
-		deadline := time.Now().Add(5 * time.Second)
-		for consumerTable.Size() < n {
-			if time.Now().After(deadline) {
-				t.Fatal("consumers never registered")
-			}
-			time.Sleep(10 * time.Millisecond)
-		}
-		// Let each handler park in its select loop, since unbuffered broadcast only reaches parked
-		// receivers
-		time.Sleep(100 * time.Millisecond)
-	}
-	return subscribe, genesis, expect, waitForConsumers
+	return subscribe, genesis, s.expect, s.waitForConsumers
 }
 
 func headerHook(r *http.Request) string { return r.Header.Get(testCountryHeader) }
@@ -334,5 +395,123 @@ func TestHandleSignal_HookResultNormalized(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// recv returns the message waiting on ch, or "" without blocking.
+func recv(ch chan string) string {
+	select {
+	case m := <-ch:
+		return m
+	default:
+		return ""
+	}
+}
+
+// Precedence per genesis message: room, then (only when the producer serves
+// the pool) country, then everyone.
+func TestConsumerIndex_RoomsFirst(t *testing.T) {
+	idx := newConsumerIndex(1)
+	paired := idx.AddConsumer("paired", "RU", []string{"room-a"})
+	ir := idx.AddConsumer("ir", "IR", nil)
+	other := idx.AddWithCountry("other", "")
+
+	matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, []string{"IR"})
+	if !matched || outcome != "" {
+		t.Fatalf("room-a: matched=%v outcome=%q, want a room match and no pool step", matched, outcome)
+	}
+	if got := recv(paired); got != "r" {
+		t.Errorf("paired consumer got %q, want the room message", got)
+	}
+	if received(ir) || received(other) {
+		t.Error("a room match still reached pool consumers")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"IR"})
+	if matched || outcome != genesisMatched {
+		t.Fatalf("room-b, IR: matched=%v outcome=%q, want the country step", matched, outcome)
+	}
+	if recv(ir) != "m" || received(paired) || received(other) {
+		t.Error("with nobody in room-b the IR consumer, and only it, should get the plain message")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"CN"})
+	if matched || outcome != genesisFallback {
+		t.Fatalf("room-b, CN: matched=%v outcome=%q, want the fallback", matched, outcome)
+	}
+	if recv(paired) != "m" || recv(ir) != "m" || recv(other) != "m" {
+		t.Error("the fallback must reach everyone with the plain message, room members included")
+	}
+
+	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, false, []string{"IR"})
+	if matched || outcome != "" {
+		t.Fatalf("pool=0, nobody in room-b: matched=%v outcome=%q, want no delivery", matched, outcome)
+	}
+	matched, outcome = idx.DeliverGenesis("m", "r", nil, false, nil)
+	if matched || outcome != "" {
+		t.Fatalf("pool=0, no rooms: matched=%v outcome=%q, want no delivery", matched, outcome)
+	}
+	if received(paired) || received(ir) || received(other) {
+		t.Error("a pool=0 genesis with no room consumer reached someone")
+	}
+
+	matched, _ = idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil)
+	if !matched || recv(paired) != "r" {
+		t.Error("pool=0 must still reach the room")
+	}
+}
+
+// A room member that can't take the message right now is not a match: a
+// producer serving the pool falls back, and one that doesn't reaches nobody.
+func TestConsumerIndex_UndeliverableRoomMatch(t *testing.T) {
+	idx := newConsumerIndex(1)
+	paired := idx.AddConsumer("paired", "", []string{"room-a"})
+	pool := idx.AddWithCountry("pool", "")
+	paired <- "already full"
+
+	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, nil); matched || outcome != genesisUntargeted {
+		t.Fatalf("matched=%v outcome=%q, want an untargeted pool broadcast", matched, outcome)
+	}
+	if recv(pool) != "m" {
+		t.Error("the pool consumer did not get the fallback")
+	}
+	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil); matched || outcome != "" {
+		t.Fatalf("pool=0: matched=%v outcome=%q, want nothing", matched, outcome)
+	}
+	if received(pool) {
+		t.Error("a pool=0 genesis reached the pool")
+	}
+}
+
+// A consumer in several of the producer's rooms gets the message once.
+func TestConsumerIndex_RoomMessageOncePerConsumer(t *testing.T) {
+	// A buffer of 2 is what makes a duplicate visible: with 1, a second send would be dropped by
+	// the non-blocking select and the test would pass even if broadcastToRooms sent twice.
+	idx := newConsumerIndex(2)
+	ch := idx.AddConsumer("u", "", []string{"room-a", "room-b"})
+	if n := idx.broadcastToRooms("r", []string{"room-a", "room-b"}); n != 1 {
+		t.Errorf("delivered %d times, want 1", n)
+	}
+	if len(ch) != 1 {
+		t.Errorf("%d messages queued, want 1", len(ch))
+	}
+}
+
+func TestConsumerIndex_DeleteCleansRooms(t *testing.T) {
+	idx := newConsumerIndex(1)
+	idx.AddConsumer("a", "IR", []string{"room-a", "room-b"})
+	idx.AddConsumer("b", "", []string{"room-a"})
+
+	idx.Delete("a")
+	if _, ok := idx.byRoom["room-b"]; ok {
+		t.Error("an empty room was not removed")
+	}
+	if len(idx.byRoom["room-a"]) != 1 {
+		t.Errorf("room-a has %d members, want 1", len(idx.byRoom["room-a"]))
+	}
+	idx.Delete("b")
+	if idx.Size() != 0 || len(idx.rooms) != 0 || len(idx.byRoom) != 0 || len(idx.byCountry) != 0 {
+		t.Errorf("index not empty after deleting everyone: size=%d rooms=%d byRoom=%d byCountry=%d",
+			idx.Size(), len(idx.rooms), len(idx.byRoom), len(idx.byCountry))
 	}
 }
