@@ -42,29 +42,45 @@ sequenceDiagram
 Each of these blocks one task at most. The plan implements the recommendation. A different ruling changes only the task named.
 
 1. **Per-person data relayed (blocks the "You're helping" totals, Task 14).** The spec wants one row per person with that person's daily data relayed and time active. Neither radiance nor the volunteer's widget can tell which person a session belongs to today. Direct mode would need samizdat to expose the short ID a session used, lantern-box to carry it on the connection event, and lantern-cloud to say which pairing each short ID belongs to. Unbounded would need freddie to tell the producer which room a consumer matched. That is five repos of plumbing.
-   - **Recommendation:** ship v1 rows with the person's name and "helping since" date. Show today's time active and data relayed once, for the section as a whole: everything this device relayed today, paired and pool together, as Advanced stats counts it. Write the per-pairing attribution as a separate plan (4b) after the pilot.
-2. **The inviter's name before approval (Task 14 copy).** The spec has the link open at "Sara asked for your help", but the link carries only `s`, and plan 1 delivers Sara's name only after she approves, as an encrypted blob.
+   - **Recommendation:** ship v1 rows with only the person's name and "helping since" date. Show today's time active and data relayed once, in the section header, for everything this device relayed today, paired and pool together, as Advanced stats counts it.
+   - **No number appears next to any name**, so the section totals can never be read as one person's.
+   - Write the per-pairing attribution as a separate plan (4b) after the pilot.
+2. **The inviter's name before approval (Task 14 copy; spec deviation).** The spec has the link open at "Sara asked for your help", but the link carries only `s`, and plan 1 delivers Sara's name only after she approves, as an encrypted blob.
    - **Recommendation:** before approval, say "A friend asked for your help". Use the name from approval on. Putting the name in the link would leak it wherever the link is forwarded or seized, and the share message that travels with the link already names her.
-3. **Account-bound pairings (no task).** Plan 1 deferred this to plan 4. lantern-cloud has no verified account identity on the helper path, and names live only on the device that made the invite, so another device on the account would show unnamed helpers.
-   - **Recommendation:** keep pairings device-bound for the pilot. Write account binding as its own plan once accounts are verified server-side.
-4. **Where the crypto runs (Tasks 4 and 9).** The spec's testing section names "the Go (lantern-cloud, radiance) and Dart (app) implementations".
+3. **Account-bound pairings: decided.** The user approved device-bound pairings for the pilot on 2026-10-23, with account binding in a later plan. See "Spec amendments needed".
+4. **Where the crypto runs (Tasks 4 and 9; spec deviation).** The spec's testing section names "the Go (lantern-cloud, radiance) and Dart (app) implementations".
    - **Recommendation:** implement it once, in Go, in broflake's `common/helperinvite`, used by both the app's Go core and the browser's wasm. Check it against lantern-cloud's vectors plus new name-blob vectors. This adds no Dart crypto dependency, and the invite secret never enters radiance, which on Windows runs as a system service.
 5. **The OS keystore (Task 12).** "Encrypted with the OS keystore" needs a native dependency. The plan uses flutter_secure_storage to hold one 32-byte key, which seals the engine's state file. Linux needs libsecret and a running keyring.
    - **Recommendation:** add flutter_secure_storage. On a device where the keystore fails, such as Linux with no keyring, helper invites show "can't store names securely on this device" and stay off. Names are never stored without the keystore.
+   - If the keystore later returns a different key, the old state is kept as `state.bin.bak` and the UI reports `keystore_reset` (Task 9).
 6. **Stealth builds (Tasks 12–14).** Stealth artifacts remove identifying UI, app links and the QR scanner.
-   - **Recommendation:** helper invites are off in stealth builds (`AppBuildInfo.enableHelperInvites = !suppressIdentifyingFeatures`). Invites are a recognisable Lantern artifact in a chat.
+   - **Recommendation:** helper invites are off in stealth builds (`AppBuildInfo.enableHelperInvites = !suppressIdentifyingFeatures`). The Android `/help` link filters are also left out of stealth manifests, through a manifest placeholder (Task 14).
 7. **Browser volunteers' identity (Tasks 3 and 5, and plan 5).** The spec leaves this open. Volunteer tickets come from `IssueTickets`, which authenticates by device ID.
    - **Recommendation, the smallest secure design:**
-     - The landing page generates a random device ID, `web-` plus 32 hex characters, and a device-key seed, and keeps both in `localStorage` on `lantern.io`.
-     - It calls `/v1/helper/invites/claim`, `/v1/helper/pairings`, `/v1/helper/pairings/end` and `/v1/helper/tickets` directly, with CORS allowed only for `https://lantern.io` and `https://www.lantern.io` (Task 3).
+     - Browser volunteers run only on a dedicated origin, `https://help.lantern.io`. It has a strict CSP (`default-src 'self'`, with `connect-src` limited to the API and freddie), and no third-party JavaScript, analytics or tag managers. **This is a hard rule for plan 5's page.**
+     - That page generates a random device ID, `web-` plus 32 hex characters, and a device-key seed, and keeps both in that origin's `localStorage`.
+     - It calls `/v1/helper/invites/claim`, `/v1/helper/pairings`, `/v1/helper/pairings/end` and `/v1/helper/tickets` directly. CORS allows only `https://help.lantern.io` (Task 3).
      - The wasm widget computes the claim and the code (Task 5) and joins the pairing's room with the tickets.
-     - Leaking the browser's device ID has the same consequence as leaking an app's (spec threat model, "Leaked volunteer ticket").
+     - Leaking the browser's device ID has the same consequence as leaking an app's (spec threat model, "Leaked volunteer ticket"). The dedicated origin and CSP are what keep other scripts from reading it.
      - v1 has no transfer of a browser pairing to the app. Someone who installs the app later asks for a new invite. The page offers "stop helping from this browser", which ends the browser pairing.
-8. **What "online" means for a helper (Task 2).** Either the volunteer has a live direct-mode route, or its widget fetched volunteer tickets in the last 15 minutes, which a running widget does every 10. The server keeps one `seen_at` per volunteer device, refreshed at most every 5 minutes and swept after 48 hours. It never logs it.
+8. **What "online" means for a helper (Task 2).** Either the volunteer has a live direct-mode route, or its widget fetched volunteer tickets in the last 15 minutes, which a running widget does every 10. The server keeps one `seen_at` per volunteer device, in Postgres, refreshed at most every 5 minutes and swept after 48 hours. It never logs it. Task 2 records the Redis alternative and why Postgres was chosen.
+   - The inviter can watch the volunteer's on and off pattern at about 5-minute resolution. That is new, and is added to the spec's threat model.
    - Known edge: a device that is both an inviter and a volunteer, with the VPN on and sharing off, reads as online, because its tunnel's ticket fetch also returns its volunteer tickets. This is accepted.
-9. **Cancelling an invite (Task 13).** HelperService has no "delete invite" call. A cancelled, unclaimed invite is forgotten on the device but stays claimable on the server until it expires, 48 hours at most. A claimant then waits for an approval that never comes. A claimed invite is rejected on cancel.
-   - **Recommendation:** accept this for v1, and add no RPC.
+9. **Cancelling an invite (Tasks 9 and 13).** HelperService has no "delete invite" call.
+   - **Recommendation:** keep a local tombstone. A cancelled invite stays in the sealed state, hidden from the UI, until it expires. If anyone claims it later, the next refresh rejects the claim automatically, so a claimant never waits on an approval that cannot come. A claimed invite is rejected at once on cancel. No RPC is added.
 10. **The spec's open question, discreet links.** **Recommendation:** keep branded `lantern.io/help` links for the pilot, and revisit if pilot partners report risk. No task changes.
+
+## Spec amendments needed
+
+The spec is the binding authority. These are places where this plan departs from it. The first is user-approved. Each of the others needs the user's ruling, and every row then needs a spec edit.
+
+| Spec text | This plan | Why |
+|---|---|---|
+| Decisions: "What a pairing binds to: The inviter's device; the inviter's account when they have one" | Device only for the pilot; account binding in a later plan. **User-approved 2026-10-23.** | No verified account identity on the helper path, and names live on one device |
+| Section 1, Claiming: "the link opens the app at "Sara asked for your help"" | "A friend asked for your help" until approval | The link carries only `s`; the name arrives sealed, after approval (open question 2) |
+| Section 4, Testing: "the Go (lantern-cloud, radiance) and Dart (app) implementations" | One Go implementation (broflake `helperinvite`) used by the app's Go core and the browser's wasm | One codebase against the vectors; no Dart crypto dependency (open question 4) |
+| Plan 1 rule: every helper endpoint requires the `helper_invites` flag | `ClaimInvite` passes the gate with a live invite, and `ListPairings`, `EndPairing` and `IssueTickets` pass it for a device that holds a claim or a pairing | Volunteers abroad must not need the flag, and their countries must not see the inviter UI (Task 1) |
+| Threat model | Two rows added to the spec in this commit: helper presence visible to the inviter (Task 2), and flag-free volunteer access (Task 1) | New exposures this plan creates |
 
 ## Global Constraints
 
@@ -124,7 +140,9 @@ Each of these blocks one task at most. The plan implements the recommendation. A
   - a count of invites, claims, pairings or helpers.
 
   This holds in Dart, lantern-core, radiance and lantern-cloud. Errors that cross into logs are fixed codes (`already_claimed`, `disabled`, …). The radiance relay is registered without the IPC tracer, because the tracer records error bodies.
-- **The UI gate.** Helper UI shows only when `AppBuildInfo.enableHelperInvites` holds and `Features["helper_invites"]` is true. The server decides that flag from `X-Lantern-Feature-Override` or the `helper_invites` flag (Task 1).
+- **The UI gate.** Nothing about helper invites shows in a stealth build (`AppBuildInfo.enableHelperInvites`). Beyond that, the two sides are gated differently:
+  - **The inviter's UI** (Settings → "Get help from a friend", and the "Help a friend" entry button) shows only when `Features["helper_invites"]` is true. The server decides that flag from `X-Lantern-Feature-Override` or the `helper_invites` flag.
+  - **The volunteer's UI** (a `/help` link, the claim screen, "You're helping") needs no flag. A volunteer abroad reaches it through an invite, and the server lets a device holding a live invite, a claim or a pairing through (Task 1). So nobody in a volunteer's country is shown the inviter UI just so that volunteers can help.
 - **The keystore is touched only after use.** The app never reads or creates the state key until the user creates or claims an invite, or opens a helper link. A local preference, `helper_invites_used`, records first use. This keeps Keychain prompts and libsecret off every other user's path.
 - **Dependency bumps.** After every `go get module@version`, run `go mod tidy`, check `git diff` for unexpected changes, and commit `go.mod` and `go.sum` together in the same commit as the bump. broflake is consumed by pseudo-version and is not tagged. radiance is consumed by pseudo-version in lantern.
 - **sqlc (lantern-cloud).** After any query or migration change, run `cd cmd/api && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0 generate`, not `make sqlc`. Commit the generated `cmd/api/dal/` files with the change.
@@ -159,29 +177,36 @@ These rows come from plan 1 and are restated so each task is self-contained. Pla
 | `K` | `HKDF-SHA256(ikm=s, salt=empty, info="lantern-helper-invite-v1/key")`, 32 bytes |
 | Approval keypair | Ed25519 from seed `HKDF-SHA256(s, info="lantern-helper-invite-v1/approve")` |
 | Name keys | `K_v = HKDF(s, "lantern-helper-invite-v1/volunteer-name")`, `K_i = HKDF(s, "lantern-helper-invite-v1/inviter-name")` |
-| Name blob | ChaCha20-Poly1305 under `K_v` (the volunteer's name) or `K_i` (the inviter's), empty associated data, blob = 12-byte random nonce ‖ ciphertext. **New in this plan:** the plaintext is the display name as UTF-8, trimmed of surrounding white space, 1–200 bytes, with no control characters (`helperinvite.CleanName`). The blob is at most 228 bytes, under lantern-cloud's 512. |
+| Name blob | ChaCha20-Poly1305 under `K_v` (the volunteer's name) or `K_i` (the inviter's), empty associated data, blob = 12-byte random nonce ‖ ciphertext. **New in this plan:** the plaintext is the display name as UTF-8, trimmed of surrounding white space, 1–200 bytes, with no control characters and no format characters (Unicode Cf) other than ZWNJ and ZWJ (`helperinvite.CleanName`). The blob is at most 228 bytes, under lantern-cloud's 512. |
 | Matching code | `HMAC-SHA256(K, "code" ‖ volunteer_pubkey)`, first 4 bytes big-endian, mod 10000, 4 digits zero-padded |
 | Approval signature | Ed25519 by the approval key over `"approve" ‖ invite_hash ‖ volunteer_pubkey` |
 | Device key | Ed25519 from a 32-byte random seed kept in the app's sealed state, or in the browser's `localStorage`. Only its public half leaves the device. |
 | Link | `https://lantern.io/help/#` + base64url(`s`). Parsers also accept `https://www.lantern.io/help#…`, `/help/#…`, the app's custom scheme `<APP_AUTH_SCHEME>://help#…` (normalized in Dart), and a bare 43-character base64url secret. |
 | HelperService JSON | proto field names, bytes as standard base64 with padding, int64 as a JSON string (protojson). `HelperPairing` gains `online` (field 4, inviter rows only) and `created_unix` (field 5) in Task 2. |
-| `Features["helper_invites"]` | In `/v1/config-new`: true when helper invites are enabled for the client (Task 1) |
-| Paired-volunteer widget | In `/v1/config-new`: `Features["unbounded"]` is also true, and `Unbounded` widget config is sent, when `helper_invites` is on, the client advertises `unbounded`, the device volunteers in at least one pairing, and its country is known and not censored (Task 1) |
+| `Features["helper_invites"]` | In `/v1/config-new`: true when helper invites are enabled for the client (Task 1). It gates only the inviter's UI. |
+| Paired-volunteer widget | In `/v1/config-new`: `Features["unbounded"]` is also true, and `Unbounded` widget config is sent, when the client advertises `unbounded`, the device volunteers in at least one pairing, and its country is known and not censored. The `helper_invites` flag is not needed (Task 1). |
+| Gate without the flag | `ClaimInvite` passes the `helper_invites` gate without the flag; an unknown, used or expired invite then answers 409 as for any client. `ListPairings`, `EndPairing` and `IssueTickets` pass it without the flag for a device that is the volunteer in a pairing or holds a live claim. `CreateInvite`, `GetInvite` and `DecideInvite` always need the flag (Task 1). |
 | radiance relay | IPC `POST /helper/relay` `{"op": <op>, "body": <JSON>}` → 200 `{"status": <int>, "body": <JSON on 2xx>, "error": <text otherwise>}`. The ops are `invites`, `invites/claim`, `invites/get`, `invites/decide`, `pairings`, `pairings/end`, and the local `tickets/refresh`. Anything else gets 400 (Task 6). |
 | radiance activity | IPC `GET /helper/activity` → `{"day":"YYYY-MM-DD","active_seconds":<int>,"relayed_bytes":<int>}`, the device's local calendar day (Task 8) |
 | `helperCall` | The bridge from Dart to lantern-core. It takes `op`, a string, and `args`, a JSON object string. It returns the operation's JSON result, or `{"error":"<code>"}`. The ops and codes are listed in Task 9. |
 
 ### Browser volunteer protocol (for plan 5's landing page)
 
-This is the sequence the landing page runs. Plan 4 builds and tests every server and wasm piece it uses.
+This is the sequence the landing page runs. Plan 4 builds and tests every server and wasm piece it uses. The `lanternHelperInvite` functions take the bare base64url secret (`ParseLink` also accepts a full link).
 
-1. `seed = localStorage["helper.seed"] ??= lanternHelperInvite.newSeed()`, and `device = localStorage["helper.device"] ??= "web-" + 32 random hex characters`.
-2. Read the secret from `location.hash`. Never send it, never put it in a query string, and clear it from the address bar with `history.replaceState` once the page has read it.
-3. `const {body, code} = lanternHelperInvite.claim(location.href, seed, name)`.
-4. `POST https://api.<domain>/v1/helper/invites/claim` with `body`, `Content-Type: application/json` and `X-Lantern-Device-Id: device`. A 409 means "this invite was already claimed".
-5. Show `code`. Every 30 s, `POST /v1/helper/pairings` with `{}`. A new pairing's `inviter_blob` opens with `lanternHelperInvite.openInviterName(location.href, blob)`.
-6. Every 10 minutes, `POST /v1/helper/tickets` with `{}`. Pass the volunteer tickets to the widget's `setRoomTickets(tickets)`, and call `setServePool(helpOthers)`.
-7. "Stop helping from this browser" sends `POST /v1/helper/pairings/end {"pairing_id": …}` and clears both `localStorage` keys.
+1. **Origin.** The page is served only from `https://help.lantern.io`, with a strict CSP (`default-src 'self'; connect-src 'self' https://api.iantem.io https://freddie.iantem.io; script-src 'self' 'wasm-unsafe-eval'`) and no third-party JavaScript. `https://lantern.io/help/` redirects there, and the fragment survives the redirect. CORS allows only this origin (Task 3).
+2. **Identity.** `seed = localStorage["helper.seed"] ??= lanternHelperInvite.newSeed()`, and `device = localStorage["helper.device"] ??= "web-" + 32 random hex characters`, both on `help.lantern.io`.
+3. **The secret.** On load, `secret = location.hash.slice(1)`. Then at once call `history.replaceState(null, "", location.pathname)`, so the fragment leaves the address bar and history.
+   - Hold `secret` in memory.
+   - Keep it in `sessionStorage["helper.secret"]` only until approval, so a reload in the same tab can carry on.
+   - Never send it anywhere, and never put it in a query string.
+4. **Claim.** `const {body, code} = lanternHelperInvite.claim(secret, seed, name)`. Then `POST https://api.iantem.io/v1/helper/invites/claim` with `body`, `Content-Type: application/json` and `X-Lantern-Device-Id: device`. A 409 means "this invite was already claimed". `api.iantem.io` is production's public API host; the page takes the host from its build config.
+5. **Approval.** Show `code`. Every 30 s, `POST /v1/helper/pairings` with `{}`.
+   - For a new pairing, **first** run `name = lanternHelperInvite.openInviterName(secret, pairing.inviter_blob)`. lantern-cloud delivers the blob exactly once.
+   - **Then** delete `sessionStorage["helper.secret"]` and drop `secret`.
+6. **Names are memory-only in the browser.** A name is never written to `localStorage`, `sessionStorage`, IndexedDB or a cookie. After a reload the page says "your friend".
+7. **Tickets.** Every 10 minutes, `POST /v1/helper/tickets` with `{}`. Pass the volunteer tickets to the widget's `setRoomTickets(tickets)`, and call `setServePool(helpOthers)`.
+8. **Stopping.** "Stop helping from this browser" sends `POST /v1/helper/pairings/end {"pairing_id": …}` and clears both `localStorage` keys.
 
 ### Repos, branches and worktrees (in execution order)
 
@@ -189,7 +214,7 @@ This is the sequence the landing page runs. Plan 4 builds and tests every server
 |---|---|---|---|
 | lantern-cloud | `~/go/src/github.com/getlantern/lantern-cloud-helper-app` | `fisk/helper-app` | `origin/main` (451692a04 or later) |
 | unbounded (`github.com/getlantern/broflake`) | `~/go/src/github.com/getlantern/unbounded-helper-app` | `fisk/helper-app` | `origin/main` (6679ccf or later) |
-| radiance | `~/go/src/github.com/getlantern/radiance-helper-app` | `fisk/helper-app` | `origin/main` **after plan 3's radiance PR (Tasks 12–14) merges**, because Tasks 6–8 extend its `helper` package |
+| radiance | `~/go/src/github.com/getlantern/radiance-helper-app` | `fisk/helper-app` | `origin/main`, **only after the gates in Task 6 Step 1**: lantern-box #380 merged and tagged, then plan 3's radiance PR (Tasks 12–14) switched to that tag and merged. Tasks 6–8 extend its `helper` package. |
 | lantern | `~/go/src/github.com/getlantern/lantern-helper-app` | `fisk/helper-app` | `origin/main` (c56403559 or later) |
 
 Two values come from earlier tasks: `UB_SHA`, the unbounded merge commit (Task 5 Step 7), and `RAD_SHA`, the radiance merge commit (Task 8 Step 7). The lantern Go tasks (9–11) bump to them.
@@ -199,15 +224,16 @@ Two values come from earlier tasks: `UB_SHA`, the unbounded merge commit (Task 5
 | Repo | File | Responsibility |
 |---|---|---|
 | lantern-cloud | `cmd/api/helper_features.go`, `helper_features_db_test.go` | `helperFeatureFlags`, the paired-volunteer lookup |
+| lantern-cloud | `cmd/api/helper_handler.go` (gate), `helper_handler_db_test.go`, `migrations/infra/000149_helper_claims_by_volunteer.*` | Volunteers without the flag: `helperFlagFreeHandlers`, `volunteerOrNotFound`, flag-off rate-limit buckets |
 | lantern-cloud | `cmd/api/config.go` | Emits `Features["helper_invites"]` and the paired-volunteer widget |
-| lantern-cloud | `cmd/api/migrations/infra/000149_helper_volunteer_presence.{up,down}.sql` | `helper_volunteer_presence` |
+| lantern-cloud | `cmd/api/migrations/infra/000150_helper_volunteer_presence.{up,down}.sql` | `helper_volunteer_presence` |
 | lantern-cloud | `cmd/api/queries/infra/helper.sql`, `cmd/api/dal/*` | Presence queries |
 | lantern-cloud | `cmd/api/apipb/proto/services/helper.proto` and generated files | `HelperPairing.online`, `created_unix` |
 | lantern-cloud | `cmd/api/helper_handler.go`, `helper_presence_db_test.go` | Online status in `ListPairings`; presence in `IssueTickets` and the sweep |
-| lantern-cloud | `router/middleware.go`, `router/middleware_test.go`, `cmd/api/main.go` | `CORSWith`, `RestrictedCORS`; the `/v1/helper/` rule |
+| lantern-cloud | `router/middleware.go`, `router/middleware_test.go`, `cmd/api/main.go` | `CORSWith`, `RestrictedCORS`; the `/v1/helper/` rule for `help.lantern.io` |
 | unbounded | `common/helperinvite/{helperinvite,names,link,claim,browser}.go`, `helperinvite_test.go`, `testdata/{lantern-cloud-vectors,names}.json` | Device-side crypto, link, claim and approval, a string API for wasm |
 | unbounded | `clientcore/broflake.go`, `clientcore/ui_wasm_impl.go`, `cmd/helperinvite_wasm.go`, `cmd/client_wasm_impl.go` | `setRoomTickets`, `setServePool`, `lanternHelperInvite` |
-| radiance | `helper/relay.go`, `helper/relay_test.go`, `helper/tickets.go` | The relay, `InvalidateSources` |
+| radiance | `helper/relay.go`, `helper/relay_test.go`, `helper/tickets.go` | The relay with its `onChange` hook, `Source.Invalidate` |
 | radiance | `helper/activity.go`, `helper/activity_test.go` | `ActivityTracker` |
 | radiance | `ipc/server.go`, `ipc/client.go`, `ipc/types.go`, `ipc/helper_test.go` | `/helper/relay`, `/helper/activity` |
 | radiance | `backend/radiance.go`, `backend/peer_share.go`, `backend/radiance_test.go`, `peer/peer.go`, `peer/rotation_test.go` | Wiring; re-register on a serve-pool change |
@@ -224,7 +250,7 @@ Two values come from earlier tasks: `UB_SHA`, the unbounded merge commit (Task 5
 
 ---
 
-### Task 1: lantern-cloud — helper feature flags in `/v1/config-new`
+### Task 1: lantern-cloud — helper features in `/v1/config-new`, and volunteers without the flag
 
 **Repo / worktree:** lantern-cloud, `~/go/src/github.com/getlantern/lantern-cloud-helper-app`
 
@@ -232,18 +258,36 @@ Two values come from earlier tasks: `UB_SHA`, the unbounded merge commit (Task 5
 - Create: `cmd/api/helper_features.go`
 - Create: `cmd/api/helper_features_db_test.go`
 - Modify: `cmd/api/config.go` (the helper block at about line 555, and the features block at about line 780)
+- Modify: `cmd/api/helper_handler.go` (`helperRequestContext`, `helperRequest`, `allowSource`, `ListPairings`, `EndPairing`, `IssueTickets`)
+- Create: `cmd/api/migrations/infra/000149_helper_claims_by_volunteer.up.sql` and `.down.sql`. If `000149` is taken on `origin/main` when this runs, use the next free number, and renumber Task 2's migration after it.
+- Modify: `cmd/api/queries/infra/helper.sql`, and the generated `cmd/api/dal/helper.sql.go`
+- Modify: `cmd/api/helper_handler_db_test.go` (`TestHelperGateRunsBeforeBody`)
 
 **Interfaces:**
 - Consumes:
   - `helperInvitesEnabled(header, clientIP, country) bool` and `featureFlagHelperInvites` (`helper_handler.go`)
   - `startHelperLookup` and `helperOutboundsTimeout` (`helper_direct.go`)
-  - `dal.Queries.CountHelperPairingsForVolunteer`
+  - the existing pairing lookup `dal.Queries.CountHelperPairingsForVolunteer`
   - `regions.IsCensoredCountry`
-  - the test fixture `newHelperConfigNewFixture` (`helper_direct_db_test.go`)
+  - the test helpers `newHelperConfigNewFixture`, `newHelperTestService`, `newHelperTestRouter`, `helperPost`, `newTestInvite`, `claimBody` and `approveBody`
 - Produces:
   - `func helperFeatureFlags(invitesOn, pairedVolunteer bool, clientCountry string) (helperInvites, forceUnbounded bool)`
   - `func (ls *lanternService) startHelperVolunteerLookup(ctx context.Context, timeout time.Duration, deviceID string) func() bool`
-  - On the wire: `Features["helper_invites"]`, and `Features["unbounded"]` with the `Unbounded` widget config for paired volunteers. The app (Tasks 12–14) and radiance's widget gate read these.
+  - `var helperFlagFreeHandlers map[string]bool`, `helperRequestContext.flagOff bool`, and `func (s helperService) volunteerOrNotFound(p helperRequestContext, handler string) error`
+  - the query `CountLiveHelperClaimsForVolunteer(ctx, volunteerDeviceID sql.NullString) (int64, error)`
+  - On the wire: `Features["helper_invites"]`, and `Features["unbounded"]` with the `Unbounded` widget config for paired volunteers, with or without the flag. The app (Tasks 12–14) and radiance's widget gate read these.
+  - The "Gate without the flag" behaviour in Global Constraints.
+
+**Why volunteers need no flag (PL4):** if volunteers needed `helper_invites`, the flag would have to cover every country a volunteer might live in, and everyone there would see the inviter UI. Instead, the invite itself is the volunteer's credential.
+- `ClaimInvite` runs for anyone with a live invite.
+- Once a device holds a claim or a pairing, `ListPairings`, `EndPairing` and `IssueTickets` run for it.
+- Creating, reading and deciding invites still need the flag, so only the pilot's inviters can invite.
+
+**Abuse analysis** (this also adds the spec's "Flag-free volunteer access" threat row):
+- Flag-off clients can now try claims with guessed invite hashes. With a 256-bit secret, guessing is hopeless.
+- Flag-off requests get their own rate-limit buckets (prefix `flagoff:`), so they cannot drain the egress bucket the pilot's inviters share.
+- A flag-off device with no claim or pairing gets the gate's 404 from the three volunteer endpoints. These answer 400 rather than 404 to an undecodable body, because their gate now runs after decoding. That reveals only that the endpoints exist, which is now intended.
+- The paired-volunteer lookup in `/v1/config-new` now runs for every client that advertises `unbounded`, not only flag-on ones. That is one indexed count, bounded at 300 ms and detached from the trace, like the other helper lookups.
 
 - [ ] **Step 1: Create the worktree**
 
@@ -284,16 +328,17 @@ import (
 
 func TestHelperFeatureFlags(t *testing.T) {
 	cases := []struct {
-		name                 string
-		on, volunteer        bool
-		country              string
+		name                   string
+		on, volunteer          bool
+		country                string
 		wantInvites, wantForce bool
 	}{
-		{"flag off", false, true, "DE", false, false},
+		{"flag off, not a volunteer", false, false, "DE", false, false},
+		{"flag off, paired volunteer abroad", false, true, "DE", false, true},
 		{"flag on, not a volunteer", true, false, "DE", true, false},
 		{"paired volunteer abroad", true, true, "DE", true, true},
 		{"paired volunteer in a censored country", true, true, "IR", true, false},
-		{"paired volunteer, unknown country", true, true, "", true, false},
+		{"paired volunteer, unknown country", false, true, "", false, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -333,42 +378,135 @@ func configNewForDevice(t *testing.T, f helperConfigNewFixture, deviceID string,
 
 // TestConfigNewHelperFeatures checks that helper_invites reaches the client's
 // Features, and that a paired volunteer that can run the widget gets it
-// whatever the unbounded flag says.
+// whatever the unbounded and helper_invites flags say.
 func TestConfigNewHelperFeatures(t *testing.T) {
 	f := newHelperConfigNewFixture(t)
 	require.NoError(t, f.q.InsertHelperPairing(context.Background(), dal.InsertHelperPairingParams{
 		PairingID: uuid.New(), InviterDeviceID: "inviter", VolunteerDeviceID: "volunteer-A"}))
 	protos := []string{"samizdat", common.UNBOUNDED}
 
-	off := configNewForDevice(t, f, "volunteer-A", protos, "")
-	assert.False(t, off.Features[featureFlagHelperInvites], "flag off: no helper invites")
-	baseline := off.Features[common.UNBOUNDED]
+	stranger := configNewForDevice(t, f, "stranger", protos, "")
+	assert.False(t, stranger.Features[featureFlagHelperInvites], "flag off: no inviter UI")
+	baseline := stranger.Features[common.UNBOUNDED]
 
-	stranger := configNewForDevice(t, f, "stranger", protos, featureFlagHelperInvites)
-	assert.True(t, stranger.Features[featureFlagHelperInvites])
-	assert.Equal(t, baseline, stranger.Features[common.UNBOUNDED], "an unpaired device keeps the unbounded flag's value")
+	flagged := configNewForDevice(t, f, "stranger", protos, featureFlagHelperInvites)
+	assert.True(t, flagged.Features[featureFlagHelperInvites])
+	assert.Equal(t, baseline, flagged.Features[common.UNBOUNDED], "an unpaired device keeps the unbounded flag's value")
 
 	inviter := configNewForDevice(t, f, "inviter", protos, featureFlagHelperInvites)
 	assert.Equal(t, baseline, inviter.Features[common.UNBOUNDED], "being an inviter does not turn the widget on")
 
-	vol := configNewForDevice(t, f, "volunteer-A", protos, featureFlagHelperInvites)
-	assert.True(t, vol.Features[featureFlagHelperInvites])
-	assert.True(t, vol.Features[common.UNBOUNDED], "a paired volunteer gets the widget")
+	vol := configNewForDevice(t, f, "volunteer-A", protos, "")
+	assert.False(t, vol.Features[featureFlagHelperInvites], "a volunteer is not shown the inviter UI")
+	assert.True(t, vol.Features[common.UNBOUNDED], "a paired volunteer gets the widget without any flag")
 	assert.NotNil(t, vol.Unbounded, "with its discovery and egress settings")
 
-	noWidget := configNewForDevice(t, f, "volunteer-A", []string{"samizdat"}, featureFlagHelperInvites)
+	noWidget := configNewForDevice(t, f, "volunteer-A", []string{"samizdat"}, "")
 	assert.Equal(t, baseline, noWidget.Features[common.UNBOUNDED], "a client that can't run the widget is not forced")
+}
+
+// TestHelperVolunteerWorksWithoutTheFlag covers the gate without the flag: a
+// live invite admits a claim, and a claim or pairing admits the volunteer
+// endpoints; inviting still needs the flag.
+func TestHelperVolunteerWorksWithoutTheFlag(t *testing.T) {
+	ls, _ := newHelperTestService(t)
+	mux := newHelperTestRouter(t, ls)
+	s, body := newTestInvite(t)
+	require.Equal(t, http.StatusOK, helperPost(t, mux, "/v1/helper/invites", "inviter", body, true).Code)
+
+	for _, path := range []string{"/v1/helper/pairings", "/v1/helper/tickets"} {
+		assert.Equal(t, http.StatusNotFound, helperPost(t, mux, path, "stranger", map[string]any{}, false).Code, path)
+	}
+	assert.Equal(t, http.StatusNotFound, helperPost(t, mux, "/v1/helper/pairings/end", "stranger",
+		map[string]any{"pairing_id": uuid.NewString()}, false).Code)
+	_, other := newTestInvite(t)
+	assert.Equal(t, http.StatusNotFound, helperPost(t, mux, "/v1/helper/invites", "stranger", other, false).Code,
+		"inviting needs the flag")
+
+	vol := bytes.Repeat([]byte{6}, 32)
+	require.Equal(t, http.StatusOK, helperPost(t, mux, "/v1/helper/invites/claim", "volunteer-A", claimBody(s, vol), false).Code)
+	assert.Equal(t, http.StatusOK, helperPost(t, mux, "/v1/helper/pairings", "volunteer-A", map[string]any{}, false).Code,
+		"a device holding a claim polls for approval")
+	assert.Equal(t, http.StatusNotFound, helperPost(t, mux, "/v1/helper/invites/get", "volunteer-A",
+		map[string]any{"invite_hash": body["invite_hash"]}, false).Code, "reading invites needs the flag")
+
+	w := helperPost(t, mux, "/v1/helper/invites/decide", "inviter", approveBody(s, vol), true)
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+	var resp struct {
+		PairingID string `json:"pairing_id"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, http.StatusOK, helperPost(t, mux, "/v1/helper/tickets", "volunteer-A", map[string]any{}, false).Code)
+	assert.Equal(t, http.StatusOK, helperPost(t, mux, "/v1/helper/pairings/end", "volunteer-A",
+		map[string]any{"pairing_id": resp.PairingID}, false).Code)
+
+	s2, _ := newTestInvite(t)
+	assert.Equal(t, http.StatusConflict, helperPost(t, mux, "/v1/helper/invites/claim", "volunteer-B", claimBody(s2, vol), false).Code,
+		"an unknown invite reads as already claimed, as for any client")
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+In `cmd/api/helper_handler_db_test.go`, replace the body of `TestHelperGateRunsBeforeBody` after `mux := newHelperTestRouter(t, ls)` with:
 
-Run: `$LC_TEST 'TestHelperFeatureFlags|TestConfigNewHelperFeatures'`
+```go
+	// The volunteer endpoints are reachable without the flag, so their gate
+	// runs in the handler, after decoding (see helperFlagFreeHandlers).
+	flagFree := map[string]bool{"/v1/helper/invites/claim": true, "/v1/helper/pairings": true,
+		"/v1/helper/pairings/end": true, "/v1/helper/tickets": true}
+	flagOffWant := func(path string) int {
+		if flagFree[path] {
+			return http.StatusBadRequest
+		}
+		return http.StatusNotFound
+	}
+	for _, path := range []string{"/v1/helper/invites", "/v1/helper/invites/claim"} {
+		w := helperPost(t, mux, path, "device-A", map[string]any{}, false)
+		assert.Equal(t, flagOffWant(path), w.Code, "%s: flag off, invalid body", path)
+		w = helperPost(t, mux, path, "device-A", map[string]any{}, true)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "%s: flag on, invalid body", path)
+	}
+	// A JSON string is not a valid body for any method.
+	for _, path := range []string{"/v1/helper/invites", "/v1/helper/invites/claim", "/v1/helper/invites/get",
+		"/v1/helper/invites/decide", "/v1/helper/pairings", "/v1/helper/pairings/end", "/v1/helper/tickets"} {
+		w := helperPost(t, mux, path, "device-A", "not a message", false)
+		assert.Equal(t, flagOffWant(path), w.Code, "%s: flag off, undecodable body", path)
+		w = helperPost(t, mux, path, "", "not a message", true)
+		assert.Equal(t, http.StatusBadRequest, w.Code, "%s: no device id", path)
+		assert.Contains(t, w.Body.String(), "X-Lantern-Device-Id", "%s: the gate, not the decoder, refused it", path)
+	}
+```
+
+Run: `$LC_TEST 'TestHelperFeatureFlags|TestConfigNewHelperFeatures|TestHelperVolunteerWorksWithoutTheFlag|TestHelperGateRunsBeforeBody'`
 Expected: the build fails with `undefined: helperFeatureFlags`.
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 3: Migration and query**
 
-`cmd/api/helper_features.go`:
+`cmd/api/migrations/infra/000149_helper_claims_by_volunteer.up.sql`:
+
+```sql
+-- The gate lets a device that holds a live claim reach the volunteer
+-- endpoints without the helper_invites flag; this finds its claims.
+CREATE INDEX helper_invites_claimed_volunteer_idx ON helper_invites (volunteer_device_id)
+WHERE state = 'claimed';
+```
+
+`000149_helper_claims_by_volunteer.down.sql`:
+
+```sql
+DROP INDEX IF EXISTS helper_invites_claimed_volunteer_idx;
+```
+
+Append to `cmd/api/queries/infra/helper.sql`:
+
+```sql
+-- name: CountLiveHelperClaimsForVolunteer :one
+SELECT count(*) FROM helper_invites
+WHERE volunteer_device_id = @volunteer_device_id AND state = 'claimed' AND expires_at > now();
+```
+
+Run: `cd cmd/api && go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0 generate && cd ../..`
+
+- [ ] **Step 4: Write `helper_features.go`**
 
 ```go
 package main
@@ -383,18 +521,15 @@ import (
 	"github.com/getlantern/lantern-cloud/regions"
 )
 
-// helperFeatureFlags returns the client's Features["helper_invites"], and
-// whether the Unbounded widget is forced on because the device volunteers in
-// a pairing. The app shows helper invites only behind the first. The second
-// lets a paired volunteer help through its widget even where the unbounded
-// rollout flag is off. It is never forced for a volunteer in a censored
-// country, or one whose country is unknown, because the widget's UI must not
-// appear there (see the app's FeatureFlag.unbounded).
+// helperFeatureFlags returns the client's Features["helper_invites"], which
+// gates only the inviter's UI, and whether the Unbounded widget is forced on
+// because the device volunteers in a pairing. The second needs no flag: a
+// volunteer abroad helps through an invite, and the flag must not have to
+// cover its country. It is never forced in a censored country, or where the
+// country is unknown, because the widget's UI must not appear there (see the
+// app's FeatureFlag.unbounded).
 func helperFeatureFlags(invitesOn, pairedVolunteer bool, clientCountry string) (helperInvites, forceUnbounded bool) {
-	if !invitesOn {
-		return false, false
-	}
-	return true, pairedVolunteer && clientCountry != "" && !regions.IsCensoredCountry(clientCountry)
+	return invitesOn, pairedVolunteer && clientCountry != "" && !regions.IsCensoredCountry(clientCountry)
 }
 
 // startHelperVolunteerLookup starts, in the background, a check of whether
@@ -419,6 +554,118 @@ func (ls *lanternService) startHelperVolunteerLookup(ctx context.Context, timeou
 }
 ```
 
+- [ ] **Step 5: The gate without the flag**
+
+In `cmd/api/helper_handler.go`:
+
+Add a field to `helperRequestContext`:
+
+```go
+	// flagOff is set when helper_invites is off for the client and the
+	// handler is one a volunteer may reach without it. The handler then
+	// requires a live invite (claim), or a claim or pairing (the rest).
+	flagOff bool
+```
+
+After `featureFlagHelperInvites`, add:
+
+```go
+// helperFlagFreeHandlers are the volunteer's endpoints. They run without the
+// helper_invites flag, so a volunteer abroad needs no flag: a live invite
+// admits a claim, and holding a claim or a pairing admits the rest (see
+// volunteerOrNotFound). Inviting always needs the flag.
+var helperFlagFreeHandlers = map[string]bool{
+	"helperClaimInvite": true, "helperListPairings": true, "helperEndPairing": true, "helperIssueTickets": true,
+}
+```
+
+In `helperRequest`, replace:
+
+```go
+	if !helperInvitesEnabled(header, p.clientIP, p.clientCountry) {
+		return p, router.NotFound("404 page not found")
+	}
+```
+
+with:
+
+```go
+	if !helperInvitesEnabled(header, p.clientIP, p.clientCountry) {
+		if !helperFlagFreeHandlers[handler] {
+			return p, router.NotFound("404 page not found")
+		}
+		p.flagOff = true
+	}
+```
+
+Add:
+
+```go
+// volunteerOrNotFound lets a flag-off request through only for a device that
+// is the volunteer in a pairing or holds a live claim. Anything else gets the
+// gate's own 404.
+func (s helperService) volunteerOrNotFound(p helperRequestContext, handler string) error {
+	if !p.flagOff {
+		return nil
+	}
+	q := dal.New(s.apiDB.GetPool())
+	n, err := q.CountHelperPairingsForVolunteer(p.ctx, p.deviceID)
+	if err != nil {
+		return helperInternalError(p.ctx, handler, err)
+	}
+	if n > 0 {
+		return nil
+	}
+	c, err := q.CountLiveHelperClaimsForVolunteer(p.ctx, sql.NullString{String: p.deviceID, Valid: true})
+	if err != nil {
+		return helperInternalError(p.ctx, handler, err)
+	}
+	if c > 0 {
+		return nil
+	}
+	return router.NotFound("404 page not found")
+}
+```
+
+In `ListPairings`, `EndPairing` and `IssueTickets`, right after `p, err := helperRequest(ctx, "<handler>")` and its error check, add the following, with that method's handler name:
+
+```go
+	if err := s.volunteerOrNotFound(p, "helperListPairings"); err != nil {
+		return nil, err
+	}
+```
+
+`ClaimInvite` needs no extra check. `ClaimHelperInvite` already admits only a pending, unexpired invite and answers 409 otherwise.
+
+Replace `allowSource` with a version whose flag-off requests use their own buckets:
+
+```go
+// allowSource charges the rate-limit bucket for p's network source.
+// Flag-off requests, which can only be claims, use buckets of their own, so
+// they cannot drain the egress bucket the pilot's inviters share.
+func (s helperService) allowSource(p helperRequestContext) bool {
+	now := time.Now()
+	prefix := ""
+	if p.flagOff {
+		prefix = "flagoff:"
+	}
+	if p.source == "" {
+		return s.ipLimit.allowN(prefix+helperUnknownSourceKey, helperIPRate, helperIPBurst, now)
+	}
+	if s.isEgress != nil {
+		// An inventory failure falls back to the source's own bucket rather
+		// than refusing: helper invites are not worth an outage, and the
+		// per-source budget still bounds a single address.
+		if egress, err := s.isEgress(p.ctx, p.source); err == nil && egress {
+			return s.ipLimit.allowN(prefix+helperEgressKey, helperEgressRate, helperEgressBurst, now)
+		}
+	}
+	return s.ipLimit.allowN(prefix+helperIPKey(p.source), helperIPRate, helperIPBurst, now)
+}
+```
+
+- [ ] **Step 6: `/v1/config-new`**
+
 In `cmd/api/config.go`, replace the helper block that starts `var helpers []helperOutbound` and ends with the closing brace of `if (wantsDirect || wantsRooms) && helperInvitesEnabled(...) {` with:
 
 ```go
@@ -427,14 +674,17 @@ In `cmd/api/config.go`, replace the helper block that starts `var helpers []help
 	var pairedVolunteer bool
 	wantsDirect, wantsRooms := slices.Contains(req.Protocols, "samizdat"), slices.Contains(req.Protocols, common.UNBOUNDED)
 	helperOn := helperInvitesEnabled(hdr, clientIPString, clientCountry)
+	var waitVolunteer func() bool
+	if wantsRooms {
+		// Not behind helper_invites: a paired volunteer abroad needs no flag
+		// to get its widget (see helperFeatureFlags).
+		waitVolunteer = ls.startHelperVolunteerLookup(ctx, helperOutboundsTimeout, req.DeviceID)
+	}
 	if (wantsDirect || wantsRooms) && helperOn {
 		validate := featureEnabled(featureFlagEnforceConfigValidation)
 		var waitRooms func() *option.Outbound
-		var waitVolunteer func() bool
 		if wantsRooms {
 			waitRooms = ls.startHelperUnboundedLookup(ctx, helperOutboundsTimeout, req.DeviceID, validate)
-			// A paired volunteer gets the widget (see helperFeatureFlags).
-			waitVolunteer = ls.startHelperVolunteerLookup(ctx, helperOutboundsTimeout, req.DeviceID)
 		}
 		if wantsDirect {
 			helpers = ls.helperOutboundsWithin(ctx, helperOutboundsTimeout, req.DeviceID, clientCountry, helperClientFactors(banditCF, banditCFBuilt), helperNow(), validate)
@@ -442,9 +692,9 @@ In `cmd/api/config.go`, replace the helper block that starts `var helpers []help
 		if waitRooms != nil {
 			helperUnbounded = waitRooms()
 		}
-		if waitVolunteer != nil {
-			pairedVolunteer = waitVolunteer()
-		}
+	}
+	if waitVolunteer != nil {
+		pairedVolunteer = waitVolunteer()
 	}
 ```
 
@@ -457,31 +707,32 @@ In the same file, replace:
 with:
 
 ```go
-	// helper_invites gates the app's helper screens. A paired volunteer gets
-	// the widget whatever the unbounded flag says, so it can help without a
-	// port (see helperFeatureFlags). Nothing here is logged or traced.
+	// helper_invites gates the app's inviter screens. A paired volunteer gets
+	// the widget whatever the unbounded and helper_invites flags say, so it
+	// can help without a port (see helperFeatureFlags). Nothing here is
+	// logged or traced.
 	helperInvites, forceUnbounded := helperFeatureFlags(helperOn, pairedVolunteer, clientCountry)
 	fullResponse.Features[featureFlagHelperInvites] = helperInvites
 	fullResponse.Features[common.UNBOUNDED] = featureEnabled(common.UNBOUNDED) || forceUnbounded
 ```
 
-- [ ] **Step 5: Run the tests and the existing helper tests**
+- [ ] **Step 7: Run the tests and the existing helper tests**
 
-Run: `$LC_TEST 'TestHelperFeatureFlags|TestConfigNewHelperFeatures|TestConfigNewHelper|TestConfigNewRecordsNoHelperOnTheRequestSpan|TestHelperDirectModeEndToEnd'`
-Expected: PASS.
+Run: `$LC_TEST 'TestHelperFeatureFlags|TestConfigNewHelperFeatures|TestHelperVolunteerWorksWithoutTheFlag|TestHelper|TestConfigNewHelper|TestConfigNewRecordsNoHelperOnTheRequestSpan'`
+Expected: PASS. `TestConfigNewRecordsNoHelperOnTheRequestSpan` still passes because the new lookup runs on a detached trace and the Features map is not recorded anywhere.
 
-`TestConfigNewRecordsNoHelperOnTheRequestSpan` still passes because the new lookup runs on a detached trace and the Features map is not recorded anywhere.
-
-- [ ] **Step 6: Telemetry audit**
+- [ ] **Step 8: Telemetry audit**
 
 Run: `git diff origin/main -- cmd/api/*.go ':!*_test.go' | grep -nE '^\+.*(log\.|span\.|attribute\.|metrics\.)'`
-Expected: only `log.ErrorUnlessCanceled(hctx, "helper volunteer: count pairings", err, nil)`, which has a fixed message and no identifier.
+Expected: only `log.ErrorUnlessCanceled(hctx, "helper volunteer: count pairings", err, nil)`. `volunteerOrNotFound` logs through `helperInternalError`, which records the handler name only.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add cmd/api/helper_features.go cmd/api/helper_features_db_test.go cmd/api/config.go
-git commit -m "api: helper_invites in client features; paired volunteers get the widget"
+git add cmd/api/helper_features.go cmd/api/helper_features_db_test.go cmd/api/config.go cmd/api/helper_handler.go \
+  cmd/api/helper_handler_db_test.go cmd/api/migrations/infra/000149_helper_claims_by_volunteer.*.sql \
+  cmd/api/queries/infra/helper.sql cmd/api/dal
+git commit -m "api: helper features in config; volunteers reach their endpoints without the flag"
 ```
 
 ---
@@ -491,7 +742,7 @@ git commit -m "api: helper_invites in client features; paired volunteers get the
 **Repo / worktree:** lantern-cloud, `~/go/src/github.com/getlantern/lantern-cloud-helper-app`
 
 **Files:**
-- Create: `cmd/api/migrations/infra/000149_helper_volunteer_presence.up.sql`, `000149_helper_volunteer_presence.down.sql`. If `000149` is taken on `origin/main` by the time this runs, use the next free number in both names.
+- Create: `cmd/api/migrations/infra/000150_helper_volunteer_presence.up.sql`, `000150_helper_volunteer_presence.down.sql`. This is the number after Task 1's migration; if Task 1 had to renumber, follow it.
 - Modify: `cmd/api/queries/infra/helper.sql`, and the generated `cmd/api/dal/helper.sql.go` and `cmd/api/dal/models.go`
 - Modify: `cmd/api/apipb/proto/services/helper.proto`, and the five generated files listed in Global Constraints
 - Modify: `cmd/api/helper_handler.go` (`ListPairings`, `IssueTickets`, `runHelperInviteSweep`)
@@ -505,6 +756,14 @@ git commit -m "api: helper_invites in client features; paired volunteers get the
   - Table `helper_volunteer_presence(volunteer_device_id TEXT PRIMARY KEY, seen_at TIMESTAMPTZ NOT NULL)`
   - Queries `TouchHelperVolunteerPresence(ctx, volunteerDeviceID string) error`, `ListHelperVolunteersOnlineForInviter(ctx, inviterDeviceID string) ([]dal.ListHelperVolunteersOnlineForInviterRow, error)` with fields `PairingID uuid.UUID` and `Online bool`, and `DeleteStaleHelperVolunteerPresence(ctx) (int64, error)`
   - `HelperPairing.online` (field 4) and `HelperPairing.created_unix` (field 5). On the wire these are `"online": true` (absent when false) and `"created_unix": "<seconds>"`. The app's engine (Task 9) reads them.
+
+**Where presence lives: Postgres, not Redis TTL keys.**
+- *Redis TTL keys* (`SET helper:seen:<sha256(device)> 1 EX 900`) would expire by themselves, need no sweep and no migration, and keep presence writes off Postgres.
+- *Postgres* puts presence where `ListPairings` already reads: the online query joins it with `helper_pairings` and `peer_routes` in one statement and is tested with `testdb` like the rest of the helper API. lantern-cloud reaches Redis only through its cache manager, built for caches rather than per-device state.
+- At pilot scale a volunteer costs at most one write every 5 minutes.
+- **Decision:** Postgres. Move to Redis TTL keys if volunteer counts make the write rate matter. The online status is computed fail-soft (Step 6), so presence storage can never break `ListPairings`.
+
+**Threat-model row** (added to the spec in this plan's commit): "Helper presence visible to the inviter". An inviter, or whoever holds her phone, can chart a volunteer's on and off pattern at about 5-minute resolution. This is accepted, because the spec asks for online status. The server keeps one timestamp per volunteer device, never per pairing, and sweeps it after 48 hours.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -615,17 +874,30 @@ func TestHelperOnlineCountsALiveRoute(t *testing.T) {
 	assert.Equal(t, pid, rows[0].PairingID)
 	assert.True(t, rows[0].Online)
 }
+// TestHelperListPairingsSurvivesAMissingPresenceTable checks the fail-soft
+// online status: a broken presence lookup shows helpers offline and still
+// serves the list.
+func TestHelperListPairingsSurvivesAMissingPresenceTable(t *testing.T) {
+	ls, tdb := newHelperTestService(t)
+	mux := newHelperTestRouter(t, ls)
+	approvedPairingWith(t, mux, "volunteer-A")
+	_, err := tdb.GetPool().Exec(context.Background(), `DROP TABLE helper_volunteer_presence`)
+	require.NoError(t, err)
+	got := listPairings(t, mux, "inviter")
+	require.Len(t, got, 1)
+	assert.False(t, got[0].Online)
+}
 ```
 
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `$LC_TEST 'TestHelperListPairingsReportsVolunteerPresence|TestHelperPresenceWritesAreCoarse|TestHelperOnlineCountsALiveRoute'`
+Run: `$LC_TEST 'TestHelperListPairingsReportsVolunteerPresence|TestHelperPresenceWritesAreCoarse|TestHelperOnlineCountsALiveRoute|TestHelperListPairingsSurvivesAMissingPresenceTable'`
 Expected: the build fails with `undefined: ... DeleteStaleHelperVolunteerPresence`.
 
 - [ ] **Step 3: Migration**
 
-`cmd/api/migrations/infra/000149_helper_volunteer_presence.up.sql`:
+`cmd/api/migrations/infra/000150_helper_volunteer_presence.up.sql`:
 
 ```sql
 -- When each paired volunteer device last fetched pairing tickets, which its
@@ -639,7 +911,7 @@ CREATE TABLE helper_volunteer_presence (
 );
 ```
 
-`000149_helper_volunteer_presence.down.sql`:
+`000150_helper_volunteer_presence.down.sql`:
 
 ```sql
 DROP TABLE IF EXISTS helper_volunteer_presence;
@@ -713,19 +985,6 @@ In `cmd/api/helper_handler.go`, in `ListPairings`, replace the body of the trans
 		if err != nil {
 			return nil, fmt.Errorf("list helper pairings: %w", err)
 		}
-		online := map[uuid.UUID]bool{}
-		for _, r := range rows {
-			if r.VolunteerDeviceID != p.deviceID {
-				st, err := q.ListHelperVolunteersOnlineForInviter(ctx, p.deviceID)
-				if err != nil {
-					return nil, fmt.Errorf("list helper volunteers online: %w", err)
-				}
-				for _, o := range st {
-					online[o.PairingID] = o.Online
-				}
-				break
-			}
-		}
 		out := &services.HelperPairingList{}
 		for _, r := range rows {
 			hp := &services.HelperPairing{PairingId: r.PairingID.String(), Role: string(pairing.RoleInviter),
@@ -742,12 +1001,50 @@ In `cmd/api/helper_handler.go`, in `ListPairings`, replace the body of the trans
 					}
 					hp.InviterBlob = blob
 				}
-			} else {
-				hp.Online = online[r.PairingID]
 			}
 			out.Pairings = append(out.Pairings, hp)
 		}
 		return out, nil
+```
+
+After the transaction, and before `return out, nil`, mark the inviter's helpers online. This runs outside the transaction and fails soft: if the presence lookup fails, for example because the table is missing during a rolling deploy, every helper reads offline and the list is still served.
+
+```go
+	s.markHelpersOnline(ctx, p.deviceID, out)
+```
+
+Add the method:
+
+```go
+// markHelpersOnline sets Online on the inviter-side pairings in out. It is
+// best-effort: on any error every helper stays offline, so presence can never
+// break ListPairings. A volunteer's rows never carry it.
+func (s helperService) markHelpersOnline(ctx context.Context, deviceID string, out *services.HelperPairingList) {
+	inviter := false
+	for _, hp := range out.Pairings {
+		if hp.Role == string(pairing.RoleInviter) {
+			inviter = true
+			break
+		}
+	}
+	if !inviter {
+		return
+	}
+	rows, err := dal.New(s.apiDB.GetPool()).ListHelperVolunteersOnlineForInviter(ctx, deviceID)
+	if err != nil {
+		log.Error(ctx, "helperListPairings: presence lookup failed; helpers shown offline", err, nil)
+		return
+	}
+	online := make(map[string]bool, len(rows))
+	for _, o := range rows {
+		online[o.PairingID.String()] = o.Online
+	}
+	for _, hp := range out.Pairings {
+		if hp.Role == string(pairing.RoleInviter) {
+			hp.Online = online[hp.PairingId]
+		}
+	}
+}
 ```
 
 In `IssueTickets`, inside the `for _, r := range rows` loop, after `role = pairing.RoleVolunteer`, add `volunteer = true`. Declare `volunteer := false` before the loop. After the loop, before `return out, nil`, add:
@@ -772,16 +1069,16 @@ In `runHelperInviteSweep`, after the `DeleteExpiredHelperInvites` call, add:
 
 - [ ] **Step 7: Run the tests**
 
-Run: `$LC_TEST 'TestHelperListPairingsReportsVolunteerPresence|TestHelperPresenceWritesAreCoarse|TestHelperOnlineCountsALiveRoute|TestHelper'`
+Run: `$LC_TEST 'TestHelperListPairingsReportsVolunteerPresence|TestHelperPresenceWritesAreCoarse|TestHelperOnlineCountsALiveRoute|TestHelperListPairingsSurvivesAMissingPresenceTable|TestHelper'`
 Expected: PASS, including every existing `TestHelper*` test.
 
 - [ ] **Step 8: Telemetry audit and commit**
 
 Run: `git diff origin/main -- cmd/api/helper_handler.go | grep -nE '^\+.*(log\.|span|attribute)'`
-Expected: only the two fixed messages `"helperIssueTickets: presence failed"` and `"helper presence sweep failed"`.
+Expected: only the three fixed messages `"helperIssueTickets: presence failed"`, `"helperListPairings: presence lookup failed; helpers shown offline"` and `"helper presence sweep failed"`.
 
 ```bash
-git add cmd/api/migrations/infra/000149_helper_volunteer_presence.*.sql cmd/api/queries/infra/helper.sql cmd/api/dal \
+git add cmd/api/migrations/infra/000150_helper_volunteer_presence.*.sql cmd/api/queries/infra/helper.sql cmd/api/dal \
   cmd/api/apipb/proto/services/helper.proto cmd/api/apipb/services/helper.pb.go cmd/api/apipb/services/helper_grpc.pb.go \
   cmd/backoffice/src/gen/services/helper_pb.ts cmd/backoffice/src/gen/services/helper-HelperService_connectquery.ts \
   openapiv2/services/helper.swagger.json cmd/api/helper_handler.go cmd/api/helper_presence_db_test.go
@@ -790,7 +1087,7 @@ git commit -m "api: helper online status and pairing dates in ListPairings"
 
 ---
 
-### Task 3: lantern-cloud — CORS on `/v1/helper/` for browser volunteers
+### Task 3: lantern-cloud — CORS on `/v1/helper/` for `help.lantern.io` only
 
 **Repo / worktree:** lantern-cloud, `~/go/src/github.com/getlantern/lantern-cloud-helper-app`
 
@@ -805,9 +1102,9 @@ git commit -m "api: helper online status and pairing dates in ListPairings"
 - Produces:
   - `type RestrictedCORS struct { Prefix string; Origins []string; Headers string }`
   - `func CORSWith(restricted []RestrictedCORS, anonymous ...string) Middleware`
-  - `var helperCORS = []router.RestrictedCORS{...}`, which allows `https://lantern.io` and `https://www.lantern.io` to send `Content-Type` and `X-Lantern-Device-Id` to `/v1/helper/`. Plan 5's landing page relies on it.
+  - `var helperCORS = []router.RestrictedCORS{...}`, which allows only `https://help.lantern.io` to send `Content-Type`, `X-Lantern-Device-Id` and `X-Lantern-Feature-Override` to `/v1/helper/`. The override header is there for testing a flag-on browser before the flag is on. Plan 5's page relies on this rule, and must be served from that origin.
 
-**Why restricted:** the generic `CORSMiddleware` reflects any origin with credentials. The helper API takes a bearer device ID, so only Lantern's own page may call it from a browser. Other origins get no `Access-Control-Allow-Origin`, and the browser refuses their preflight.
+**Why restricted:** the generic `CORSMiddleware` reflects any origin with credentials. The helper API takes a bearer device ID, so only Lantern's own volunteer page may call it from a browser. That page lives on a dedicated origin, `help.lantern.io`, with a strict CSP and no third-party script (open question 7), so nothing else on lantern.io can read the browser's device ID or seed. Other origins get no `Access-Control-Allow-Origin`, and the browser refuses their preflight.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -821,8 +1118,8 @@ func TestCORSWithRestrictedPrefix(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	h := router.CORSWith([]router.RestrictedCORS{{
 		Prefix:  "/v1/helper/",
-		Origins: []string{"https://lantern.io", "https://www.lantern.io"},
-		Headers: "Content-Type, X-Lantern-Device-Id",
+		Origins: []string{"https://help.lantern.io"},
+		Headers: "Content-Type, X-Lantern-Device-Id, X-Lantern-Feature-Override",
 	}})(ok)
 	do := func(method, path, origin string) *http.Response {
 		r := httptest.NewRequest(method, path, nil)
@@ -836,23 +1133,25 @@ func TestCORSWithRestrictedPrefix(t *testing.T) {
 	}
 
 	t.Run("allowed origin preflight", func(t *testing.T) {
-		resp := do(http.MethodOptions, "/v1/helper/invites/claim", "https://lantern.io")
+		resp := do(http.MethodOptions, "/v1/helper/invites/claim", "https://help.lantern.io")
 		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
-		assert.Equal(t, "https://lantern.io", resp.Header.Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "https://help.lantern.io", resp.Header.Get("Access-Control-Allow-Origin"))
 		assert.Contains(t, resp.Header.Get("Access-Control-Allow-Headers"), "X-Lantern-Device-Id")
 		assert.Empty(t, resp.Header.Get("Access-Control-Allow-Credentials"))
 		assert.Contains(t, resp.Header.Values("Vary"), "Origin")
 	})
-	t.Run("other origin preflight is refused", func(t *testing.T) {
-		resp := do(http.MethodOptions, "/v1/helper/invites/claim", "https://evil.example")
-		assert.Equal(t, http.StatusNoContent, resp.StatusCode)
-		assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"))
-		assert.Empty(t, resp.Header.Get("Access-Control-Allow-Headers"))
+	t.Run("other origins' preflights are refused, lantern.io's too", func(t *testing.T) {
+		for _, origin := range []string{"https://evil.example", "https://lantern.io", "https://www.lantern.io"} {
+			resp := do(http.MethodOptions, "/v1/helper/invites/claim", origin)
+			assert.Equal(t, http.StatusNoContent, resp.StatusCode, origin)
+			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Origin"), origin)
+			assert.Empty(t, resp.Header.Get("Access-Control-Allow-Headers"), origin)
+		}
 	})
 	t.Run("allowed origin POST reaches the handler", func(t *testing.T) {
-		resp := do(http.MethodPost, "/v1/helper/pairings", "https://www.lantern.io")
+		resp := do(http.MethodPost, "/v1/helper/pairings", "https://help.lantern.io")
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
-		assert.Equal(t, "https://www.lantern.io", resp.Header.Get("Access-Control-Allow-Origin"))
+		assert.Equal(t, "https://help.lantern.io", resp.Header.Get("Access-Control-Allow-Origin"))
 	})
 	t.Run("no origin, as from the app", func(t *testing.T) {
 		resp := do(http.MethodPost, "/v1/helper/pairings", "")
@@ -925,13 +1224,15 @@ func CORSWith(restricted []RestrictedCORS, anonymous ...string) Middleware {
 In `cmd/api/helper_handler.go`, after `featureFlagHelperInvites`, add:
 
 ```go
-// helperCORS lets Lantern's landing page, and only it, call the helper API
-// from a browser, as browser volunteers do (plan 5). The device ID header is
-// the only credential, and no cookie is ever sent.
+// helperCORS lets the browser-volunteer page, and only it, call the helper
+// API from a browser (plan 5). That page lives on its own origin with a
+// strict CSP and no third-party script, so no other lantern.io page can read
+// the device ID it keeps. The device ID header is the only credential, and no
+// cookie is ever sent. The override header is for testing.
 var helperCORS = []router.RestrictedCORS{{
 	Prefix:  "/v1/helper/",
-	Origins: []string{"https://lantern.io", "https://www.lantern.io"},
-	Headers: "Content-Type, X-Lantern-Device-Id",
+	Origins: []string{"https://help.lantern.io"},
+	Headers: "Content-Type, X-Lantern-Device-Id, X-Lantern-Feature-Override",
 }}
 ```
 
@@ -946,16 +1247,16 @@ Expected: PASS. The existing `TestCORS` is unchanged.
 
 ```bash
 git add router/middleware.go router/middleware_test.go cmd/api/main.go cmd/api/helper_handler.go
-git commit -m "api: CORS on /v1/helper/ for lantern.io only"
+git commit -m "api: CORS on /v1/helper/ for help.lantern.io only"
 ```
 
 Run `make test` and `golangci-lint run --new-from-rev=origin/main ./cmd/api/... ./router/...`. Expected: both pass. Then open the PR for Tasks 1–3 with `skills:create-pr`, base `main`.
 
 - [ ] **Step 5: [Human] Merge, migrate, deploy**
   - Merge the PR.
-  - Apply migration 000149 in production, the way 000146–000148 were applied.
+  - Apply migrations 000149 and 000150 in production, the way 000146–000148 were applied.
   - Deploy the API with a rolling restart of the `api` MIG.
-  - Check with `curl -si -X OPTIONS -H 'Origin: https://lantern.io' -H 'Access-Control-Request-Method: POST' https://api.iantem.io/v1/helper/pairings`. Expect 204 with `Access-Control-Allow-Origin: https://lantern.io`.
+  - Check with `curl -si -X OPTIONS -H 'Origin: https://help.lantern.io' -H 'Access-Control-Request-Method: POST' https://api.iantem.io/v1/helper/pairings`. Expect 204 with `Access-Control-Allow-Origin: https://help.lantern.io`.
   - If the API is reached through a CDN, confirm that the CDN passes `Origin`, `X-Lantern-Device-Id` and the CORS response headers.
 
 ---
@@ -1159,11 +1460,18 @@ func TestNamesSealUnderTheirOwnKeyOnly(t *testing.T) {
 }
 
 func TestCleanName(t *testing.T) {
-	for _, bad := range []string{"", "   ", "a\x00b", "line\nbreak", strings.Repeat("a", MaxNameBytes+1), string([]byte{0xff})} {
+	for _, bad := range []string{"", "   ", "a\x00b", "line\nbreak", strings.Repeat("a", MaxNameBytes+1), string([]byte{0xff}),
+		"\u202eilA", "Al\u200bi", "\ufeffAli", "A\u2066li"} {
 		_, err := CleanName(bad)
 		assert.ErrorIs(t, err, ErrName, "%q", bad)
 	}
-	got, err := CleanName(" سارا ")
+	zwnjName := "\u0645\u06cc\u200c\u0631\u0627" // Persian, with a zero-width non-joiner
+	got, err := CleanName(zwnjName)
+	require.NoError(t, err, "ZWNJ is part of Persian spelling")
+	assert.Equal(t, zwnjName, got)
+	_, err = CleanName("\U0001f469\u200d\U0001f4bb")
+	assert.NoError(t, err, "ZWJ joins emoji")
+	got, err = CleanName(" سارا ")
 	require.NoError(t, err)
 	assert.Equal(t, "سارا", got)
 	got, err = CleanName(strings.Repeat("a", MaxNameBytes))
@@ -1379,9 +1687,9 @@ import (
 const MaxNameBytes = 200
 
 var (
-	// ErrName is returned for a name that is empty, too long, not UTF-8 or
-	// has control characters.
-	ErrName = errors.New("helperinvite: a name is 1 to 200 bytes of UTF-8 with no control characters")
+	// ErrName is returned for a name that is empty, too long, not UTF-8, or
+	// has control or format characters (other than ZWNJ and ZWJ).
+	ErrName = errors.New("helperinvite: a name is 1 to 200 bytes of UTF-8 with no control or format characters")
 	// ErrBlob is returned for a blob that does not open under the key.
 	ErrBlob = errors.New("helperinvite: the name blob does not open")
 )
@@ -1393,12 +1701,20 @@ func CleanName(name string) (string, error) {
 		return "", ErrName
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) {
+		if unicode.IsControl(r) || (unicode.Is(unicode.Cf, r) && r != zwnj && r != zwj) {
 			return "", ErrName
 		}
 	}
 	return name, nil
 }
+
+// Format characters (Unicode Cf) are refused: bidi overrides and invisible
+// marks could make one name display as another. ZWNJ and ZWJ are the
+// exceptions, because Persian spelling and emoji need them.
+const (
+	zwnj = '\u200c'
+	zwj  = '\u200d'
+)
 
 // SealName encrypts name under key with a random nonce from r.
 func SealName(key []byte, name string, r io.Reader) ([]byte, error) {
@@ -1595,10 +1911,11 @@ git commit -m "helperinvite: device-side crypto, links and name blobs for helper
   - `setServePool(bool)`
 - Produces, on the global `lanternHelperInvite`:
   - `newSeed()` → base64 string
-  - `claim(link, seedB64, name)` → `{body, code}` or `{error}`
-  - `matchingCode(link, seedB64)` → string or `{error}`
-  - `openInviterName(link, blobB64)` → string or `{error}`
-- Produces, in Go: `func BrowserNewSeed(r io.Reader) (string, error)`, `func BrowserClaim(link, seedB64, name string, r io.Reader) (body, code string, err error)`, `func BrowserMatchingCode(link, seedB64 string) (string, error)` and `func BrowserOpenInviterName(link, blobB64 string) (string, error)`. The landing page follows the "Browser volunteer protocol" in Global Constraints.
+  - `claim(secret, seedB64, name)` → `{body, code}` or `{error}`
+  - `matchingCode(secret, seedB64)` → string or `{error}`
+  - `openInviterName(secret, blobB64)` → string or `{error}`
+  - `secret` is the bare base64url secret the page holds in memory, not `location.href`
+- Produces, in Go: `func BrowserNewSeed(r io.Reader) (string, error)`, `func BrowserClaim(secret, seedB64, name string, r io.Reader) (body, code string, err error)`, `func BrowserMatchingCode(secret, seedB64 string) (string, error)` and `func BrowserOpenInviterName(secret, blobB64 string) (string, error)`. The landing page follows the "Browser volunteer protocol" in Global Constraints.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1630,7 +1947,8 @@ func TestBrowserClaim(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, seed, 32)
 
-	body, code, err := BrowserClaim(Link(s), seedB64, "Ali", rand.Reader)
+	secret := base64.RawURLEncoding.EncodeToString(s)
+	body, code, err := BrowserClaim(secret, seedB64, "Ali", rand.Reader)
 	require.NoError(t, err)
 	var req struct {
 		InviteHash      []byte `json:"invite_hash"`
@@ -1645,13 +1963,13 @@ func TestBrowserClaim(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Ali", name)
 
-	again, err := BrowserMatchingCode(Link(s), seedB64)
+	again, err := BrowserMatchingCode(secret, seedB64)
 	require.NoError(t, err)
 	assert.Equal(t, code, again, "the page can recompute the code after a reload")
 
 	a, err := NewApproval(s, req.VolunteerPubkey, "Sara", rand.Reader)
 	require.NoError(t, err)
-	inviter, err := BrowserOpenInviterName(Link(s), base64.StdEncoding.EncodeToString(a.InviterBlob))
+	inviter, err := BrowserOpenInviterName(secret, base64.StdEncoding.EncodeToString(a.InviterBlob))
 	require.NoError(t, err)
 	assert.Equal(t, "Sara", inviter)
 }
@@ -1734,10 +2052,12 @@ func browserSeed(seedB64 string) ([]byte, error) {
 	return seed, nil
 }
 
-// BrowserClaim is NewClaim for the landing page. It returns the JSON body of
+// BrowserClaim is NewClaim for the landing page. secret is the bare
+// base64url secret the page read from its fragment and holds in memory
+// (ParseLink also accepts a full link). It returns the JSON body of
 // POST /v1/helper/invites/claim and the code to show.
-func BrowserClaim(link, seedB64, name string, r io.Reader) (body, code string, err error) {
-	s, err := ParseLink(link)
+func BrowserClaim(secret, seedB64, name string, r io.Reader) (body, code string, err error) {
+	s, err := ParseLink(secret)
 	if err != nil {
 		return "", "", err
 	}
@@ -1761,8 +2081,8 @@ func BrowserClaim(link, seedB64, name string, r io.Reader) (body, code string, e
 }
 
 // BrowserMatchingCode recomputes the code for a claim the page already sent.
-func BrowserMatchingCode(link, seedB64 string) (string, error) {
-	s, err := ParseLink(link)
+func BrowserMatchingCode(secret, seedB64 string) (string, error) {
+	s, err := ParseLink(secret)
 	if err != nil {
 		return "", err
 	}
@@ -1778,9 +2098,10 @@ func BrowserMatchingCode(link, seedB64 string) (string, error) {
 }
 
 // BrowserOpenInviterName opens the inviter_blob a new pairing carries in
-// ListPairings, given in standard base64 as lantern-cloud sends it.
-func BrowserOpenInviterName(link, blobB64 string) (string, error) {
-	s, err := ParseLink(link)
+// ListPairings, given in standard base64 as lantern-cloud sends it. The page
+// must call it before it forgets the secret: the blob comes only once.
+func BrowserOpenInviterName(secret, blobB64 string) (string, error) {
+	s, err := ParseLink(secret)
 	if err != nil {
 		return "", err
 	}
@@ -1967,7 +2288,7 @@ Publishing a new `widget.wasm` for the landing page belongs to plan 5.
 
 **Files:**
 - Create: `helper/relay.go`, `helper/relay_test.go`
-- Modify: `helper/tickets.go` (`NewSource`; a registry and `InvalidateSources`)
+- Modify: `helper/tickets.go` (`Source.Invalidate`, with a generation counter that `refresh` checks)
 - Modify: `ipc/server.go` (an endpoint constant and its route), `ipc/client.go`, `ipc/types.go`
 - Create: `ipc/helper_test.go`
 - Modify: `backend/radiance.go` (a `helperRelay` field, construction, `HelperRelay`)
@@ -1980,9 +2301,9 @@ Publishing a new `widget.wasm` for the landing page belongs to plan 5.
   - `const helper.OpRefreshTickets = "tickets/refresh"`
   - `var helper.ErrUnknownOp error`
   - `type helper.RelayResult struct { Status int; Body json.RawMessage; Error string }`
-  - `func helper.NewRelayer(httpClient *http.Client, baseURL string) *Relayer`
+  - `func helper.NewRelayer(httpClient *http.Client, baseURL string, onChange func()) *Relayer`. `onChange` runs after a claim, decision or ending succeeds, and for `tickets/refresh`. The backend passes its one shared ticket `Source`'s `Invalidate`. No global registry is involved.
   - `func (*Relayer) Relay(ctx context.Context, op string, body []byte) (RelayResult, error)`
-  - `func helper.InvalidateSources()`, `func helper.IsRelayOp(op string) bool`
+  - `func (*helper.Source) Invalidate()`, `func helper.IsRelayOp(op string) bool`
   - `func (*backend.LocalBackend) HelperRelay(ctx context.Context, op string, body []byte) (helper.RelayResult, error)`
   - IPC `POST /helper/relay`, `type ipc.HelperRelayRequest struct { Op string; Body json.RawMessage }`
   - `func (*ipc.Client) HelperRelay(ctx context.Context, op string, body []byte) (helper.RelayResult, error)`
@@ -1990,7 +2311,20 @@ Publishing a new `widget.wasm` for the landing page belongs to plan 5.
 
 - [ ] **Step 1: Create the worktree**
 
-Check first that plan 3's radiance PR (Tasks 12–14) has merged: `git -C ~/go/src/github.com/getlantern/radiance fetch origin && git -C ~/go/src/github.com/getlantern/radiance show origin/main:helper/tickets.go | head -5` must print the package comment. Then:
+**Gates.** Do not start until all three hold, in this order:
+1. **[Human]** lantern-box #380 (plan 3 Tasks 10–11) is merged, off Iran's peak hours, and tagged. Call the tag `LB_TAG`.
+2. Plan 3's radiance PR (Tasks 12–14) has switched its lantern-box pin from the #380 pseudo-version to `LB_TAG`, with `go mod tidy`, as ruling R1 requires.
+3. **[Human]** that radiance PR is merged.
+
+Check with:
+
+```bash
+git -C ~/go/src/github.com/getlantern/radiance fetch origin
+git -C ~/go/src/github.com/getlantern/radiance show origin/main:go.mod | grep lantern-box     # must name LB_TAG, not a pseudo-version
+git -C ~/go/src/github.com/getlantern/radiance show origin/main:helper/tickets.go | head -5   # must print the package comment
+```
+
+Then:
 
 ```bash
 cd ~/go/src/github.com/getlantern/radiance
@@ -2032,7 +2366,7 @@ func TestRelayForwardsAllowedOps(t *testing.T) {
 		_, _ = w.Write([]byte(`{"pairing_id":"p"}`))
 	}))
 	defer srv.Close()
-	rl := NewRelayer(srv.Client(), srv.URL+"/v1")
+	rl := NewRelayer(srv.Client(), srv.URL+"/v1", nil)
 	for op, path := range relayPaths {
 		res, err := rl.Relay(context.Background(), op, []byte(`{"x":1}`))
 		require.NoError(t, err, op)
@@ -2051,7 +2385,7 @@ func TestRelayForwardsAllowedOps(t *testing.T) {
 }
 
 func TestRelayRefusesOtherOps(t *testing.T) {
-	rl := NewRelayer(http.DefaultClient, "http://127.0.0.1:1/v1")
+	rl := NewRelayer(http.DefaultClient, "http://127.0.0.1:1/v1", nil)
 	for _, op := range []string{"", "tickets", "ticket-key", "../peer/register", "invites/../../peer"} {
 		_, err := rl.Relay(context.Background(), op, nil)
 		assert.ErrorIs(t, err, ErrUnknownOp, op)
@@ -2063,7 +2397,7 @@ func TestRelayReportsErrorsAsResults(t *testing.T) {
 		http.Error(w, "invite already claimed or expired", http.StatusConflict)
 	}))
 	defer srv.Close()
-	res, err := NewRelayer(srv.Client(), srv.URL+"/v1").Relay(context.Background(), "invites/claim", []byte(`{}`))
+	res, err := NewRelayer(srv.Client(), srv.URL+"/v1", nil).Relay(context.Background(), "invites/claim", []byte(`{}`))
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusConflict, res.Status)
 	assert.Equal(t, "invite already claimed or expired", res.Error)
@@ -2075,14 +2409,34 @@ func TestRelayRejectsANonJSONSuccess(t *testing.T) {
 		_, _ = w.Write([]byte("<html>captive portal</html>"))
 	}))
 	defer srv.Close()
-	_, err := NewRelayer(srv.Client(), srv.URL+"/v1").Relay(context.Background(), "pairings", nil)
+	_, err := NewRelayer(srv.Client(), srv.URL+"/v1", nil).Relay(context.Background(), "pairings", nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "captive", "an error never quotes the body")
 }
 
-// A pairing change makes every ticket Source fetch at its next read, so a new
-// pairing's rooms work within one read instead of one refresh interval.
-func TestRelayInvalidatesTicketSources(t *testing.T) {
+// A pairing change runs onChange, so the backend's ticket Source fetches at
+// its next read and a new pairing's rooms work within one read, not one
+// refresh interval.
+func TestRelayCallsOnChangeWhenPairingsChange(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"pairing_id": "p"})
+	}))
+	defer srv.Close()
+	var changes atomic.Int32
+	rl := NewRelayer(srv.Client(), srv.URL+"/v1", func() { changes.Add(1) })
+	for _, op := range []string{"invites", "invites/get", "pairings"} {
+		_, err := rl.Relay(context.Background(), op, []byte(`{}`))
+		require.NoError(t, err)
+	}
+	assert.Zero(t, changes.Load(), "creating, reading and listing change no pairing")
+	for _, op := range []string{"invites/claim", "invites/decide", "pairings/end", OpRefreshTickets} {
+		_, err := rl.Relay(context.Background(), op, []byte(`{}`))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(4), changes.Load())
+}
+
+func TestSourceInvalidate(t *testing.T) {
 	var fetches atomic.Int32
 	src := NewSource(context.Background(), func(context.Context) (Tickets, error) {
 		fetches.Add(1)
@@ -2093,27 +2447,31 @@ func TestRelayInvalidatesTicketSources(t *testing.T) {
 	src.Volunteer()
 	time.Sleep(20 * time.Millisecond)
 	require.Equal(t, int32(1), fetches.Load(), "a fresh source does not refetch")
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"pairing_id": "p"})
-	}))
-	defer srv.Close()
-	rl := NewRelayer(srv.Client(), srv.URL+"/v1")
-	_, err := rl.Relay(context.Background(), "invites/get", []byte(`{}`))
-	require.NoError(t, err)
-	src.Volunteer()
-	time.Sleep(20 * time.Millisecond)
-	assert.Equal(t, int32(1), fetches.Load(), "a read-only op invalidates nothing")
-
-	_, err = rl.Relay(context.Background(), "invites/decide", []byte(`{}`))
-	require.NoError(t, err)
+	src.Invalidate()
 	src.Volunteer()
 	require.Eventually(t, func() bool { return !src.isFetching() && fetches.Load() == 2 }, time.Second, 5*time.Millisecond)
+}
 
-	_, err = rl.Relay(context.Background(), OpRefreshTickets, nil)
-	require.NoError(t, err)
+// TestSourceInvalidateDuringAFetchIsNotLost covers the race: a pairing that
+// changes while a fetch is in flight must not be hidden by that fetch's
+// success, whose tickets may predate the change.
+func TestSourceInvalidateDuringAFetchIsNotLost(t *testing.T) {
+	release := make(chan struct{})
+	var fetches atomic.Int32
+	src := NewSource(context.Background(), func(context.Context) (Tickets, error) {
+		if fetches.Add(1) == 1 {
+			<-release
+		}
+		return Tickets{Lifetime: 15 * time.Minute}, nil
+	})
 	src.Volunteer()
-	require.Eventually(t, func() bool { return !src.isFetching() && fetches.Load() == 3 }, time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return fetches.Load() == 1 }, time.Second, 5*time.Millisecond)
+	src.Invalidate()
+	close(release)
+	require.Eventually(t, func() bool { return !src.isFetching() }, time.Second, 5*time.Millisecond)
+	src.Volunteer()
+	require.Eventually(t, func() bool { return fetches.Load() == 2 }, time.Second, 5*time.Millisecond,
+		"the fetch that began before the change does not count as fresh")
 }
 ```
 
@@ -2197,8 +2555,8 @@ var relayPaths = map[string]string{
 	"pairings/end":   "/helper/pairings/end",
 }
 
-// OpRefreshTickets is a local operation. It makes every ticket Source fetch at
-// its next read, for a pairing the app has just seen appear.
+// OpRefreshTickets is a local operation. It runs onChange, so the ticket
+// Source fetches at its next read, for a pairing the app has just seen appear.
 const OpRefreshTickets = "tickets/refresh"
 
 // invalidatingOps change this device's pairings when they succeed.
@@ -2229,20 +2587,29 @@ type RelayResult struct {
 type Relayer struct {
 	httpClient *http.Client
 	baseURL    string
+	onChange   func()
 }
 
 // NewRelayer returns a Relayer. baseURL includes the API version segment, as
 // common.GetBaseURL() returns it.
-func NewRelayer(httpClient *http.Client, baseURL string) *Relayer {
-	return &Relayer{httpClient: httpClient, baseURL: baseURL}
+// onChange, which may be nil, runs after an operation that changes this
+// device's pairings succeeds.
+func NewRelayer(httpClient *http.Client, baseURL string, onChange func()) *Relayer {
+	return &Relayer{httpClient: httpClient, baseURL: baseURL, onChange: onChange}
+}
+
+func (r *Relayer) changed() {
+	if r.onChange != nil {
+		r.onChange()
+	}
 }
 
 // Relay sends body to op's HelperService path. A transport failure is an
 // error, and any HTTP status is a result. After a claim, decision or ending
-// succeeds, every ticket Source fetches at its next read.
+// succeeds, onChange runs.
 func (r *Relayer) Relay(ctx context.Context, op string, body []byte) (RelayResult, error) {
 	if op == OpRefreshTickets {
-		InvalidateSources()
+		r.changed()
 		return RelayResult{Status: http.StatusOK, Body: json.RawMessage("{}")}, nil
 	}
 	path, ok := relayPaths[op]
@@ -2278,7 +2645,7 @@ func (r *Relayer) Relay(ctx context.Context, op string, body []byte) (RelayResul
 		}
 		out.Body = data
 		if invalidatingOps[op] {
-			InvalidateSources()
+			r.changed()
 		}
 		return out, nil
 	}
@@ -2303,42 +2670,39 @@ func IsRelayOp(op string) bool {
 
 The transport error is a fixed string, because `net/http` errors quote the URL.
 
-- [ ] **Step 4: Add the Source registry**
+- [ ] **Step 4: `Source.Invalidate`, without losing a change to a fetch in flight**
 
-In `helper/tickets.go`, replace `NewSource` with the version below. Plan 3 merged `NewSource(ctx, fetch)` with a `busy` backoff for 429 and 503 answers, and invalidation leaves a backoff in place.
+In `helper/tickets.go`, as plan 3 merged it (`NewSource(ctx, fetch)`, the `busy` backoff for 429 and 503 answers):
+
+- Add a field to `Source`:
 
 ```go
-// sources is every Source this process made, so InvalidateSources can reach
-// the widget's and the tunnel's. There are two at most, and they live as long
-// as the process.
-var sources struct {
-	mu  sync.Mutex
-	all []*Source
-}
+	gen uint64 // bumped by Invalidate; a fetch started under an older gen is stale
+```
 
-// NewSource returns a Source that fetches with fetch, Fetcher.Fetch outside
-// tests. Cancelling ctx cancels a fetch in flight and stops further fetches.
-func NewSource(ctx context.Context, fetch func(context.Context) (Tickets, error)) *Source {
-	s := &Source{ctx: ctx, fetch: fetch, now: time.Now}
-	sources.mu.Lock()
-	sources.all = append(sources.all, s)
-	sources.mu.Unlock()
-	return s
-}
+- In `read`, replace `go s.refresh()` with `go s.refresh(s.gen)`.
+- Change `func (s *Source) refresh()` to `func (s *Source) refresh(gen uint64)`. In its success branch, after `s.due = now.Add(refreshAfter(t.Lifetime))`, add:
 
-// InvalidateSources makes every Source fetch at its next read. The app calls
-// it, through the relay, when its pairings change. A Source backing off after
-// lantern-cloud said it was busy keeps its backoff.
-func InvalidateSources() {
-	sources.mu.Lock()
-	all := slices.Clone(sources.all)
-	sources.mu.Unlock()
-	for _, s := range all {
-		s.mu.Lock()
-		if s.busy == 0 {
+```go
+		if s.gen != gen {
+			// The pairings changed while this fetch was in flight, so its
+			// tickets may predate the change: fetch again at the next read.
 			s.due = time.Time{}
 		}
-		s.mu.Unlock()
+```
+
+- Add:
+
+```go
+// Invalidate makes the next read fetch, because this device's pairings have
+// changed. A fetch already in flight does not satisfy it (see gen). A Source
+// backing off after lantern-cloud said it was busy keeps its backoff.
+func (s *Source) Invalidate() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gen++
+	if s.busy == 0 {
+		s.due = time.Time{}
 	}
 }
 ```
@@ -2418,7 +2782,17 @@ func (c *Client) HelperRelay(ctx context.Context, op string, body []byte) (helpe
 
 In `backend/radiance.go`:
 - Add the field `helperRelay *helper.Relayer` to `LocalBackend`.
-- In `NewLocalBackend`, set `helperRelay: helper.NewRelayer(kindling.HTTPClient(), common.GetBaseURL()),` in the `r := &LocalBackend{…}` literal.
+- In `NewLocalBackend`, right after plan 3's `r.helperTickets = helper.NewSource(ctx, …)`, add:
+
+```go
+	// The widget and the tunnel share r.helperTickets, so invalidating it
+	// reaches both when the app's pairings change.
+	r.helperRelay = helper.NewRelayer(kindling.HTTPClient(), common.GetBaseURL(), func() {
+		if r.helperTickets != nil {
+			r.helperTickets.Invalidate()
+		}
+	})
+```
 - `backend/radiance.go` already imports `github.com/getlantern/radiance/helper`: plan 3 Task 13 added it.
 - Add:
 
@@ -2441,14 +2815,14 @@ func (r *LocalBackend) HelperRelay(ctx context.Context, op string, body []byte) 
 
 - [ ] **Step 6: Run the tests**
 
-Run: `go test -race ./helper/ ./ipc/ ./backend/ -v -run 'Relay|HelperRelay|Source|Fetcher' && make test`
+Run: `go test -race ./helper/ ./ipc/ ./backend/ -v -run 'Relay|HelperRelay|Source|Fetcher|Invalidate' && make test`
 Expected: PASS, including plan 3's `helper` tests and the full module.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add helper/relay.go helper/relay_test.go helper/tickets.go ipc/server.go ipc/client.go ipc/types.go ipc/helper_test.go backend/radiance.go
-git commit -m "helper: relay the app's helper-invite requests; refresh tickets when pairings change"
+git commit -m "helper: relay the app's helper-invite requests; refresh tickets when pairings change, even mid-fetch"
 ```
 
 ---
@@ -2475,6 +2849,8 @@ git commit -m "helper: relay the app's helper-invite requests; refresh tickets w
   - `peerController.Reregister(ctx context.Context) error`
   - `(*LocalBackend).reregisterPeer()`
   - The app's toggle (Task 14) patches `peer_serve_pool`, and direct mode applies it within one re-register instead of at the hourly rotation. This closes plan 2's deferral.
+
+**The cost of a toggle:** re-registering rotates the credentials and rebuilds the samizdat inbound, so every open session drops and reconnects within seconds, paired ones included. The widget does the same when "help others too" turns off. Task 14 adds a caption under the switch saying so (`help_others_too_note`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2594,7 +2970,11 @@ In `backend/peer_share.go`, add `Reregister(ctx context.Context) error` to `peer
 ```go
 // reregisterPeer re-registers a running peer in the background, under the
 // toggle lock so it cannot overlap a Start or Stop, after "help others too"
-// changes. The widget picks the setting up by itself within roomSyncInterval.
+// changes. Re-registering rotates the credentials and rebuilds the inbound,
+// so every open session, paired ones included, drops and reconnects within
+// seconds; the switch's caption warns of it (help_others_too_note). The
+// widget picks the setting up by itself within roomSyncInterval, and plan 3
+// restarts it when helping others turns off, with the same brief drop.
 func (r *LocalBackend) reregisterPeer() {
 	if r.peerClient == nil {
 		return
@@ -2983,12 +3363,12 @@ Releasing radiance to users happens through the lantern app release (Task 15).
 | `refresh` | `{}` | View, after `invites/get` for each local invite, `pairings` and the activity read |
 | `create_invite` | `{"name"}` | `{"invite_id","link"}` |
 | `decide` | `{"invite_id","approve": bool}` | View |
-| `forget_invite` | `{"invite_id"}` | View (a claimed invite is rejected first) |
+| `forget_invite` | `{"invite_id"}` | View. A claimed invite is rejected; an unclaimed one becomes a hidden tombstone, and any later claim on it is rejected at the next refresh |
 | `claim` | `{"link","name"}` | `{"claim_id","code"}` |
 | `end_pairing` | `{"pairing_id"}` | View |
-| `end_all_helpers` | `{}` | View (ends every pairing where this device is helped, and forgets every invite) |
+| `end_all_helpers` | `{}` | View (ends every pairing where this device is helped, and cancels every invite as `forget_invite` does) |
 
-The View is `{"unlocked","my_name","invites":[{"id","state","link"?,"expires_unix","code"?,"volunteer_name"?}],"claims":[{"id","code","expires_unix"}],"helpers":[{"pairing_id","name","online"?,"since_unix"}],"helping":[{"pairing_id","name","since_unix"}],"activity"?:{…},"new_helping"}`. A `link` appears only on an unclaimed invite, so it can be re-shared.
+The View is `{"unlocked","my_name","invites":[{"id","state","link"?,"expires_unix","code"?,"volunteer_name"?}],"claims":[{"id","code","expires_unix"}],"helpers":[{"pairing_id","name","online"?,"since_unix"}],"helping":[{"pairing_id","name","since_unix"}],"activity"?:{…},"new_helping","keystore_reset"?}`. A `link` appears only on an unclaimed invite, so it can be re-shared. `keystore_reset` appears only in `unlock`'s answer, when the old state could not be opened and was kept as `state.bin.bak`.
 
 **Error codes** (`{"error": code}`):
 - `locked`: no `unlock` yet
@@ -3348,6 +3728,45 @@ func TestStateIsSealed(t *testing.T) {
 	other := NewEngine(dir, cloud.relay("sara"), nil)
 	out := call(t, other, "unlock", map[string]any{"key": base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))})
 	assert.Empty(t, list(out, "invites"), "another key reads nothing")
+	assert.Equal(t, true, out["keystore_reset"], "and says so rather than silently starting over")
+	assert.FileExists(t, filepath.Join(dir, stateFile+".bak"), "the unreadable state is kept")
+	assert.Nil(t, call(t, other, "view", nil)["keystore_reset"], "reported once, at unlock")
+}
+
+// TestCancelledInviteRejectsALaterClaim covers the tombstone: a cancelled,
+// unclaimed invite is hidden, and a claim that arrives later is rejected at
+// the next refresh instead of waiting for an approval that cannot come.
+func TestCancelledInviteRejectsALaterClaim(t *testing.T) {
+	cloud := newFakeCloud()
+	sara := newTestEngine(t, cloud, "sara", t.TempDir())
+	inv := call(t, sara, "create_invite", map[string]any{"name": "Sara"})
+	sv := call(t, sara, "forget_invite", map[string]any{"invite_id": inv["invite_id"]})
+	assert.Empty(t, list(sv, "invites"), "a cancelled invite is hidden")
+	call(t, newTestEngine(t, cloud, "eve", t.TempDir()), "claim", map[string]any{"link": inv["link"], "name": "Eve"})
+	assert.Empty(t, list(call(t, sara, "refresh", nil), "invites"))
+	assert.Empty(t, list(call(t, sara, "view", nil), "helpers"))
+	cloud.mu.Lock()
+	defer cloud.mu.Unlock()
+	for _, fi := range cloud.invites {
+		assert.Equal(t, "rejected", fi.state, "the late claim was rejected")
+	}
+}
+
+// TestEachInviteKeepsItsOwnName checks that approval seals the name given for
+// that invite, not whichever name was typed last.
+func TestEachInviteKeepsItsOwnName(t *testing.T) {
+	cloud := newFakeCloud()
+	sara := newTestEngine(t, cloud, "sara", t.TempDir())
+	first := call(t, sara, "create_invite", map[string]any{"name": "Sara"})
+	call(t, sara, "create_invite", map[string]any{"name": "S. from work"})
+	ali := newTestEngine(t, cloud, "ali", t.TempDir())
+	call(t, ali, "claim", map[string]any{"link": first["link"], "name": "Ali"})
+	for _, iv := range list(call(t, sara, "refresh", nil), "invites") {
+		if iv["state"] == "claimed" {
+			call(t, sara, "decide", map[string]any{"invite_id": iv["id"], "approve": true})
+		}
+	}
+	assert.Equal(t, "Sara", list(call(t, ali, "refresh", nil), "helping")[0]["name"])
 }
 
 func TestExpiredInvitesAndClaimsArePruned(t *testing.T) {
@@ -3496,18 +3915,25 @@ const (
 type state struct {
 	V          int        `json:"v"`
 	DeviceSeed []byte     `json:"device_seed,omitempty"`
+	// MyName is only the last name used, to prefill the next prompt. Each
+	// invite and claim keeps its own.
 	MyName     string     `json:"my_name,omitempty"`
 	Invites    []*invite  `json:"invites,omitempty"`
 	Claims     []*claim   `json:"claims,omitempty"`
 	Pairings   []*pairing `json:"pairings,omitempty"`
 }
 
-// invite is one this device created and has not seen decided.
+// invite is one this device created and has not seen decided. A cancelled
+// invite is a tombstone: hidden from the UI, kept until it expires so that a
+// late claim on it is rejected rather than left waiting.
 type invite struct {
 	ID            string    `json:"id"`
 	Secret        []byte    `json:"secret"`
 	Created       time.Time `json:"created"`
-	State         string    `json:"state"` // "pending" or "claimed"
+	State         string    `json:"state"` // "pending", "claimed" or "cancelled"
+	// InviterName is the name this user gave for this invite, sealed for the
+	// volunteer at approval. Kept per invite: two invites can carry two names.
+	InviterName   string    `json:"inviter_name,omitempty"`
 	VolunteerPub  []byte    `json:"volunteer_pub,omitempty"`
 	VolunteerName string    `json:"volunteer_name,omitempty"`
 	Code          string    `json:"code,omitempty"`
@@ -3519,6 +3945,8 @@ type claim struct {
 	Secret  []byte    `json:"secret"`
 	Created time.Time `json:"created"`
 	Code    string    `json:"code"`
+	// Name is the name this user gave the inviter with this claim.
+	Name string `json:"name,omitempty"`
 }
 
 // pairing is one this device is in. Role is this device's side.
@@ -3534,27 +3962,41 @@ const (
 	RoleVolunteer = "volunteer"
 )
 
-// load reads the sealed state. A missing file, or one that does not open
-// under the key, is an empty state: the keystore has been reset, and the
-// next save replaces the file.
+// load reads the sealed state. A missing file is an empty state. A file
+// that does not open under the key means the keystore now returns another
+// key (an OS reset, a restored backup): the file is kept as state.bin.bak,
+// never silently replaced, the state starts empty, and the next view says
+// keystore_reset so the UI can tell the user.
 func (e *Engine) load() {
 	e.st = state{V: 1}
-	data, err := os.ReadFile(filepath.Join(e.dir, stateFile))
+	path := filepath.Join(e.dir, stateFile)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
+	if st, ok := e.open(data); ok {
+		e.st = st
+		return
+	}
+	if err := os.Rename(path, path+".bak"); err == nil {
+		e.reset = true
+	}
+}
+
+func (e *Engine) open(data []byte) (state, bool) {
 	aead, err := chacha20poly1305.New(e.key)
 	if err != nil || len(data) < chacha20poly1305.NonceSize+aead.Overhead() {
-		return
+		return state{}, false
 	}
 	pt, err := aead.Open(nil, data[:chacha20poly1305.NonceSize], data[chacha20poly1305.NonceSize:], []byte(stateAD))
 	if err != nil {
-		return
+		return state{}, false
 	}
 	var st state
-	if json.Unmarshal(pt, &st) == nil {
-		e.st = st
+	if json.Unmarshal(pt, &st) != nil {
+		return state{}, false
 	}
+	return st, true
 }
 
 // save seals the state and replaces the file atomically, owner-only.
@@ -3663,6 +4105,8 @@ type Engine struct {
 	st       state
 	online   map[string]bool
 	activity *Activity
+	// reset is set when unlock found a state file the key could not open.
+	reset bool
 }
 
 // NewEngine returns an engine that keeps its state in dir.
@@ -3729,8 +4173,11 @@ func (e *Engine) unlock(args []byte) ([]byte, error) {
 		return nil, errCode(CodeInternal)
 	}
 	e.key = key
+	e.reset = false
 	e.load()
-	return json.Marshal(e.view(false))
+	v := e.view(false)
+	v.KeystoreReset = e.reset
+	return json.Marshal(v)
 }
 
 func (e *Engine) newID() string {
@@ -3768,6 +4215,9 @@ type View struct {
 	Helping    []PairingView `json:"helping"`
 	Activity   *Activity     `json:"activity,omitempty"`
 	NewHelping bool          `json:"new_helping"`
+	// KeystoreReset is set only in unlock's answer, when the old state could
+	// not be opened and was kept as state.bin.bak.
+	KeystoreReset bool `json:"keystore_reset,omitempty"`
 }
 
 type InviteView struct {
@@ -3908,6 +4358,9 @@ func (e *Engine) view(newHelping bool) View {
 	v := View{Unlocked: true, MyName: e.st.MyName, NewHelping: newHelping, Activity: e.activity,
 		Invites: []InviteView{}, Claims: []ClaimView{}, Helpers: []PairingView{}, Helping: []PairingView{}}
 	for _, i := range e.st.Invites {
+		if i.State == "cancelled" {
+			continue
+		}
 		iv := InviteView{ID: i.ID, State: i.State, ExpiresUnix: i.Created.Add(InviteTTL).Unix(),
 			Code: i.Code, VolunteerName: i.VolunteerName}
 		if i.State == "pending" {
@@ -3956,7 +4409,7 @@ func (e *Engine) createInvite(ctx context.Context, args []byte) (any, error) {
 		ApprovalPubkey: helperinvite.ApprovalPublic(s)}, nil); err != nil {
 		return nil, err
 	}
-	inv := &invite{ID: e.newID(), Secret: s, Created: e.now(), State: "pending"}
+	inv := &invite{ID: e.newID(), Secret: s, Created: e.now(), State: "pending", InviterName: name}
 	e.st.Invites = append(e.st.Invites, inv)
 	e.st.MyName = name
 	if err := e.save(); err != nil {
@@ -3980,6 +4433,22 @@ func (e *Engine) refresh(ctx context.Context) (any, error) {
 				_ = e.save()
 			}
 			return nil, err
+		}
+		if inv.State == "cancelled" {
+			// A tombstone: reject any claim, so nobody waits on an approval
+			// that cannot come, and forget it once it can no longer change.
+			switch st.State {
+			case "claimed":
+				if err := e.post(ctx, "invites/decide", decideReq{InviteHash: helperinvite.InviteHash(inv.Secret)}, nil); err == nil ||
+					isCode(err, CodeNoPendingClaim) {
+					e.dropInvite(inv.ID)
+				}
+				changed = true
+			case "approved", "rejected":
+				e.dropInvite(inv.ID)
+				changed = true
+			}
+			continue
 		}
 		switch st.State {
 		case "claimed":
@@ -4088,7 +4557,11 @@ func (e *Engine) decide(ctx context.Context, args []byte) (any, error) {
 		}
 		e.dropInvite(inv.ID)
 	} else {
-		appr, err := helperinvite.NewApproval(inv.Secret, inv.VolunteerPub, e.st.MyName, e.rand)
+		name := inv.InviterName
+		if name == "" {
+			name = e.st.MyName // an invite saved before names were kept per invite
+		}
+		appr, err := helperinvite.NewApproval(inv.Secret, inv.VolunteerPub, name, e.rand)
 		if err != nil {
 			return nil, errCode(CodeBadName)
 		}
@@ -4119,17 +4592,30 @@ func (e *Engine) forgetInvite(ctx context.Context, args []byte) (any, error) {
 	if inv == nil {
 		return e.view(false), nil
 	}
-	if inv.State == "claimed" {
-		err := e.post(ctx, "invites/decide", decideReq{InviteHash: helperinvite.InviteHash(inv.Secret)}, nil)
-		if err != nil && !isCode(err, CodeNoPendingClaim) && !isCode(err, CodeNotFound) {
-			return nil, err
-		}
+	if err := e.cancelInvite(ctx, inv); err != nil {
+		return nil, err
 	}
-	e.dropInvite(inv.ID)
 	if err := e.save(); err != nil {
 		return nil, err
 	}
 	return e.view(false), nil
+}
+
+// cancelInvite rejects a claimed invite and forgets it. An unclaimed one
+// becomes a tombstone (there is no RPC to delete it), which refresh uses to
+// reject any later claim until it expires.
+func (e *Engine) cancelInvite(ctx context.Context, inv *invite) error {
+	if inv.State == "claimed" {
+		err := e.post(ctx, "invites/decide", decideReq{InviteHash: helperinvite.InviteHash(inv.Secret)}, nil)
+		if err != nil && !isCode(err, CodeNoPendingClaim) && !isCode(err, CodeNotFound) {
+			return err
+		}
+		e.dropInvite(inv.ID)
+		return nil
+	}
+	inv.State = "cancelled"
+	inv.InviterName = ""
+	return nil
 }
 
 func (e *Engine) claim(ctx context.Context, args []byte) (any, error) {
@@ -4172,9 +4658,10 @@ func (e *Engine) claim(ctx context.Context, args []byte) (any, error) {
 		VolunteerBlob: c.VolunteerBlob}, nil); err != nil {
 		return nil, err
 	}
-	cl := &claim{ID: e.newID(), Secret: s, Created: e.now(), Code: c.Code}
+	name, _ := helperinvite.CleanName(a.Name)
+	cl := &claim{ID: e.newID(), Secret: s, Created: e.now(), Code: c.Code, Name: name}
 	e.st.Claims = append(e.st.Claims, cl)
-	e.st.MyName, _ = helperinvite.CleanName(a.Name)
+	e.st.MyName = name
 	if err := e.save(); err != nil {
 		return nil, err
 	}
@@ -4203,8 +4690,8 @@ func (e *Engine) endPairing(ctx context.Context, args []byte) (any, error) {
 }
 
 // endAllHelpers is "remove all helpers": it ends every pairing in which this
-// device is helped and forgets every invite, rejecting claimed ones, so a
-// seized phone holds no helper names. It saves after each step, so a failure
+// device is helped, rejects claimed invites, and turns unclaimed ones into
+// tombstones without names, so a seized phone holds no helper names. It saves after each step, so a failure
 // part way keeps what was done.
 func (e *Engine) endAllHelpers(ctx context.Context) (any, error) {
 	for _, p := range slices.Clone(e.st.Pairings) {
@@ -4218,10 +4705,10 @@ func (e *Engine) endAllHelpers(ctx context.Context) (any, error) {
 		e.dropPairing(p.ID)
 	}
 	for _, inv := range slices.Clone(e.st.Invites) {
-		if inv.State == "claimed" {
-			_ = e.post(ctx, "invites/decide", decideReq{InviteHash: helperinvite.InviteHash(inv.Secret)}, nil)
+		if err := e.cancelInvite(ctx, inv); err != nil {
+			_ = e.save()
+			return nil, err
 		}
-		e.dropInvite(inv.ID)
 	}
 	if err := e.save(); err != nil {
 		return nil, err
@@ -5233,6 +5720,7 @@ String helperErrorText(String code) => switch (code) {
   'bad_name' => 'helper_error_bad_name'.i18n,
   'own_invite' => 'help_friend_own_invite'.i18n,
   'keystore' => 'helper_error_keystore'.i18n,
+  'keystore_reset' => 'helper_error_keystore_reset'.i18n,
   _ => 'helper_error_unavailable'.i18n,
 };
 ```
@@ -5399,7 +5887,12 @@ class HelpersNotifier extends _$HelpersNotifier {
       if (ref.mounted) state = state.copyWith(error: 'keystore');
       return;
     }
-    _apply(await _call('unlock', {'key': key}));
+    final r = _apply(await _call('unlock', {'key': key}));
+    if (r.ok && r.data['keystore_reset'] == true && ref.mounted) {
+      // The keystore returned a new key: the old names could not be read and
+      // were set aside. Tell the user once.
+      state = state.copyWith(error: 'keystore_reset');
+    }
   }
 
   Future<HelperResult?> _guard() async {
@@ -5423,9 +5916,10 @@ class HelpersNotifier extends _$HelpersNotifier {
     return r;
   }
 
-  /// Refreshes only on a device that has used helper invites.
+  /// Refreshes only on a device that has used helper invites, in a build
+  /// that has them.
   Future<void> refreshIfUsed() async {
-    if (used) await refresh();
+    if (AppBuildInfo.enableHelperInvites && used) await refresh();
   }
 
   Future<HelperResult> refreshView() async => _apply(await _call('view'));
@@ -5523,6 +6017,9 @@ msgstr "Enter a name your friend will recognise, up to 60 characters."
 
 msgid "helper_error_keystore"
 msgstr "This device can't store names securely, so helping friends is off. On Linux, start a keyring such as GNOME Keyring."
+
+msgid "helper_error_keystore_reset"
+msgstr "This device's secure storage was reset, so the names of your helpers and invites could not be read. Your helpers still work; invite them again to see their names."
 ```
 
 The strings `help_friend_already_claimed_body`, `help_friend_bad_link` and `help_friend_own_invite` are added in Task 14.
@@ -5561,6 +6058,7 @@ git commit -m "app: helper-invite state, keystore and feature gate"
 - Create: `lib/features/helpers/approve_helper_sheet.dart`
 - Modify: `lib/core/router/router.dart` (two routes), and regenerate `router.gr.dart`
 - Modify: `lib/features/setting/setting.dart` (a tile and its `_SettingType`)
+- Modify: `lib/lantern/lantern_platform_service.dart` (`copySensitiveText`), `android/app/src/main/kotlin/org/getlantern/lantern/handler/MethodHandler.kt` (`copySensitiveText`)
 - Modify: `assets/locales/en.po`
 - Create: `test/features/helpers/inviter_screens_test.dart`
 
@@ -6007,9 +6505,22 @@ import 'package:flutter/services.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:lantern/core/common/common.dart';
 import 'package:lantern/features/helpers/approve_helper_sheet.dart';
+import 'package:lantern/core/services/injection_container.dart';
 import 'package:lantern/features/helpers/provider/helpers_notifier.dart';
+import 'package:lantern/lantern/lantern_platform_service.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:share_plus/share_plus.dart';
+
+/// Copies an invite link. On Android it is marked sensitive, so Android 13+
+/// hides it from the clipboard preview and keyboard clipboard history; the
+/// link is a secret.
+Future<void> copySensitiveText(String text) async {
+  if (PlatformUtils.isAndroid) {
+    await sl<LanternPlatformService>().copySensitiveText(text);
+    return;
+  }
+  await Clipboard.setData(ClipboardData(text: text));
+}
 
 /// One invite: share it as a link or a QR code, then compare codes once a
 /// friend opens it. It reads the invite from the engine's view by ID, so the
@@ -6069,8 +6580,12 @@ class InviteShare extends ConsumerWidget {
           SecondaryButton(
             label: 'invite_copy_link'.i18n,
             onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: invite.link));
-              if (context.mounted) context.showSnackBar('invite_link_copied'.i18n);
+              try {
+                await copySensitiveText(invite.link);
+                if (context.mounted) context.showSnackBar('invite_link_copied'.i18n);
+              } catch (_) {
+                if (context.mounted) context.showSnackBarError('helper_error_copy'.i18n);
+              }
             },
           ),
           const SizedBox(height: 24),
@@ -6098,6 +6613,49 @@ class InviteShare extends ConsumerWidget {
     );
   }
 }
+```
+
+- [ ] **Step 3b: Sensitive copy on Android**
+
+Add to `LanternPlatformService` in `lib/lantern/lantern_platform_service.dart`. It is Android-only, so it is not part of `LanternCoreService`:
+
+```dart
+  /// Android only: copies [text] with ClipDescription's IS_SENSITIVE extra.
+  Future<void> copySensitiveText(String text) =>
+      _methodChannel.invokeMethod('copySensitiveText', {'text': text});
+```
+
+In `MethodHandler.kt`:
+- add `CopySensitiveText("copySensitiveText"),` to the `Methods` enum;
+- add the imports `android.content.ClipData`, `android.content.ClipboardManager` and `android.os.PersistableBundle`;
+- add a branch to the `when`:
+
+```kotlin
+            // Copies text marked sensitive, so Android 13+ keeps it out of the
+            // clipboard preview and keyboards' clipboard history. Used for
+            // helper invite links, which are secrets. setExtras needs API 24,
+            // the app's minSdk; older releases ignore the flag.
+            Methods.CopySensitiveText.method -> {
+                try {
+                    val text = call.argument<String>("text") ?: error("Missing text")
+                    val clip = ClipData.newPlainText("", text)
+                    clip.description.extras = PersistableBundle().apply {
+                        putBoolean("android.content.extra.IS_SENSITIVE", true)
+                    }
+                    val cm = appContext.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(clip)
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("copy_sensitive_text", e.localizedMessage, null)
+                }
+            }
+```
+
+Add the string to `assets/locales/en.po` with Step 5's:
+
+```po
+msgid "helper_error_copy"
+msgstr "Couldn't copy the link. Use Share link instead."
 ```
 
 - [ ] **Step 4: Routes and the settings entry**
@@ -6260,16 +6818,19 @@ make gen
 flutter analyze
 flutter test test/features/helpers/
 make find-duplicate-translations
+(cd android && ./gradlew :app:compileDebugKotlin)
 ```
 
 Expected:
 - `router.gr.dart` gains `GetHelp` and `InviteShare`.
+- The Kotlin compiles with `copySensitiveText`.
 - Analyze is clean.
 - The tests pass.
 - No duplicates.
 
 ```bash
 git add lib/features/helpers lib/core/router/router.dart lib/core/router/router.gr.dart lib/features/setting/setting.dart \
+  lib/lantern/lantern_platform_service.dart android/app/src/main/kotlin/org/getlantern/lantern/handler/MethodHandler.kt \
   assets/locales/en.po test/features/helpers/inviter_screens_test.dart
 git commit -m "app: invite a helper, share the link or QR, compare codes, approve, manage helpers"
 ```
@@ -6288,7 +6849,7 @@ git commit -m "app: invite a helper, share the link or QR, compare codes, approv
 - Modify: `lib/features/home/home.dart` (`Home.build`)
 - Modify: `lib/lantern_app.dart` (`_handleDeepLinkUri`, `_onResume`)
 - Modify: `lib/core/router/router.dart` (`/help-friend`), and regenerate `router.gr.dart`
-- Modify: `android/app/src/main/AndroidManifest.xml`
+- Modify: `android/app/src/main/AndroidManifest.xml`, `android/app/build.gradle` (`helperLinksEnabled`)
 - Modify: `assets/locales/en.po`
 - Create: `test/features/helpers/volunteer_screens_test.dart`
 - Modify: `test/features/action_mode/share_notifier_test.dart`
@@ -6787,6 +7348,15 @@ class HelpingSection extends HookConsumerWidget {
               ),
               onPressed: () => notifier.setHelpOthers(!helpers.helpOthers),
             ),
+            // Changing it rebuilds the sharing session (Task 7), so the people
+            // helped reconnect after a few seconds.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Text(
+                'help_others_too_note'.i18n,
+                style: textTheme.labelSmall?.copyWith(color: context.textTertiary),
+              ),
+            ),
           ],
         ),
       ),
@@ -6818,11 +7388,18 @@ String _date(int unix) => DateFormat.yMMMd().format(DateTime.fromMillisecondsSin
 
 - [ ] **Step 5: Wire the tab, Home, deep links and the route**
 
-In `lib/features/action_mode/action_mode.dart`, add the imports `package:lantern/features/helpers/helping_section.dart` and `package:lantern/features/helpers/provider/helpers_notifier.dart`. In `ActionModeTab.build`, add `final helperInvites = ref.watch(helperInvitesAvailableProvider);`. In the `Column`'s `children`, after the `_StatusCard(…)`, add:
+In `lib/features/action_mode/action_mode.dart`, add the imports `package:lantern/features/helpers/helping_section.dart` and `package:lantern/features/helpers/provider/helpers_notifier.dart`. In `ActionModeTab.build`, add:
 
 ```dart
-                    if (helperInvites) ...[
-                      const HelpingSection(),
+    final helperInvites = ref.watch(helperInvitesAvailableProvider);
+    final helping = ref.watch(helpersProvider.select((s) => s.view.helping.isNotEmpty));
+```
+
+In the `Column`'s `children`, after the `_StatusCard(…)`, add the following. "You're helping" needs no flag: a volunteer abroad is never flagged, so that nobody in their country sees the inviter UI (Task 1).
+
+```dart
+                    if (AppBuildInfo.enableHelperInvites) const HelpingSection(),
+                    if (AppBuildInfo.enableHelperInvites && (helperInvites || helping)) ...[
                       const SizedBox(height: defaultSize),
                       AppTextButton(
                         label: 'help_friend_entry'.i18n,
@@ -6834,16 +7411,16 @@ In `lib/features/action_mode/action_mode.dart`, add the imports `package:lantern
 In `lib/features/home/home.dart`, add the import `package:lantern/features/helpers/provider/helpers_notifier.dart`. In `Home.build`, after the `ref.listen<VPNStatus>(vpnProvider, …);` block, add:
 
 ```dart
-    final helperInvites = ref.watch(helperInvitesAvailableProvider);
     // A device that has used helper invites refreshes them at launch, so a
-    // volunteer approved while the app was closed starts helping now.
+    // volunteer approved while the app was closed starts helping now. Not
+    // behind the helper_invites flag: volunteers abroad are not flagged.
     useEffect(() {
-      if (!helperInvites) return null;
+      if (!AppBuildInfo.enableHelperInvites) return null;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (context.mounted) ref.read(helpersProvider.notifier).refreshIfUsed();
       });
       return null;
-    }, [helperInvites]);
+    }, const []);
 
     // A newly approved pairing this device helps: start sharing, picking the
     // mode as the toggle does. Not gated on the Unbounded tab being visible:
@@ -6888,10 +7465,24 @@ In `lib/core/router/router.dart`, after the `/invite-share` route:
     ),
 ```
 
-In `android/app/src/main/AndroidManifest.xml`:
-- After the `/private-server` https intent filter, add:
+In `android/app/build.gradle`, add to `manifestPlaceholders`, after `appAuthScheme: androidIdentity.appAuthScheme,`:
+
+```groovy
+                // Helper invite links open the app only in normal builds;
+                // stealth artifacts must not claim lantern.io/help.
+                helperLinksEnabled: stealthMode ? "false" : "true",
+```
+
+In `android/app/src/main/AndroidManifest.xml`, after the `</activity>` that closes `MainActivity`, add an alias that carries the `/help` filters. An intent filter cannot be disabled on its own, but an activity alias can, so a stealth build ships the filters disabled:
 
 ```xml
+        <!-- Helper invite links (lantern.io/help#…). Disabled in stealth builds
+             through the helperLinksEnabled placeholder. -->
+        <activity-alias
+            android:name=".HelperInviteLinks"
+            android:targetActivity=".MainActivity"
+            android:enabled="${helperLinksEnabled}"
+            android:exported="true">
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -6899,18 +7490,23 @@ In `android/app/src/main/AndroidManifest.xml`:
                 <data android:scheme="https" android:host="lantern.io" android:path="/help" />
                 <data android:scheme="https" android:host="lantern.io" android:pathPrefix="/help/" />
             </intent-filter>
-```
-
-- After the `affiliate` custom-scheme filter, add:
-
-```xml
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="${appAuthScheme}" android:host="help" />
             </intent-filter>
+        </activity-alias>
 ```
+
+The alias opens `MainActivity` with the original intent, so app_links delivers the URI as for the other links. To check the stealth gate:
+
+```bash
+(cd android && ./gradlew :app:processDebugMainManifest -PSTEALTH_MODE=stealth-vpn)
+grep -rl --include=AndroidManifest.xml HelperInviteLinks build/app/intermediates | xargs grep -A3 HelperInviteLinks
+```
+
+Expect `android:enabled="false"`. Without `-PSTEALTH_MODE`, expect `"true"`. `STEALTH_MODE` is the Gradle property `android/app/build.gradle` reads.
 
 iOS and macOS already claim `applinks:lantern.io`. Which paths open the app is set on lantern.io (Task 15).
 
@@ -7002,6 +7598,9 @@ msgstr "Help others too"
 msgid "help_others_too_body"
 msgstr "Lend spare capacity to other people facing censorship; Lantern only lets them reach allowed sites, which protects your connection from misuse."
 
+msgid "help_others_too_note"
+msgstr "Changing this briefly reconnects the people you help."
+
 # %s %s are hours and minutes, as numbers.
 msgid "helping_duration_hm"
 msgstr "%sh %sm"
@@ -7028,7 +7627,7 @@ Expected:
 
 ```bash
 git add lib/features/helpers lib/features/action_mode lib/features/home/home.dart lib/lantern_app.dart \
-  lib/core/router/router.dart lib/core/router/router.gr.dart android/app/src/main/AndroidManifest.xml \
+  lib/core/router/router.dart lib/core/router/router.gr.dart android/app/src/main/AndroidManifest.xml android/app/build.gradle \
   assets/locales/en.po test/features/helpers/volunteer_screens_test.dart test/features/action_mode/share_notifier_test.dart
 git commit -m "app: accept a helper invite, show the code, help automatically, You're helping"
 ```
@@ -7063,14 +7662,18 @@ Open the PR for Tasks 9–14 with `skills:create-pr`, base `main`. In the PR bod
 
 Every step here is a production action. Do them in this order.
 
-- [ ] **Step 1: [Human] lantern-cloud.** Merge the Tasks 1–3 PR, apply migration 000149, deploy the API, and check CORS (Task 3 Step 5). This is safe before any client ships:
+**Already satisfied:** the helper ticket seed is in Vault (`secret/data/lantern_cloud/helper_tickets`), with its Vault policy, in production as of 2026-10-23. Tickets, freddie rooms and the volunteer accepted sets have the key they need, so this is not a gate.
+
+**Gates from plan 3, before Task 6:** lantern-box #380 merged and tagged; plan 3's radiance PR on that tag and merged (Task 6 Step 1).
+
+- [ ] **Step 1: [Human] lantern-cloud.** Merge the Tasks 1–3 PR, apply migrations 000149 and 000150, deploy the API, and check CORS (Task 3 Step 5). This is safe before any client ships:
   - `Features["helper_invites"]` is false wherever the flag is off.
   - The paired-volunteer widget needs an existing pairing, and pairings exist only behind the flag.
 - [ ] **Step 2: [Human] lantern.io.**
   - Add `/help` and `/help/*` to the `applinks` paths in `https://lantern.io/.well-known/apple-app-site-association`, for both the iOS and the macOS app IDs.
   - Confirm `https://lantern.io/.well-known/assetlinks.json` lists the Play and sideload signing certificates. It is domain-wide, so no path change is needed.
-  - Until plan 5's landing page exists, `https://lantern.io/help/` must at least serve a page that does not send the fragment anywhere, for desktop browsers and for phones without the app.
-  - Confirm the site has no analytics or third-party script that reads `location.hash`.
+  - Until plan 5's page exists on `https://help.lantern.io`, `https://lantern.io/help/` must at least serve a page that sends the fragment nowhere, for desktop browsers and for phones without the app. Once that page exists, `lantern.io/help/` redirects to it; the fragment survives the redirect.
+  - Confirm `lantern.io/help` loads no analytics or third-party script that could read `location.hash`.
 - [ ] **Step 3: [Human] Merge the unbounded and radiance PRs** (Tasks 4–5 and 6–8). Record `UB_SHA` and `RAD_SHA`. No release is needed: both reach users only through the app.
 - [ ] **Step 4: [Human] Merge the lantern PR** (Tasks 9–14), after Steps 1–3.
 - [ ] **Step 5: [Human] Smoke-test the keystore on every platform with a debug build.**
@@ -7081,8 +7684,8 @@ Every step here is a production action. Do them in this order.
   - Submit to Google Play and the App Store. The App Store review notes should explain the camera use (the QR scanner already exists) and the new associated-domain paths.
   - Notarize and publish the desktop builds.
   - Rebuild the Linux packages with the new `libsecret` dependency.
-- [ ] **Step 7: [Human] Turn on the pilot flag.**
-  - Set `helper_invites` for the pilot's inviters in Iran and for the countries their volunteers are in. Volunteers call the same gated API.
+- [ ] **Step 7: [Human] Turn on the pilot flag, for inviters only.**
+  - Set `helper_invites` for the pilot's inviters in Iran. **Do not** flag volunteers' countries: a volunteer needs no flag (Task 1), and flagging their countries would show everyone there the inviter UI.
   - Start with device-scoped overrides (`X-Lantern-Feature-Override: helper_invites`, through the developer settings' feature overrides) on test devices, then widen.
   - `unbounded` does not need to be on for the volunteers: Task 1 turns the widget on for paired volunteers.
 - [ ] **Step 8: [Human] The pilot checks from the spec's "Production pilot checks".**
@@ -7118,27 +7721,29 @@ Every step here is a production action. Do them in this order.
 | Sara's name reaches the volunteer encrypted with `K_i`, once | The inviter blob from `ListPairings`, opened by the matching claim | 9 |
 | When a link leaks: reject, burn, send a new one | Reject path; `reject_explainer` | 9, 13 |
 | Either side can end a pairing | `end_pairing` on both sides | 9, 13, 14 |
-| Display names stored only on the two devices, encrypted with the OS keystore | Sealed `state.bin`; the key in flutter_secure_storage | 9, 12 |
+| Display names stored only on the two devices, encrypted with the OS keystore | Sealed `state.bin`, a name per invite and claim; the key in flutter_secure_storage; a key mismatch keeps `state.bin.bak` and reports `keystore_reset`. Browser names are memory-only | 9, 12 |
 | Limits | Server-side (plan 1). The app shows `too_many_invites` and `too_many_pairings` | 9, 12 |
 | Mode: direct whenever it can, otherwise Unbounded; no picker; Advanced stats shows it | `ShareNotifier._startAuto`, used by toggle and `startForHelper`; Advanced stats unchanged | 14 |
 | "You're helping" rows by name with daily totals | `HelpingSection`, with totals for the section (open question 1) | 8, 9, 14 |
 | No live "Sara is online now" | Volunteers never get `online` (Task 2), and the section shows none | 2, 14 |
 | "Help others too", on by default, one sentence on the allowlist | Switch → `peer_serve_pool`; direct mode re-registers at once; the widget follows within 30 s | 7, 12, 14 |
-| Browser fallback scoped to the pairing's room | wasm `setRoomTickets`, `setServePool`, `lanternHelperInvite`; CORS; the protocol in Global Constraints. The page is plan 5 | 3, 5 |
+| Browser fallback scoped to the pairing's room | wasm `setRoomTickets`, `setServePool`, `lanternHelperInvite` taking the in-memory secret; CORS for `help.lantern.io` only; the protocol in Global Constraints. The page is plan 5 | 3, 5 |
 | Inviter: online or offline status, revoke, invite another, nudge to a second helper | `ListPairings.online`; `GetHelp` rows, nudge, remove | 2, 13 |
 | "Remove all helpers" | `end_all_helpers` | 9, 13 |
 | Telemetry: outcomes and timings only | Rules in Global Constraints; an audit step in each PR task | 1–14 |
 | Clients must not export `helper-` tags | Server list filter, Dart log redaction, a guard on lantern-core logs | 11 |
 | Testing: shared crypto vectors | `helperinvite` against lantern-cloud's `vectors.json`, plus `names.json` | 4 |
-| Testing: state machine, including two claims racing | `TestASecondClaimIsAlreadyClaimed` and the end-to-end engine test. The server-side race is plan 1's | 9 |
+| Testing: state machine, including two claims racing | `TestASecondClaimIsAlreadyClaimed`, `TestCancelledInviteRejectsALaterClaim` and the end-to-end engine test. The server-side race is plan 1's | 9 |
 | Production pilot checks | Task 15 Step 8 | 15 |
-| Rollout behind a feature flag | `Features["helper_invites"]` and the app gate | 1, 12, 15 |
-| Plan 3 deferrals: toggle IPC; dispatching it at once; invalidating tickets on approval; P13 auto-enable for paired volunteers; browser tickets and wasm exports | IPC allowlist (already on main); re-register (7); `InvalidateSources` (6); auto-share (14) and `Features[unbounded]` (1); wasm and CORS (3, 5) | 1, 3, 5, 6, 7, 14 |
+| Rollout behind a feature flag | `Features["helper_invites"]` gates inviters. Volunteers pass the gate with an invite, claim or pairing, so the flag covers only the pilot's inviters (a spec amendment) | 1, 12, 14, 15 |
+| Plan 3 deferrals: toggle IPC; dispatching it at once; invalidating tickets on approval; P13 auto-enable for paired volunteers; browser tickets and wasm exports | IPC allowlist (already on main); re-register (7); `Relayer` `onChange` → `Source.Invalidate` (6); auto-share (14) and `Features[unbounded]` (1); wasm and CORS (3, 5) | 1, 3, 5, 6, 7, 14 |
 | Plan 2 deferral: the inviter's helper list with online status | Task 2 and Task 13 | 2, 13 |
 
 ### Deferred to plan 5 (landing page and rewards)
 
-- The `lantern.io/help` landing page: the human story; the install call to action; keeping `s` in the browser; "Continue" via `lantern://help#s`; "help from this browser now", running the browser protocol above with the wasm built here; and the `<meta>` preview "Sara wants your help staying online.", served without the fragment.
+- The landing page: the human story; the install call to action; keeping `s` in the browser; "help from this browser now", running the browser protocol above with the wasm built here; and the `<meta>` preview "Sara wants your help staying online.", served without the fragment.
+  - **Hard rule:** the page that runs browser volunteers is served only from `https://help.lantern.io`, a dedicated origin with a strict CSP and no third-party JavaScript, analytics or tag managers. It is the only origin in `helperCORS` (Task 3). `lantern.io/help/` redirects there.
+  - "Continue in the app": on Android, use an `intent://` URL naming the package, `intent://help/<s>#Intent;scheme=lantern;package=<applicationId>;end`, so Chrome opens Lantern itself and never offers another handler. An intent URL's fragment holds the intent spec, so the secret goes in the path. Android delivers it as `lantern://help/<s>`, and plan 5 extends `_isHelperInviteUri` and the link normalization to accept that form. Elsewhere, use `lantern://help#<s>`.
 - Publishing a new `widget.wasm` with Task 5's exports.
 - Pro rewards: the welcome week, a week per 30 active days with the 6-hour rule, the censored-country and 3-pairing conditions, the yearly cap, eligibility from heartbeats and the config-fetch country, grants through the referral mechanism, and the "you've earned a free week, create an account to claim it" prompt and claim.
 - The share card ("I'm keeping someone in Iran online with Lantern"), never naming the paired person.
@@ -7154,10 +7759,10 @@ Every step here is a production action. Do them in this order.
 
 ### Placeholder and consistency check
 
-- No step says "TBD", "add error handling" or "similar to Task N". The values not known in advance, `UB_SHA` (Task 5 Step 7) and `RAD_SHA` (Task 8 Step 7), come with the commands that produce them. The one environment-dependent instruction is the migration number in Task 2, which says exactly what to do if 000149 is taken.
+- No step says "TBD", "add error handling" or "similar to Task N". The values not known in advance, `UB_SHA` (Task 5 Step 7) and `RAD_SHA` (Task 8 Step 7), come with the commands that produce them. The one environment-dependent instruction is the migration numbering in Tasks 1 and 2, which says exactly what to do if 000149 is taken. `LB_TAG` comes from the plan 3 gate in Task 6 Step 1.
 - Names are consistent across repos:
   - broflake `helperinvite`: `NewSecret`, `InviteHash`, `DeriveKey`, `ApprovalPublic`, `ApprovalMessage`, `Approve`, `MatchingCode`, `VolunteerNameKey`, `InviterNameKey`, `DeviceKey`, `CleanName`, `SealName`, `OpenName`, `Link`, `ParseLink`, `NewClaim`, `NewApproval`, `LinkPrefix` and the `Browser*` functions. All are defined in Tasks 4–5 and used in Tasks 5 and 9.
-  - radiance: `helper.Relayer.Relay`, `RelayResult`, `IsRelayOp`, `OpRefreshTickets`, `InvalidateSources`, `Activity` and `ActivityTracker` (Tasks 6 and 8), used by `ipc.Client.HelperRelay` and `HelperActivity`, and through them by lantern-core's `relayHelper` and `helperActivity` (Task 10).
+  - radiance: `helper.Relayer.Relay`, `RelayResult`, `IsRelayOp`, `OpRefreshTickets`, `Source.Invalidate`, `Activity` and `ActivityTracker` (Tasks 6 and 8), used by `ipc.Client.HelperRelay` and `HelperActivity`, and through them by lantern-core's `relayHelper` and `helperActivity` (Task 10).
   - lantern-core: `helper.NewEngine`, `Engine.Call`, `ErrorJSON`, `Error` and the `Code*` constants (Task 9), used by `LanternCore.HelperCall` (Task 10). The ops in the Task 9 table are the strings `HelpersNotifier` sends (Task 12).
   - Dart: `helperCall` (Task 10) is used by `HelpersNotifier` (Task 12). `helpersProvider`, `helperInvitesAvailableProvider`, `HelperResult`, `HelpersState.helpingApprovals` and `helperErrorText` (Task 12) are used in Tasks 13–14. `askHelperName` (Task 13) is available to Task 14. `startForHelper` (Task 14) is called from Home (Task 14).
 - The wire names line up:
