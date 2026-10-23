@@ -28,17 +28,26 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@ DANGER                                                @")
-	slog.Warn("@                                                       @")
-	slog.Warn("@ This standalone egress server does not use secure TLS @")
-	slog.Warn("@ at the QUIC layer!                                    @")
-	slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n")
-
-	// And here's why it doesn't use secure TLS at the QUIC layer
-	tlsConfig := egcmdcommon.GenerateSelfSignedTLSConfig(true)
+	// See egress/cmd/common/tls.go for where the certificate comes from. A
+	// configured certificate that cannot be used is fatal: falling back to the
+	// self-signed one would leave every verifying consumer rejecting this egress.
+	tlsConfig, source, err := egcmdcommon.LoadEgressTLSConfig(os.Getenv)
+	if err != nil {
+		slog.Error("Cannot load the egress QUIC client certificate", "source", source, "error", err)
+		os.Exit(1)
+	}
+	if source == egcmdcommon.SourceSelfSigned {
+		slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+		slog.Warn("@ DANGER                                                @")
+		slog.Warn("@                                                       @")
+		slog.Warn("@ No egress TLS certificate is configured, so this      @")
+		slog.Warn("@ egress uses a throwaway self-signed one at the QUIC   @")
+		slog.Warn("@ layer. Consumers cannot verify it, and consumers that @")
+		slog.Warn("@ require verification will reject it.                  @")
+		slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	} else {
+		slog.Info("Loaded the egress QUIC client certificate", "source", source)
+	}
 
 	ll, err := egress.NewListener(ctx, l, tlsConfig)
 	if err != nil {

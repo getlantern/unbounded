@@ -116,12 +116,14 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 		)
 
 		if err != nil {
+			recordHandshakeFailure(err)
 			manager.mx.Lock()
 			delete(manager.connections, csid)
 			manager.mx.Unlock()
 			return nil, nil, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
+		go watchHandshake(newConn)
 		record.connection = newConn
 		record.transport = transport
 		return newConn, transport, nil

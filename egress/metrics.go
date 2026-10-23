@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/getlantern/semconv"
 	"github.com/getlantern/telemetry"
@@ -79,6 +80,15 @@ var teardownCounter metric.Int64ObservableCounter
 var freezeReportCounter metric.Int64ObservableCounter
 
 var migrationCounter metric.Int64ObservableCounter
+
+// handshakeFailureCounter tallies consumers rejecting the egress's client
+// certificate, by TLS alert. See handshakes.go.
+var handshakeFailureCounter metric.Int64ObservableCounter
+
+// clientCertExpiryGauge is the seconds until the egress's CA-issued client
+// certificate expires. Absent when the egress runs the unverifiable self-signed
+// fallback. See clientcert.go.
+var clientCertExpiryGauge metric.Int64ObservableGauge
 
 type migrationOutcome string
 
@@ -212,6 +222,14 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	if migrationCounter, err = m.Int64ObservableCounter("quic-migrations"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+	if handshakeFailureCounter, err = m.Int64ObservableCounter("quic-handshake-failures"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if clientCertExpiryGauge, err = m.Int64ObservableGauge("client-cert-expiry-seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("seconds until the egress's CA-issued QUIC client certificate expires")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
 
 	// proxy.io and proxy.activations are synchronous — their measurements
 	// arrive from the packet and session paths, via addProxyIO and
@@ -248,6 +266,8 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		freezeReportCounter,
 		migrationCounter,
 		migrationAttemptsCounter,
+		handshakeFailureCounter,
+		clientCertExpiryGauge,
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -323,6 +343,12 @@ func observeMetrics(ctx context.Context, o metric.Observer) error {
 		}
 		o.ObserveInt64(migrationCounter, count, metric.WithAttributes(attribute.String("outcome", string(outcome))))
 	})
+	eachHandshakeFailure(func(alert handshakeAlert, count int64) {
+		o.ObserveInt64(handshakeFailureCounter, count, metric.WithAttributes(attribute.String("alert", string(alert))))
+	})
+	if secs, ok := egressCertSecondsToExpiry(time.Now()); ok {
+		o.ObserveInt64(clientCertExpiryGauge, secs)
+	}
 	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
 	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))
 

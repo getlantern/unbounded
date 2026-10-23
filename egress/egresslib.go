@@ -398,6 +398,9 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	// series "unknown" and changes nothing else.
 	initDonorGeo()
 
+	// After startMetrics, so the line reaches the exported logs.
+	recordEgressCert(tlsConfig)
+
 	cm := &connectionManager{
 		connections:     make(map[string]*connectionRecord),
 		tlsConfig:       tlsConfig,
