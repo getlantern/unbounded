@@ -90,6 +90,11 @@ var handshakeFailureCounter metric.Int64ObservableCounter
 // fallback. See clientcert.go.
 var clientCertExpiryGauge metric.Int64ObservableGauge
 
+// clientCertVerifiableGauge is 1 when the egress offers a CA-issued clientAuth
+// certificate and 0 for the self-signed fallback, labelled by source. Unlike the
+// expiry gauge it is reported in both modes, so a fallback reads as 0, not a gap.
+var clientCertVerifiableGauge metric.Int64ObservableGauge
+
 type migrationOutcome string
 
 const (
@@ -230,6 +235,10 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		metric.WithDescription("seconds until the egress's CA-issued QUIC client certificate expires")); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+	if clientCertVerifiableGauge, err = m.Int64ObservableGauge("client-cert-verifiable",
+		metric.WithDescription("1 if the egress offers a CA-issued clientAuth QUIC certificate, 0 for the self-signed fallback")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
 
 	// proxy.io and proxy.activations are synchronous — their measurements
 	// arrive from the packet and session paths, via addProxyIO and
@@ -268,6 +277,7 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		migrationAttemptsCounter,
 		handshakeFailureCounter,
 		clientCertExpiryGauge,
+		clientCertVerifiableGauge,
 	); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
@@ -348,6 +358,9 @@ func observeMetrics(ctx context.Context, o metric.Observer) error {
 	})
 	if secs, ok := egressCertSecondsToExpiry(time.Now()); ok {
 		o.ObserveInt64(clientCertExpiryGauge, secs)
+	}
+	if value, source, ok := clientCertVerifiable(); ok {
+		o.ObserveInt64(clientCertVerifiableGauge, value, metric.WithAttributes(attribute.String("source", source)))
 	}
 	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
 	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))

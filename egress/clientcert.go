@@ -19,6 +19,7 @@ import (
 
 type egressCertInfo struct {
 	sha256     string
+	notBefore  time.Time
 	notAfter   time.Time
 	sans       []string
 	clientAuth bool
@@ -44,10 +45,48 @@ func describeEgressCert(cfg *tls.Config) (egressCertInfo, bool) {
 	}
 	return egressCertInfo{
 		sha256:     hex.EncodeToString(sum[:]),
+		notBefore:  leaf.NotBefore,
 		notAfter:   leaf.NotAfter,
 		sans:       sans,
 		clientAuth: slices.Contains(leaf.ExtKeyUsage, x509.ExtKeyUsageClientAuth),
 	}, true
+}
+
+// fleetSAN is the name consumers pin as egress_server_name. A leaf without it
+// loads, since a test rig may pin another name, but production consumers reject it.
+const fleetSAN = "egress.unbounded.lantern"
+
+// Certificate sources, as reported on client-cert-verifiable. They mirror the
+// constants in egress/cmd/common, which this package cannot import.
+var knownCertSources = map[string]bool{"env": true, "systemd-credentials": true, "self-signed": true}
+
+var clientCertSource atomic.Pointer[string]
+
+// SetClientCertSource names where the egress certificate came from ("env",
+// "systemd-credentials" or "self-signed"; anything else reports "unknown"). Call
+// it before NewListener.
+func SetClientCertSource(source string) {
+	if !knownCertSources[source] {
+		source = "unknown"
+	}
+	clientCertSource.Store(&source)
+}
+
+type verifiableState struct {
+	value  int64
+	source string
+}
+
+// certVerifiable backs the client-cert-verifiable gauge; nil until a certificate
+// has been recorded.
+var certVerifiable atomic.Pointer[verifiableState]
+
+func clientCertVerifiable() (int64, string, bool) {
+	st := certVerifiable.Load()
+	if st == nil {
+		return 0, "", false
+	}
+	return st.value, st.source, true
 }
 
 // egressCertNotAfter is the verifiable certificate's NotAfter in Unix seconds, or 0
@@ -61,8 +100,19 @@ func recordEgressCert(cfg *tls.Config) {
 	info, ok := describeEgressCert(cfg)
 	if !ok {
 		egressCertNotAfter.Store(0)
+		certVerifiable.Store(nil)
 		return
 	}
+	source := "unknown"
+	if p := clientCertSource.Load(); p != nil {
+		source = *p
+	}
+	st := &verifiableState{source: source}
+	if info.clientAuth {
+		st.value = 1
+	}
+	certVerifiable.Store(st)
+
 	slog.Info("Egress QUIC client certificate",
 		"sha256", info.sha256,
 		"not_after", info.notAfter.UTC().Format(time.RFC3339),
@@ -77,9 +127,18 @@ func recordEgressCert(cfg *tls.Config) {
 		return
 	}
 	egressCertNotAfter.Store(info.notAfter.Unix())
-	if time.Now().After(info.notAfter) {
+	now := time.Now()
+	if now.After(info.notAfter) {
 		slog.Error("Egress QUIC client certificate has expired; consumers that verify the egress will reject it",
 			"not_after", info.notAfter.UTC().Format(time.RFC3339))
+	}
+	if now.Before(info.notBefore) {
+		slog.Error("Egress QUIC client certificate is not valid yet; consumers that verify the egress will reject it until then",
+			"not_before", info.notBefore.UTC().Format(time.RFC3339))
+	}
+	if !slices.Contains(info.sans, fleetSAN) {
+		slog.Warn("Egress QUIC client certificate does not carry the fleet SAN; consumers pinning it will reject this egress",
+			"want_san", fleetSAN, "sans", info.sans)
 	}
 }
 

@@ -170,32 +170,44 @@ certificate as a client certificate. In secure mode the consumer requires the
 certificate to chain to its `egress_ca`, to carry the `clientAuth` extended key
 usage, and to have a DNS or IP SAN exactly equal to `egress_server_name`.
 
-The released egress (`egress/cmd/sing-box`) takes its certificate from the first
-of these that is configured:
+Every egress command (`egress/cmd/sing-box`, the released one, plus `http` and
+`socks5`) takes its certificate from the first of these that is configured:
 
 1. `EGRESS_TLS_CERT_FILE` and `EGRESS_TLS_KEY_FILE`, an explicit override. Set both.
 2. systemd credentials: if `$CREDENTIALS_DIRECTORY` holds `egress-tls.crt` or
-   `egress-tls.key`, both must be present. With `DynamicUser=yes`, deliver them with
+   `egress-tls.key`, both must be present. Deliver them with
    `LoadCredential=egress-tls.crt:/etc/egress/egress-tls.crt` and
    `LoadCredential=egress-tls.key:/etc/egress/egress-tls.key`.
 3. Neither: a throwaway self-signed certificate, with a DANGER banner. No consumer
    can verify it, and consumers that require verification reject it.
 
-The certificate file holds the PEM leaf first, followed by any intermediates. The
-key may be PKCS#8, PKCS#1 or SEC 1 PEM. If a source is configured but the files
-cannot be read, the key does not match, or the leaf has no `clientAuth` EKU or no
-SAN, the egress logs the reason and **exits with status 1**. It never falls back
-to the self-signed certificate in that case.
+The certificate file holds the PEM leaf first, followed by any intermediates
+(full-chain PEM). The egress sends the whole chain, so if the leaf comes from an
+intermediate, consumers' `egress_ca` only needs the root. If the intermediate is
+missing from the file, Go sends no certificate at all and consumers reject the
+egress with `certificate_required`. The key may be PKCS#8, PKCS#1 or SEC 1 PEM.
+The egress logs the reason and **exits with status 1** when a source is configured
+but unusable: a file cannot be read or stat'ed (a missing file is not an error, but
+a permission error is), the key does not match, or the leaf has no `clientAuth`
+EKU or no SAN. It never falls back to the self-signed certificate in that case. An
+expired or not-yet-valid leaf still starts, with an ERROR log line, so that
+consumers that do not verify keep working. A leaf without the fleet SAN
+`egress.unbounded.lantern` starts with a WARN.
 
 At startup the egress logs `Egress QUIC client certificate` with the leaf's
 `sha256` fingerprint, `not_after`, `sans` and `client_auth` (no key material). It
-exports two metrics:
+exports three metrics:
 
+- `client-cert-verifiable`: a gauge that is 1 for a CA-issued `clientAuth`
+  certificate and 0 for the self-signed fallback, labelled `source` (`env`,
+  `systemd-credentials` or `self-signed`). It is always reported, so alert on it
+  being 0.
 - `client-cert-expiry-seconds`: a gauge of seconds until the CA-issued
   certificate expires. It is absent while the egress runs the self-signed fallback.
 - `quic-handshake-failures`: a monotonic counter of TLS alerts consumers sent when
   rejecting the egress, labelled only by `alert` (`certificate_required`,
-  `bad_certificate`, `unknown_ca`, `certificate_expired`, ..., `other`).
+  `bad_certificate`, `certificate_expired`, `unknown_ca`, ..., `other`). Only
+  alerts sent by the consumer are counted.
   `certificate_required` usually means the egress's issuer is not in the consumer's
   `egress_ca`: Go clients send no certificate at all in that case.
   `bad_certificate` means a certificate was sent and failed verification (wrong

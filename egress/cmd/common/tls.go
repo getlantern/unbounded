@@ -8,6 +8,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -59,7 +61,14 @@ func LoadEgressTLSConfig(getenv func(string) string) (*tls.Config, string, error
 
 	if dir := getenv(envCredentialsDirectory); dir != "" {
 		certFile, keyFile = filepath.Join(dir, CredentialCert), filepath.Join(dir, CredentialKey)
-		certOK, keyOK := exists(certFile), exists(keyFile)
+		certOK, err := exists(certFile)
+		if err != nil {
+			return nil, SourceCredentials, err
+		}
+		keyOK, err := exists(keyFile)
+		if err != nil {
+			return nil, SourceCredentials, err
+		}
 		if certOK || keyOK {
 			if !certOK {
 				return nil, SourceCredentials, fmt.Errorf("systemd credential %s is present but %s is not", CredentialKey, CredentialCert)
@@ -75,9 +84,43 @@ func LoadEgressTLSConfig(getenv func(string) string) (*tls.Config, string, error
 	return GenerateSelfSignedTLSConfig(true), SourceSelfSigned, nil
 }
 
-func exists(path string) bool {
+// exists reports whether path is present. Only "does not exist" counts as absent:
+// a credential that cannot be stat'ed (permissions, a broken mount) is an error,
+// not a reason to fall back to the self-signed certificate.
+func exists(path string) (bool, error) {
 	_, err := os.Stat(path)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, fmt.Errorf("check systemd credential %s: %w", filepath.Base(path), err)
+}
+
+// LoadEgressTLSConfigOrExit is LoadEgressTLSConfig(os.Getenv) for the egress
+// commands. A configured certificate that cannot be used is fatal: falling back to
+// the self-signed one would leave every verifying consumer rejecting this egress.
+// Pass the returned source to egress.SetClientCertSource before NewListener.
+func LoadEgressTLSConfigOrExit() (*tls.Config, string) {
+	tlsConfig, source, err := LoadEgressTLSConfig(os.Getenv)
+	if err != nil {
+		slog.Error("Cannot load the egress QUIC client certificate", "source", source, "error", err)
+		os.Exit(1)
+	}
+	if source == SourceSelfSigned {
+		slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+		slog.Warn("@ DANGER                                                @")
+		slog.Warn("@                                                       @")
+		slog.Warn("@ No egress TLS certificate is configured, so this      @")
+		slog.Warn("@ egress uses a throwaway self-signed one at the QUIC   @")
+		slog.Warn("@ layer. Consumers cannot verify it, and consumers that @")
+		slog.Warn("@ require verification will reject it.                  @")
+		slog.Warn("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+	} else {
+		slog.Info("Loaded the egress QUIC client certificate", "source", source)
+	}
+	return tlsConfig, source
 }
 
 // LoadClientCertTLSConfig loads a CA-issued egress certificate. certFile holds the

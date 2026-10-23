@@ -232,3 +232,60 @@ func assertBroflakeConfig(t *testing.T, cfg *tls.Config) {
 		t.Fatal("InsecureSkipVerify must stay true: consumers are anonymous")
 	}
 }
+
+// A credential that exists but cannot be stat'ed (permissions, a broken mount)
+// must not read as "not configured": that would silently fall back to the
+// self-signed certificate.
+func TestLoadEgressTLSConfig_UnstatableCredentialIsAnError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	_, source, err := LoadEgressTLSConfig(envOf(map[string]string{"CREDENTIALS_DIRECTORY": dir}))
+	if err == nil {
+		t.Fatalf("expected an error, got a %q config", source)
+	}
+	if !strings.Contains(err.Error(), CredentialCert) {
+		t.Fatalf("error %q does not name the credential", err)
+	}
+}
+
+// An expired leaf still loads: refusing to start would also cut off consumers
+// that do not verify. The egress package logs it at ERROR instead.
+func TestLoadClientCertTLSConfig_ExpiredLeafLoads(t *testing.T) {
+	ca := newTestCA(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(3),
+		NotBefore:    time.Now().Add(-48 * time.Hour),
+		NotAfter:     time.Now().Add(-24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+		DNSNames:     []string{testSAN},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, &key.PublicKey, ca.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg, err := LoadClientCertTLSConfig(
+		writeFile(t, dir, "c.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		writeFile(t, dir, "k.pem", pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})),
+	)
+	if err != nil {
+		t.Fatalf("expired leaf should load, got %v", err)
+	}
+	assertBroflakeConfig(t, cfg)
+}

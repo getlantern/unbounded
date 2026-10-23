@@ -78,7 +78,9 @@ func watchHandshake(conn *quic.Conn) {
 
 func classifyHandshakeError(err error) (handshakeAlert, bool) {
 	var te *quic.TransportError
-	if !errors.As(err, &te) || !te.ErrorCode.IsCryptoError() {
+	// Remote only: the egress never verifies its peer, so the alert that matters
+	// is the one the consumer sent.
+	if !errors.As(err, &te) || !te.Remote || !te.ErrorCode.IsCryptoError() {
 		return "", false
 	}
 	if name, ok := alertNames[tls.AlertError(te.ErrorCode-0x100)]; ok {
