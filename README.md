@@ -187,9 +187,11 @@ intermediate, consumers' `egress_ca` only needs the root. If the intermediate is
 missing from the file, Go sends no certificate at all and consumers reject the
 egress with `certificate_required`. The key may be PKCS#8, PKCS#1 or SEC 1 PEM.
 The egress logs the reason and **exits with status 1** when a source is configured
-but unusable: a file cannot be read or stat'ed (a missing file is not an error, but
-a permission error is), the key does not match, or the leaf has no `clientAuth`
-EKU or no SAN. It never falls back to the self-signed certificate in that case. An
+but unusable: a file cannot be read or stat'ed, the key does not match, or the leaf
+has no `clientAuth` EKU or no SAN. A file named by `EGRESS_TLS_CERT_FILE` or
+`EGRESS_TLS_KEY_FILE` that is missing is fatal. For systemd credentials, a missing
+pair means "not configured", but any other error, such as a permission error, is
+fatal. It never falls back to the self-signed certificate in that case. An
 expired or not-yet-valid leaf still starts, with an ERROR log line, so that
 consumers that do not verify keep working. A leaf without the fleet SAN
 `egress.unbounded.lantern` starts with a WARN.
