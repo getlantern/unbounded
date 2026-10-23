@@ -204,6 +204,9 @@ exports three metrics:
   being 0. It only says a `clientAuth` leaf is loaded, not that consumers accept
   it: an expired leaf or one from the wrong CA still reads 1, so pair it with
   `client-cert-expiry-seconds` and `quic-handshake-failures`.
+  In a process with several listeners it reports the minimum across open
+  listeners, with that listener's `source`, and `client-cert-expiry-seconds`
+  reports the soonest expiry. A closed listener stops counting.
 - `client-cert-expiry-seconds`: a gauge of seconds until the CA-issued
   certificate expires. It is absent while the egress runs the self-signed fallback.
 - `quic-handshake-failures`: a monotonic counter of TLS alerts consumers sent when

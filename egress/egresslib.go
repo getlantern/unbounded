@@ -71,6 +71,9 @@ type proxyListener struct {
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
 	activations  *activations
+	// releaseCert removes this listener's certificate from the process-wide
+	// certificate gauges. Idempotent, like closeMetrics.
+	releaseCert func()
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -84,6 +87,7 @@ func (l proxyListener) Addr() net.Addr {
 
 func (l proxyListener) Close() error {
 	err := l.Listener.Close()
+	l.releaseCert()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -399,7 +403,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	initDonorGeo()
 
 	// After startMetrics, so the line reaches the exported logs.
-	recordEgressCert(tlsConfig)
+	releaseCert := registerEgressCert(tlsConfig)
 
 	cm := &connectionManager{
 		connections:     make(map[string]*connectionRecord),
@@ -415,6 +419,7 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
+		releaseCert:       releaseCert,
 		activations:       newActivations(newMemoryActivations()),
 	}
 

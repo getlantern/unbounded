@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"slices"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -72,47 +73,104 @@ func SetClientCertSource(source string) {
 	clientCertSource.Store(&source)
 }
 
-type verifiableState struct {
-	value  int64
-	source string
+// certEntry is one live listener's certificate health. NewListener may be called
+// more than once per process, so health is registered per listener, removed on
+// Close, and aggregated: a healthy listener must not hide an unverifiable one.
+type certEntry struct {
+	seq        uint64
+	verifiable int64
+	source     string
+	notAfter   int64 // Unix seconds; 0 when the certificate is not verifiable
 }
 
-// certVerifiable backs the client-cert-verifiable gauge; nil until a certificate
-// has been recorded.
-var certVerifiable atomic.Pointer[verifiableState]
+var (
+	certHealthMu  sync.Mutex
+	certHealth    = map[*certEntry]struct{}{}
+	certHealthSeq uint64
+)
 
+// clientCertVerifiable is the minimum across live listeners, with the source of
+// the listener that set it. Ties go to the certificate expiring soonest, then to
+// the listener registered first, so the label is stable between collections.
 func clientCertVerifiable() (int64, string, bool) {
-	st := certVerifiable.Load()
-	if st == nil {
+	certHealthMu.Lock()
+	defer certHealthMu.Unlock()
+	var worst *certEntry
+	for e := range certHealth {
+		if worst == nil || worse(e, worst) {
+			worst = e
+		}
+	}
+	if worst == nil {
 		return 0, "", false
 	}
-	return st.value, st.source, true
+	return worst.verifiable, worst.source, true
 }
 
-// egressCertNotAfter is the verifiable certificate's NotAfter in Unix seconds, or 0
-// when the egress has none. Process-global like the other observed tallies: the
-// otel callback is registered once per process.
-var egressCertNotAfter atomic.Int64
+func worse(a, b *certEntry) bool {
+	if a.verifiable != b.verifiable {
+		return a.verifiable < b.verifiable
+	}
+	if a.notAfter != b.notAfter {
+		return a.notAfter < b.notAfter
+	}
+	return a.seq < b.seq
+}
 
-// recordEgressCert logs the certificate the egress will offer consumers and arms
-// the expiry gauge. Call it after telemetry is up so the log line is exported.
-func recordEgressCert(cfg *tls.Config) {
+// egressCertSecondsToExpiry reports the verifiable certificate that expires
+// soonest across live listeners.
+func egressCertSecondsToExpiry(now time.Time) (int64, bool) {
+	certHealthMu.Lock()
+	defer certHealthMu.Unlock()
+	var soonest int64
+	for e := range certHealth {
+		if e.notAfter != 0 && (soonest == 0 || e.notAfter < soonest) {
+			soonest = e.notAfter
+		}
+	}
+	if soonest == 0 {
+		return 0, false
+	}
+	return soonest - now.Unix(), true
+}
+
+// registerEgressCert logs the certificate a listener will offer consumers and
+// adds it to the certificate gauges. Call it after telemetry is up so the log
+// line is exported. The returned release removes it and is safe to call twice.
+func registerEgressCert(cfg *tls.Config) func() {
 	info, ok := describeEgressCert(cfg)
 	if !ok {
-		egressCertNotAfter.Store(0)
-		certVerifiable.Store(nil)
-		return
+		return func() {}
 	}
 	source := "unknown"
 	if p := clientCertSource.Load(); p != nil {
 		source = *p
 	}
-	st := &verifiableState{source: source}
+	e := &certEntry{source: source}
 	if info.clientAuth {
-		st.value = 1
+		// The self-signed fallback's 100-year NotAfter would make the expiry
+		// gauge read as healthy, so only a verifiable certificate reports one.
+		e.verifiable = 1
+		e.notAfter = info.notAfter.Unix()
 	}
-	certVerifiable.Store(st)
+	certHealthMu.Lock()
+	certHealthSeq++
+	e.seq = certHealthSeq
+	certHealth[e] = struct{}{}
+	certHealthMu.Unlock()
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			certHealthMu.Lock()
+			delete(certHealth, e)
+			certHealthMu.Unlock()
+		})
+	}
+	logEgressCert(info)
+	return release
+}
 
+func logEgressCert(info egressCertInfo) {
 	slog.Info("Egress QUIC client certificate",
 		"sha256", info.sha256,
 		"not_after", info.notAfter.UTC().Format(time.RFC3339),
@@ -120,13 +178,9 @@ func recordEgressCert(cfg *tls.Config) {
 		"client_auth", info.clientAuth,
 	)
 	if !info.clientAuth {
-		// The self-signed fallback lands here. Its 100-year NotAfter would make
-		// the expiry gauge read as healthy, so it reports nothing instead.
-		egressCertNotAfter.Store(0)
 		slog.Warn("Egress QUIC client certificate is not CA-issued for client auth; consumers that verify the egress will reject it")
 		return
 	}
-	egressCertNotAfter.Store(info.notAfter.Unix())
 	now := time.Now()
 	if now.After(info.notAfter) {
 		slog.Error("Egress QUIC client certificate has expired; consumers that verify the egress will reject it",
@@ -140,12 +194,4 @@ func recordEgressCert(cfg *tls.Config) {
 		slog.Warn("Egress QUIC client certificate does not carry the fleet SAN; consumers pinning it will reject this egress",
 			"want_san", fleetSAN, "sans", info.sans)
 	}
-}
-
-func egressCertSecondsToExpiry(now time.Time) (int64, bool) {
-	notAfter := egressCertNotAfter.Load()
-	if notAfter == 0 {
-		return 0, false
-	}
-	return notAfter - now.Unix(), true
 }

@@ -379,7 +379,7 @@ func TestDescribeEgressCert(t *testing.T) {
 // The expiry gauge reports only a certificate a consumer could verify. The
 // self-signed fallback's 100-year NotAfter would otherwise read as "healthy".
 func TestEgressCertExpiryGauge(t *testing.T) {
-	t.Cleanup(func() { recordEgressCert(nil) })
+	withEmptyCertHealth(t)
 	ca := newCertAuthority(t, "Unbounded Egress CA")
 	certFile, keyFile := ca.issueLeaf(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, fleetSAN)
 	cfg, err := egcmdcommon.LoadClientCertTLSConfig(certFile, keyFile)
@@ -387,7 +387,7 @@ func TestEgressCertExpiryGauge(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recordEgressCert(cfg)
+	release := registerEgressCert(cfg)
 	now := time.Now()
 	secs, ok := egressCertSecondsToExpiry(now)
 	if !ok {
@@ -398,7 +398,8 @@ func TestEgressCertExpiryGauge(t *testing.T) {
 		t.Errorf("seconds to expiry = %d, want about %d", secs, want)
 	}
 
-	recordEgressCert(egcmdcommon.GenerateSelfSignedTLSConfig(true))
+	release()
+	t.Cleanup(registerEgressCert(egcmdcommon.GenerateSelfSignedTLSConfig(true)))
 	if _, ok := egressCertSecondsToExpiry(now); ok {
 		t.Error("expiry reported for the unverifiable self-signed fallback")
 	}
@@ -435,8 +436,7 @@ func TestClassifyHandshakeError(t *testing.T) {
 
 func TestNewListener_RecordsEgressCert(t *testing.T) {
 	withStubbedMetrics(t)
-	t.Cleanup(func() { recordEgressCert(nil) })
-	recordEgressCert(nil)
+	withEmptyCertHealth(t)
 
 	ca := newCertAuthority(t, "Unbounded Egress CA")
 	certFile, keyFile := ca.issueLeaf(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, fleetSAN)
@@ -452,11 +452,108 @@ func TestNewListener_RecordsEgressCert(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = ll.Close() })
-
 	if _, ok := egressCertSecondsToExpiry(time.Now()); !ok {
 		t.Fatal("NewListener did not record the egress certificate")
 	}
+
+	// Closing the listener removes its certificate from both gauges, and a
+	// second Close does not disturb anything.
+	_ = ll.Close()
+	_ = ll.Close()
+	if _, ok := egressCertSecondsToExpiry(time.Now()); ok {
+		t.Error("expiry still reported after the only listener closed")
+	}
+	if _, _, ok := clientCertVerifiable(); ok {
+		t.Error("verifiable still reported after the only listener closed")
+	}
+}
+
+// Two live listeners: a healthy one must not hide an unverifiable one, and the
+// expiry gauge reports the verifiable certificate that expires soonest.
+func TestCertHealth_AggregatesAcrossListeners(t *testing.T) {
+	withStubbedMetrics(t)
+	withEmptyCertHealth(t)
+	t.Cleanup(func() { SetClientCertSource("") })
+
+	ca := newCertAuthority(t, "Unbounded Egress CA")
+	soonFile, soonKey := ca.issue(t, leafSpec{eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, san: fleetSAN, notAfter: time.Now().Add(2 * time.Hour)})
+	lateFile, lateKey := ca.issue(t, leafSpec{eku: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, san: fleetSAN, notAfter: time.Now().Add(20 * time.Hour)})
+	soon, err := egcmdcommon.LoadClientCertTLSConfig(soonFile, soonKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	late, err := egcmdcommon.LoadClientCertTLSConfig(lateFile, lateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listen := func(source string, cfg *tls.Config) net.Listener {
+		t.Helper()
+		SetClientCertSource(source)
+		tcpL, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ll, err := NewListener(context.Background(), tcpL, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = ll.Close() })
+		return ll
+	}
+	expectVerifiable := func(wantValue int64, wantSource string) {
+		t.Helper()
+		value, source, ok := clientCertVerifiable()
+		if !ok || value != wantValue || source != wantSource {
+			t.Fatalf("client-cert-verifiable = (%d, %q, %v), want (%d, %q, true)", value, source, ok, wantValue, wantSource)
+		}
+	}
+	expectExpiry := func(cfg *tls.Config) {
+		t.Helper()
+		now := time.Now()
+		secs, ok := egressCertSecondsToExpiry(now)
+		want := cfg.Certificates[0].Leaf.NotAfter.Unix() - now.Unix()
+		if !ok || secs < want-1 || secs > want+1 {
+			t.Fatalf("client-cert-expiry-seconds = (%d, %v), want about %d", secs, ok, want)
+		}
+	}
+
+	selfSigned := listen(egcmdcommon.SourceSelfSigned, egcmdcommon.GenerateSelfSignedTLSConfig(true))
+	lateL := listen(egcmdcommon.SourceCredentials, late)
+	// The self-signed listener started first; the CA-backed one must not mask it.
+	expectVerifiable(0, "self-signed")
+	expectExpiry(late)
+
+	soonL := listen(egcmdcommon.SourceEnv, soon)
+	expectVerifiable(0, "self-signed")
+	expectExpiry(soon)
+
+	_ = selfSigned.Close()
+	expectVerifiable(1, "env")
+	expectExpiry(soon)
+
+	_ = soonL.Close()
+	expectVerifiable(1, "systemd-credentials")
+	expectExpiry(late)
+
+	_ = lateL.Close()
+	if _, _, ok := clientCertVerifiable(); ok {
+		t.Fatal("verifiable still reported after every listener closed")
+	}
+}
+
+// withEmptyCertHealth runs the test against an empty certificate registry and
+// restores whatever other tests' listeners left registered.
+func withEmptyCertHealth(t *testing.T) {
+	t.Helper()
+	certHealthMu.Lock()
+	prev := certHealth
+	certHealth = map[*certEntry]struct{}{}
+	certHealthMu.Unlock()
+	t.Cleanup(func() {
+		certHealthMu.Lock()
+		certHealth = prev
+		certHealthMu.Unlock()
+	})
 }
 
 // The egress sends the whole chain from its certificate file, so a consumer whose
@@ -538,7 +635,8 @@ func waitForAlert(t *testing.T, before map[string]int64, alert handshakeAlert) {
 // client-cert-verifiable is reported in every mode, so a host that quietly fell
 // back to the self-signed certificate shows up as 0 rather than as a gap.
 func TestClientCertVerifiableGauge(t *testing.T) {
-	t.Cleanup(func() { SetClientCertSource(""); recordEgressCert(nil) })
+	withEmptyCertHealth(t)
+	t.Cleanup(func() { SetClientCertSource("") })
 	ca := newCertAuthority(t, "Unbounded Egress CA")
 	certFile, keyFile := ca.issueLeaf(t, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, fleetSAN)
 	caIssued, err := egcmdcommon.LoadClientCertTLSConfig(certFile, keyFile)
@@ -547,7 +645,6 @@ func TestClientCertVerifiableGauge(t *testing.T) {
 	}
 	selfSigned := egcmdcommon.GenerateSelfSignedTLSConfig(true)
 
-	recordEgressCert(nil)
 	if _, _, ok := clientCertVerifiable(); ok {
 		t.Fatal("verifiable gauge reported before any certificate was recorded")
 	}
@@ -566,8 +663,9 @@ func TestClientCertVerifiableGauge(t *testing.T) {
 	}
 	for _, tc := range cases {
 		SetClientCertSource(tc.source)
-		recordEgressCert(tc.cfg)
+		release := registerEgressCert(tc.cfg)
 		value, source, ok := clientCertVerifiable()
+		release()
 		if !ok || value != tc.wantValue || source != tc.wantSource {
 			t.Errorf("source %q: gauge = (%d, %q, %v), want (%d, %q, true)", tc.source, value, source, ok, tc.wantValue, tc.wantSource)
 		}
@@ -575,7 +673,7 @@ func TestClientCertVerifiableGauge(t *testing.T) {
 }
 
 func TestRecordEgressCert_LogsProblems(t *testing.T) {
-	t.Cleanup(func() { recordEgressCert(nil) })
+	withEmptyCertHealth(t)
 	ca := newCertAuthority(t, "Unbounded Egress CA")
 	load := func(spec leafSpec) *tls.Config {
 		certFile, keyFile := ca.issue(t, spec)
@@ -604,7 +702,7 @@ func TestRecordEgressCert_LogsProblems(t *testing.T) {
 			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 			defer slog.SetDefault(prev)
 
-			recordEgressCert(tc.cfg)
+			registerEgressCert(tc.cfg)()
 			out := buf.String()
 			for _, w := range tc.want {
 				if !strings.Contains(out, w) {
