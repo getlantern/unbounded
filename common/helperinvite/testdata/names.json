@@ -1,0 +1,15 @@
+{
+  "secret_b64url": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "nonce_hex": "000102030405060708090a0b",
+  "volunteer_name_key_hex": "d2e3f66916d1617a73e3012fef21b4aa879657637131e16863b2f5172686c64b",
+  "inviter_name_key_hex": "7f5e6b1bea23883eb71b7b8bf3ba454eb60bac661aa175da990ecc9e45bc80b5",
+  "blobs": [
+    {"key": "volunteer", "name_hex": "416c69", "blob_hex": "000102030405060708090a0b3d162fa26ae4b01b6f1f42a08d0b9833d29c55"},
+    {"key": "inviter", "name_hex": "53617261", "blob_hex": "000102030405060708090a0b763a2be76a376a5b56e96ba66c507b4643b3120d"},
+    {"key": "inviter", "name_hex": "d8b3d8a7d8b1d8a7", "blob_hex": "000102030405060708090a0bfde88121ac37ff16f2cf1e0473b436baa96dbb816160a28c"}
+  ],
+  "device_seed_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "device_pub_hex": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
+  "device_matching_code": "2562",
+  "device_approval_sig_hex": "98b762de9ad5640c119c2d8ed227b839b6def7ce2f59af474e905d407ea2320fd37b3c9e139017de9bed5ee86f68154bbfbbeaab84cf3ad95651bcef75afd904"
+}
