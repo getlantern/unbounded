@@ -163,7 +163,7 @@ func TestMetricCallback_ObservesOnlyDeclaredInstruments(t *testing.T) {
 	}
 
 	declared := namesIn(t, string(src),
-		"m.RegisterCallback(", "\n\t); err != nil {", `(?m)^\t\t(\w+Counter),?$`)
+		"m.RegisterCallback(", "\n\t); err != nil {", `(?m)^\t\t(\w+(?:Counter|Gauge)),?$`)
 	if len(declared) == 0 {
 		t.Fatal("found no instruments in the RegisterCallback list; this test needs updating")
 	}
