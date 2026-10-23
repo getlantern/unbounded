@@ -293,6 +293,7 @@ Rewards are granted through the existing referral-reward mechanism.
 | Ticket key compromise | An attacker could join rooms or use routes, but learns no identities; rotate the key and reissue |
 | Leaked volunteer ticket (bearer) | Its holder could post a pairings-only genesis for that room and receive the inviter's offer, learning her IP, for up to one ticket lifetime (15 min). Accepted for v1: the same exposure class as device-ID bearer auth, and tickets travel only over TLS to lantern-cloud and freddie. Follow-up: bind tickets to a key held by the volunteer and require proof of possession at genesis |
 | Leaked inviter ticket (bearer) | Its holder could subscribe with it for up to one ticket lifetime (15 min) and receive that room's volunteer genesis, learning the volunteer's IP, which a pairings-only volunteer otherwise keeps from strangers. Accepted for v1 on the same grounds as the volunteer row, with the same proof-of-possession follow-up. Tickets ride in the `X-BF-Room-Tickets` header and the genesis form body, so no fronting CDN, proxy or lantern-cloud request middleware may log either |
+| Client-side outbound tags | An inviter's config carries `helper-` outbound tags: per-device HMACs, stable until a ticket-key rotation, carrying no IDs. On the device they mark it as a paired inviter, and they let anything that records outbound tags (session history, client telemetry) link that device's sessions. The server records nothing. Clients must not export `helper-` tags in telemetry or reports |
 
 ### Telemetry
 
