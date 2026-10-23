@@ -162,6 +162,48 @@ suite; `-short` skips it, and its first build may download the legacy module dep
 The helper does not require cgo; the parent egress still runs under `-race` in CI. This tests
 QUIC interoperability, not an installed Lantern binary or every historical client.
 
+### Egress QUIC client certificate
+
+On the inner QUIC layer the egress is the TLS **client**: it dials the consumer,
+and the consumer (lantern-box's `unbounded` outbound) verifies the egress's
+certificate as a client certificate. In secure mode the consumer requires the
+certificate to chain to its `egress_ca`, to carry the `clientAuth` extended key
+usage, and to have a DNS or IP SAN exactly equal to `egress_server_name`.
+
+The released egress (`egress/cmd/sing-box`) takes its certificate from the first
+of these that is configured:
+
+1. `EGRESS_TLS_CERT_FILE` and `EGRESS_TLS_KEY_FILE`, an explicit override. Set both.
+2. systemd credentials: if `$CREDENTIALS_DIRECTORY` holds `egress-tls.crt` or
+   `egress-tls.key`, both must be present. With `DynamicUser=yes`, deliver them with
+   `LoadCredential=egress-tls.crt:/etc/egress/egress-tls.crt` and
+   `LoadCredential=egress-tls.key:/etc/egress/egress-tls.key`.
+3. Neither: a throwaway self-signed certificate, with a DANGER banner. No consumer
+   can verify it, and consumers that require verification reject it.
+
+The certificate file holds the PEM leaf first, followed by any intermediates. The
+key may be PKCS#8, PKCS#1 or SEC 1 PEM. If a source is configured but the files
+cannot be read, the key does not match, or the leaf has no `clientAuth` EKU or no
+SAN, the egress logs the reason and **exits with status 1**. It never falls back
+to the self-signed certificate in that case.
+
+At startup the egress logs `Egress QUIC client certificate` with the leaf's
+`sha256` fingerprint, `not_after`, `sans` and `client_auth` (no key material). It
+exports two metrics:
+
+- `client-cert-expiry-seconds`: a gauge of seconds until the CA-issued
+  certificate expires. It is absent while the egress runs the self-signed fallback.
+- `quic-handshake-failures`: a monotonic counter of TLS alerts consumers sent when
+  rejecting the egress, labelled only by `alert` (`certificate_required`,
+  `bad_certificate`, `unknown_ca`, `certificate_expired`, ..., `other`).
+  `certificate_required` usually means the egress's issuer is not in the consumer's
+  `egress_ca`: Go clients send no certificate at all in that case.
+  `bad_certificate` means a certificate was sent and failed verification (wrong
+  SAN, missing `clientAuth`). Rejections also log a throttled WARN.
+
+`go test -race ./egress -run 'TestEgressClientCert'` runs real QUIC handshakes
+against a consumer configured like lantern-box's secure mode.
+
 ### :art: UI
 
 ![ui system](https://user-images.githubusercontent.com/24487544/220998573-0b1f3bd2-66d1-41eb-b256-4da1aa69da76.png)
