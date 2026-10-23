@@ -18,8 +18,10 @@ import (
 // answer SDP, a consumer's in its ICE message), so it can see how each peer's NAT maps its sockets
 // without any client reporting it.
 const (
-	// natNoSrflx means no STUN server answered, so the peer can only offer host candidates, which a
-	// remote peer can't reach.
+	// natNoSrflx means the set carries no UDP srflx candidate. It does NOT measure STUN failure:
+	// producer.go and consumer.go abort a host-only set before signaling it, so a peer whose STUN
+	// servers all failed never reaches freddie. Only a set with some other non-host candidate (TCP
+	// srflx, prflx, relay) but no UDP srflx lands here, and a zero count says nothing about STUN.
 	natNoSrflx = "no_srflx"
 	// natSymmetric means one local socket got different public mappings from different STUN
 	// servers. Hole punching fails against such a NAT unless the other side is open, and only a
