@@ -201,7 +201,9 @@ exports three metrics:
 - `client-cert-verifiable`: a gauge that is 1 for a CA-issued `clientAuth`
   certificate and 0 for the self-signed fallback, labelled `source` (`env`,
   `systemd-credentials` or `self-signed`). It is always reported, so alert on it
-  being 0.
+  being 0. It only says a `clientAuth` leaf is loaded, not that consumers accept
+  it: an expired leaf or one from the wrong CA still reads 1, so pair it with
+  `client-cert-expiry-seconds` and `quic-handshake-failures`.
 - `client-cert-expiry-seconds`: a gauge of seconds until the CA-issued
   certificate expires. It is absent while the egress runs the self-signed fallback.
 - `quic-handshake-failures`: a monotonic counter of TLS alerts consumers sent when
