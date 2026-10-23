@@ -63,41 +63,24 @@ func (ui *UIImpl) Init(bf *BroflakeEngine) {
 
 	// setRoomTickets(["...", "..."]) or setRoomTickets("...,...") gives the
 	// widget its helper pairings' volunteer tickets (from POST
-	// /v1/helper/tickets). setRoomTickets([]) leaves every room. Safe to call
-	// at any time. Nothing here logs: tickets are credentials.
+	// /v1/helper/tickets). setRoomTickets([]) leaves every room, and so does
+	// any argument it does not recognise, on purpose: see roomTicketsArg.
+	// Safe to call at any time. Nothing here logs: tickets are credentials.
 	js.Global().Get(ui.ID).Set(
 		"setRoomTickets",
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			var tickets []string
-			if len(args) > 0 {
-				switch v := args[0]; v.Type() {
-				case js.TypeString:
-					if s := v.String(); s != "" {
-						tickets = strings.Split(s, ",")
-					}
-				case js.TypeObject:
-					for i := 0; i < v.Length(); i++ {
-						if e := v.Index(i); e.Type() == js.TypeString {
-							tickets = append(tickets, e.String())
-						}
-					}
-				}
-			}
-			ui.BroflakeEngine.setRoomTickets(tickets)
+			ui.BroflakeEngine.setRoomTickets(roomTicketsArg(jsArg(args, 0)))
 			return nil
 		}),
 	)
 
-	// setServePool(false) limits the widget to its pairings' rooms ("help
-	// others too" off); setServePool(true) also serves everyone.
+	// setServePool(true) also serves everyone ("help others too");
+	// setServePool(false), or anything but a boolean true, limits the widget
+	// to its pairings' rooms: see servePoolArg.
 	js.Global().Get(ui.ID).Set(
 		"setServePool",
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			serve := true
-			if len(args) > 0 && args[0].Type() == js.TypeBoolean {
-				serve = args[0].Bool()
-			}
-			ui.BroflakeEngine.setServePool(serve)
+			ui.BroflakeEngine.setServePool(servePoolArg(jsArg(args, 0)))
 			return nil
 		}),
 	)
@@ -184,4 +167,35 @@ func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.I
 
 	detail := map[string]interface{}{"state": state, "workerIdx": workerIdx, "addr": addrString}
 	ui.fireEvent("consumerConnectionChange", detail)
+}
+
+// jsArg converts args[i] for the native-tested argument mappings in
+// ui_args.go: a boolean, string or number to bool, string or float64, an
+// array to []any of those, and anything else, including a missing argument,
+// undefined and null, to nil.
+func jsArg(args []js.Value, i int) any {
+	if i >= len(args) {
+		return nil
+	}
+	v := args[i]
+	if v.Type() == js.TypeObject && js.Global().Get("Array").Call("isArray", v).Bool() {
+		out := make([]any, v.Length())
+		for j := range out {
+			out[j] = jsScalar(v.Index(j))
+		}
+		return out
+	}
+	return jsScalar(v)
+}
+
+func jsScalar(v js.Value) any {
+	switch v.Type() {
+	case js.TypeBoolean:
+		return v.Bool()
+	case js.TypeString:
+		return v.String()
+	case js.TypeNumber:
+		return v.Float()
+	}
+	return nil
 }
