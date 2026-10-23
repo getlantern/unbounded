@@ -453,7 +453,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	}
 
 	f.iceNAT, err = f.meter.Int64Counter("freddie.ice.nat",
-		metric.WithDescription("ICE candidate sets relayed, by role and by how the peer's NAT mapped its sockets (see icenat.go)"),
+		metric.WithDescription("ICE candidate sets received, by role, by how the peer's NAT mapped its sockets (see icenat.go), and by whether freddie delivered them"),
 		metric.WithUnit("message"))
 	if err != nil {
 		return nil, err
@@ -769,7 +769,6 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		attribute.String("recipient.id", recipient),
 		attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 	)
-	f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data)
 
 	// Package the message
 	msg, err := json.Marshal(
@@ -823,6 +822,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			delivered,
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
+		f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.

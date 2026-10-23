@@ -85,8 +85,10 @@ func classifyNAT(cands []iceCandidate) natClass {
 }
 
 // recordICENAT classifies the ICE candidates a signaling message carries: a volunteer's answer
-// SDP, or a consumer's ICE message. Other message types carry none.
-func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string) {
+// SDP, or a consumer's ICE message. Other message types carry none. A late reply that freddie
+// couldn't deliver still describes a real peer's NAT, so it is counted, labeled
+// reply.delivered=false like freddie.signal.replies.
+func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string, delivered attribute.KeyValue) {
 	var role string
 	var cands []iceCandidate
 	var ok bool
@@ -109,6 +111,7 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType com
 		attribute.String("nat", class.nat),
 		attribute.Bool("base_hidden", class.baseHidden),
 		attribute.Bool("port_preserved", class.portPreserved),
+		delivered,
 	}
 	f.iceNAT.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(
