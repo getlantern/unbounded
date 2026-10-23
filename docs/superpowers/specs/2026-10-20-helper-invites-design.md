@@ -27,7 +27,7 @@ must not reveal who is helping whom.
 | Topic | Decision |
 |---|---|
 | Volunteer surface | The Lantern app first; a browser page running Unbounded as a fallback |
-| What a pairing binds to | The inviter's device; the inviter's account when they have one |
+| What a pairing binds to | The inviter's device. Binding to the inviter's account is deferred to a later plan (user-approved 2026-10-23) |
 | Invite security | Single-use link, matching-code comparison, inviter approval, expiry, revocation |
 | Serving | A volunteer serves their paired people first; "help others too" is on by default and uses spare capacity |
 | Volunteer mode | Automatic: direct mode whenever it works, otherwise Unbounded. No picker in v1 |
@@ -79,7 +79,7 @@ a different app; that defeats it, but v1 does not enforce it.
 
 The volunteer opens the link:
 
-- **Lantern installed:** the link opens the app at "Sara asked for your help".
+- **Lantern installed:** the link opens the app at "A friend asked for your help". The link carries only `s`, and Sara's name reaches the volunteer only after approval (below), so the app shows her name from then on. The share message that travels with the link already names her.
 - **Not installed:** the landing page keeps `s` in the browser, offers the
   install, and after install a "Continue" button reopens the link in the app.
   It does not use third-party deferred deep-link services, which would receive
@@ -131,8 +131,10 @@ pending claim, the invite is burned, and she sends a new one.
   be reused.
 - Either side can end a pairing at any time. That deletes its server record and
   revokes access (Section 2).
-- If the inviter has a Lantern account, the pairing binds to the account and
-  works on every device signed in to it. Otherwise it binds to the device.
+- A pairing binds to the inviter's device. Binding it to her Lantern account, so
+  it works on every device signed in to it, is deferred to a later plan
+  (user-approved 2026-10-23): the helper API has no verified account identity,
+  and names live only on the device that made the invite.
 - Display names are stored only on the two devices, encrypted with the OS keystore.
 
 ### Limits
@@ -304,8 +306,11 @@ account. Spans for invite, claim and approval record outcomes and timings only.
 
 ### Testing
 
-- **Crypto:** shared test vectors so the Go (lantern-cloud, radiance) and Dart
-  (app) implementations derive identical keys, matching codes and approval MACs.
+- **Crypto:** shared test vectors so the server (lantern-cloud) and the one
+  device-side implementation, Go in broflake's `common/helperinvite`, which the
+  app's Go core and the browser's wasm both use, derive identical keys, matching
+  codes, approval signatures and name blobs. There is no separate Dart
+  implementation.
 - **State machine:** invite → claim → approve / reject / expire → revoke,
   including two claims racing for one invite.
 - **Tickets and credentials:** ticket issuance, expiry and verification in

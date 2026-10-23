@@ -4,7 +4,7 @@
 
 **Goal:** Put helper invites in people's hands. Sara creates an invite in the Lantern app and shares it as a link or QR code. Her friend claims it in the app, both compare a four-digit code, and Sara approves. The friend's app then helps her automatically, direct mode where it can and Unbounded otherwise. Each side lists the other, can end the pairing, and the volunteer chooses whether to help others too. The browser gets the primitives the plan 5 landing page needs to volunteer from a tab.
 
-**Architecture:** The device-side cryptography lives in one Go package, `common/helperinvite` in broflake, checked against lantern-cloud's golden vectors. The app's Go core (`lantern-core/helper`) and the browser's wasm widget both use it. In the app, `lantern-core/helper` is a small engine. It holds the invite secrets, the device key and the display names in one state file, sealed with a key from the OS keystore that Dart passes in. It drives the plan 1 HelperService API through a new radiance IPC relay, so lantern-cloud requests still go through kindling and carry the device ID, but radiance only ever sees hashes, public keys and encrypted name blobs. Dart reaches the engine through one bridge call, `helperCall(op, argsJSON)`, and draws the screens. lantern-cloud adds three things: the `helper_invites` and paired-volunteer feature flags in `/v1/config-new`, an online status per helper in `ListPairings`, and CORS on `/v1/helper/` for `https://lantern.io`.
+**Architecture:** The device-side cryptography lives in one Go package, `common/helperinvite` in broflake, checked against lantern-cloud's golden vectors. The app's Go core (`lantern-core/helper`) and the browser's wasm widget both use it. In the app, `lantern-core/helper` is a small engine. It holds the invite secrets, the device key and the display names in one state file, sealed with a key from the OS keystore that Dart passes in. It drives the plan 1 HelperService API through a new radiance IPC relay, so lantern-cloud requests still go through kindling and carry the device ID, but radiance only ever sees hashes, public keys and encrypted name blobs. Dart reaches the engine through one bridge call, `helperCall(op, argsJSON)`, and draws the screens. lantern-cloud adds three things: the `helper_invites` and paired-volunteer feature flags in `/v1/config-new`, an online status per helper in `ListPairings`, and CORS on `/v1/helper/` for `https://help.lantern.io` only. It also lets volunteers reach their endpoints without the flag.
 
 ```mermaid
 sequenceDiagram
@@ -45,10 +45,10 @@ Each of these blocks one task at most. The plan implements the recommendation. A
    - **Recommendation:** ship v1 rows with only the person's name and "helping since" date. Show today's time active and data relayed once, in the section header, for everything this device relayed today, paired and pool together, as Advanced stats counts it.
    - **No number appears next to any name**, so the section totals can never be read as one person's.
    - Write the per-pairing attribution as a separate plan (4b) after the pilot.
-2. **The inviter's name before approval (Task 14 copy; spec deviation).** The spec has the link open at "Sara asked for your help", but the link carries only `s`, and plan 1 delivers Sara's name only after she approves, as an encrypted blob.
+2. **The inviter's name before approval (Task 14 copy; spec amended).** The spec has the link open at "Sara asked for your help", but the link carries only `s`, and plan 1 delivers Sara's name only after she approves, as an encrypted blob.
    - **Recommendation:** before approval, say "A friend asked for your help". Use the name from approval on. Putting the name in the link would leak it wherever the link is forwarded or seized, and the share message that travels with the link already names her.
-3. **Account-bound pairings: decided.** The user approved device-bound pairings for the pilot on 2026-10-23, with account binding in a later plan. See "Spec amendments needed".
-4. **Where the crypto runs (Tasks 4 and 9; spec deviation).** The spec's testing section names "the Go (lantern-cloud, radiance) and Dart (app) implementations".
+3. **Account-bound pairings: decided.** The user approved device-bound pairings for the pilot on 2026-10-23, with account binding in a later plan. See "Spec amendments".
+4. **Where the crypto runs (Tasks 4 and 9; spec amended).** The spec's testing section names "the Go (lantern-cloud, radiance) and Dart (app) implementations".
    - **Recommendation:** implement it once, in Go, in broflake's `common/helperinvite`, used by both the app's Go core and the browser's wasm. Check it against lantern-cloud's vectors plus new name-blob vectors. This adds no Dart crypto dependency, and the invite secret never enters radiance, which on Windows runs as a system service.
 5. **The OS keystore (Task 12).** "Encrypted with the OS keystore" needs a native dependency. The plan uses flutter_secure_storage to hold one 32-byte key, which seals the engine's state file. Linux needs libsecret and a running keyring.
    - **Recommendation:** add flutter_secure_storage. On a device where the keystore fails, such as Linux with no keyring, helper invites show "can't store names securely on this device" and stay off. Names are never stored without the keystore.
@@ -57,7 +57,7 @@ Each of these blocks one task at most. The plan implements the recommendation. A
    - **Recommendation:** helper invites are off in stealth builds (`AppBuildInfo.enableHelperInvites = !suppressIdentifyingFeatures`). The Android `/help` link filters are also left out of stealth manifests, through a manifest placeholder (Task 14).
 7. **Browser volunteers' identity (Tasks 3 and 5, and plan 5).** The spec leaves this open. Volunteer tickets come from `IssueTickets`, which authenticates by device ID.
    - **Recommendation, the smallest secure design:**
-     - Browser volunteers run only on a dedicated origin, `https://help.lantern.io`. It has a strict CSP (`default-src 'self'`, with `connect-src` limited to the API and freddie), and no third-party JavaScript, analytics or tag managers. **This is a hard rule for plan 5's page.**
+     - Browser volunteers run only on a dedicated origin, `https://help.lantern.io`. It has a strict CSP (`default-src 'self'`, with `connect-src` limited to the API, freddie and the Unbounded egress), and no third-party JavaScript, analytics or tag managers. **This is a hard rule for plan 5's page.**
      - That page generates a random device ID, `web-` plus 32 hex characters, and a device-key seed, and keeps both in that origin's `localStorage`.
      - It calls `/v1/helper/invites/claim`, `/v1/helper/pairings`, `/v1/helper/pairings/end` and `/v1/helper/tickets` directly. CORS allows only `https://help.lantern.io` (Task 3).
      - The wasm widget computes the claim and the code (Task 5) and joins the pairing's room with the tickets.
@@ -70,17 +70,17 @@ Each of these blocks one task at most. The plan implements the recommendation. A
    - **Recommendation:** keep a local tombstone. A cancelled invite stays in the sealed state, hidden from the UI, until it expires. If anyone claims it later, the next refresh rejects the claim automatically, so a claimant never waits on an approval that cannot come. A claimed invite is rejected at once on cancel. No RPC is added.
 10. **The spec's open question, discreet links.** **Recommendation:** keep branded `lantern.io/help` links for the pilot, and revisit if pilot partners report risk. No task changes.
 
-## Spec amendments needed
+## Spec amendments (applied to the spec in this branch)
 
-The spec is the binding authority. These are places where this plan departs from it. The first is user-approved. Each of the others needs the user's ruling, and every row then needs a spec edit.
+These are the places where this plan departs from the original spec. Each is now written into the spec itself, on `docs/helper-invites-spec`, so the spec stays the binding authority. The reviewer agreed with each, and the user approved executing a plan that lists them. Revert the spec edits if the user objects to any.
 
-| Spec text | This plan | Why |
+| Original spec text | Now in the spec | Why |
 |---|---|---|
-| Decisions: "What a pairing binds to: The inviter's device; the inviter's account when they have one" | Device only for the pilot; account binding in a later plan. **User-approved 2026-10-23.** | No verified account identity on the helper path, and names live on one device |
-| Section 1, Claiming: "the link opens the app at "Sara asked for your help"" | "A friend asked for your help" until approval | The link carries only `s`; the name arrives sealed, after approval (open question 2) |
-| Section 4, Testing: "the Go (lantern-cloud, radiance) and Dart (app) implementations" | One Go implementation (broflake `helperinvite`) used by the app's Go core and the browser's wasm | One codebase against the vectors; no Dart crypto dependency (open question 4) |
-| Plan 1 rule: every helper endpoint requires the `helper_invites` flag | `ClaimInvite` passes the gate with a live invite, and `ListPairings`, `EndPairing` and `IssueTickets` pass it for a device that holds a claim or a pairing | Volunteers abroad must not need the flag, and their countries must not see the inviter UI (Task 1) |
-| Threat model | Two rows added to the spec in this commit: helper presence visible to the inviter (Task 2), and flag-free volunteer access (Task 1) | New exposures this plan creates |
+| Decisions: "What a pairing binds to: The inviter's device; the inviter's account when they have one". Lifecycle: "the pairing binds to the account" | Device-bound; account binding deferred to a later plan. **User-approved 2026-10-23.** | No verified account identity on the helper path, and names live on one device |
+| Section 1, Claiming: "the link opens the app at "Sara asked for your help"" | "A friend asked for your help" until approval, then her name | The link carries only `s`; the name arrives sealed, after approval (open question 2) |
+| Section 4, Testing: "the Go (lantern-cloud, radiance) and Dart (app) implementations" | One Go device-side implementation (broflake `helperinvite`), used by the app's Go core and the browser's wasm | One codebase against the vectors; no Dart crypto dependency (open question 4) |
+| Plan 1 rule: every helper endpoint requires the `helper_invites` flag | `ClaimInvite` passes the gate with a live invite. `ListPairings`, `EndPairing` and `IssueTickets` pass it for a device holding a claim or a pairing | Volunteers abroad need no flag, and their countries never see the inviter UI (Task 1). Recorded in the spec's threat model as "Flag-free volunteer access" |
+| Threat model | Rows added: "Helper presence visible to the inviter" (Task 2) and "Flag-free volunteer access" (Task 1) | New exposures this plan creates |
 
 ## Global Constraints
 
@@ -114,7 +114,7 @@ The spec is the binding authority. These are places where this plan departs from
 **Flag gating and limits**
 
 - "Rollout | Production pilot behind a feature flag; no staging phase", and "Implement behind a feature flag in production."
-- From plan 1: "Every endpoint except `GET /v1/helper/ticket-key` requires `X-Lantern-Device-Id` and the `helper_invites` feature flag".
+- From plan 1: "Every endpoint except `GET /v1/helper/ticket-key` requires `X-Lantern-Device-Id` and the `helper_invites` feature flag". **Superseded by Task 1:** the device-ID requirement stands, but the flag rule is replaced by "Gate without the flag" in the wire table. Volunteers pass with an invite, a claim or a pairing, and only inviter endpoints need the flag.
 - The limits table:
 
 | Who | Limit |
@@ -141,7 +141,7 @@ The spec is the binding authority. These are places where this plan departs from
 
   This holds in Dart, lantern-core, radiance and lantern-cloud. Errors that cross into logs are fixed codes (`already_claimed`, `disabled`, …). The radiance relay is registered without the IPC tracer, because the tracer records error bodies.
 - **The UI gate.** Nothing about helper invites shows in a stealth build (`AppBuildInfo.enableHelperInvites`). Beyond that, the two sides are gated differently:
-  - **The inviter's UI** (Settings → "Get help from a friend", and the "Help a friend" entry button) shows only when `Features["helper_invites"]` is true. The server decides that flag from `X-Lantern-Feature-Override` or the `helper_invites` flag.
+  - **The inviter's UI** (Settings → "Get help from a friend") shows only when `Features["helper_invites"]` is true. The in-app "Help a friend" entry, with its QR scanner, shows when the flag is on or the device already helps someone. A first-time volunteer abroad uses the phone's camera app instead (Task 14). The server decides that flag from `X-Lantern-Feature-Override` or the `helper_invites` flag.
   - **The volunteer's UI** (a `/help` link, the claim screen, "You're helping") needs no flag. A volunteer abroad reaches it through an invite, and the server lets a device holding a live invite, a claim or a pairing through (Task 1). So nobody in a volunteer's country is shown the inviter UI just so that volunteers can help.
 - **The keystore is touched only after use.** The app never reads or creates the state key until the user creates or claims an invite, or opens a helper link. A local preference, `helper_invites_used`, records first use. This keeps Keychain prompts and libsecret off every other user's path.
 - **Dependency bumps.** After every `go get module@version`, run `go mod tidy`, check `git diff` for unexpected changes, and commit `go.mod` and `go.sum` together in the same commit as the bump. broflake is consumed by pseudo-version and is not tagged. radiance is consumed by pseudo-version in lantern.
@@ -194,7 +194,7 @@ These rows come from plan 1 and are restated so each task is self-contained. Pla
 
 This is the sequence the landing page runs. Plan 4 builds and tests every server and wasm piece it uses. The `lanternHelperInvite` functions take the bare base64url secret (`ParseLink` also accepts a full link).
 
-1. **Origin.** The page is served only from `https://help.lantern.io`, with a strict CSP (`default-src 'self'; connect-src 'self' https://api.iantem.io https://freddie.iantem.io; script-src 'self' 'wasm-unsafe-eval'`) and no third-party JavaScript. `https://lantern.io/help/` redirects there, and the fragment survives the redirect. CORS allows only this origin (Task 3).
+1. **Origin.** The page is served only from `https://help.lantern.io`, with a strict CSP (`default-src 'self'; connect-src 'self' https://api.iantem.io https://freddie.iantem.io wss://unbounded.iantem.io; script-src 'self' 'wasm-unsafe-eval'`) and no third-party JavaScript. The hosts are production's (`unbounded_discovery_srv` and `unbounded_egress_addr` in lantern-cloud's `unboundedWidgetConfig`), and the page takes them from its build config. `https://lantern.io/help/` redirects there, and the fragment survives the redirect. CORS allows only this origin (Task 3).
 2. **Identity.** `seed = localStorage["helper.seed"] ??= lanternHelperInvite.newSeed()`, and `device = localStorage["helper.device"] ??= "web-" + 32 random hex characters`, both on `help.lantern.io`.
 3. **The secret.** On load, `secret = location.hash.slice(1)`. Then at once call `history.replaceState(null, "", location.pathname)`, so the fragment leaves the address bar and history.
    - Hold `secret` in memory.
@@ -286,6 +286,7 @@ Two values come from earlier tasks: `UB_SHA`, the unbounded merge commit (Task 5
 **Abuse analysis** (this also adds the spec's "Flag-free volunteer access" threat row):
 - Flag-off clients can now try claims with guessed invite hashes. With a 256-bit secret, guessing is hopeless.
 - Flag-off requests get their own rate-limit buckets (prefix `flagoff:`), so they cannot drain the egress bucket the pilot's inviters share.
+- Any device ID can call the three flag-free volunteer endpoints, and each call costs two indexed counts. `volunteerOrNotFound` charges the request to its source's `flagoff:` bucket before running them, as claims already are. That is 30 a minute per source, and 600 a minute shared through Lantern's egress. Volunteers' own polling (pairings every 30 s while waiting, tickets every 10 minutes) stays well inside it.
 - A flag-off device with no claim or pairing gets the gate's 404 from the three volunteer endpoints. These answer 400 rather than 404 to an undecodable body, because their gate now runs after decoding. That reveals only that the endpoints exist, which is now intended.
 - The paired-volunteer lookup in `/v1/config-new` now runs for every client that advertises `unbounded`, not only flag-on ones. That is one indexed count, bounded at 300 ms and detached from the trace, like the other helper lookups.
 
@@ -601,12 +602,18 @@ with:
 Add:
 
 ```go
+var errHelperTooManyRequests = &router.HTTPError{Status: http.StatusTooManyRequests, Msg: "too many requests"}
+
 // volunteerOrNotFound lets a flag-off request through only for a device that
 // is the volunteer in a pairing or holds a live claim. Anything else gets the
-// gate's own 404.
+// gate's own 404. Any device ID can ask, so each request is charged to its
+// source's flagoff: bucket before the two lookups run.
 func (s helperService) volunteerOrNotFound(p helperRequestContext, handler string) error {
 	if !p.flagOff {
 		return nil
+	}
+	if !s.allowSource(p) {
+		return errHelperTooManyRequests
 	}
 	q := dal.New(s.apiDB.GetPool())
 	n, err := q.CountHelperPairingsForVolunteer(p.ctx, p.deviceID)
@@ -2473,6 +2480,29 @@ func TestSourceInvalidateDuringAFetchIsNotLost(t *testing.T) {
 	require.Eventually(t, func() bool { return fetches.Load() == 2 }, time.Second, 5*time.Millisecond,
 		"the fetch that began before the change does not count as fresh")
 }
+
+// TestSourceInvalidateDuringADisabledFetchIsNotLost: a flag-off volunteer's
+// fetch answers 404 (ErrDisabled) until its pairing exists. An approval that
+// lands during that fetch must not wait out DisabledInterval.
+func TestSourceInvalidateDuringADisabledFetchIsNotLost(t *testing.T) {
+	release := make(chan struct{})
+	var fetches atomic.Int32
+	src := NewSource(context.Background(), func(context.Context) (Tickets, error) {
+		if fetches.Add(1) == 1 {
+			<-release
+			return Tickets{}, ErrDisabled
+		}
+		return Tickets{Lifetime: 15 * time.Minute}, nil
+	})
+	src.Volunteer()
+	require.Eventually(t, func() bool { return fetches.Load() == 1 }, time.Second, 5*time.Millisecond)
+	src.Invalidate()
+	close(release)
+	require.Eventually(t, func() bool { return !src.isFetching() }, time.Second, 5*time.Millisecond)
+	src.Volunteer()
+	require.Eventually(t, func() bool { return fetches.Load() == 2 }, time.Second, 5*time.Millisecond,
+		"the 404 that raced the approval does not hold the next fetch for an hour")
+}
 ```
 
 `ipc/helper_test.go`:
@@ -2681,15 +2711,19 @@ In `helper/tickets.go`, as plan 3 merged it (`NewSource(ctx, fetch)`, the `busy`
 ```
 
 - In `read`, replace `go s.refresh()` with `go s.refresh(s.gen)`.
-- Change `func (s *Source) refresh()` to `func (s *Source) refresh(gen uint64)`. In its success branch, after `s.due = now.Add(refreshAfter(t.Lifetime))`, add:
+- Change `func (s *Source) refresh()` to `func (s *Source) refresh(gen uint64)`. After the `switch` that sets `s.due`, still under the lock (before `s.mu.Unlock()`), add:
 
 ```go
-		if s.gen != gen {
-			// The pairings changed while this fetch was in flight, so its
-			// tickets may predate the change: fetch again at the next read.
-			s.due = time.Time{}
-		}
+	if s.gen != gen && s.busy == 0 {
+		// The pairings changed while this fetch was in flight, so whatever it
+		// got (tickets, a 404 for a device not yet paired, an error) may
+		// predate the change: fetch again at the next read. A busy backoff
+		// stands.
+		s.due = time.Time{}
+	}
 ```
+
+This covers every outcome, not only success. Without it, an invalidation during a fetch that returned `ErrDisabled` would wait out `DisabledInterval` (an hour). That 404 is the normal answer for a flag-off volunteer just before its pairing exists (Task 1).
 
 - Add:
 
@@ -3052,6 +3086,7 @@ git commit -m "peer: re-register at once when help-others-too changes"
 package helper
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -3091,6 +3126,33 @@ func TestActivityCountsTimeAndBytesWhileSharing(t *testing.T) {
 
 	now = now.Add(24 * time.Hour)
 	assert.Equal(t, Activity{Day: "2026-10-24"}, tr.Today(), "a new day starts at zero")
+}
+
+func TestActivitySavesOnlyOnChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.json")
+	sh := &fakeSharing{epoch: "e"}
+	now := time.Date(2026, 10, 23, 10, 0, 0, 0, time.Local)
+	tr := NewActivityTracker(path, sh.read)
+	tr.now = func() time.Time { return now }
+	tr.Sample(time.Minute)
+	tr.save()
+	info, err := os.Stat(path)
+	require.NoError(t, err, "the first sample of a day starts the file")
+	first := info.ModTime()
+	require.NoError(t, os.Chtimes(path, first.Add(-time.Hour), first.Add(-time.Hour)))
+	for range 5 {
+		tr.Sample(time.Minute) // not sharing: nothing changes
+		tr.save()
+	}
+	info, err = os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, first.Add(-time.Hour).Unix(), info.ModTime().Unix(), "idle samples write nothing")
+	sh.running = true
+	tr.Sample(time.Minute)
+	tr.save()
+	info, err = os.Stat(path)
+	require.NoError(t, err)
+	assert.NotEqual(t, first.Add(-time.Hour).Unix(), info.ModTime().Unix(), "a change is saved")
 }
 
 func TestActivitySurvivesARestartTheSameDay(t *testing.T) {
@@ -3164,6 +3226,7 @@ type ActivityTracker struct {
 
 	mu        sync.Mutex
 	cur       Activity
+	saved     Activity // what the file holds; save writes only when cur differs
 	lastEpoch string
 	lastBytes uint64
 	primed    bool
@@ -3175,7 +3238,7 @@ func NewActivityTracker(path string, read Sharing) *ActivityTracker {
 	if data, err := os.ReadFile(path); err == nil {
 		var a Activity
 		if json.Unmarshal(data, &a) == nil {
-			t.cur = a
+			t.cur, t.saved = a, a
 		}
 	}
 	return t
@@ -3212,7 +3275,9 @@ func (t *ActivityTracker) Sample(elapsed time.Duration) {
 	t.lastEpoch, t.lastBytes, t.primed = epoch, bytes, true
 }
 
-// Run samples every interval until ctx ends, saving after each sample.
+// Run samples every interval until ctx ends, saving after a sample that
+// changed something. A device that never shares writes nothing but the
+// first sample of each day.
 func (t *ActivityTracker) Run(ctx context.Context, every time.Duration) {
 	tk := time.NewTicker(every)
 	defer tk.Stop()
@@ -3230,14 +3295,23 @@ func (t *ActivityTracker) Run(ctx context.Context, every time.Duration) {
 
 func (t *ActivityTracker) save() {
 	t.mu.Lock()
-	data, err := json.Marshal(t.cur)
+	cur := t.cur
+	unchanged := cur == t.saved
 	t.mu.Unlock()
+	if unchanged {
+		return
+	}
+	data, err := json.Marshal(cur)
 	if err != nil {
 		return
 	}
 	if err := atomicfile.WriteFile(t.path, data, 0o600); err != nil {
 		slog.Debug("helper: saving activity failed", "error", err)
+		return
 	}
+	t.mu.Lock()
+	t.saved = cur
+	t.mu.Unlock()
 }
 ```
 
@@ -3438,10 +3512,14 @@ type fakeCloud struct {
 	online   map[string]bool
 	disabled bool
 	down     bool
+	// flagOff lists devices without the helper_invites flag. They get
+	// lantern-cloud's gate (Task 1): claims always; pairings, ending and
+	// tickets only while they hold a live claim or a pairing; nothing else.
+	flagOff map[string]bool
 }
 
 func newFakeCloud() *fakeCloud {
-	return &fakeCloud{invites: map[string]*fakeInvite{}, online: map[string]bool{}}
+	return &fakeCloud{invites: map[string]*fakeInvite{}, online: map[string]bool{}, flagOff: map[string]bool{}}
 }
 
 func mustJSON(v any) []byte {
@@ -3452,6 +3530,27 @@ func mustJSON(v any) []byte {
 	return b
 }
 
+// flagFreeAllowed mirrors lantern-cloud's volunteerOrNotFound for a flag-off
+// device. The caller holds f.mu.
+func (f *fakeCloud) flagFreeAllowed(device, op string) bool {
+	switch op {
+	case "invites/claim", "tickets/refresh":
+		return true
+	case "pairings", "pairings/end":
+		for _, p := range f.pairings {
+			if p.volunteer == device {
+				return true
+			}
+		}
+		for _, inv := range f.invites {
+			if inv.state == "claimed" && inv.volunteer == device {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (f *fakeCloud) relay(device string) Relay {
 	return func(_ context.Context, op string, body []byte) (int, []byte, string, error) {
 		f.mu.Lock()
@@ -3459,7 +3558,7 @@ func (f *fakeCloud) relay(device string) Relay {
 		if f.down {
 			return 0, nil, "", fmt.Errorf("connection refused")
 		}
-		if f.disabled {
+		if f.disabled || (f.flagOff[device] && !f.flagFreeAllowed(device, op)) {
 			return 404, nil, "404 page not found", nil
 		}
 		var req struct {
@@ -3733,6 +3832,33 @@ func TestStateIsSealed(t *testing.T) {
 	assert.Nil(t, call(t, other, "view", nil)["keystore_reset"], "reported once, at unlock")
 }
 
+// TestVolunteerAbroadWithoutTheFlag covers a volunteer that lantern-cloud
+// gates by its claim or pairing (Task 1): after its claim is rejected, and
+// after its last pairing ends, the gate answers 404, and the engine must
+// read that as "nothing", not as an error that strands the claim or row.
+func TestVolunteerAbroadWithoutTheFlag(t *testing.T) {
+	cloud := newFakeCloud()
+	cloud.flagOff["ali"] = true
+	sara := newTestEngine(t, cloud, "sara", t.TempDir())
+	ali := newTestEngine(t, cloud, "ali", t.TempDir())
+
+	link := call(t, sara, "create_invite", map[string]any{"name": "Sara"})["link"]
+	call(t, ali, "claim", map[string]any{"link": link, "name": "Ali"})
+	assert.Len(t, list(call(t, ali, "refresh", nil), "claims"), 1, "a live claim passes the gate")
+	id := list(call(t, sara, "refresh", nil), "invites")[0]["id"]
+	call(t, sara, "decide", map[string]any{"invite_id": id, "approve": false})
+	assert.Empty(t, list(call(t, ali, "refresh", nil), "claims"), "the rejected claim is dropped, not left waiting")
+
+	link = call(t, sara, "create_invite", map[string]any{"name": "Sara"})["link"]
+	call(t, ali, "claim", map[string]any{"link": link, "name": "Ali"})
+	id = list(call(t, sara, "refresh", nil), "invites")[0]["id"]
+	call(t, sara, "decide", map[string]any{"invite_id": id, "approve": true})
+	require.Len(t, list(call(t, ali, "refresh", nil), "helping"), 1)
+	pid := list(call(t, sara, "view", nil), "helpers")[0]["pairing_id"]
+	call(t, sara, "end_pairing", map[string]any{"pairing_id": pid})
+	assert.Empty(t, list(call(t, ali, "refresh", nil), "helping"), "the ended pairing's row is removed")
+}
+
 // TestCancelledInviteRejectsALaterClaim covers the tombstone: a cancelled,
 // unclaimed invite is hidden, and a claim that arrives later is rejected at
 // the next refresh instead of waiting for an approval that cannot come.
@@ -3876,6 +4002,9 @@ func statusError(op string, status int, errText string) *Error {
 		return errCode(CodeAlreadyClaimed)
 	case status == http.StatusConflict && op == "invites/decide":
 		return errCode(CodeNoPendingClaim)
+	case status == http.StatusTooManyRequests && strings.Contains(errText, "too many requests"):
+		// The flag-free gate's rate limit (lantern-cloud Task 1): retry later.
+		return errCode(CodeUnavailable)
 	case status == http.StatusTooManyRequests && strings.Contains(errText, "pairings"):
 		return errCode(CodeTooManyPairings)
 	case status == http.StatusTooManyRequests:
@@ -4472,7 +4601,22 @@ func (e *Engine) refresh(ctx context.Context) (any, error) {
 	var list struct {
 		Pairings []listedPairing `json:"pairings"`
 	}
-	if err := e.post(ctx, "pairings", struct{}{}, &list); err != nil {
+	err := e.post(ctx, "pairings", struct{}{}, &list)
+	if isCode(err, CodeDisabled) && len(e.st.Invites) == 0 {
+		// A volunteer abroad has no helper_invites flag. lantern-cloud lets it
+		// list pairings only while it holds a live claim or a pairing (Task 1),
+		// so once its claim is rejected or expires, or its last pairing ends,
+		// the answer is the gate's 404. A device with no invites of its own is
+		// no inviter, so that answer means it holds nothing: an empty list.
+		// (An inviter whose flag is turned off also sees an empty list.)
+		err = nil
+		list.Pairings = nil
+		if len(e.st.Claims) > 0 {
+			e.st.Claims = nil
+			changed = true
+		}
+	}
+	if err != nil {
 		if changed {
 			_ = e.save()
 		}
@@ -5095,7 +5239,7 @@ git commit -m "app: helperCall bridge from Dart to the helper-invite engine"
 - Consumes: radiance's log redaction from plan 3 (radiance `log/redact.go`, which wraps every slog sink), now reached through the `RAD_SHA` bump in Task 10.
 - Produces:
   - `bool isHelperTag(String tag)`
-  - `String redactHelperTags(String text)`, which turns `helper-[0-9a-f]{12}` into `helper`, as radiance does
+  - `String redactHelperTags(String text)`, a port of radiance's `internal/redact.Helper`. It turns `helper-[0-9a-f]{12}` into `helper`, and replaces every IP address, with any port, on a line naming a helper outbound with `<redacted>`
   - The server list, the location picker and the tray never show a helper outbound. Auto-selection may still use one.
 
 **Why:** the spec says "Clients must not export `helper-` tags in telemetry or reports". lantern-cloud gives each helper outbound a location (`outboundLocations[h.outbound.Tag]`), so radiance lists it as a server. The app would show the volunteer's city as a selectable server and write its tag to `flutter.log`, which the Logs screen shares unredacted.
@@ -5137,6 +5281,39 @@ void main() {
     expect(redactHelperTags('helper-short stays'), 'helper-short stays');
     expect(isHelperTag('helper-0123456789ab'), isTrue);
     expect(isHelperTag('lantern-1'), isFalse);
+  });
+
+  // The same cases as radiance's internal/redact tests.
+  const tag = 'helper-0123456789ab';
+  final cases = {
+    'outbound/samizdat[$tag]: dial tcp 203.0.113.7:443: i/o timeout':
+        'outbound/samizdat[helper]: dial tcp <redacted>: i/o timeout',
+    'outbound/samizdat[$tag]: no route to 203.0.113.7.':
+        'outbound/samizdat[helper]: no route to <redacted>.',
+    'outbound/samizdat[$tag]: dial tcp [2001:db8::7]:8443: refused':
+        'outbound/samizdat[helper]: dial tcp <redacted>: refused',
+    'outbound/samizdat[$tag]: unreachable 2001:db8::7':
+        'outbound/samizdat[helper]: unreachable <redacted>',
+    'outbound/samizdat[helper]: dial tcp 203.0.113.7:443':
+        'outbound/samizdat[helper]: dial tcp <redacted>',
+    'time="2026-10-23 13:30:00.000 UTC" msg="outbound/samizdat[$tag]: dial tcp 203.0.113.7:443"':
+        'time="2026-10-23 13:30:00.000 UTC" msg="outbound/samizdat[helper]: dial tcp <redacted>"',
+  };
+  cases.forEach((input, want) {
+    test('redacts the address on a helper line: $want', () {
+      expect(redactHelperTags(input), want);
+    });
+  });
+
+  test('lines that name no helper keep their addresses', () {
+    const input = 'outbound/samizdat[lantern-1]: dial tcp 198.51.100.9:443\n'
+        'outbound/samizdat[$tag]: dial tcp 203.0.113.7:443\n'
+        'dial tcp [2001:db8::9]:443 ok\n';
+    const want = 'outbound/samizdat[lantern-1]: dial tcp 198.51.100.9:443\n'
+        'outbound/samizdat[helper]: dial tcp <redacted>\n'
+        'dial tcp [2001:db8::9]:443 ok\n';
+    expect(redactHelperTags(input), want);
+    expect(redactHelperTags('nothing to see 198.51.100.9'), 'nothing to see 198.51.100.9');
   });
 }
 ```
@@ -5182,16 +5359,70 @@ Expected: the Dart test fails to compile (`helper_tags.dart` does not exist). Th
 `lib/core/utils/helper_tags.dart`:
 
 ```dart
+import 'dart:io' show InternetAddress;
+
 /// Helper outbound tags are client-side pseudonyms for the user's helper
-/// pairings. The spec forbids exporting them, so the app never shows them as
-/// servers and never writes them to its logs.
-final _helperTag = RegExp(r'helper-[0-9a-f]{12}');
+/// pairings, and a line naming a helper outbound may carry the helper's
+/// address. The spec forbids exporting either, so the app never shows helper
+/// outbounds as servers and redacts both from its logs. This is a port of
+/// radiance's internal/redact.Helper and must stay in step with it.
+const redactedAddress = '<redacted>';
+
+final _helperTag = RegExp(r'\bhelper-[0-9a-f]{12}\b');
+
+// A helper outbound named in a line: its tag, or the "[helper]" an earlier
+// redaction left of "outbound/<type>[helper-…]".
+final _helperNamed = RegExp(r'\bhelper-[0-9a-f]{12}\b|\[helper\]');
+
+// Text that may be an IP address, with or without a port: a bracketed host,
+// or a run of hex digits, dots and colons. Each match is checked before it is
+// replaced.
+final _ipCandidate = RegExp(
+  r'\[[0-9A-Fa-f:.]+(?:%[0-9A-Za-z_.\-]+)?\](?::[0-9]{1,5})?|[0-9A-Fa-f]*[.:][0-9A-Fa-f.:%]*',
+);
 
 bool isHelperTag(String tag) => tag.startsWith('helper-');
 
-/// Replaces each helper tag with "helper", as radiance's log redaction does.
-String redactHelperTags(String text) =>
-    text.contains('helper-') ? text.replaceAll(_helperTag, 'helper') : text;
+/// Replaces each helper tag with "helper" and, on every line that names a
+/// helper outbound, every IP address (with any port) with "<redacted>".
+/// Lines that name no helper outbound keep their addresses.
+String redactHelperTags(String text) {
+  if (!text.contains('helper')) return text;
+  if (_helperNamed.hasMatch(text)) {
+    text = text.splitMapJoin(
+      '\n',
+      onNonMatch: (line) => _helperNamed.hasMatch(line)
+          ? line.replaceAllMapped(_ipCandidate, (m) => _redactIp(m[0]!))
+          : line,
+    );
+  }
+  return text.replaceAll(_helperTag, 'helper');
+}
+
+String _redactIp(String m) {
+  final core = m.replaceFirst(RegExp(r'[.:]+$'), '');
+  return _isIpAddr(core) ? '$redactedAddress${m.substring(core.length)}' : m;
+}
+
+bool _isIpAddr(String s) {
+  if (s.startsWith('[')) {
+    final end = s.indexOf(']');
+    return end >= 0 && _parseIp(s.substring(1, end));
+  }
+  if (_parseIp(s)) return true;
+  // host:port, as Go's net.SplitHostPort reads it: an IPv6 host would be
+  // bracketed, so the host here has no colon.
+  final i = s.lastIndexOf(':');
+  if (i <= 0) return false;
+  final host = s.substring(0, i);
+  final port = s.substring(i + 1);
+  return !host.contains(':') && port.isNotEmpty && int.tryParse(port) != null && _parseIp(host);
+}
+
+bool _parseIp(String s) {
+  final zone = s.indexOf('%');
+  return InternetAddress.tryParse(zone >= 0 ? s.substring(0, zone) : s) != null;
+}
 ```
 
 In `lib/core/models/available_servers.dart`, add `import 'package:lantern/core/utils/helper_tags.dart';` and replace `lanternServers` with:
@@ -5247,7 +5478,7 @@ git commit -m "app: never list or log helper- outbound tags"
   - Models: `HelpersView`, `HelperInviteView`, `HelperClaimView`, `HelperPairingView` and `HelperActivity`, each with `fromJson`, parsed tolerantly
   - `class HelperResult { Map<String, dynamic> data; String? error; bool get ok; }`
   - `class HelpersState { HelpersView view; String? error; bool helpOthers; int helpingApprovals; }`
-  - `helpersProvider` (`HelpersNotifier`), with `ensureUnlocked()`, `refresh()`, `refreshIfUsed()`, `refreshView()`, `createInvite(name)`, `decide(id, approve:)`, `forgetInvite(id)`, `claim(link, name)`, `endPairing(id)`, `endAllHelpers()`, `loadHelpOthers()` and `setHelpOthers(bool)`
+  - `helpersProvider` (`HelpersNotifier`), with `ensureUnlocked()`, `refresh()`, `refreshIfUsed()`, `refreshView()`, `createInvite(name)`, `decide(id, approve:)`, `forgetInvite(id)`, `claim(link, name)`, `holdLink(link)`, `takeLink()`, `endPairing(id)`, `endAllHelpers()`, `loadHelpOthers()` and `setHelpOthers(bool)`
   - `helperInvitesAvailableProvider` (bool)
   - `String helperErrorText(String code)`
   - Tasks 13 and 14 build the screens on these.
@@ -5500,9 +5731,10 @@ Expected: compilation fails, because `helpers_view.dart`, `helper_key_store.dart
 In `lib/core/models/feature_flags.dart`, add before `unbounded('unbounded');`:
 
 ```dart
-  // Server-side gate for helper invites ("get help from a friend" and
-  // "help a friend"). lantern-cloud sets it for the pilot's inviters and
-  // volunteers; nothing about helper invites shows without it.
+  // Server-side gate for the inviter's side of helper invites ("Get help
+  // from a friend"). lantern-cloud sets it for the pilot's inviters only.
+  // Volunteers are never flagged: their screens show through an invite link
+  // or a pairing (lantern-cloud lets them through without the flag).
   helperInvites('helper_invites'),
 ```
 
@@ -5831,6 +6063,18 @@ class HelpersNotifier extends _$HelpersNotifier {
 
   Timer? _poll;
   Future<void>? _unlocking;
+  String? _heldLink;
+
+  /// Holds an invite link that opened the app, for HelpFriend to take, so
+  /// the secret never travels in route arguments. Memory only.
+  void holdLink(String link) => _heldLink = link;
+
+  /// Returns the held link once, and forgets it.
+  String? takeLink() {
+    final link = _heldLink;
+    _heldLink = null;
+    return link;
+  }
 
   @override
   HelpersState build() {
@@ -6067,7 +6311,7 @@ git commit -m "app: helper-invite state, keystore and feature gate"
 - Produces:
   - Routes `GetHelp()` (`/get-help`) and `InviteShare({required String inviteId})` (`/invite-share`)
   - `Future<void> showApproveHelperSheet(BuildContext context, HelperInviteView invite)`
-  - `Future<String?> askHelperName(BuildContext context, {required String initial, required String title})`, which Task 14 reuses
+  - `Future<String?> askHelperName(BuildContext context, {required String initial, required String title})`, used by `GetHelp`
 
 **The flow the spec asks for:**
 - Settings → "Get help from a friend".
@@ -6104,10 +6348,7 @@ class _Helpers extends HelpersNotifier {
   HelpersState build() => initial;
 
   @override
-  Future<HelperResult> refresh() async {
-    refreshes++;
-    return HelperResult.parse('{"unlocked":true}');
-  }
+  Future<void> refreshIfUsed() async => refreshes++;
 
   @override
   Future<HelperResult> decide(String inviteId, {required bool approve}) async {
@@ -6160,7 +6401,7 @@ void main() {
     expect(find.text('Ali'), findsOneWidget);
     expect(find.byKey(const Key('helpers.online.0')), findsOneWidget);
     expect(find.byKey(const Key('helpers.nudge')), findsOneWidget);
-    expect(fake.refreshes, 1, reason: 'opening the screen refreshes');
+    expect(fake.refreshes, 1, reason: 'opening the screen refreshes, if helper invites were used');
   });
 
   testWidgets('two helpers: no nudge; offline shown', (tester) async {
@@ -6288,24 +6529,40 @@ Future<String?> askHelperName(
   required String initial,
   required String title,
 }) async {
-  final controller = TextEditingController(text: initial);
+  var current = initial;
   String? result;
   await AppDialog.show(
     context: context,
     title: title,
-    content: AppTextField(
+    content: _HelperNameField(initial: initial, onChanged: (v) => current = v),
+    primaryLabel: 'continue'.i18n,
+    onPrimaryPressed: () => result = current.trim(),
+    secondaryLabel: 'cancel'.i18n,
+  );
+  return (result == null || result!.isEmpty) ? null : result;
+}
+
+/// The name field inside askHelperName's dialog. It owns its controller,
+/// which the hook disposes when the dialog's route is gone, after its exit
+/// animation, not when show() returns.
+class _HelperNameField extends HookWidget {
+  const _HelperNameField({required this.initial, required this.onChanged});
+
+  final String initial;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = useTextEditingController(text: initial);
+    return AppTextField(
       controller: controller,
       label: 'helpers_your_name_label'.i18n,
       hintText: 'helpers_your_name_hint'.i18n,
       maxLength: 60,
       autofocus: true,
-    ),
-    primaryLabel: 'continue'.i18n,
-    onPrimaryPressed: () => result = controller.text.trim(),
-    secondaryLabel: 'cancel'.i18n,
-  );
-  controller.dispose();
-  return (result == null || result!.isEmpty) ? null : result;
+      onChanged: onChanged,
+    );
+  }
 }
 ```
 
@@ -6340,9 +6597,11 @@ class GetHelp extends HookConsumerWidget {
     final textTheme = Theme.of(context).textTheme;
 
     useEffect(() {
-      unawaited(notifier.refresh());
+      // refreshIfUsed, not refresh: merely opening this screen must not touch
+      // the keystore (Plan rules). The first invite unlocks it.
+      unawaited(notifier.refreshIfUsed());
       // Online status changes while the screen is open.
-      final timer = Timer.periodic(const Duration(seconds: 60), (_) => notifier.refresh());
+      final timer = Timer.periodic(const Duration(seconds: 60), (_) => notifier.refreshIfUsed());
       return timer.cancel;
     }, const []);
 
@@ -6844,7 +7103,7 @@ git commit -m "app: invite a helper, share the link or QR, compare codes, approv
 **Files:**
 - Create: `lib/features/helpers/help_friend.dart`
 - Create: `lib/features/helpers/helping_section.dart`
-- Modify: `lib/features/action_mode/provider/share_notifier.dart` (`_toggle`, plus new `_startAuto` and `startForHelper`)
+- Modify: `lib/features/action_mode/provider/share_notifier.dart` (`_toggle` and `autoStart`, plus new `_startAuto`, `_autoStartWith` and `startForHelper`)
 - Modify: `lib/features/action_mode/action_mode.dart` (`ActionModeTab`)
 - Modify: `lib/features/home/home.dart` (`Home.build`)
 - Modify: `lib/lantern_app.dart` (`_handleDeepLinkUri`, `_onResume`)
@@ -6857,24 +7116,24 @@ git commit -m "app: invite a helper, share the link or QR, compare codes, approv
 **Interfaces:**
 - Consumes:
   - Task 12's `helpersProvider`, with `claim`, `endPairing`, `loadHelpOthers`, `setHelpOthers` and `refreshIfUsed`, and `HelpersState.helpingApprovals`, `helperInvitesAvailableProvider`, `helperErrorText` and `HelpersView.helping`/`.activity`
-  - Task 13's `askHelperName`
   - `ShareNotifier.ensureConsent` and `_start`
   - `QrCodeScanner`, which returns the scanned string through `appRouter.pop`
   - `int.siBytes`
 - Produces:
-  - The route `HelpFriend({String? link})` (`/help-friend`)
+  - The route `HelpFriend({bool fromLink = false})` (`/help-friend`). A deep link's secret goes through `HelpersNotifier.holdLink` and `takeLink` (Task 12), never through route arguments, as Task 13 does for invites
   - `class HelpingSection extends HookConsumerWidget`
   - `Future<void> ShareNotifier.startForHelper(WidgetRef widgetRef)`
-  - `String helpingDuration(int seconds)`
+  - `(int, int) helpingHoursMinutes(int seconds)` and `String helpingDuration(int seconds)`
   - Deep links: `https://lantern.io/help#…`, `https://lantern.io/help/#…`, and `<APP_AUTH_SCHEME>://help#…`
 
 **The flow the spec asks for:**
 - The link, a scanned QR or a pasted link opens "Help a friend stay online". Before approval the copy says "A friend asked for your help" (open question 2).
 - The volunteer types the name the friend knows them by and accepts the sharing consent. They then see the four-digit code to read to the friend.
-- If the invite was already used, a prominent "This invite was already used" explains what to tell the friend.
+- If the invite was already claimed, a prominent "This invite was already claimed" explains what to tell the friend.
 - On approval, Home starts sharing automatically, picking the mode as the toggle does (direct where a port opens, Unbounded otherwise; "Mode" in the spec).
 - The Unbounded tab shows "You're helping", with each person's name and since-date, today's time active and data relayed, a warning if sharing is off, and a "Help others too" switch with one sentence on the allowlist.
 - Each row can stop helping that person.
+- A first-time volunteer abroad has no flag and is not yet helping, so the app shows them no in-app scanner entry. In person, they scan Sara's QR code with the phone's camera app, which opens the `lantern.io/help` link like any other. This is accepted for the pilot. Once they help someone, "Help a friend" (with the scanner) appears in the Unbounded tab.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6954,20 +7213,24 @@ HelpersState _helping() => const HelpersState(
 void main() {
   testWidgets('claiming shows the code', (tester) async {
     final helpers = _Helpers(const HelpersState());
-    await _pump(tester, helpers, const HelpFriend(link: _link));
+    helpers.holdLink(_link);
+    await _pump(tester, helpers, const HelpFriend(fromLink: true));
     await tester.enterText(find.byKey(const Key('help_friend.name')), 'Ali');
     await tester.tap(find.byKey(const Key('help_friend.accept')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(); // pumpAndSettle would never settle: the waiting view spins
     expect(helpers.claims, [(_link, 'Ali')]);
     expect(find.text('2562'), findsOneWidget);
   });
 
   testWidgets('an already claimed invite says so prominently', (tester) async {
     final helpers = _Helpers(const HelpersState(), claimAnswer: '{"error":"already_claimed"}');
-    await _pump(tester, helpers, const HelpFriend(link: _link));
+    helpers.holdLink(_link);
+    await _pump(tester, helpers, const HelpFriend(fromLink: true));
     await tester.enterText(find.byKey(const Key('help_friend.name')), 'Ali');
     await tester.tap(find.byKey(const Key('help_friend.accept')));
-    await tester.pumpAndSettle();
+    await tester.pump();
+    await tester.pump(); // pumpAndSettle would never settle: the waiting view spins
     expect(find.byKey(const Key('help_friend.already_claimed')), findsOneWidget);
   });
 
@@ -6992,9 +7255,11 @@ void main() {
     expect(find.byKey(const Key('helping.today')), findsNothing);
   });
 
-  test('helpingDuration', () {
-    expect(helpingDuration(3 * 3600 + 20 * 60), isNot(contains('%')));
-    expect(helpingDuration(59), isNotEmpty);
+  test('helpingHoursMinutes', () {
+    expect(helpingHoursMinutes(3 * 3600 + 20 * 60), (3, 20));
+    expect(helpingHoursMinutes(3600), (1, 0));
+    expect(helpingHoursMinutes(59), (0, 0));
+    expect(helpingHoursMinutes(0), (0, 0));
   });
 }
 ```
@@ -7065,20 +7330,33 @@ In `lib/features/action_mode/provider/share_notifier.dart`, in `_toggle`, replac
   /// Starts sharing for a newly approved helper pairing, as the toggle would.
   /// The consent was collected when the user accepted the invite; without it
   /// this does nothing. A user who later turns sharing off stays off.
-  Future<void> startForHelper(WidgetRef widgetRef) async {
+  Future<void> startForHelper(WidgetRef widgetRef) =>
+      _autoStartWith(() => _startAuto(widgetRef));
+
+  /// The no-UI start shared by autoStart and startForHelper: skip while a
+  /// change is in flight or sharing is already up, and never start without
+  /// the consent ack.
+  Future<void> _autoStartWith(Future<void> Function() start) async {
     if (_changing || state.active || state.probing) return;
     if (!_consentAcked) return;
     _changes++;
     try {
       state = state.copyWith(probing: true);
-      await _startAuto(widgetRef);
+      await start();
     } finally {
       _changes--;
     }
   }
 ```
 
-The lines removed from `_toggle` are exactly the body of `_startAuto`, so `toggle` behaves as before.
+Replace the body of the existing `autoStart` so the two share one guard:
+
+```dart
+  Future<void> autoStart(WidgetRef widgetRef) =>
+      _autoStartWith(() => _start(widgetRef, ShareMode.unbounded));
+```
+
+Keep `autoStart`'s doc comment. The lines removed from `_toggle` are exactly the body of `_startAuto`, so `toggle` behaves as before, and `autoStart` keeps its guards and its Unbounded-only start.
 
 - [ ] **Step 3: The claim screen**
 
@@ -7099,14 +7377,17 @@ import 'package:lantern/features/helpers/provider/helpers_notifier.dart';
 /// waits for approval. The link is a secret: it is never logged or shown.
 @RoutePage(name: 'HelpFriend')
 class HelpFriend extends HookConsumerWidget {
-  const HelpFriend({super.key, this.link});
+  const HelpFriend({super.key, this.fromLink = false});
 
-  final String? link;
+  /// Whether a deep link opened this screen. Its secret is held by the
+  /// notifier (holdLink), never passed in route arguments.
+  final bool fromLink;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final textTheme = Theme.of(context).textTheme;
     final helpers = ref.watch(helpersProvider);
+    final link = useMemoized(() => fromLink ? ref.read(helpersProvider.notifier).takeLink() : null);
     final linkCtl = useTextEditingController(text: link ?? '');
     final nameCtl = useTextEditingController(text: helpers.view.myName);
     final code = useState<String?>(null);
@@ -7376,10 +7657,12 @@ class HelpingSection extends HookConsumerWidget {
   }
 }
 
+/// Whole hours and the minutes left over.
+(int, int) helpingHoursMinutes(int seconds) => (seconds ~/ 3600, (seconds % 3600) ~/ 60);
+
 /// "3h 20m" or "45m", localized.
 String helpingDuration(int seconds) {
-  final h = seconds ~/ 3600;
-  final m = (seconds % 3600) ~/ 60;
+  final (h, m) = helpingHoursMinutes(seconds);
   return h > 0 ? 'helping_duration_hm'.i18n.fill([h, m]) : 'helping_duration_m'.i18n.fill([m]);
 }
 
@@ -7440,7 +7723,9 @@ In `lib/lantern_app.dart`:
     if (_isHelperInviteUri(uri)) {
       // The invite secret is the fragment: never log it.
       appLogger.debug('DeepLink helper invite');
-      _pushWithHome(HelpFriend(link: 'https://lantern.io/help/#${uri.fragment}'));
+      // Held by the notifier, not put in route arguments.
+      ref.read(helpersProvider.notifier).holdLink('https://lantern.io/help/#${uri.fragment}');
+      _pushWithHome(HelpFriend(fromLink: true));
       return;
     }
 ```
@@ -7764,7 +8049,7 @@ Every step here is a production action. Do them in this order.
   - broflake `helperinvite`: `NewSecret`, `InviteHash`, `DeriveKey`, `ApprovalPublic`, `ApprovalMessage`, `Approve`, `MatchingCode`, `VolunteerNameKey`, `InviterNameKey`, `DeviceKey`, `CleanName`, `SealName`, `OpenName`, `Link`, `ParseLink`, `NewClaim`, `NewApproval`, `LinkPrefix` and the `Browser*` functions. All are defined in Tasks 4–5 and used in Tasks 5 and 9.
   - radiance: `helper.Relayer.Relay`, `RelayResult`, `IsRelayOp`, `OpRefreshTickets`, `Source.Invalidate`, `Activity` and `ActivityTracker` (Tasks 6 and 8), used by `ipc.Client.HelperRelay` and `HelperActivity`, and through them by lantern-core's `relayHelper` and `helperActivity` (Task 10).
   - lantern-core: `helper.NewEngine`, `Engine.Call`, `ErrorJSON`, `Error` and the `Code*` constants (Task 9), used by `LanternCore.HelperCall` (Task 10). The ops in the Task 9 table are the strings `HelpersNotifier` sends (Task 12).
-  - Dart: `helperCall` (Task 10) is used by `HelpersNotifier` (Task 12). `helpersProvider`, `helperInvitesAvailableProvider`, `HelperResult`, `HelpersState.helpingApprovals` and `helperErrorText` (Task 12) are used in Tasks 13–14. `askHelperName` (Task 13) is available to Task 14. `startForHelper` (Task 14) is called from Home (Task 14).
+  - Dart: `helperCall` (Task 10) is used by `HelpersNotifier` (Task 12). `helpersProvider`, `helperInvitesAvailableProvider`, `HelperResult`, `HelpersState.helpingApprovals` and `helperErrorText` (Task 12) are used in Tasks 13–14. `startForHelper` (Task 14) is called from Home (Task 14).
 - The wire names line up:
   - The engine's request structs use lantern-cloud's proto field names (`invite_hash`, `approval_pubkey`, `volunteer_pubkey`, `volunteer_blob`, `approve`, `approval_sig`, `inviter_blob`, `pairing_id`).
   - `listedPairing` reads Task 2's `online` and `created_unix`, the latter as a protojson string.
