@@ -61,6 +61,47 @@ func (ui *UIImpl) Init(bf *BroflakeEngine) {
 		}),
 	)
 
+	// setRoomTickets(["...", "..."]) or setRoomTickets("...,...") gives the
+	// widget its helper pairings' volunteer tickets (from POST
+	// /v1/helper/tickets). setRoomTickets([]) leaves every room. Safe to call
+	// at any time. Nothing here logs: tickets are credentials.
+	js.Global().Get(ui.ID).Set(
+		"setRoomTickets",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			var tickets []string
+			if len(args) > 0 {
+				switch v := args[0]; v.Type() {
+				case js.TypeString:
+					if s := v.String(); s != "" {
+						tickets = strings.Split(s, ",")
+					}
+				case js.TypeObject:
+					for i := 0; i < v.Length(); i++ {
+						if e := v.Index(i); e.Type() == js.TypeString {
+							tickets = append(tickets, e.String())
+						}
+					}
+				}
+			}
+			ui.BroflakeEngine.setRoomTickets(tickets)
+			return nil
+		}),
+	)
+
+	// setServePool(false) limits the widget to its pairings' rooms ("help
+	// others too" off); setServePool(true) also serves everyone.
+	js.Global().Get(ui.ID).Set(
+		"setServePool",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			serve := true
+			if len(args) > 0 && args[0].Type() == js.TypeBoolean {
+				serve = args[0].Bool()
+			}
+			ui.BroflakeEngine.setServePool(serve)
+			return nil
+		}),
+	)
+
 	// Exposes liveness() so the page can tell a wedged Go runtime apart from a
 	// wedged browser main thread. See watchdog_wasm_impl.go for why that
 	// distinction is the one that matters.
