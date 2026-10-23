@@ -2,7 +2,7 @@ package helperinvite
 
 import (
 	"crypto/ed25519"
-	"errors"
+	"fmt"
 	"io"
 )
 
@@ -47,7 +47,7 @@ func NewApproval(s, volunteerPub []byte, inviterName string, r io.Reader) (Appro
 		return Approval{}, ErrSecret
 	}
 	if len(volunteerPub) != ed25519.PublicKeySize {
-		return Approval{}, errors.New("helperinvite: a volunteer key is 32 bytes")
+		return Approval{}, fmt.Errorf("%w: a volunteer key is 32 bytes", ErrKey)
 	}
 	blob, err := SealName(InviterNameKey(s), inviterName, r)
 	if err != nil {

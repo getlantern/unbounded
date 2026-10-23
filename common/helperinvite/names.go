@@ -18,8 +18,9 @@ const MaxNameBytes = 200
 
 var (
 	// ErrName is returned for a name that is empty, too long, not UTF-8, or
-	// has control or format characters (other than ZWNJ and ZWJ).
-	ErrName = errors.New("helperinvite: a name is 1 to 200 bytes of UTF-8 with no control or format characters")
+	// has control, format (other than ZWNJ and ZWJ), line or paragraph
+	// separator, or private-use characters.
+	ErrName = errors.New("helperinvite: a name is 1 to 200 bytes of UTF-8 with no control, format, separator or private-use characters")
 	// ErrBlob is returned for a blob that does not open under the key.
 	ErrBlob = errors.New("helperinvite: the name blob does not open")
 )
@@ -31,7 +32,8 @@ func CleanName(name string) (string, error) {
 		return "", ErrName
 	}
 	for _, r := range name {
-		if unicode.IsControl(r) || (unicode.Is(unicode.Cf, r) && r != zwnj && r != zwj) {
+		if unicode.IsControl(r) || unicode.In(r, unicode.Zl, unicode.Zp, unicode.Co) ||
+			(unicode.Is(unicode.Cf, r) && r != zwnj && r != zwj) {
 			return "", ErrName
 		}
 	}
@@ -40,7 +42,10 @@ func CleanName(name string) (string, error) {
 
 // Format characters (Unicode Cf) are refused: bidi overrides and invisible
 // marks could make one name display as another. ZWNJ and ZWJ are the
-// exceptions, because Persian spelling and emoji need them.
+// exceptions, because Persian spelling and emoji need them. Emoji tag
+// sequences (the England and Scotland flags) use Cf tag characters and so
+// are refused. U+2028 and U+2029 (Zl, Zp) break lines, and private-use
+// characters (Co) render differently, or not at all, from device to device.
 const (
 	zwnj = '\u200c'
 	zwj  = '\u200d'
@@ -62,7 +67,7 @@ func SealName(key []byte, name string, r io.Reader) ([]byte, error) {
 func sealName(key []byte, name string, nonce []byte) ([]byte, error) {
 	aead, err := chacha20poly1305.New(key)
 	if err != nil {
-		return nil, fmt.Errorf("helperinvite: name key: %w", err)
+		return nil, fmt.Errorf("%w: %v", ErrKey, err)
 	}
 	out := make([]byte, 0, len(nonce)+len(name)+aead.Overhead())
 	out = append(out, nonce...)

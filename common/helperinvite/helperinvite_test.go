@@ -3,10 +3,12 @@ package helperinvite
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -161,7 +163,8 @@ func TestNamesSealUnderTheirOwnKeyOnly(t *testing.T) {
 
 func TestCleanName(t *testing.T) {
 	for _, bad := range []string{"", "   ", "a\x00b", "line\nbreak", strings.Repeat("a", MaxNameBytes+1), string([]byte{0xff}),
-		"\u202eilA", "Al\u200bi", "\ufeffAli", "A\u2066li", "A\u00adli", "A\u2060li", "A\u061cli"} {
+		"\u202eilA", "Al\u200bi", "\ufeffAli", "A\u2066li", "A\u00adli", "A\u2060li", "A\u061cli",
+		"A\u2028li", "A\u2029li", "A\ue000li", "A\U000f0000li", "A\U00100000li"} {
 		_, err := CleanName(bad)
 		isErr(t, err, ErrName, "CleanName "+strconv.QuoteToASCII(bad))
 	}
@@ -196,6 +199,9 @@ func TestLinks(t *testing.T) {
 		"  " + link + "\n",
 		"https://www.lantern.io/help/#" + enc,
 		"https://lantern.io/help#" + enc,
+		"https://www.lantern.io/help#" + enc,
+		"HTTPS://lantern.io/help/#" + enc,
+		"Https://www.lantern.io/help/#" + enc,
 		enc,
 	} {
 		got, err := ParseLink(in)
@@ -213,10 +219,107 @@ func TestLinks(t *testing.T) {
 		"https://lantern.io/help/#" + enc[:20],
 		"https://lantern.io/help/#" + enc + "==",
 		enc + "x",
+		"https://evil.example@lantern.io/help/#" + enc,
+		"https://lantern.io@evil.example/help/#" + enc,
+		"https://lantern.io:443/help/#" + enc,
+		"https://lantern.io/help/?#" + enc,
+		"https://lantern.io/hel%70/#" + enc,
+		"https://lantern.io//help/#" + enc,
+		"https://LANTERN.IO/help/#" + enc,
+		"https://lantern.io/help/#" + enc[:10] + "\n" + enc[10:],
+		"https://lantern.io/help/#" + enc[:10] + "\r\n" + enc[10:],
+		enc[:10] + "\n" + enc[10:],
+		"https://lantern.io/help/#" + enc[:10] + "%0A" + enc[10:],
+		"https://lantern.io/help/#" + enc[:10] + "%0d" + enc[10:],
+		"https://lantern.io/help/#" + fmt.Sprintf("%%%02X", enc[0]) + enc[1:],
+		"https://lantern.io/help/##" + enc,
+		"https://lantern.io/help/#" + enc + "#",
+		"lantern.io/help/#" + enc,
+		"https:" + enc,
+		enc[:42] + string(b64url[strings.IndexByte(b64url, enc[42])|1]),
+		link + strings.Repeat(" ", maxLinkLen),
+		strings.Repeat(" ", maxLinkLen) + link,
 	} {
 		_, err := ParseLink(bad)
 		isErr(t, err, ErrLink, bad)
 	}
+}
+
+const b64url = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+
+// TestLinkTrailingBits pins that a secret has one encoding: the last
+// character's two spare bits must be zero.
+func TestLinkTrailingBits(t *testing.T) {
+	enc := strings.TrimPrefix(Link(bytes.Repeat([]byte{0xfb}, SecretLen)), LinkPrefix)
+	if strings.IndexByte(b64url, enc[42])&3 != 0 {
+		t.Fatalf("canonical last character %q has spare bits set", enc[42])
+	}
+	if enc[42] == b64url[strings.IndexByte(b64url, enc[42])|1] {
+		t.Fatal("the mutated last character must differ")
+	}
+}
+
+func TestLinkLengthBound(t *testing.T) {
+	longest := "https://www.lantern.io/help/#" + strings.TrimPrefix(Link(make([]byte, SecretLen)), LinkPrefix)
+	if len(longest) > maxLinkLen/2 {
+		t.Errorf("maxLinkLen %d leaves too little room over the %d-byte longest link", maxLinkLen, len(longest))
+	}
+	padded := longest + strings.Repeat(" ", maxLinkLen-len(longest))
+	if _, err := ParseLink(padded); err != nil {
+		t.Errorf("a padded link of exactly maxLinkLen bytes must parse: %v", err)
+	}
+}
+
+// TestSecretLenEnforced pins that the helpers taking a secret refuse one of
+// the wrong length with a zero value rather than deriving from it.
+func TestSecretLenEnforced(t *testing.T) {
+	for _, s := range [][]byte{nil, make([]byte, SecretLen-1), make([]byte, SecretLen+1)} {
+		pub := make([]byte, 32)
+		eq(t, "", Link(s), "Link")
+		eq(t, 0, len(InviteHash(s)), "InviteHash")
+		eq(t, 0, len(DeriveKey(s)), "DeriveKey")
+		eq(t, 0, len(ApprovalKey(s)), "ApprovalKey")
+		eq(t, 0, len(ApprovalPublic(s)), "ApprovalPublic")
+		eq(t, 0, len(Approve(s, pub)), "Approve")
+		eq(t, 0, len(VolunteerNameKey(s)), "VolunteerNameKey")
+		eq(t, 0, len(InviterNameKey(s)), "InviterNameKey")
+	}
+	eq(t, "", MatchingCode(make([]byte, 31), make([]byte, 32)), "MatchingCode short key")
+	eq(t, "", MatchingCode(make([]byte, 32), make([]byte, 31)), "MatchingCode short volunteer key")
+	eq(t, 0, len(Approve(make([]byte, SecretLen), make([]byte, 31))), "Approve short volunteer key")
+	eq(t, 0, len(ApprovalMessage(make([]byte, 31), make([]byte, 32))), "ApprovalMessage short hash")
+	eq(t, 0, len(ApprovalMessage(make([]byte, 32), make([]byte, 31))), "ApprovalMessage short volunteer key")
+}
+
+// lanternCloudVectorsSHA256 pins testdata/lantern-cloud-vectors.json. When
+// lantern-cloud regenerates cmd/api/pairing/testdata/vectors.json, re-copy it
+// verbatim from lantern-cloud's main branch and update this hash.
+const lanternCloudVectorsSHA256 = "6320f5bde6da73304b57a1d6116d2fc578708cd15c3c59ba506a77e2e032173f"
+
+func TestLanternCloudVectorsPinned(t *testing.T) {
+	data, err := os.ReadFile("testdata/lantern-cloud-vectors.json")
+	must(t, err, "read vectors")
+	sum := sha256.Sum256(data)
+	eq(t, lanternCloudVectorsSHA256, hex.EncodeToString(sum[:]),
+		"lantern-cloud-vectors.json changed: re-copy it from lantern-cloud and update the pinned hash")
+}
+
+func TestNameErrorPaths(t *testing.T) {
+	key := VolunteerNameKey(make([]byte, SecretLen))
+	_, err := SealName(key, "Ali", bytes.NewReader(make([]byte, 5)))
+	if err == nil || errors.Is(err, ErrName) {
+		t.Errorf("a failed nonce read: got %v", err)
+	}
+	_, err = sealName(make([]byte, 5), "Ali", make([]byte, 12))
+	isErr(t, err, ErrKey, "sealName with a short key")
+	_, err = SealName(make([]byte, 5), "Ali", rand.Reader)
+	isErr(t, err, ErrKey, "SealName with a short key")
+	bad, err := sealName(key, "\u202e", make([]byte, 12))
+	must(t, err, "seal an invalid name directly")
+	_, err = OpenName(key, bad)
+	isErr(t, err, ErrBlob, "a blob that opens to an invalid name")
+	_, err = DeviceKey(make([]byte, 31))
+	isErr(t, err, ErrKey, "a short device seed")
 }
 
 // TestClaimAndApprovalRoundTrip runs both sides with the package alone: the
@@ -253,13 +356,13 @@ func TestClaimAndApprovalRoundTrip(t *testing.T) {
 	_, err = NewClaim(s, seed, "", rand.Reader)
 	isErr(t, err, ErrName, "empty name claim")
 	_, err = NewClaim(s, seed[:5], "Ali", rand.Reader)
-	if err == nil {
-		t.Error("a short seed must fail NewClaim")
-	}
+	isErr(t, err, ErrKey, "a short seed")
 	_, err = NewApproval(s, c.VolunteerPubkey[:5], "Sara", rand.Reader)
-	if err == nil {
-		t.Error("a short volunteer key must fail NewApproval")
-	}
+	isErr(t, err, ErrKey, "a short volunteer key")
+	_, err = NewApproval(s, c.VolunteerPubkey, "", rand.Reader)
+	isErr(t, err, ErrName, "an empty inviter name")
+	_, err = NewApproval(s, c.VolunteerPubkey, "Sa\u202era", rand.Reader)
+	isErr(t, err, ErrName, "an inviter name with a bidi override")
 	_, err = NewApproval(s[:5], c.VolunteerPubkey, "Sara", rand.Reader)
 	isErr(t, err, ErrSecret, "short secret approval")
 }
