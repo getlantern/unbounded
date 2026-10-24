@@ -1,0 +1,356 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/pion/webrtc/v4"
+)
+
+type probeConfig struct {
+	url     string
+	token   string
+	stun    []string
+	timeout time.Duration
+	test    testSpec
+}
+
+// result is one attempt. Timings are milliseconds since the attempt started; a missing timing
+// means that step never happened.
+type result struct {
+	Attempt int       `json:"attempt"`
+	Time    time.Time `json:"time"`
+	DTLS    string    `json:"dtls"`
+	Mode    string    `json:"mode"`
+	Dir     string    `json:"dir"`
+	// Outcome is "connected", or the step it stalled at: "gather", "signal", "ice", "dtls" or
+	// "sctp" (DTLS done but the data channels never opened).
+	Outcome string `json:"outcome"`
+	Error   string `json:"error,omitempty"`
+	// Srflx is the probe's public addresses as its STUN servers saw them, to confirm the vantage
+	// point is where it's meant to be.
+	Srflx        []string `json:"srflx,omitempty"`
+	GatherMs     *int64   `json:"gather_ms,omitempty"`
+	SignalMs     *int64   `json:"signal_ms,omitempty"`
+	ICEMs        *int64   `json:"ice_ms,omitempty"`
+	DTLSMs       *int64   `json:"dtls_ms,omitempty"`
+	OpenMs       *int64   `json:"open_ms,omitempty"`
+	ICEState     string   `json:"ice_state"`
+	DTLSState    string   `json:"dtls_state"`
+	Mbps         *float64 `json:"mbps,omitempty"`
+	Loss         *float64 `json:"loss,omitempty"`
+	BytesThrough int64    `json:"bytes_through,omitempty"`
+}
+
+func probe(args []string) error {
+	fs := flag.NewFlagSet("probe", flag.ExitOnError)
+	url := fs.String("url", "", "responder base URL, e.g. http://203.0.113.5:8080 (required)")
+	token := fs.String("token", "", "the responder's shared secret (required)")
+	n := fs.Int("n", 10, "attempts")
+	interval := fs.Duration("interval", 2*time.Second, "pause between attempts")
+	stun := fs.String("stun", "stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478", "comma-separated STUN URLs")
+	timeout := fs.Duration("timeout", 30*time.Second, "time allowed for one attempt to open its data channels")
+	dir := fs.String("dir", "up", "transfer direction: up (probe sends) or down")
+	secs := fs.Int("secs", 10, "transfer seconds; 0 skips the transfer")
+	mode := fs.String("mode", "unreliable", "data channel mode: unreliable (unordered, no retransmits, as Unbounded) or reliable")
+	chunk := fs.Int("chunk", 1200, "message size in bytes; 1200 is about one QUIC packet, as Unbounded sends")
+	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default or alt")
+	role := fs.String("responder-role", "client", "DTLS role the responder takes: client (as a browser volunteer) or server")
+	fs.Parse(args)
+
+	if *url == "" || *token == "" {
+		return errors.New("-url and -token are required")
+	}
+	cfg := probeConfig{
+		url:     strings.TrimRight(*url, "/"),
+		token:   *token,
+		timeout: *timeout,
+		test: testSpec{
+			Dir: *dir, Secs: *secs, Mode: *mode, Chunk: *chunk, DTLS: *dtlsVariant, ResponderRole: *role,
+		},
+	}
+	for _, s := range strings.Split(*stun, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			cfg.stun = append(cfg.stun, s)
+		}
+	}
+	if err := cfg.test.validate(); err != nil {
+		return err
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	var results []result
+	for i := 1; i <= *n; i++ {
+		r := attempt(i, cfg)
+		results = append(results, r)
+		enc.Encode(r)
+		if i < *n {
+			time.Sleep(*interval)
+		}
+	}
+	summarize(results)
+	return nil
+}
+
+func attempt(n int, cfg probeConfig) (r result) {
+	t := cfg.test
+	r = result{Attempt: n, Time: time.Now().UTC(), DTLS: t.DTLS, Mode: t.Mode, Dir: t.Dir}
+	k := newMarks()
+	ms := func(name string) *int64 {
+		if v, ok := k.get(name); ok {
+			return &v
+		}
+		return nil
+	}
+
+	api, err := newAPI(t.DTLS, nil)
+	if err != nil {
+		r.Outcome, r.Error = "gather", err.Error()
+		return r
+	}
+	var servers []webrtc.ICEServer
+	if len(cfg.stun) > 0 {
+		servers = []webrtc.ICEServer{{URLs: cfg.stun}}
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
+	if err != nil {
+		r.Outcome, r.Error = "gather", err.Error()
+		return r
+	}
+	defer pc.Close()
+
+	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
+		if s == webrtc.ICEConnectionStateConnected {
+			k.set("ice")
+		}
+	})
+	pc.SCTP().Transport().OnStateChange(func(s webrtc.DTLSTransportState) {
+		if s == webrtc.DTLSTransportStateConnected {
+			k.set("dtls")
+		}
+	})
+	defer func() {
+		r.ICEState = pc.ICEConnectionState().String()
+		r.DTLSState = pc.SCTP().Transport().State().String()
+		r.GatherMs, r.SignalMs, r.ICEMs, r.DTLSMs, r.OpenMs = ms("gather"), ms("signal"), ms("ice"), ms("dtls"), ms("open")
+	}()
+
+	got := &tally{}
+	doneCh := make(chan doneMsg, 1)
+	statsCh := make(chan statsMsg, 1)
+	chans := newChannels()
+	for _, label := range []string{"data", "ctl"} {
+		init := &webrtc.DataChannelInit{}
+		if label == "data" {
+			init = dataChannelInit(t.Mode)
+		}
+		dc, err := pc.CreateDataChannel(label, init)
+		if err != nil {
+			r.Outcome, r.Error = "gather", err.Error()
+			return r
+		}
+		onMessage := func(m webrtc.DataChannelMessage) { got.add(len(m.Data)) }
+		if label == "ctl" {
+			// The responder sends doneMsg after a download and statsMsg after an upload.
+			onMessage = func(m webrtc.DataChannelMessage) {
+				if t.Dir == "down" {
+					var d doneMsg
+					if json.Unmarshal(m.Data, &d) == nil {
+						select {
+						case doneCh <- d:
+						default:
+						}
+					}
+					return
+				}
+				var s statsMsg
+				if json.Unmarshal(m.Data, &s) == nil {
+					select {
+					case statsCh <- s:
+					default:
+					}
+				}
+			}
+		}
+		chans.add(dc, onMessage)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.timeout)
+	defer cancel()
+
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		r.Outcome, r.Error = "gather", err.Error()
+		return r
+	}
+	gathered := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		r.Outcome, r.Error = "gather", err.Error()
+		return r
+	}
+	select {
+	case <-gathered:
+		k.set("gather")
+	case <-ctx.Done():
+		r.Outcome, r.Error = "gather", "ICE gathering timed out"
+		return r
+	}
+	r.Srflx = srflxAddrs(pc.LocalDescription().SDP)
+
+	answer, err := postOffer(ctx, cfg, offerRequest{SDP: *pc.LocalDescription(), Test: t})
+	if err != nil {
+		r.Outcome, r.Error = "signal", err.Error()
+		return r
+	}
+	if err := pc.SetRemoteDescription(*answer); err != nil {
+		r.Outcome, r.Error = "signal", err.Error()
+		return r
+	}
+	k.set("signal")
+
+	select {
+	case <-chans.open:
+		k.set("open")
+	case <-ctx.Done():
+		switch {
+		case !has(k, "ice"):
+			r.Outcome = "ice"
+		case !has(k, "dtls"):
+			r.Outcome = "dtls"
+		default:
+			r.Outcome = "sctp"
+		}
+		return r
+	}
+	r.Outcome = "connected"
+	if t.Secs == 0 {
+		return r
+	}
+
+	// The transfer gets its own deadline: the attempt's timeout covered only connecting.
+	wait := time.Duration(t.Secs)*time.Second + 15*time.Second
+	var sent doneMsg
+	var stats statsMsg
+	switch t.Dir {
+	case "up":
+		sent, err = send(chans.data, time.Duration(t.Secs)*time.Second, t.Chunk)
+		if err == nil {
+			err = sendJSON(chans.ctl, sent)
+		}
+		if err != nil {
+			r.Error = "send: " + err.Error()
+			return r
+		}
+		select {
+		case stats = <-statsCh:
+		case <-time.After(wait):
+			r.Error = "no stats from the responder"
+			return r
+		}
+	case "down":
+		select {
+		case sent = <-doneCh:
+			time.Sleep(drainGrace)
+			stats = got.stats()
+		case <-time.After(wait):
+			r.Error = "the responder never finished sending"
+			return r
+		}
+	}
+	mbps, loss := throughput(sent, stats)
+	r.Mbps, r.Loss, r.BytesThrough = &mbps, &loss, stats.Bytes
+	return r
+}
+
+func has(k *marks, name string) bool {
+	_, ok := k.get(name)
+	return ok
+}
+
+func postOffer(ctx context.Context, cfg probeConfig, offer offerRequest) (*webrtc.SessionDescription, error) {
+	body, err := json.Marshal(offer)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.url+"/offer", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(tokenHeader, cfg.token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("responder: %s: %s", res.Status, strings.TrimSpace(string(msg)))
+	}
+	var answer webrtc.SessionDescription
+	if err := json.NewDecoder(res.Body).Decode(&answer); err != nil {
+		return nil, err
+	}
+	return &answer, nil
+}
+
+// srflxAddrs returns the address:port of each srflx candidate in sdp.
+func srflxAddrs(sdp string) []string {
+	var out []string
+	for _, line := range strings.Split(sdp, "\n") {
+		f := strings.Fields(strings.TrimPrefix(strings.TrimSpace(line), "a="))
+		if len(f) >= 8 && strings.HasPrefix(f[0], "candidate:") && f[6] == "typ" && f[7] == "srflx" {
+			if a := f[4] + ":" + f[5]; !slices.Contains(out, a) {
+				out = append(out, a)
+			}
+		}
+	}
+	return out
+}
+
+func summarize(results []result) {
+	outcomes := map[string]int{}
+	var dtls, open []int64
+	var mbps []float64
+	for _, r := range results {
+		outcomes[r.Outcome]++
+		if r.DTLSMs != nil && r.ICEMs != nil {
+			dtls = append(dtls, *r.DTLSMs-*r.ICEMs)
+		}
+		if r.OpenMs != nil {
+			open = append(open, *r.OpenMs)
+		}
+		if r.Mbps != nil {
+			mbps = append(mbps, *r.Mbps)
+		}
+	}
+	fmt.Fprintf(os.Stderr, "attempts=%d outcomes=%v\n", len(results), outcomes)
+	fmt.Fprintf(os.Stderr, "median ms: dtls_after_ice=%v open=%v   median mbps=%.2f\n",
+		median(dtls), median(open), medianF(mbps))
+}
+
+func median(v []int64) any {
+	if len(v) == 0 {
+		return "n/a"
+	}
+	slices.Sort(v)
+	return v[len(v)/2]
+}
+
+func medianF(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	slices.Sort(v)
+	return v[len(v)/2]
+}
