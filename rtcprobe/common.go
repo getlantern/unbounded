@@ -115,7 +115,7 @@ func dataChannelInit(mode string) *webrtc.DataChannelInit {
 
 // send fills dc for d, in messages of chunk bytes, keeping pion's send buffer between its low and
 // high water marks so the rate is what SCTP's congestion control allows.
-func send(dc *webrtc.DataChannel, d time.Duration, chunk int) (doneMsg, error) {
+func send(dc *webrtc.DataChannel, d time.Duration, chunk int) (sent doneMsg, err error) {
 	const highWater, lowWater = 1 << 20, 256 << 10
 	low := make(chan struct{}, 1)
 	dc.SetBufferedAmountLowThreshold(lowWater)
@@ -126,7 +126,6 @@ func send(dc *webrtc.DataChannel, d time.Duration, chunk int) (doneMsg, error) {
 		}
 	})
 	buf := make([]byte, chunk)
-	var sent doneMsg
 	start := time.Now()
 	defer func() { sent.SendSecs = time.Since(start).Seconds() }()
 	for deadline := start.Add(d); time.Now().Before(deadline); {
@@ -178,10 +177,17 @@ func (t *tally) settle(sent doneMsg, reliable bool) statsMsg {
 	if reliable {
 		limit = reliableDrain
 	}
-	for deadline := time.Now().Add(limit); ; time.Sleep(50 * time.Millisecond) {
+	start := time.Now()
+	for deadline := start.Add(limit); ; time.Sleep(50 * time.Millisecond) {
 		t.mu.Lock()
+		// Quiet is measured from settling's start at the earliest: done can overtake the data, so
+		// a long-quiet channel may still have messages on the way.
+		quietSince := start
+		if t.last.After(start) {
+			quietSince = t.last
+		}
 		done := reliable && t.msgs >= sent.Msgs ||
-			!reliable && time.Since(t.last) >= unreliableQuiet
+			!reliable && time.Since(quietSince) >= unreliableQuiet
 		t.mu.Unlock()
 		if done || time.Now().After(deadline) {
 			s := t.stats()

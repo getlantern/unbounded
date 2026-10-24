@@ -58,6 +58,7 @@ type result struct {
 	BurstMbps    *float64 `json:"burst_mbps,omitempty"`
 	Loss         *float64 `json:"loss,omitempty"`
 	BytesThrough int64    `json:"bytes_through,omitempty"`
+	SendSecs     float64  `json:"send_secs,omitempty"`
 	// DrainIncomplete means the receiver stopped counting while data was still due, so Loss
 	// overstates what was lost.
 	DrainIncomplete bool `json:"drain_incomplete,omitempty"`
@@ -289,6 +290,7 @@ func attempt(n int, cfg probeConfig) (r result) {
 	mbps, burst, loss := throughput(sent, stats)
 	r.Mbps, r.BurstMbps, r.Loss, r.BytesThrough = &mbps, &burst, &loss, stats.Bytes
 	r.DrainIncomplete = !stats.Complete
+	r.SendSecs = sent.SendSecs
 	return r
 }
 
@@ -391,13 +393,13 @@ func signalingClient(rawURL, pin string, allowHTTP bool) (*http.Client, error) {
 		if pin != "" {
 			return nil, errors.New("-pin needs an https URL")
 		}
-		return &http.Client{}, nil
+		return noRedirects(&http.Client{}), nil
 	case "https":
 	default:
 		return nil, fmt.Errorf("unsupported URL scheme %q", u.Scheme)
 	}
 	if pin == "" {
-		return &http.Client{}, nil
+		return noRedirects(&http.Client{}), nil
 	}
 	want, err := hex.DecodeString(pin)
 	if err != nil || len(want) != sha256.Size {
@@ -416,5 +418,12 @@ func signalingClient(rawURL, pin string, allowHTTP bool) (*http.Client, error) {
 			return nil
 		},
 	}
-	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}, nil
+	return noRedirects(&http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}), nil
+}
+
+// noRedirects stops c following redirects, which would carry the token to wherever they point,
+// including from https to http.
+func noRedirects(c *http.Client) *http.Client {
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -46,6 +47,12 @@ func TestProbeAgainstResponder(t *testing.T) {
 			}
 			if r.Mbps == nil || *r.Mbps <= 0 || r.BytesThrough == 0 {
 				t.Fatalf("no transfer measured: %+v", r)
+			}
+			if r.SendSecs < 0.9 {
+				t.Fatalf("send_secs %v should cover the 1s transfer", r.SendSecs)
+			}
+			if r.DrainIncomplete {
+				t.Fatalf("a loopback transfer should drain completely: %+v", r)
 			}
 		})
 	}
@@ -157,5 +164,37 @@ func TestThroughputCountsStalls(t *testing.T) {
 		statsMsg{Msgs: 100, Bytes: 125_000, ActiveSecs: 1})
 	if mbps != 0.1 || burst != 1 || loss != 0.9 {
 		t.Fatalf("mbps=%v burst=%v loss=%v, want 0.1, 1, 0.9", mbps, burst, loss)
+	}
+}
+
+func TestSettleWaitsForQuietAfterDone(t *testing.T) {
+	var got tally
+	got.add(100)
+	time.Sleep(unreliableQuiet + 100*time.Millisecond)
+	// done arrives after a long quiet; a straggler lands shortly after.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		got.add(100)
+	}()
+	if s := got.settle(doneMsg{Msgs: 2}, false); s.Msgs != 2 || !s.Complete {
+		t.Fatalf("settle should count the straggler, got %+v", s)
+	}
+}
+
+func TestSignalingClientRefusesRedirects(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the redirect was followed, carrying token %q", r.Header.Get(tokenHeader))
+	}))
+	t.Cleanup(target.Close)
+	redirect := httptest.NewServer(http.RedirectHandler(target.URL+"/offer", http.StatusTemporaryRedirect))
+	t.Cleanup(redirect.Close)
+
+	client, err := signalingClient(redirect.URL, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := probeConfig{url: redirect.URL, token: "secret", client: client}
+	if _, err := postOffer(context.Background(), cfg, offerRequest{}); err == nil {
+		t.Fatal("a redirect should fail signaling")
 	}
 }
