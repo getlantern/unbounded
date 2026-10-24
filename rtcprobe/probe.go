@@ -78,6 +78,7 @@ func probe(args []string) error {
 	chunk := fs.Int("chunk", 1200, "message size in bytes; 1200 is about one QUIC packet, as Unbounded sends")
 	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default, alt or covert (covert shapes only the ClientHello)")
 	role := fs.String("responder-role", "client", "DTLS role the responder takes: client (as a browser volunteer) or server")
+	retransmit := fs.Duration("dtls-retransmit", 0, "initial DTLS handshake retransmission interval for both sides; 0 keeps pion's default (1s)")
 	pin := fs.String("pin", "", "hex SHA-256 of the responder's certificate, as `rtcprobe serve -tls` logs it")
 	allowHTTP := fs.Bool("allow-http", false, "allow plain HTTP to a non-loopback responder, which sends the token in the clear")
 	fs.Parse(args)
@@ -96,6 +97,7 @@ func probe(args []string) error {
 		timeout: *timeout,
 		test: testSpec{
 			Dir: *dir, Secs: *secs, Mode: *mode, Chunk: *chunk, DTLS: *dtlsVariant, ResponderRole: *role,
+			DTLSRetransmitMs: int(*retransmit / time.Millisecond),
 		},
 	}
 	for _, s := range strings.Split(*stun, ",") {
@@ -134,7 +136,7 @@ func attempt(n int, cfg probeConfig) (r result) {
 		return nil
 	}
 
-	api, err := newAPI(t.DTLS, nil)
+	api, err := newAPI(t.DTLS, func(se *webrtc.SettingEngine) { applyRetransmit(t, se) })
 	if err != nil {
 		r.Outcome, r.Error = "gather", err.Error()
 		return r

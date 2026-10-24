@@ -38,6 +38,9 @@ type testSpec struct {
 	// ResponderRole is the DTLS role the answering responder takes: "client", as a browser
 	// volunteer does, or "server".
 	ResponderRole string `json:"responder_role"`
+	// DTLSRetransmitMs is the initial DTLS handshake retransmission interval both sides use, or 0
+	// for pion's default (1s, doubling).
+	DTLSRetransmitMs int `json:"dtls_retransmit_ms,omitempty"`
 }
 
 func (t testSpec) validate() error {
@@ -52,6 +55,8 @@ func (t testSpec) validate() error {
 		return fmt.Errorf("chunk must be 64..65535, got %d", t.Chunk)
 	case t.ResponderRole != "client" && t.ResponderRole != "server":
 		return fmt.Errorf("responder role must be client or server, got %q", t.ResponderRole)
+	case t.DTLSRetransmitMs < 0 || t.DTLSRetransmitMs > 5000:
+		return fmt.Errorf("dtls retransmit must be 0..5000ms, got %d", t.DTLSRetransmitMs)
 	}
 	_, err := newAPI(t.DTLS, nil)
 	return err
@@ -111,6 +116,13 @@ func newAPI(variant string, configure func(*webrtc.SettingEngine)) (*webrtc.API,
 		configure(&se)
 	}
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se)), nil
+}
+
+// applyRetransmit sets the DTLS handshake retransmission interval t asks for, if any.
+func applyRetransmit(t testSpec, se *webrtc.SettingEngine) {
+	if t.DTLSRetransmitMs > 0 {
+		se.SetDTLSRetransmissionInterval(time.Duration(t.DTLSRetransmitMs) * time.Millisecond)
+	}
 }
 
 func dataChannelInit(mode string) *webrtc.DataChannelInit {
