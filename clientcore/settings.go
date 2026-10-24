@@ -86,6 +86,9 @@ type WebRTCOptions struct {
 	// producer/widget side. See common/covertdtls and net4people/bbs#603
 	// for background. The zero value disables the feature.
 	CovertDTLS covertdtls.Config
+	// Tuning overrides pion's ICE, DTLS and SCTP defaults on native builds.
+	// The zero value keeps every default.
+	Tuning WebRTCTuning
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
