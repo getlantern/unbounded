@@ -147,6 +147,7 @@ func (r *responder) answer(offer offerRequest) (*webrtc.PeerConnection, *session
 	}
 	api, err := newAPI(offer.Test.DTLS, func(se *webrtc.SettingEngine) {
 		se.SetAnsweringDTLSRole(role)
+		applyRetransmit(offer.Test, se)
 		if len(r.publicIPs) > 0 {
 			se.SetNAT1To1IPs(r.publicIPs, webrtc.ICECandidateTypeHost)
 		}
