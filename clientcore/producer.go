@@ -26,6 +26,9 @@ import (
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
+	// last is how this worker's previous attempt ended, reported on its next genesis message.
+	// A worker's states run on one goroutine, so it needs no lock.
+	var last attemptOutcome
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -177,6 +180,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Signal the genesis message
 			form := genesisForm(options, g)
+			last.addTo(form)
 
 			req, err := http.NewRequestWithContext(
 				ctx,
@@ -317,6 +321,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			if !hasNonHostCandidate {
 				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+				last.record(common.OutcomeNoLocalSrflx, peerConnection)
 				scache.drop()
 				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
 
@@ -378,6 +383,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case http.StatusNotFound:
 				slog.Debug("Signaling partner hung up, aborting!")
+				last.record(common.OutcomePartnerHungUp, peerConnection)
 
 				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
 				// interpret that signal to mean that our current STUN cohort is too slow, and we should
@@ -421,6 +427,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// to complete ICE gathering and send a list of candidates, or B) took so long to perform
 				// ICE gathering that Freddie's TTL for this step expired.
 				slog.Debug("No ICE candidates from signaling partner!")
+				last.record(common.OutcomeNoConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -430,6 +437,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
 				slog.Debug("Error decoding signal message", "error", err, "msg", string(iceBytes))
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -437,6 +445,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			if iceMsg.(common.ICEMsg).ConsumerSessionID == "" {
 				slog.Debug("Missing session ID from signaling partner, aborting!")
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -455,6 +464,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				err := peerConnection.AddICECandidate(c.ToJSON())
 				if err != nil {
 					slog.Debug("Error adding ICE candidate", "error", err)
+					last.record(common.OutcomeBadConsumerICE, peerConnection)
 					// Borked!
 					peerConnection.Close() // TODO: there's an err we should handle here
 					return 0, []interface{}{}
@@ -474,6 +484,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// perform this check on the producer side because some consumers may still on an old version.
 			if !remoteHasNonHostCandidate {
 				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
+				last.record(common.OutcomeConsumerHostOnly, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -513,6 +524,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case d := <-connectionEstablished:
 				slog.Debug("A WebRTC connection has been established!")
+				last.record(common.OutcomeConnected, peerConnection)
 				return 5, []interface{}{
 					peerConnection,
 					d,
@@ -524,6 +536,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				}
 			case <-time.After(options.NATFailTimeout):
 				slog.Debug("NAT traversal timeout, aborting!")
+				last.record(common.OutcomeNATTimeout, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -709,6 +722,36 @@ func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Conf
 // A producer that serves only its rooms posts to
 // common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
 // that predates rooms refuses the genesis instead of broadcasting it.
+// attemptOutcome is how a producer worker's previous connection attempt ended (see
+// common/outcome.go).
+type attemptOutcome struct {
+	outcome  string
+	iceState string
+	pcState  string
+}
+
+// record notes the attempt's outcome and the peer connection's states at that moment. Call it
+// before the peer connection is closed.
+func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
+	*o = attemptOutcome{outcome: outcome}
+	if pc != nil {
+		o.iceState = pc.ICEConnectionState().String()
+		o.pcState = pc.ConnectionState().String()
+	}
+}
+
+// addTo puts the recorded outcome on a genesis form, once: each outcome is reported with the
+// genesis message that follows it and then cleared.
+func (o *attemptOutcome) addTo(form url.Values) {
+	if o.outcome == "" {
+		return
+	}
+	form.Set(common.PrevOutcomeField, o.outcome)
+	form.Set(common.PrevICEStateField, o.iceState)
+	form.Set(common.PrevPCStateField, o.pcState)
+	*o = attemptOutcome{}
+}
+
 func genesisForm(options *WebRTCOptions, g []byte) url.Values {
 	sendTo := options.GenesisAddr
 	if !options.ServesPool() {

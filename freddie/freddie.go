@@ -349,6 +349,7 @@ type Freddie struct {
 	roomMatches       metric.Int64Counter
 	roomsDisabled     metric.Int64Counter
 	iceNAT            metric.Int64Counter
+	producerOutcomes  metric.Int64Counter
 
 	tickets *ticketCache
 }
@@ -455,6 +456,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.iceNAT, err = f.meter.Int64Counter("freddie.ice.nat",
 		metric.WithDescription("ICE candidate sets received, by role, by how the peer's NAT mapped its sockets (see icenat.go), and by whether freddie delivered them"),
 		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
+		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go)"),
+		metric.WithUnit("attempt"))
 	if err != nil {
 		return nil, err
 	}
@@ -788,6 +796,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
 		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
 		// first room-aware clients did, to SignalSendToGenesis with pool=0.
+		f.recordProducerOutcome(ctx, span, r)
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
