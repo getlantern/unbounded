@@ -41,6 +41,11 @@ var nQUICStreams uint64
 // nQUICConnections is the number of open QUIC connections
 var nQUICConnections uint64
 
+// nQUICConnectionsDialed counts every QUIC connection the egress has dialed. Each one is a
+// consumer whose WebRTC hop through a volunteer came up, so against freddie's delivered ICE
+// messages it gives the share of signaling handshakes that end in a working connection.
+var nQUICConnectionsDialed uint64
+
 // The metric instruments, their otel callback and the provider lifecycle live in
 // metrics.go. They are process-scoped, not per-listener, which is the whole point
 // of them being over there.

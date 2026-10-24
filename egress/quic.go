@@ -123,6 +123,7 @@ func (manager *connectionManager) createOrMigrate(csid string, pconn net.PacketC
 			return nil, nil, err
 		}
 		slog.Debug("Dialed a new QUIC connection!", "local_addr", pconn.LocalAddr(), "total", atomic.AddUint64(&nQUICConnections, uint64(1)))
+		atomic.AddUint64(&nQUICConnectionsDialed, 1)
 		go watchHandshake(newConn)
 		record.connection = newConn
 		record.transport = transport

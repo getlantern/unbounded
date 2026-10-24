@@ -348,6 +348,7 @@ type Freddie struct {
 	consumerSubs      metric.Int64Counter
 	roomMatches       metric.Int64Counter
 	roomsDisabled     metric.Int64Counter
+	iceNAT            metric.Int64Counter
 
 	tickets *ticketCache
 }
@@ -447,6 +448,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.roomsDisabled, err = f.meter.Int64Counter("freddie.rooms.disabled",
 		metric.WithDescription("signaling requests served with helper pairing rooms disabled, because no room ticket verifier is configured"),
 		metric.WithUnit("request"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.iceNAT, err = f.meter.Int64Counter("freddie.ice.nat",
+		metric.WithDescription("ICE candidate sets received, by role, by how the peer's NAT mapped its sockets (see icenat.go), and by whether freddie delivered them"),
+		metric.WithUnit("message"))
 	if err != nil {
 		return nil, err
 	}
@@ -814,6 +822,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			delivered,
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
+		f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
