@@ -259,6 +259,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
 			slog.Debug("Producer state 3...")
+			last.begin(replyTo)
 
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
@@ -728,12 +729,18 @@ type attemptOutcome struct {
 	outcome  string
 	iceState string
 	pcState  string
+	offerID  string
+}
+
+// begin notes the ReplyTo of the offer an attempt is answering. record keeps it.
+func (o *attemptOutcome) begin(offerID string) {
+	*o = attemptOutcome{offerID: offerID}
 }
 
 // record notes the attempt's outcome and the peer connection's states at that moment. Call it
 // before the peer connection is closed.
 func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
-	*o = attemptOutcome{outcome: outcome}
+	*o = attemptOutcome{outcome: outcome, offerID: o.offerID}
 	if pc != nil {
 		o.iceState = pc.ICEConnectionState().String()
 		o.pcState = pc.ConnectionState().String()
@@ -750,6 +757,9 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	form.Set(common.PrevICEStateField, o.iceState)
 	form.Set(common.PrevPCStateField, o.pcState)
 	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
+	if o.offerID != "" {
+		form.Set(common.PrevOfferIDField, o.offerID)
+	}
 	*o = attemptOutcome{}
 }
 

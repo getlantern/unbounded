@@ -309,6 +309,9 @@ type Freddie struct {
 	// consumer untargeted: it still receives untargeted and fallback broadcasts, but is never
 	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
 	// is read without synchronization by concurrent request handlers.
+	//
+	// Freddie also calls it on each offer POST, so freddie.producer.outcomes can say
+	// which country the consumer behind each attempt was in.
 	ConsumerCountry func(r *http.Request) string
 
 	// RoomTicket, if non-nil, verifies a helper pairing ticket presented for role and returns the
@@ -351,7 +354,8 @@ type Freddie struct {
 	iceNAT            metric.Int64Counter
 	producerOutcomes  metric.Int64Counter
 
-	tickets *ticketCache
+	tickets        *ticketCache
+	offerCountries *offerCountryCache
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -365,11 +369,12 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 			Addr:         listenAddr,
 			Handler:      mux,
 		},
-		currentGets:  atomic.Int64{},
-		currentPosts: atomic.Int64{},
-		tracer:       otel.Tracer("github.com/getlantern/broflake/freddie"),
-		meter:        otel.Meter("github.com/getlantern/broflake/freddie"),
-		tickets:      newTicketCache(maxCachedTickets, time.Now),
+		currentGets:    atomic.Int64{},
+		currentPosts:   atomic.Int64{},
+		tracer:         otel.Tracer("github.com/getlantern/broflake/freddie"),
+		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
+		tickets:        newTicketCache(maxCachedTickets, time.Now),
+		offerCountries: newOfferCountryCache(time.Now),
 	}
 
 	var err error
@@ -824,7 +829,16 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
+		// An offer's country is cached before the offer is published, so the producer can't report
+		// the attempt before Freddie can label it.
+		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer && f.ConsumerCountry != nil
+		if isOffer {
+			f.offerCountries.add(reqID, common.NormalizeCountry(f.ConsumerCountry(r)))
+		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
+		if isOffer && !ok {
+			f.offerCountries.take(reqID)
+		}
 		delivered := attribute.Bool("reply.delivered", ok)
 		span.SetAttributes(delivered)
 		f.signalReplies.Add(ctx, 1, metric.WithAttributes(

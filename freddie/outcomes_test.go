@@ -45,7 +45,8 @@ func outcomeCounts(t *testing.T, form url.Values) map[string]int64 {
 				i, _ := dp.Attributes.Value("ice_state")
 				p, _ := dp.Attributes.Value("pc_state")
 				n, _ := dp.Attributes.Value("nat_timeout_s")
-				counts[o.AsString()+"/"+i.AsString()+"/"+p.AsString()+"/"+n.AsString()] += dp.Value
+				c, _ := dp.Attributes.Value("consumer_country")
+				counts[o.AsString()+"/"+i.AsString()+"/"+p.AsString()+"/"+n.AsString()+"/"+c.AsString()] += dp.Value
 			}
 		}
 	}
@@ -58,7 +59,7 @@ func TestRecordProducerOutcome_CountsNormalizedReport(t *testing.T) {
 		common.PrevICEStateField: {"connected"},
 		common.PrevPCStateField:  {"bogus"},
 	})
-	if got["nat_timeout/connected/invalid/unreported"] != 1 || len(got) != 1 {
+	if got["nat_timeout/connected/invalid/unreported/unreported"] != 1 || len(got) != 1 {
 		t.Fatalf("got %v", got)
 	}
 }
@@ -70,7 +71,7 @@ func TestRecordProducerOutcome_LabelsTimeout(t *testing.T) {
 		common.PrevPCStateField:    {"connected"},
 		common.PrevNATTimeoutField: {"15"},
 	})
-	if got["connected/connected/connected/15"] != 1 || len(got) != 1 {
+	if got["connected/connected/connected/15/unreported"] != 1 || len(got) != 1 {
 		t.Fatalf("got %v", got)
 	}
 }
