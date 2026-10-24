@@ -90,7 +90,10 @@ func (b *BroflakeEngine) start() {
 
 // defaultStopGrace bounds how long stop() waits for workers to exit before
 // cancelling the engine ctx regardless. Generous enough for a worker to finish a
-// state (the longest state timeout is NATFailTimeout, 5s).
+// state. The producer's wait on NATFailTimeout (longer for the widget) returns as
+// soon as its worker is stopped, so it needn't fit inside this. The consumer's
+// doesn't select on ctx, so a consumer NATFailTimeout above this grace means
+// stop() gives up waiting on that worker and cancels the engine ctx anyway.
 const defaultStopGrace = 10 * time.Second
 
 func (b *BroflakeEngine) stop() {
