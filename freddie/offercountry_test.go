@@ -31,24 +31,46 @@ func TestOfferCountryCache_TakeOnceAndExpire(t *testing.T) {
 	}
 }
 
-func TestOfferCountryCache_FullSweepsExpired(t *testing.T) {
+func TestOfferCountryCache_FullEvictsOldest(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := newOfferCountryCache(func() time.Time { return now })
 	for i := range maxOfferCountries {
 		c.add(strconv.Itoa(i), "US")
 	}
-	c.add("live-dropped", "RU")
-	if got := c.take("live-dropped"); got != "" {
-		t.Fatalf("a full cache of live entries must drop new offers, got %q", got)
+	c.add("newest", "RU")
+	if len(c.m) != maxOfferCountries || c.order.Len() != maxOfferCountries {
+		t.Fatalf("the cache must stay at its cap, has %d entries and %d in order", len(c.m), c.order.Len())
 	}
+	if got := c.take("0"); got != "" {
+		t.Fatalf("the oldest offer should have been evicted, got %q", got)
+	}
+	if got := c.take("1"); got != "US" {
+		t.Fatalf("only the oldest offer should have been evicted, got %q", got)
+	}
+	if got := c.take("newest"); got != "RU" {
+		t.Fatalf("a full cache must still remember new offers, got %q", got)
+	}
+}
 
+func TestOfferCountryCache_DropsExpiredOnAdd(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newOfferCountryCache(func() time.Time { return now })
+	c.add("old", "US")
 	now = now.Add(offerCountryTTL)
-	c.add("after-expiry", "RU")
-	if got := c.take("after-expiry"); got != "RU" {
-		t.Fatalf("a full cache must sweep expired entries to make room, got %q", got)
+	c.add("new", "RU")
+	if _, ok := c.m["old"]; ok || c.order.Len() != 1 {
+		t.Fatalf("an expired offer should be dropped when another is added, %d remain", c.order.Len())
 	}
-	if len(c.m) != 0 {
-		t.Fatalf("the sweep should have removed every expired entry, %d remain", len(c.m))
+}
+
+func TestOfferCountryCache_SurvivesLongSession(t *testing.T) {
+	now := time.Unix(0, 0)
+	c := newOfferCountryCache(func() time.Time { return now })
+	c.add("a", "IR")
+	// A connected attempt is reported only when its session ends.
+	now = now.Add(3 * time.Hour)
+	if got := c.take("a"); got != "IR" {
+		t.Fatalf("a long session's outcome should keep its country, got %q", got)
 	}
 }
 
