@@ -310,7 +310,7 @@ type Freddie struct {
 	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
 	// is read without synchronization by concurrent request handlers.
 	//
-	// Freddie also calls it on each offer POST it delivers, so freddie.producer.outcomes can say
+	// Freddie also calls it on each offer POST, so freddie.producer.outcomes can say
 	// which country the consumer behind each attempt was in.
 	ConsumerCountry func(r *http.Request) string
 
@@ -829,7 +829,16 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
+		// An offer's country is cached before the offer is published, so the producer can't report
+		// the attempt before Freddie can label it.
+		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer && f.ConsumerCountry != nil
+		if isOffer {
+			f.offerCountries.add(reqID, common.NormalizeCountry(f.ConsumerCountry(r)))
+		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
+		if isOffer && !ok {
+			f.offerCountries.take(reqID)
+		}
 		delivered := attribute.Bool("reply.delivered", ok)
 		span.SetAttributes(delivered)
 		f.signalReplies.Add(ctx, 1, metric.WithAttributes(
@@ -837,9 +846,6 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
 		f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
-		if ok && common.SignalMsgType(msgType) == common.SignalMsgOffer && f.ConsumerCountry != nil {
-			f.offerCountries.add(reqID, common.NormalizeCountry(f.ConsumerCountry(r)))
-		}
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
