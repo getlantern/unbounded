@@ -62,7 +62,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS)
+			peerConnection, err := newProducerPeerConnection(config, options)
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -689,13 +689,17 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	})
 }
 
-func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config) (*webrtc.PeerConnection, error) {
-	if !dtls.Enabled() {
-		return webrtc.NewPeerConnection(config)
-	}
+func newProducerPeerConnection(config webrtc.Configuration, options *WebRTCOptions) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
-	if err := covertdtls.Apply(dtls, &se); err != nil {
-		return nil, err
+	custom := applyICETiming(&se, options)
+	if options.CovertDTLS.Enabled() {
+		if err := covertdtls.Apply(options.CovertDTLS, &se); err != nil {
+			return nil, err
+		}
+		custom = true
+	}
+	if !custom {
+		return webrtc.NewPeerConnection(config)
 	}
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config)
 }

@@ -86,6 +86,16 @@ type WebRTCOptions struct {
 	// producer/widget side. See common/covertdtls and net4people/bbs#603
 	// for background. The zero value disables the feature.
 	CovertDTLS covertdtls.Config
+	// ICEMaxBindingRequests caps the connectivity checks pion sends on a candidate pair before it
+	// marks the pair failed. Zero keeps pion's default of 7. pion runs a full check round each time
+	// a remote candidate is added just after the agent starts, so an answer carrying several
+	// candidates can spend all 7 within milliseconds, before the remote side's own checks have
+	// opened our NAT. Native builds only: a browser's ICE agent can't be tuned.
+	ICEMaxBindingRequests uint16
+	// STUNGatherTimeout bounds how long ICE gathering waits on each STUN server. Zero keeps pion's
+	// default of 5s, which lets a single unresponsive server in the batch delay every handshake by
+	// 5s. Native builds only.
+	STUNGatherTimeout time.Duration
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {

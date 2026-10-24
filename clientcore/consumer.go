@@ -84,7 +84,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 				},
 			}
 
-			api, err := newWebRTCAPI(options.Net)
+			api, err := newWebRTCAPI(options.Net, options)
 			if err != nil {
 				slog.Debug("Error creating WebRTC API", "error", err)
 				return 0, []any{}

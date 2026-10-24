@@ -8,7 +8,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-func newWebRTCAPI(net transport.Net) (*webrtc.API, error) {
+func newWebRTCAPI(net transport.Net, options *WebRTCOptions) (*webrtc.API, error) {
 	if net == nil {
 		var err error
 		net, err = stdnet.NewNet()
@@ -18,5 +18,6 @@ func newWebRTCAPI(net transport.Net) (*webrtc.API, error) {
 	}
 	se := &webrtc.SettingEngine{}
 	se.SetNet(net)
+	applyICETiming(se, options)
 	return webrtc.NewAPI(webrtc.WithSettingEngine(*se)), nil
 }
