@@ -1,10 +1,15 @@
 package freddie
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/pion/webrtc/v4"
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -99,6 +104,34 @@ func TestClassifyNAT_ConsumerPortTranslatedAndSymmetric(t *testing.T) {
 	want := natClass{nat: natSymmetric}
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestRecordICENAT_SkipsPayloadsWithoutCandidates(t *testing.T) {
+	f, err := New(context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := sdkmetric.NewManualReader()
+	f.iceNAT, err = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Int64Counter("freddie.ice.nat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, span := noop.NewTracerProvider().Tracer("test").Start(context.Background(), "test")
+	delivered := attribute.Bool("reply.delivered", true)
+
+	f.recordICENAT(context.Background(), span, common.SignalMsgICE, "{}", delivered)
+	f.recordICENAT(context.Background(), span, common.SignalMsgAnswer, "{}", delivered)
+	f.recordICENAT(context.Background(), span, common.SignalMsgAnswer, sdpJSON(t), delivered)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	for _, sm := range rm.ScopeMetrics {
+		if len(sm.Metrics) > 0 {
+			t.Fatalf("payloads without candidates must not be counted, got %+v", sm.Metrics)
+		}
 	}
 }
 

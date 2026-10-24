@@ -104,7 +104,9 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType com
 	default:
 		return
 	}
-	if !ok {
+	// A payload with no candidates (data={}, or an SDP without a=candidate lines) says nothing
+	// about the peer's NAT and would otherwise land in no_srflx.
+	if !ok || len(cands) == 0 {
 		return
 	}
 	class := classifyNAT(cands)
