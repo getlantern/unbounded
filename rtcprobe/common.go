@@ -9,6 +9,8 @@ import (
 	"github.com/pion/dtls/v3"
 	"github.com/pion/dtls/v3/pkg/crypto/elliptic"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/getlantern/broflake/common/covertdtls"
 )
 
 const (
@@ -85,6 +87,9 @@ type statsMsg struct {
 //     and supported_groups lists every DTLS hello carries. It isn't meant to look like a browser,
 //     only to differ from "default", so a censor matching pion's hello would treat the two arms
 //     differently.
+//   - "covert" applies the covert-dtls randomize+mimic shaping native producers use
+//     (common/covertdtls). It rewrites only the ClientHello, so it only changes what the DTLS
+//     client sends: pair it with -responder-role server to shape the probe's own hello.
 func newAPI(variant string, configure func(*webrtc.SettingEngine)) (*webrtc.API, error) {
 	var se webrtc.SettingEngine
 	switch variant {
@@ -95,8 +100,12 @@ func newAPI(variant string, configure func(*webrtc.SettingEngine)) (*webrtc.API,
 			dtls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
 		)
 		se.SetDTLSEllipticCurves(elliptic.X25519)
+	case "covert":
+		if err := covertdtls.Apply(covertdtls.Config{Randomize: true, Mimic: true}, &se); err != nil {
+			return nil, err
+		}
 	default:
-		return nil, fmt.Errorf("dtls variant must be default or alt, got %q", variant)
+		return nil, fmt.Errorf("dtls variant must be default, alt or covert, got %q", variant)
 	}
 	if configure != nil {
 		configure(&se)

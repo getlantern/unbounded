@@ -7,9 +7,13 @@
 // The probe makes the offer and the responder answers, so the DTLS roles match production's: the
 // offerer (Unbounded's consumer) is the DTLS server unless -responder-role says otherwise.
 //
-//	rtcprobe serve -listen :8080 -token SECRET -udp-ports 50000-50100
-//	rtcprobe probe -url http://HOST:8080 -token SECRET -n 20 -dtls default
-//	rtcprobe probe -url http://HOST:8080 -token SECRET -n 20 -dtls alt
+//	rtcprobe serve -listen :8443 -token SECRET -tls -udp-ports 50000-50100   # logs the certificate pin
+//	rtcprobe probe -url https://HOST:8443 -token SECRET -pin PIN -n 20
+//	rtcprobe probe ... -responder-role server -dtls default   # the probe sends pion's ClientHello
+//	rtcprobe probe ... -responder-role server -dtls covert    # ... or covert-dtls's
+//
+// With the default -responder-role client, the probe is the DTLS server and sends pion's
+// ServerHello, as a production consumer does to a browser volunteer.
 //
 // The probe prints one JSON line per attempt on stdout and a summary on stderr.
 package main

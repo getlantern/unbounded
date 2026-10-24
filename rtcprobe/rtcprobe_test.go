@@ -34,6 +34,8 @@ func TestProbeAgainstResponder(t *testing.T) {
 		{"up unreliable", func(*testSpec) {}},
 		{"down reliable", func(s *testSpec) { s.Dir, s.Mode = "down", "reliable" }},
 		{"alt dtls, responder as server", func(s *testSpec) { s.DTLS, s.ResponderRole = "alt", "server" }},
+		{"covert dtls, probe as client", func(s *testSpec) { s.DTLS, s.ResponderRole = "covert", "server" }},
+		{"covert dtls, probe as server", func(s *testSpec) { s.DTLS = "covert" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testResponder(t)

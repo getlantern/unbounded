@@ -76,7 +76,7 @@ func probe(args []string) error {
 	secs := fs.Int("secs", 10, "transfer seconds; 0 skips the transfer")
 	mode := fs.String("mode", "unreliable", "data channel mode: unreliable (unordered, no retransmits, as Unbounded) or reliable")
 	chunk := fs.Int("chunk", 1200, "message size in bytes; 1200 is about one QUIC packet, as Unbounded sends")
-	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default or alt")
+	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default, alt or covert (covert shapes only the ClientHello)")
 	role := fs.String("responder-role", "client", "DTLS role the responder takes: client (as a browser volunteer) or server")
 	pin := fs.String("pin", "", "hex SHA-256 of the responder's certificate, as `rtcprobe serve -tls` logs it")
 	allowHTTP := fs.Bool("allow-http", false, "allow plain HTTP to a non-loopback responder, which sends the token in the clear")
