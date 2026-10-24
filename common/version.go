@@ -1,4 +1,4 @@
 package common
 
 // Must be a valid semver
-const Version = "v2.3.23"
+const Version = "v2.3.24"
