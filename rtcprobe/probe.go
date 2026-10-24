@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -20,6 +25,7 @@ import (
 type probeConfig struct {
 	url     string
 	token   string
+	client  *http.Client
 	stun    []string
 	timeout time.Duration
 	test    testSpec
@@ -39,22 +45,27 @@ type result struct {
 	Error   string `json:"error,omitempty"`
 	// Srflx is the probe's public addresses as its STUN servers saw them, to confirm the vantage
 	// point is where it's meant to be.
-	Srflx        []string `json:"srflx,omitempty"`
-	GatherMs     *int64   `json:"gather_ms,omitempty"`
-	SignalMs     *int64   `json:"signal_ms,omitempty"`
-	ICEMs        *int64   `json:"ice_ms,omitempty"`
-	DTLSMs       *int64   `json:"dtls_ms,omitempty"`
-	OpenMs       *int64   `json:"open_ms,omitempty"`
-	ICEState     string   `json:"ice_state"`
-	DTLSState    string   `json:"dtls_state"`
+	Srflx     []string `json:"srflx,omitempty"`
+	GatherMs  *int64   `json:"gather_ms,omitempty"`
+	SignalMs  *int64   `json:"signal_ms,omitempty"`
+	ICEMs     *int64   `json:"ice_ms,omitempty"`
+	DTLSMs    *int64   `json:"dtls_ms,omitempty"`
+	OpenMs    *int64   `json:"open_ms,omitempty"`
+	ICEState  string   `json:"ice_state"`
+	DTLSState string   `json:"dtls_state"`
+	// Mbps is over the whole transfer; BurstMbps only while data was arriving.
 	Mbps         *float64 `json:"mbps,omitempty"`
+	BurstMbps    *float64 `json:"burst_mbps,omitempty"`
 	Loss         *float64 `json:"loss,omitempty"`
 	BytesThrough int64    `json:"bytes_through,omitempty"`
+	// DrainIncomplete means the receiver stopped counting while data was still due, so Loss
+	// overstates what was lost.
+	DrainIncomplete bool `json:"drain_incomplete,omitempty"`
 }
 
 func probe(args []string) error {
 	fs := flag.NewFlagSet("probe", flag.ExitOnError)
-	url := fs.String("url", "", "responder base URL, e.g. http://203.0.113.5:8080 (required)")
+	rawURL := fs.String("url", "", "responder base URL, e.g. http://203.0.113.5:8080 (required)")
 	token := fs.String("token", "", "the responder's shared secret (required)")
 	n := fs.Int("n", 10, "attempts")
 	interval := fs.Duration("interval", 2*time.Second, "pause between attempts")
@@ -66,14 +77,21 @@ func probe(args []string) error {
 	chunk := fs.Int("chunk", 1200, "message size in bytes; 1200 is about one QUIC packet, as Unbounded sends")
 	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default or alt")
 	role := fs.String("responder-role", "client", "DTLS role the responder takes: client (as a browser volunteer) or server")
+	pin := fs.String("pin", "", "hex SHA-256 of the responder's certificate, as `rtcprobe serve -tls` logs it")
+	allowHTTP := fs.Bool("allow-http", false, "allow plain HTTP to a non-loopback responder, which sends the token in the clear")
 	fs.Parse(args)
 
-	if *url == "" || *token == "" {
+	if *rawURL == "" || *token == "" {
 		return errors.New("-url and -token are required")
 	}
+	client, err := signalingClient(*rawURL, *pin, *allowHTTP)
+	if err != nil {
+		return err
+	}
 	cfg := probeConfig{
-		url:     strings.TrimRight(*url, "/"),
+		url:     strings.TrimRight(*rawURL, "/"),
 		token:   *token,
+		client:  client,
 		timeout: *timeout,
 		test: testSpec{
 			Dir: *dir, Secs: *secs, Mode: *mode, Chunk: *chunk, DTLS: *dtlsVariant, ResponderRole: *role,
@@ -93,7 +111,9 @@ func probe(args []string) error {
 	for i := 1; i <= *n; i++ {
 		r := attempt(i, cfg)
 		results = append(results, r)
-		enc.Encode(r)
+		if err := enc.Encode(r); err != nil {
+			return fmt.Errorf("writing results: %w", err)
+		}
 		if i < *n {
 			time.Sleep(*interval)
 		}
@@ -260,15 +280,15 @@ func attempt(n int, cfg probeConfig) (r result) {
 	case "down":
 		select {
 		case sent = <-doneCh:
-			time.Sleep(drainGrace)
-			stats = got.stats()
+			stats = got.settle(sent, t.Mode == "reliable")
 		case <-time.After(wait):
 			r.Error = "the responder never finished sending"
 			return r
 		}
 	}
-	mbps, loss := throughput(sent, stats)
-	r.Mbps, r.Loss, r.BytesThrough = &mbps, &loss, stats.Bytes
+	mbps, burst, loss := throughput(sent, stats)
+	r.Mbps, r.BurstMbps, r.Loss, r.BytesThrough = &mbps, &burst, &loss, stats.Bytes
+	r.DrainIncomplete = !stats.Complete
 	return r
 }
 
@@ -288,7 +308,7 @@ func postOffer(ctx context.Context, cfg probeConfig, offer offerRequest) (*webrt
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(tokenHeader, cfg.token)
-	res, err := http.DefaultClient.Do(req)
+	res, err := cfg.client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -353,4 +373,48 @@ func medianF(v []float64) float64 {
 	}
 	slices.Sort(v)
 	return v[len(v)/2]
+}
+
+// signalingClient returns the client the probe signals with. The token travels in every request,
+// so it refuses plain HTTP to anything but loopback unless allowHTTP. With pin, it accepts only
+// the certificate whose SHA-256 that is, in place of CA verification.
+func signalingClient(rawURL, pin string, allowHTTP bool) (*http.Client, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	switch u.Scheme {
+	case "http":
+		if ip := net.ParseIP(u.Hostname()); !allowHTTP && u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+			return nil, errors.New("plain HTTP would send the token in the clear: run the responder with -tls and pass -pin, or -allow-http")
+		}
+		if pin != "" {
+			return nil, errors.New("-pin needs an https URL")
+		}
+		return &http.Client{}, nil
+	case "https":
+	default:
+		return nil, fmt.Errorf("unsupported URL scheme %q", u.Scheme)
+	}
+	if pin == "" {
+		return &http.Client{}, nil
+	}
+	want, err := hex.DecodeString(pin)
+	if err != nil || len(want) != sha256.Size {
+		return nil, errors.New("-pin must be a hex SHA-256")
+	}
+	tlsConfig := &tls.Config{
+		// Verification is VerifyConnection's pin check, not a CA chain.
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return errors.New("responder sent no certificate")
+			}
+			if sum := sha256.Sum256(cs.PeerCertificates[0].Raw); !bytes.Equal(sum[:], want) {
+				return errors.New("responder certificate doesn't match -pin")
+			}
+			return nil
+		},
+	}
+	return &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}, nil
 }

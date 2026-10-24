@@ -2,12 +2,21 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"strconv"
@@ -33,6 +42,7 @@ func serve(args []string) error {
 	publicIP := fs.String("public-ip", "", "public IP to advertise when the host sits behind 1:1 NAT (e.g. a cloud VM)")
 	udpPorts := fs.String("udp-ports", "", "UDP port range for ICE, e.g. 50000-50100, to open in a firewall")
 	maxSessions := fs.Int("max-sessions", 4, "concurrent sessions")
+	useTLS := fs.Bool("tls", false, "serve signaling over TLS with a self-signed certificate, and log its SHA-256 for probes to -pin")
 	fs.Parse(args)
 
 	if *token == "" {
@@ -55,9 +65,27 @@ func serve(args []string) error {
 		r.portMin, r.portMax = uint16(min), uint16(max)
 	}
 
-	srv := &http.Server{Addr: *listen, Handler: httpHandler(r), ReadHeaderTimeout: 10 * time.Second}
-	slog.Info("rtcprobe responder listening", "addr", *listen)
-	return srv.ListenAndServe()
+	// Signaling is one small request whose answer waits for ICE gathering (up to 10s), so short
+	// deadlines cost nothing and stop a client that sends its body slowly from holding a connection.
+	srv := &http.Server{
+		Addr:              *listen,
+		Handler:           httpHandler(r),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if !*useTLS {
+		slog.Info("rtcprobe responder listening", "addr", *listen)
+		return srv.ListenAndServe()
+	}
+	cert, pin, err := selfSignedCert()
+	if err != nil {
+		return err
+	}
+	srv.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	slog.Info("rtcprobe responder listening with TLS", "addr", *listen, "pin", pin)
+	return srv.ListenAndServeTLS("", "")
 }
 
 func httpHandler(r *responder) http.Handler {
@@ -98,7 +126,11 @@ func (r *responder) handleOffer(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(answer)
+	if err := json.NewEncoder(w).Encode(answer); err != nil {
+		pc.Close()
+		<-r.slots
+		return
+	}
 
 	go func() {
 		defer func() { <-r.slots }()
@@ -215,13 +247,12 @@ func (r *responder) session(pc *webrtc.PeerConnection, s *session, remote string
 	case t.Dir == "up":
 		select {
 		case sent := <-s.done:
-			time.Sleep(drainGrace)
-			got := s.got.stats()
+			got := s.got.settle(sent, t.Mode == "reliable")
 			if err := sendJSON(s.chans.ctl, got); err != nil {
 				log.Info("couldn't send stats", "error", err)
 			}
-			mbps, loss := throughput(sent, got)
-			log.Info("received", "mbps", mbps, "loss", loss, "bytes", got.Bytes)
+			mbps, _, loss := throughput(sent, got)
+			log.Info("received", "mbps", mbps, "loss", loss, "bytes", got.Bytes, "complete", got.Complete)
 		case <-s.closed:
 			log.Info("closed during the test")
 			return
@@ -247,4 +278,31 @@ func (r *responder) session(pc *webrtc.PeerConnection, s *session, remote string
 	case <-ctx.Done():
 	case <-time.After(10 * time.Second):
 	}
+}
+
+// selfSignedCert makes a throwaway certificate and returns it with the hex SHA-256 of its DER,
+// which probes pin instead of trusting a CA: the responder usually has only an IP address.
+func selfSignedCert() (tls.Certificate, string, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "rtcprobe"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().AddDate(1, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, "", err
+	}
+	sum := sha256.Sum256(der)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, hex.EncodeToString(sum[:]), nil
 }

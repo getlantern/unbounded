@@ -14,9 +14,12 @@ import (
 const (
 	tokenHeader = "X-Rtcprobe-Token"
 	maxTestSecs = 120
-	// drainGrace is how long a receiver keeps counting after the sender says it's done, for
-	// messages still in flight.
-	drainGrace = 500 * time.Millisecond
+	// A receiver that has been told the sender is done waits for the rest to arrive: on a
+	// reliable channel until every message has (up to reliableDrain), on an unreliable one until
+	// none has arrived for unreliableQuiet (up to unreliableDrain).
+	reliableDrain   = 10 * time.Second
+	unreliableQuiet = 500 * time.Millisecond
+	unreliableDrain = 5 * time.Second
 )
 
 // testSpec is what the probe asks the responder for, alongside its offer.
@@ -61,6 +64,8 @@ type offerRequest struct {
 type doneMsg struct {
 	Msgs  int64 `json:"msgs"`
 	Bytes int64 `json:"bytes"`
+	// SendSecs runs from the first message sent to the last.
+	SendSecs float64 `json:"send_secs"`
 }
 
 // statsMsg is what a receiver counted.
@@ -69,6 +74,9 @@ type statsMsg struct {
 	Bytes int64 `json:"bytes"`
 	// ActiveSecs runs from the first message received to the last.
 	ActiveSecs float64 `json:"active_secs"`
+	// Complete is false when a reliable transfer was still missing messages at the drain deadline,
+	// or an unreliable one was still receiving.
+	Complete bool `json:"complete"`
 }
 
 // newAPI builds a pion API with a DTLS fingerprint variant:
@@ -119,7 +127,9 @@ func send(dc *webrtc.DataChannel, d time.Duration, chunk int) (doneMsg, error) {
 	})
 	buf := make([]byte, chunk)
 	var sent doneMsg
-	for deadline := time.Now().Add(d); time.Now().Before(deadline); {
+	start := time.Now()
+	defer func() { sent.SendSecs = time.Since(start).Seconds() }()
+	for deadline := start.Add(d); time.Now().Before(deadline); {
 		if dc.BufferedAmount() > highWater {
 			select {
 			case <-low:
@@ -161,15 +171,41 @@ func (t *tally) stats() statsMsg {
 	return statsMsg{Msgs: t.msgs, Bytes: t.bytes, ActiveSecs: t.last.Sub(t.first).Seconds()}
 }
 
-// throughput returns megabits per second and the fraction of sent messages that didn't arrive.
-func throughput(sent doneMsg, got statsMsg) (mbps, loss float64) {
+// settle waits for a transfer's stragglers once the sender has said it sent sent: the data and
+// control channels are separate SCTP streams, so the done message can overtake data.
+func (t *tally) settle(sent doneMsg, reliable bool) statsMsg {
+	limit := unreliableDrain
+	if reliable {
+		limit = reliableDrain
+	}
+	for deadline := time.Now().Add(limit); ; time.Sleep(50 * time.Millisecond) {
+		t.mu.Lock()
+		done := reliable && t.msgs >= sent.Msgs ||
+			!reliable && time.Since(t.last) >= unreliableQuiet
+		t.mu.Unlock()
+		if done || time.Now().After(deadline) {
+			s := t.stats()
+			s.Complete = done
+			return s
+		}
+	}
+}
+
+// throughput returns megabits per second over the whole transfer, the rate while data was
+// arriving, and the fraction of sent messages that didn't arrive. The whole-transfer rate divides
+// by the longer of the sender's and the receiver's spans, so a connection that stalls partway
+// isn't credited with its rate before the stall.
+func throughput(sent doneMsg, got statsMsg) (mbps, burstMbps, loss float64) {
+	if secs := max(sent.SendSecs, got.ActiveSecs); secs > 0 {
+		mbps = float64(got.Bytes) * 8 / secs / 1e6
+	}
 	if got.ActiveSecs > 0 {
-		mbps = float64(got.Bytes) * 8 / got.ActiveSecs / 1e6
+		burstMbps = float64(got.Bytes) * 8 / got.ActiveSecs / 1e6
 	}
 	if sent.Msgs > 0 {
 		loss = 1 - float64(got.Msgs)/float64(sent.Msgs)
 	}
-	return mbps, loss
+	return mbps, burstMbps, loss
 }
 
 func sendJSON(dc *webrtc.DataChannel, v any) error {
@@ -192,16 +228,19 @@ func newChannels() *channels {
 	return &channels{open: make(chan struct{})}
 }
 
-// add registers dc, which must not be open yet, and calls onMessage for each message it gets.
+// add registers dc, which must not be open yet, and calls onMessage for each message it gets. It
+// takes the first channel labeled "data" and the first labeled "ctl", and closes any other, so a
+// peer can't open two of one and none of the other.
 func (c *channels) add(dc *webrtc.DataChannel, onMessage func(webrtc.DataChannelMessage)) {
 	c.mu.Lock()
-	switch dc.Label() {
-	case "data":
+	switch {
+	case dc.Label() == "data" && c.data == nil:
 		c.data = dc
-	case "ctl":
+	case dc.Label() == "ctl" && c.ctl == nil:
 		c.ctl = dc
 	default:
 		c.mu.Unlock()
+		dc.Close()
 		return
 	}
 	c.mu.Unlock()
