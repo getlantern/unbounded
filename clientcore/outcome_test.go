@@ -3,6 +3,7 @@ package clientcore
 import (
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -12,13 +13,16 @@ func TestAttemptOutcome_ReportedOnceThenCleared(t *testing.T) {
 	last.record(common.OutcomeNATTimeout, nil)
 
 	form := url.Values{}
-	last.addTo(form)
+	last.addTo(form, 15*time.Second)
 	if got := form.Get(common.PrevOutcomeField); got != common.OutcomeNATTimeout {
 		t.Fatalf("first genesis should carry the outcome, got %q", got)
 	}
+	if got := form.Get(common.PrevNATTimeoutField); got != "15" {
+		t.Fatalf("the report should carry the timeout in seconds, got %q", got)
+	}
 
 	next := url.Values{}
-	last.addTo(next)
+	last.addTo(next, 15*time.Second)
 	if len(next) != 0 {
 		t.Fatalf("an outcome must be reported once, but the next genesis carried %v", next)
 	}
@@ -27,7 +31,7 @@ func TestAttemptOutcome_ReportedOnceThenCleared(t *testing.T) {
 func TestAttemptOutcome_NothingRecordedAddsNothing(t *testing.T) {
 	var last attemptOutcome
 	form := url.Values{"data": {"x"}}
-	last.addTo(form)
+	last.addTo(form, 15*time.Second)
 	if len(form) != 1 {
 		t.Fatalf("no outcome must leave the genesis form untouched, got %v", form)
 	}

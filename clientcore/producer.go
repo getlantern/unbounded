@@ -180,7 +180,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Signal the genesis message
 			form := genesisForm(options, g)
-			last.addTo(form)
+			last.addTo(form, options.NATFailTimeout)
 
 			req, err := http.NewRequestWithContext(
 				ctx,
@@ -742,13 +742,14 @@ func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
 
 // addTo puts the recorded outcome on a genesis form, once: each outcome is reported with the
 // genesis message that follows it and then cleared.
-func (o *attemptOutcome) addTo(form url.Values) {
+func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	if o.outcome == "" {
 		return
 	}
 	form.Set(common.PrevOutcomeField, o.outcome)
 	form.Set(common.PrevICEStateField, o.iceState)
 	form.Set(common.PrevPCStateField, o.pcState)
+	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
 	*o = attemptOutcome{}
 }
 
