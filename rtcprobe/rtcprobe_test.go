@@ -36,6 +36,7 @@ func TestProbeAgainstResponder(t *testing.T) {
 		{"alt dtls, responder as server", func(s *testSpec) { s.DTLS, s.ResponderRole = "alt", "server" }},
 		{"covert dtls, probe as client", func(s *testSpec) { s.DTLS, s.ResponderRole = "covert", "server" }},
 		{"covert dtls, probe as server", func(s *testSpec) { s.DTLS = "covert" }},
+		{"short dtls retransmit", func(s *testSpec) { s.DTLSRetransmitMs = 100 }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testResponder(t)
@@ -198,5 +199,26 @@ func TestSignalingClientRefusesRedirects(t *testing.T) {
 	cfg := probeConfig{url: redirect.URL, token: "secret", client: client}
 	if _, err := postOffer(context.Background(), cfg, offerRequest{}); err == nil {
 		t.Fatal("a redirect should fail signaling")
+	}
+}
+
+func TestDurationMs(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want int
+		ok   bool
+	}{
+		{0, 0, true},
+		{200 * time.Millisecond, 200, true},
+		{5 * time.Second, 5000, true},
+		{500 * time.Microsecond, 0, false},
+		{5*time.Second + 500*time.Microsecond, 0, false},
+		{5*time.Second + time.Millisecond, 0, false},
+		{-time.Millisecond, 0, false},
+	} {
+		got, err := durationMs(tc.in, 5*time.Second)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("durationMs(%s) = %d, %v; want %d, ok=%v", tc.in, got, err, tc.want, tc.ok)
+		}
 	}
 }

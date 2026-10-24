@@ -78,6 +78,7 @@ func probe(args []string) error {
 	chunk := fs.Int("chunk", 1200, "message size in bytes; 1200 is about one QUIC packet, as Unbounded sends")
 	dtlsVariant := fs.String("dtls", "default", "DTLS fingerprint variant: default, alt or covert (covert shapes only the ClientHello)")
 	role := fs.String("responder-role", "client", "DTLS role the responder takes: client (as a browser volunteer) or server")
+	retransmit := fs.Duration("dtls-retransmit", 0, "initial DTLS handshake retransmission interval for both sides; 0 keeps pion's default (1s)")
 	pin := fs.String("pin", "", "hex SHA-256 of the responder's certificate, as `rtcprobe serve -tls` logs it")
 	allowHTTP := fs.Bool("allow-http", false, "allow plain HTTP to a non-loopback responder, which sends the token in the clear")
 	fs.Parse(args)
@@ -89,6 +90,10 @@ func probe(args []string) error {
 	if err != nil {
 		return err
 	}
+	retransmitMs, err := durationMs(*retransmit, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("-dtls-retransmit: %w", err)
+	}
 	cfg := probeConfig{
 		url:     strings.TrimRight(*rawURL, "/"),
 		token:   *token,
@@ -96,6 +101,7 @@ func probe(args []string) error {
 		timeout: *timeout,
 		test: testSpec{
 			Dir: *dir, Secs: *secs, Mode: *mode, Chunk: *chunk, DTLS: *dtlsVariant, ResponderRole: *role,
+			DTLSRetransmitMs: retransmitMs,
 		},
 	}
 	for _, s := range strings.Split(*stun, ",") {
@@ -134,7 +140,7 @@ func attempt(n int, cfg probeConfig) (r result) {
 		return nil
 	}
 
-	api, err := newAPI(t.DTLS, nil)
+	api, err := newAPI(t.DTLS, func(se *webrtc.SettingEngine) { applyRetransmit(t, se) })
 	if err != nil {
 		r.Outcome, r.Error = "gather", err.Error()
 		return r
@@ -426,4 +432,14 @@ func signalingClient(rawURL, pin string, allowHTTP bool) (*http.Client, error) {
 func noRedirects(c *http.Client) *http.Client {
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return c
+}
+
+// durationMs converts d to whole milliseconds, refusing what the conversion would otherwise
+// change silently: a negative value, one over limit, or a fraction of a millisecond, which would
+// round 500us down to 0 and so to pion's default.
+func durationMs(d, limit time.Duration) (int, error) {
+	if d < 0 || d > limit || d%time.Millisecond != 0 {
+		return 0, fmt.Errorf("must be a whole number of milliseconds from 0 to %s, got %s", limit, d)
+	}
+	return int(d / time.Millisecond), nil
 }
