@@ -309,6 +309,9 @@ type Freddie struct {
 	// consumer untargeted: it still receives untargeted and fallback broadcasts, but is never
 	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
 	// is read without synchronization by concurrent request handlers.
+	//
+	// Freddie also calls it on each offer POST it delivers, so freddie.producer.outcomes can say
+	// which country the consumer behind each attempt was in.
 	ConsumerCountry func(r *http.Request) string
 
 	// RoomTicket, if non-nil, verifies a helper pairing ticket presented for role and returns the
@@ -351,7 +354,8 @@ type Freddie struct {
 	iceNAT            metric.Int64Counter
 	producerOutcomes  metric.Int64Counter
 
-	tickets *ticketCache
+	tickets        *ticketCache
+	offerCountries *offerCountryCache
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -365,11 +369,12 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 			Addr:         listenAddr,
 			Handler:      mux,
 		},
-		currentGets:  atomic.Int64{},
-		currentPosts: atomic.Int64{},
-		tracer:       otel.Tracer("github.com/getlantern/broflake/freddie"),
-		meter:        otel.Meter("github.com/getlantern/broflake/freddie"),
-		tickets:      newTicketCache(maxCachedTickets, time.Now),
+		currentGets:    atomic.Int64{},
+		currentPosts:   atomic.Int64{},
+		tracer:         otel.Tracer("github.com/getlantern/broflake/freddie"),
+		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
+		tickets:        newTicketCache(maxCachedTickets, time.Now),
+		offerCountries: newOfferCountryCache(time.Now),
 	}
 
 	var err error
@@ -832,6 +837,9 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
 		f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
+		if ok && common.SignalMsgType(msgType) == common.SignalMsgOffer && f.ConsumerCountry != nil {
+			f.offerCountries.add(reqID, common.NormalizeCountry(f.ConsumerCountry(r)))
+		}
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.

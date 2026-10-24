@@ -49,3 +49,24 @@ func TestNormalizeNATTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestOutcomeConsumerCountry(t *testing.T) {
+	for _, tc := range []struct {
+		reported bool
+		country  string
+		want     string
+	}{
+		{false, "", "unreported"},
+		{false, "RU", "unreported"},
+		{true, "", "unknown"},
+		{true, "RU", "RU"},
+		{true, "CN", "CN"},
+		{true, "IR", "IR"},
+		{true, "US", "US"},
+		{true, "DE", "other"},
+	} {
+		if got := OutcomeConsumerCountry(tc.reported, tc.country); got != tc.want {
+			t.Errorf("OutcomeConsumerCountry(%v, %q) = %q, want %q", tc.reported, tc.country, got, tc.want)
+		}
+	}
+}

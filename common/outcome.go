@@ -4,7 +4,8 @@ import "strconv"
 
 // A producer reports how its previous connection attempt ended on its next genesis message, so
 // Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
-// fields carry only these enumerations: no addresses, session IDs, or timings. A producer that
+// fields carry only these enumerations and the Freddie-minted ID of the offer the attempt
+// answered: no addresses, consumer session IDs, or timings. A producer that
 // predates them sends nothing, and a Freddie that predates them ignores them.
 const (
 	PrevOutcomeField  = "prev-outcome"
@@ -13,6 +14,10 @@ const (
 	// PrevNATTimeoutField is the NATFailTimeout, in whole seconds, the producer ran the attempt
 	// with, so outcomes can be compared across timeout settings while clients roll over.
 	PrevNATTimeoutField = "prev-nat-timeout"
+	// PrevOfferIDField is the ReplyTo of the offer the attempt answered: the ID Freddie gave the
+	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
+	// Freddie label the outcome with the country it derived for that consumer.
+	PrevOfferIDField = "prev-offer-id"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
@@ -87,6 +92,26 @@ func NormalizeNATTimeout(s string) string {
 		return "invalid"
 	}
 	return s
+}
+
+// outcomeCountries are the consumer countries freddie.producer.outcomes labels individually; any
+// other known country is "other", so the label has a handful of values.
+var outcomeCountries = map[string]bool{"CN": true, "IR": true, "RU": true, "US": true}
+
+// OutcomeConsumerCountry maps the country Freddie derived for an attempt's consumer onto the
+// consumer_country label: one of outcomeCountries, "other", "unknown" when Freddie has no country
+// for the offer, or "unreported" when the producer predates PrevOfferIDField.
+func OutcomeConsumerCountry(offerIDReported bool, country string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case country == "":
+		return "unknown"
+	case outcomeCountries[country]:
+		return country
+	default:
+		return "other"
+	}
 }
 
 func normalizeEnum(s string, known map[string]bool) string {
