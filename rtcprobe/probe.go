@@ -90,6 +90,10 @@ func probe(args []string) error {
 	if err != nil {
 		return err
 	}
+	retransmitMs, err := durationMs(*retransmit, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("-dtls-retransmit: %w", err)
+	}
 	cfg := probeConfig{
 		url:     strings.TrimRight(*rawURL, "/"),
 		token:   *token,
@@ -97,7 +101,7 @@ func probe(args []string) error {
 		timeout: *timeout,
 		test: testSpec{
 			Dir: *dir, Secs: *secs, Mode: *mode, Chunk: *chunk, DTLS: *dtlsVariant, ResponderRole: *role,
-			DTLSRetransmitMs: int(*retransmit / time.Millisecond),
+			DTLSRetransmitMs: retransmitMs,
 		},
 	}
 	for _, s := range strings.Split(*stun, ",") {
@@ -428,4 +432,14 @@ func signalingClient(rawURL, pin string, allowHTTP bool) (*http.Client, error) {
 func noRedirects(c *http.Client) *http.Client {
 	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return c
+}
+
+// durationMs converts d to whole milliseconds, refusing what the conversion would otherwise
+// change silently: a negative value, one over limit, or a fraction of a millisecond, which would
+// round 500us down to 0 and so to pion's default.
+func durationMs(d, limit time.Duration) (int, error) {
+	if d < 0 || d > limit || d%time.Millisecond != 0 {
+		return 0, fmt.Errorf("must be a whole number of milliseconds from 0 to %s, got %s", limit, d)
+	}
+	return int(d / time.Millisecond), nil
 }

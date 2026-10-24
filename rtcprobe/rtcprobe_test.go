@@ -201,3 +201,24 @@ func TestSignalingClientRefusesRedirects(t *testing.T) {
 		t.Fatal("a redirect should fail signaling")
 	}
 }
+
+func TestDurationMs(t *testing.T) {
+	for _, tc := range []struct {
+		in   time.Duration
+		want int
+		ok   bool
+	}{
+		{0, 0, true},
+		{200 * time.Millisecond, 200, true},
+		{5 * time.Second, 5000, true},
+		{500 * time.Microsecond, 0, false},
+		{5*time.Second + 500*time.Microsecond, 0, false},
+		{5*time.Second + time.Millisecond, 0, false},
+		{-time.Millisecond, 0, false},
+	} {
+		got, err := durationMs(tc.in, 5*time.Second)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("durationMs(%s) = %d, %v; want %d, ok=%v", tc.in, got, err, tc.want, tc.ok)
+		}
+	}
+}
