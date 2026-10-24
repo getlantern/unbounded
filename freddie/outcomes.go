@@ -23,6 +23,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("outcome", outcome),
 		attribute.String("ice_state", common.NormalizeICEState(r.Form.Get(common.PrevICEStateField))),
 		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
+		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
 	}
 	f.producerOutcomes.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))

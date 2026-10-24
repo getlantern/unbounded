@@ -1,5 +1,7 @@
 package common
 
+import "strconv"
+
 // A producer reports how its previous connection attempt ended on its next genesis message, so
 // Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
 // fields carry only these enumerations: no addresses, session IDs, or timings. A producer that
@@ -8,6 +10,9 @@ const (
 	PrevOutcomeField  = "prev-outcome"
 	PrevICEStateField = "prev-ice-state"
 	PrevPCStateField  = "prev-pc-state"
+	// PrevNATTimeoutField is the NATFailTimeout, in whole seconds, the producer ran the attempt
+	// with, so outcomes can be compared across timeout settings while clients roll over.
+	PrevNATTimeoutField = "prev-nat-timeout"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
@@ -65,6 +70,23 @@ func NormalizeICEState(s string) string {
 // NormalizePCState does the same for a reported peer connection state.
 func NormalizePCState(s string) string {
 	return normalizeEnum(s, pcStates)
+}
+
+// maxReportedNATTimeoutSeconds bounds the reported timeout, so the label has at most this many
+// values plus "invalid" and "unreported".
+const maxReportedNATTimeoutSeconds = 60
+
+// NormalizeNATTimeout maps a reported timeout onto "1".."60", "unreported" when the producer
+// predates the field, or "invalid".
+func NormalizeNATTimeout(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > maxReportedNATTimeoutSeconds || strconv.Itoa(n) != s {
+		return "invalid"
+	}
+	return s
 }
 
 func normalizeEnum(s string, known map[string]bool) string {
