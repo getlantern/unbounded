@@ -76,89 +76,83 @@ func TestOutcomeConsumerCountry(t *testing.T) {
 	}
 }
 
-func TestNormalizePionDTLS(t *testing.T) {
+func TestNormalizeConsumerVersion(t *testing.T) {
+	const current = "v2.3.40"
 	for in, want := range map[string]string{
-		"":                                    "not_sent",
-		"v3.1.15":                             "v3.1.15",
-		"v3.1.2":                              "v3.1.2",
-		"v3.0.0":                              "v3.0.0",
-		"v3.3.31":                             "v3.3.31",
-		"v3.1.32":                             "v3.1.32+",
-		"v3.1.999999":                         "v3.1.32+",
-		"v3.4.0":                              "v3.4+",
-		"v3.999999.0":                         "v3.4+",
-		"v3.1.16-0.20261020120000-abcdef0123": "v3.1.16",
-		"v3.2.0-rc.1":                         "v3.2.0",
-		PionDTLSBrowser:                       PionDTLSBrowser,
-		PionDTLSNoBuildInfo:                   PionDTLSNoBuildInfo,
-		"v3.01.2":                             "invalid",
-		"v3.1.02":                             "invalid",
-		"v3.1.-1":                             "invalid",
-		"v3.1.+1":                             "invalid",
-		"v3.1":                                "invalid",
-		"v3.1.2.3":                            "invalid",
-		"v3.1.2-":                             "invalid",
-		"v3.1.99999999999999999999":           "invalid",
-		"v2.2.7":                              "invalid",
-		"3.1.15":                              "invalid",
-		"(devel)":                             "invalid",
+		"":             "not_sent",
+		"v2.3.40":      "v2.3.40",
+		"v2.3.23":      "v2.3.23",
+		"v2.3.9":       "v2.3.9",
+		"v2.3.8":       "older",
+		"v2.3.48":      "v2.3.48",
+		"v2.3.49":      "newer",
+		"v2.2.99":      "older",
+		"v2.4.0":       "newer",
+		"v2.999999.0":  "newer",
+		"v1.3.40":      "invalid",
+		"v3.0.0":       "invalid",
+		"v2.3":         "invalid",
+		"v2.3.40.1":    "invalid",
+		"v2.3.040":     "invalid",
+		"v2.3.40-rc.1": "invalid",
+		"v2.3.+40":     "invalid",
+		"2.3.40":       "invalid",
+		"v2.3.-1":      "invalid",
+		"(devel)":      "invalid",
 	} {
-		if got := NormalizePionDTLS(in); got != want {
-			t.Errorf("NormalizePionDTLS(%q) = %q, want %q", in, got, want)
+		if got := NormalizeConsumerVersion(in, current); got != want {
+			t.Errorf("NormalizeConsumerVersion(%q) = %q, want %q", in, got, want)
 		}
+	}
+	if got := NormalizeConsumerVersion("v2.3.0", "v2.3.2"); got != "v2.3.0" {
+		t.Errorf("a window reaching below patch 0 got %q, want v2.3.0", got)
+	}
+	if got := NormalizeConsumerVersion("v2.3.0", "bogus"); got != "invalid" {
+		t.Errorf("an unparseable current version got %q, want invalid", got)
 	}
 }
 
-// TestNormalizePionDTLSBounded checks the label's value space stays small however the header is
-// chosen.
-func TestNormalizePionDTLSBounded(t *testing.T) {
+// TestNormalizeConsumerVersionBounded checks the label's value space stays small however the
+// header is chosen.
+func TestNormalizeConsumerVersionBounded(t *testing.T) {
 	seen := map[string]bool{}
-	for minor := 0; minor <= 50; minor++ {
-		for patch := 0; patch <= 100; patch++ {
-			v := "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
-			seen[NormalizePionDTLS(v)] = true
-			seen[NormalizePionDTLS(v+"-0.20261020120000-abcdef012345")] = true
+	for minor := 0; minor <= 20; minor++ {
+		for patch := 0; patch <= 200; patch++ {
+			seen[NormalizeConsumerVersion("v2."+strconv.Itoa(minor)+"."+strconv.Itoa(patch), Version)] = true
 		}
 	}
-	if want := (maxPionDTLSMinor+1)*(maxPionDTLSPatch+2) + 1; len(seen) != want {
-		t.Fatalf("%d label values, want %d", len(seen), want)
+	if max := consumerVersionPatchesBehind + consumerVersionPatchesAhead + 1 + 2; len(seen) > max {
+		t.Fatalf("%d label values, want at most %d", len(seen), max)
 	}
 }
 
-// TestNormalizePionDTLSDoesNotRetainInput checks a label never aliases the header it came from,
-// which Freddie caches for up to a day.
-func TestNormalizePionDTLSDoesNotRetainInput(t *testing.T) {
-	for _, in := range []string{
-		"v3.1.15-" + strings.Repeat("x", 4096),
-		"v3.1.15",
-		"v3.1.40",
-		"v3.9.0",
-		strings.Clone(PionDTLSBrowser),
-		strings.Clone(PionDTLSNoBuildInfo),
-	} {
-		got := NormalizePionDTLS(in)
-		start := uintptr(unsafe.Pointer(unsafe.StringData(in)))
-		p := uintptr(unsafe.Pointer(unsafe.StringData(got)))
-		if p >= start && p < start+uintptr(len(in)) {
-			t.Errorf("NormalizePionDTLS(%.20q) = %q shares the input's memory", in, got)
-		}
+// TestNormalizeConsumerVersionDoesNotRetainInput checks a label never aliases the header it came
+// from, which Freddie caches for up to a day.
+func TestNormalizeConsumerVersionDoesNotRetainInput(t *testing.T) {
+	in := strings.Clone(Version)
+	got := NormalizeConsumerVersion(in, Version)
+	if got != Version {
+		t.Fatalf("got %q, want %q", got, Version)
+	}
+	if unsafe.StringData(got) == unsafe.StringData(in) {
+		t.Error("the label shares the header's memory")
 	}
 }
 
-func TestOutcomeConsumerDTLS(t *testing.T) {
+func TestOutcomeConsumerVersion(t *testing.T) {
 	for _, tc := range []struct {
 		reported bool
-		dtls     string
+		version  string
 		want     string
 	}{
 		{false, "", "unreported"},
-		{false, "v3.1.15", "unreported"},
+		{false, "v2.3.23", "unreported"},
 		{true, "", "unknown"},
-		{true, "not_sent", "not_sent"},
-		{true, "v3.1.15", "v3.1.15"},
+		{true, "older", "older"},
+		{true, "v2.3.23", "v2.3.23"},
 	} {
-		if got := OutcomeConsumerDTLS(tc.reported, tc.dtls); got != tc.want {
-			t.Errorf("OutcomeConsumerDTLS(%v, %q) = %q, want %q", tc.reported, tc.dtls, got, tc.want)
+		if got := OutcomeConsumerVersion(tc.reported, tc.version); got != tc.want {
+			t.Errorf("OutcomeConsumerVersion(%v, %q) = %q, want %q", tc.reported, tc.version, got, tc.want)
 		}
 	}
 }

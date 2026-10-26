@@ -833,7 +833,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// report the attempt before Freddie can label it.
 		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
 		if isOffer {
-			oc := offerConsumer{dtls: common.NormalizePionDTLS(r.Header.Get(common.PionDTLSHeader))}
+			oc := offerConsumer{version: common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
 			}

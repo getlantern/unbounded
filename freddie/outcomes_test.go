@@ -46,8 +46,8 @@ func outcomeCounts(t *testing.T, form url.Values) map[string]int64 {
 				p, _ := dp.Attributes.Value("pc_state")
 				n, _ := dp.Attributes.Value("nat_timeout_s")
 				c, _ := dp.Attributes.Value("consumer_country")
-				d, _ := dp.Attributes.Value("consumer_dtls")
-				counts[o.AsString()+"/"+i.AsString()+"/"+p.AsString()+"/"+n.AsString()+"/"+c.AsString()+"/"+d.AsString()] += dp.Value
+				v, _ := dp.Attributes.Value("consumer_version")
+				counts[o.AsString()+"/"+i.AsString()+"/"+p.AsString()+"/"+n.AsString()+"/"+c.AsString()+"/"+v.AsString()] += dp.Value
 			}
 		}
 	}

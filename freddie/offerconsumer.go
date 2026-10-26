@@ -18,10 +18,10 @@ const (
 )
 
 // offerConsumer is what Freddie labels a delivered offer's attempt with: the consumer country it
-// derived for the request, and the consumer's common.NormalizePionDTLS value.
+// derived for the request, and the consumer's common.NormalizeConsumerVersion value.
 type offerConsumer struct {
 	country string
-	dtls    string
+	version string
 }
 
 type offerConsumerEntry struct {

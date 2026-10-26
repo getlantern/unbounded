@@ -74,9 +74,9 @@ func TestOfferConsumerCache_SurvivesLongSession(t *testing.T) {
 	}
 }
 
-// postOffer posts an offer to sendTo as a consumer in country linking pion/dtls version dtls, and
+// postOffer posts an offer to sendTo as a consumer in country sending VersionHeader version, and
 // returns the response status.
-func (s *testServer) postOffer(sendTo, country, dtls string) int {
+func (s *testServer) postOffer(sendTo, country, version string) int {
 	form := url.Values{
 		"data":    {"{}"},
 		"send-to": {sendTo},
@@ -87,11 +87,8 @@ func (s *testServer) postOffer(sendTo, country, dtls string) int {
 		s.t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set(common.VersionHeader, common.Version)
+	req.Header.Set(common.VersionHeader, version)
 	req.Header.Set(testCountryHeader, country)
-	if dtls != "" {
-		req.Header.Set(common.PionDTLSHeader, dtls)
-	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0
@@ -100,16 +97,16 @@ func (s *testServer) postOffer(sendTo, country, dtls string) int {
 	return res.StatusCode
 }
 
-// deliverOffer posts an offer from a consumer in country linking pion/dtls version dtls to a
+// deliverOffer posts an offer from a consumer in country sending VersionHeader version to a
 // waiting producer, answers it, and returns the offer's ID as the producer sees it.
-func (s *testServer) deliverOffer(country, dtls string) string {
+func (s *testServer) deliverOffer(country, version string) string {
 	s.t.Helper()
 	genesisID := "producer-genesis"
 	producer := signalTable.Add(genesisID)
 	defer signalTable.Delete(genesisID)
 
 	done := make(chan int, 1)
-	go func() { done <- s.postOffer(genesisID, country, dtls) }()
+	go func() { done <- s.postOffer(genesisID, country, version) }()
 
 	var offer common.SignalMsg
 	select {
@@ -128,52 +125,52 @@ func (s *testServer) deliverOffer(country, dtls string) string {
 	return offer.ReplyTo
 }
 
-// consumerLabels returns the consumer_country and consumer_dtls labels for an attempt that
+// consumerLabels returns the consumer_country and consumer_version labels for an attempt that
 // answered offerID.
-func (s *testServer) consumerLabels(offerID string) (country, dtls string) {
+func (s *testServer) consumerLabels(offerID string) (country, version string) {
 	for _, kv := range s.f.attemptConsumerAttrs(offerID) {
 		switch kv.Key {
 		case "consumer_country":
 			country = kv.Value.AsString()
-		case "consumer_dtls":
-			dtls = kv.Value.AsString()
+		case "consumer_version":
+			version = kv.Value.AsString()
 		}
 	}
-	return country, dtls
+	return country, version
 }
 
 func TestDeliveredOffer_LabelsProducerOutcomeWithConsumer(t *testing.T) {
 	s := startTestServer(t, headerHook)
-	offerID := s.deliverOffer("ru", "v3.1.15")
+	offerID := s.deliverOffer("ru", common.Version)
 
-	if c, d := s.consumerLabels(offerID); c != "RU" || d != "v3.1.15" {
-		t.Fatalf("got %q, %q, want RU, v3.1.15", c, d)
+	if c, v := s.consumerLabels(offerID); c != "RU" || v != common.Version {
+		t.Fatalf("got %q, %q, want RU, %s", c, v, common.Version)
 	}
-	if c, d := s.consumerLabels(offerID); c != "unknown" || d != "unknown" {
-		t.Fatalf("a second report of the same offer must not be labeled again, got %q, %q", c, d)
+	if c, v := s.consumerLabels(offerID); c != "unknown" || v != "unknown" {
+		t.Fatalf("a second report of the same offer must not be labeled again, got %q, %q", c, v)
 	}
-	if c, d := s.consumerLabels(""); c != "unreported" || d != "unreported" {
-		t.Fatalf("a producer that sends no offer ID must be unreported, got %q, %q", c, d)
+	if c, v := s.consumerLabels(""); c != "unreported" || v != "unreported" {
+		t.Fatalf("a producer that sends no offer ID must be unreported, got %q, %q", c, v)
 	}
 }
 
-func TestDeliveredOffer_ConsumerWithoutDTLSHeader(t *testing.T) {
+func TestDeliveredOffer_LabelsOldConsumerVersion(t *testing.T) {
 	s := startTestServer(t, headerHook)
-	if c, d := s.consumerLabels(s.deliverOffer("cn", "")); c != "CN" || d != "not_sent" {
-		t.Fatalf("got %q, %q, want CN, not_sent", c, d)
+	if c, v := s.consumerLabels(s.deliverOffer("cn", "v2.0.0")); c != "CN" || v != "older" {
+		t.Fatalf("got %q, %q, want CN, older", c, v)
 	}
 }
 
-func TestDeliveredOffer_LabelsDTLSWithoutCountryHook(t *testing.T) {
+func TestDeliveredOffer_LabelsVersionWithoutCountryHook(t *testing.T) {
 	s := startTestServer(t, nil)
-	if c, d := s.consumerLabels(s.deliverOffer("ru", "v3.1.2")); c != "unknown" || d != "v3.1.2" {
-		t.Fatalf("got %q, %q, want unknown, v3.1.2", c, d)
+	if c, v := s.consumerLabels(s.deliverOffer("ru", common.Version)); c != "unknown" || v != common.Version {
+		t.Fatalf("got %q, %q, want unknown, %s", c, v, common.Version)
 	}
 }
 
 func TestUndeliveredOffer_NotRemembered(t *testing.T) {
 	s := startTestServer(t, headerHook)
-	if status := s.postOffer("nobody", "RU", "v3.1.15"); status != http.StatusNotFound {
+	if status := s.postOffer("nobody", "RU", common.Version); status != http.StatusNotFound {
 		t.Fatalf("offer to a missing producer: status %d, want 404", status)
 	}
 	if n := len(s.f.offerConsumers.m); n != 0 {

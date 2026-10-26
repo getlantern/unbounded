@@ -30,7 +30,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
 }
 
-// attemptConsumerAttrs are the consumer_country and consumer_dtls labels for an attempt that
+// attemptConsumerAttrs are the consumer_country and consumer_version labels for an attempt that
 // answered offerID.
 func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	reported := offerID != ""
@@ -40,6 +40,6 @@ func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	}
 	return []attribute.KeyValue{
 		attribute.String("consumer_country", common.OutcomeConsumerCountry(reported, oc.country)),
-		attribute.String("consumer_dtls", common.OutcomeConsumerDTLS(reported, oc.dtls)),
+		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
 	}
 }

@@ -23,20 +23,6 @@ const (
 	PrevOfferIDField = "prev-offer-id"
 )
 
-// PionDTLSHeader carries, on a consumer's offer, the version of github.com/pion/dtls/v3 the
-// consumer links, so Freddie can label the attempt's outcome with it. The consumer makes the offer
-// and so is the DTLS server, whose handshake retransmission is where attempts stall after ICE.
-// Consumers that predate it send nothing.
-const PionDTLSHeader = "X-BF-Pion-DTLS"
-
-// Values a consumer sends in PionDTLSHeader in place of a version.
-const (
-	// PionDTLSBrowser: the consumer runs in a browser, whose own DTLS stack is used.
-	PionDTLSBrowser = "browser"
-	// PionDTLSNoBuildInfo: the consumer's binary carries no module information.
-	PionDTLSNoBuildInfo = "no_buildinfo"
-)
-
 // Producer attempt outcomes, in the order a handshake can fail.
 const (
 	// OutcomeNoLocalSrflx: the producer's own STUN servers all failed, so it aborted before
@@ -131,74 +117,69 @@ func OutcomeConsumerCountry(offerIDReported bool, country string) string {
 	}
 }
 
-// NormalizePionDTLS keeps minor versions up to maxPionDTLSMinor and patch versions up to
-// maxPionDTLSPatch exact, and buckets the rest, so a consumer can mint at most about 140 label
-// values. pion/dtls v3 releases so far are v3.0.0 to v3.1.15.
+// NormalizeConsumerVersion labels within this many patch versions behind and ahead of Freddie's
+// own Version stay exact, so the consumer_version label has at most 42 values however a
+// consumer sets its VersionHeader.
 const (
-	maxPionDTLSMinor = 3
-	maxPionDTLSPatch = 31
+	consumerVersionPatchesBehind = 31
+	consumerVersionPatchesAhead  = 8
 )
 
-// NormalizePionDTLS maps a PionDTLSHeader value onto the consumer_dtls label: a v3 release as
-// "v3.MINOR.PATCH", or "v3.MINOR.32+" or "v3.4+" past the bounds above; PionDTLSBrowser or
-// PionDTLSNoBuildInfo; "not_sent" when the consumer sent nothing; or "invalid". A pre-release or
-// pseudo-version is labeled as the release it precedes.
-//
-// The result never shares memory with s, so caching it doesn't keep a large header alive.
-func NormalizePionDTLS(s string) string {
-	switch s {
-	case "":
+// NormalizeConsumerVersion maps the VersionHeader a consumer sent with its offer onto the
+// consumer_version label, relative to current, the Version Freddie was built with: the version
+// itself when it has current's major and minor and a patch within the window above; "older" or
+// "newer" for any other version with current's major; "not_sent" when the header was empty; or
+// "invalid". The result never shares memory with s, so caching it doesn't keep the header alive.
+func NormalizeConsumerVersion(s, current string) string {
+	if s == "" {
 		return "not_sent"
-	case PionDTLSBrowser:
-		return PionDTLSBrowser
-	case PionDTLSNoBuildInfo:
-		return PionDTLSNoBuildInfo
 	}
-	release, suffix, pre := strings.Cut(s, "-")
-	if pre && suffix == "" {
+	major, minor, patch, ok := parseVersion(s)
+	curMajor, curMinor, curPatch, curOK := parseVersion(current)
+	if !ok || !curOK || major != curMajor {
 		return "invalid"
 	}
-	rest, ok := strings.CutPrefix(release, "v3.")
-	if !ok {
-		return "invalid"
-	}
-	minorStr, patchStr, ok := strings.Cut(rest, ".")
-	if !ok {
-		return "invalid"
-	}
-	minor, ok := versionComponent(minorStr)
-	if !ok {
-		return "invalid"
-	}
-	patch, ok := versionComponent(patchStr)
 	switch {
-	case !ok:
-		return "invalid"
-	case minor > maxPionDTLSMinor:
-		return "v3." + strconv.Itoa(maxPionDTLSMinor+1) + "+"
-	case patch > maxPionDTLSPatch:
-		return "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(maxPionDTLSPatch+1) + "+"
+	case minor < curMinor || minor == curMinor && patch < curPatch-consumerVersionPatchesBehind:
+		return "older"
+	case minor > curMinor || patch > curPatch+consumerVersionPatchesAhead:
+		return "newer"
 	}
-	return "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
+	return "v" + strconv.Itoa(major) + "." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
 }
 
-// versionComponent parses a canonical decimal version component.
-func versionComponent(s string) (int, bool) {
-	n, err := strconv.Atoi(s)
-	return n, err == nil && n >= 0 && strconv.Itoa(n) == s
+// parseVersion parses a canonical "vMAJOR.MINOR.PATCH" with no pre-release or build suffix.
+func parseVersion(s string) (major, minor, patch int, ok bool) {
+	rest, ok := strings.CutPrefix(s, "v")
+	if !ok {
+		return 0, 0, 0, false
+	}
+	parts := strings.SplitN(rest, ".", 4)
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, part := range parts {
+		v, err := strconv.Atoi(part)
+		if err != nil || v < 0 || strconv.Itoa(v) != part {
+			return 0, 0, 0, false
+		}
+		n[i] = v
+	}
+	return n[0], n[1], n[2], true
 }
 
-// OutcomeConsumerDTLS maps the NormalizePionDTLS value Freddie cached for an attempt's offer onto
-// the consumer_dtls label, with "unknown" when Freddie has no entry for the offer and "unreported"
-// when the producer predates PrevOfferIDField.
-func OutcomeConsumerDTLS(offerIDReported bool, dtls string) string {
+// OutcomeConsumerVersion maps the NormalizeConsumerVersion value Freddie cached for an attempt's
+// offer onto the consumer_version label, with "unknown" when Freddie has no entry for the offer
+// and "unreported" when the producer predates PrevOfferIDField.
+func OutcomeConsumerVersion(offerIDReported bool, version string) string {
 	switch {
 	case !offerIDReported:
 		return "unreported"
-	case dtls == "":
+	case version == "":
 		return "unknown"
 	default:
-		return dtls
+		return version
 	}
 }
 
