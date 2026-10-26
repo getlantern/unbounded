@@ -24,16 +24,22 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("ice_state", common.NormalizeICEState(r.Form.Get(common.PrevICEStateField))),
 		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
 		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
-		attribute.String("consumer_country", f.attemptConsumerCountry(r.Form.Get(common.PrevOfferIDField))),
 	}
+	attrs = append(attrs, f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))...)
 	f.producerOutcomes.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
 }
 
-// attemptConsumerCountry is the consumer_country label for an attempt that answered offerID.
-func (f *Freddie) attemptConsumerCountry(offerID string) string {
-	if offerID == "" {
-		return common.OutcomeConsumerCountry(false, "")
+// attemptConsumerAttrs are the consumer_country and consumer_version labels for an attempt that
+// answered offerID.
+func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
+	reported := offerID != ""
+	var oc offerConsumer
+	if reported {
+		oc = f.offerConsumers.take(offerID)
 	}
-	return common.OutcomeConsumerCountry(true, f.offerCountries.take(offerID))
+	return []attribute.KeyValue{
+		attribute.String("consumer_country", common.OutcomeConsumerCountry(reported, oc.country)),
+		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
+	}
 }

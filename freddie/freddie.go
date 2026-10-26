@@ -355,7 +355,7 @@ type Freddie struct {
 	producerOutcomes  metric.Int64Counter
 
 	tickets        *ticketCache
-	offerCountries *offerCountryCache
+	offerConsumers *offerConsumerCache
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -374,7 +374,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		tracer:         otel.Tracer("github.com/getlantern/broflake/freddie"),
 		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
 		tickets:        newTicketCache(maxCachedTickets, time.Now),
-		offerCountries: newOfferCountryCache(time.Now),
+		offerConsumers: newOfferConsumerCache(time.Now),
 	}
 
 	var err error
@@ -829,15 +829,19 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
-		// An offer's country is cached before the offer is published, so the producer can't report
-		// the attempt before Freddie can label it.
-		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer && f.ConsumerCountry != nil
+		// An offer's consumer is cached before the offer is published, so the producer can't
+		// report the attempt before Freddie can label it.
+		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
 		if isOffer {
-			f.offerCountries.add(reqID, common.NormalizeCountry(f.ConsumerCountry(r)))
+			oc := offerConsumer{version: common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)}
+			if f.ConsumerCountry != nil {
+				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
+			}
+			f.offerConsumers.add(reqID, oc)
 		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
 		if isOffer && !ok {
-			f.offerCountries.take(reqID)
+			f.offerConsumers.take(reqID)
 		}
 		delivered := attribute.Bool("reply.delivered", ok)
 		span.SetAttributes(delivered)

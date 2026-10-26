@@ -1,6 +1,9 @@
 package common
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // A producer reports how its previous connection attempt ended on its next genesis message, so
 // Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
@@ -111,6 +114,72 @@ func OutcomeConsumerCountry(offerIDReported bool, country string) string {
 		return country
 	default:
 		return "other"
+	}
+}
+
+// NormalizeConsumerVersion labels within this many patch versions behind and ahead of Freddie's
+// own Version stay exact, so the consumer_version label has at most 42 values however a
+// consumer sets its VersionHeader.
+const (
+	consumerVersionPatchesBehind = 31
+	consumerVersionPatchesAhead  = 8
+)
+
+// NormalizeConsumerVersion maps the VersionHeader a consumer sent with its offer onto the
+// consumer_version label, relative to current, the Version Freddie was built with: the version
+// itself when it has current's major and minor and a patch within the window above; "older" or
+// "newer" for any other version with current's major; "not_sent" when the header was empty; or
+// "invalid". The result never shares memory with s, so caching it doesn't keep the header alive.
+func NormalizeConsumerVersion(s, current string) string {
+	if s == "" {
+		return "not_sent"
+	}
+	major, minor, patch, ok := parseVersion(s)
+	curMajor, curMinor, curPatch, curOK := parseVersion(current)
+	if !ok || !curOK || major != curMajor {
+		return "invalid"
+	}
+	switch {
+	case minor < curMinor || minor == curMinor && patch < curPatch-consumerVersionPatchesBehind:
+		return "older"
+	case minor > curMinor || patch > curPatch+consumerVersionPatchesAhead:
+		return "newer"
+	}
+	return "v" + strconv.Itoa(major) + "." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
+}
+
+// parseVersion parses a canonical "vMAJOR.MINOR.PATCH" with no pre-release or build suffix.
+func parseVersion(s string) (major, minor, patch int, ok bool) {
+	rest, ok := strings.CutPrefix(s, "v")
+	if !ok {
+		return 0, 0, 0, false
+	}
+	parts := strings.SplitN(rest, ".", 4)
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, part := range parts {
+		v, err := strconv.Atoi(part)
+		if err != nil || v < 0 || strconv.Itoa(v) != part {
+			return 0, 0, 0, false
+		}
+		n[i] = v
+	}
+	return n[0], n[1], n[2], true
+}
+
+// OutcomeConsumerVersion maps the NormalizeConsumerVersion value Freddie cached for an attempt's
+// offer onto the consumer_version label, with "unknown" when Freddie has no entry for the offer
+// and "unreported" when the producer predates PrevOfferIDField.
+func OutcomeConsumerVersion(offerIDReported bool, version string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case version == "":
+		return "unknown"
+	default:
+		return version
 	}
 }
 
