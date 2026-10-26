@@ -332,6 +332,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 
 			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Add(common.VersionHeader, common.Version)
+			req.Header.Add(common.PionDTLSHeader, pionDTLSVersion())
 
 			res, err := options.HTTPClient.Do(req)
 			if err != nil {

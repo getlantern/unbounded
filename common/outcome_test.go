@@ -70,3 +70,49 @@ func TestOutcomeConsumerCountry(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizePionDTLS(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                                    "not_sent",
+		"v3.1.15":                             "v3.1.15",
+		"v3.1.2":                              "v3.1.2",
+		"v3.0.0":                              "v3.0.0",
+		"v3.99.99":                            "v3.99.99",
+		"v3.1.16-0.20261020120000-abcdef0123": "v3.1.16-dev",
+		"v3.2.0-rc.1":                         "v3.2.0-dev",
+		PionDTLSBrowser:                       PionDTLSBrowser,
+		PionDTLSNoBuildInfo:                   PionDTLSNoBuildInfo,
+		"v3.100.0":                            "invalid",
+		"v3.1.100":                            "invalid",
+		"v3.01.2":                             "invalid",
+		"v3.1.-1":                             "invalid",
+		"v3.1":                                "invalid",
+		"v3.1.2.3":                            "invalid",
+		"v3.1.2-":                             "invalid",
+		"v2.2.7":                              "invalid",
+		"3.1.15":                              "invalid",
+		"(devel)":                             "invalid",
+	} {
+		if got := NormalizePionDTLS(in); got != want {
+			t.Errorf("NormalizePionDTLS(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestOutcomeConsumerDTLS(t *testing.T) {
+	for _, tc := range []struct {
+		reported bool
+		dtls     string
+		want     string
+	}{
+		{false, "", "unreported"},
+		{false, "v3.1.15", "unreported"},
+		{true, "", "unknown"},
+		{true, "not_sent", "not_sent"},
+		{true, "v3.1.15", "v3.1.15"},
+	} {
+		if got := OutcomeConsumerDTLS(tc.reported, tc.dtls); got != tc.want {
+			t.Errorf("OutcomeConsumerDTLS(%v, %q) = %q, want %q", tc.reported, tc.dtls, got, tc.want)
+		}
+	}
+}

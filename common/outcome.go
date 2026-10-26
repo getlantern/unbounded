@@ -1,6 +1,9 @@
 package common
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // A producer reports how its previous connection attempt ended on its next genesis message, so
 // Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
@@ -18,6 +21,20 @@ const (
 	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
 	// Freddie label the outcome with the country it derived for that consumer.
 	PrevOfferIDField = "prev-offer-id"
+)
+
+// PionDTLSHeader carries, on a consumer's offer, the version of github.com/pion/dtls/v3 the
+// consumer links, so Freddie can label the attempt's outcome with it. The consumer makes the offer
+// and so is the DTLS server, whose handshake retransmission is where attempts stall after ICE.
+// Consumers that predate it send nothing.
+const PionDTLSHeader = "X-BF-Pion-DTLS"
+
+// Values a consumer sends in PionDTLSHeader in place of a version.
+const (
+	// PionDTLSBrowser: the consumer runs in a browser, whose own DTLS stack is used.
+	PionDTLSBrowser = "browser"
+	// PionDTLSNoBuildInfo: the consumer's binary carries no module information.
+	PionDTLSNoBuildInfo = "no_buildinfo"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
@@ -111,6 +128,57 @@ func OutcomeConsumerCountry(offerIDReported bool, country string) string {
 		return country
 	default:
 		return "other"
+	}
+}
+
+// maxPionDTLSComponent bounds the minor and patch versions NormalizePionDTLS accepts, so a
+// consumer can't mint unbounded label values.
+const maxPionDTLSComponent = 99
+
+// NormalizePionDTLS maps a PionDTLSHeader value onto the consumer_dtls label: a v3 release as
+// "v3.MINOR.PATCH", with "-dev" for a pre-release or pseudo-version; PionDTLSBrowser or
+// PionDTLSNoBuildInfo; "not_sent" when the consumer sent nothing; or "invalid".
+func NormalizePionDTLS(s string) string {
+	switch s {
+	case "":
+		return "not_sent"
+	case PionDTLSBrowser, PionDTLSNoBuildInfo:
+		return s
+	}
+	release, suffix, dev := strings.Cut(s, "-")
+	if dev && suffix == "" {
+		return "invalid"
+	}
+	rest, ok := strings.CutPrefix(release, "v3.")
+	if !ok {
+		return "invalid"
+	}
+	minor, patch, ok := strings.Cut(rest, ".")
+	if !ok || !versionComponent(minor) || !versionComponent(patch) {
+		return "invalid"
+	}
+	if dev {
+		return release + "-dev"
+	}
+	return release
+}
+
+func versionComponent(s string) bool {
+	n, err := strconv.Atoi(s)
+	return err == nil && n >= 0 && n <= maxPionDTLSComponent && strconv.Itoa(n) == s
+}
+
+// OutcomeConsumerDTLS maps the NormalizePionDTLS value Freddie cached for an attempt's offer onto
+// the consumer_dtls label, with "unknown" when Freddie has no entry for the offer and "unreported"
+// when the producer predates PrevOfferIDField.
+func OutcomeConsumerDTLS(offerIDReported bool, dtls string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case dtls == "":
+		return "unknown"
+	default:
+		return dtls
 	}
 }
 
