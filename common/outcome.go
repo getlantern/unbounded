@@ -131,13 +131,18 @@ func OutcomeConsumerCountry(offerIDReported bool, country string) string {
 	}
 }
 
-// maxPionDTLSComponent bounds the minor and patch versions NormalizePionDTLS accepts, so a
-// consumer can't mint unbounded label values.
-const maxPionDTLSComponent = 99
+// NormalizePionDTLS keeps minor versions up to maxPionDTLSMinor and patch versions up to
+// maxPionDTLSPatch exact, and buckets the rest, so a consumer can mint at most about 140 label
+// values. pion/dtls v3 releases so far are v3.0.0 to v3.1.15.
+const (
+	maxPionDTLSMinor = 3
+	maxPionDTLSPatch = 31
+)
 
 // NormalizePionDTLS maps a PionDTLSHeader value onto the consumer_dtls label: a v3 release as
-// "v3.MINOR.PATCH", with "-dev" for a pre-release or pseudo-version; PionDTLSBrowser or
-// PionDTLSNoBuildInfo; "not_sent" when the consumer sent nothing; or "invalid".
+// "v3.MINOR.PATCH", or "v3.MINOR.32+" or "v3.4+" past the bounds above; PionDTLSBrowser or
+// PionDTLSNoBuildInfo; "not_sent" when the consumer sent nothing; or "invalid". A pre-release or
+// pseudo-version is labeled as the release it precedes.
 func NormalizePionDTLS(s string) string {
 	switch s {
 	case "":
@@ -145,27 +150,38 @@ func NormalizePionDTLS(s string) string {
 	case PionDTLSBrowser, PionDTLSNoBuildInfo:
 		return s
 	}
-	release, suffix, dev := strings.Cut(s, "-")
-	if dev && suffix == "" {
+	release, suffix, pre := strings.Cut(s, "-")
+	if pre && suffix == "" {
 		return "invalid"
 	}
 	rest, ok := strings.CutPrefix(release, "v3.")
 	if !ok {
 		return "invalid"
 	}
-	minor, patch, ok := strings.Cut(rest, ".")
-	if !ok || !versionComponent(minor) || !versionComponent(patch) {
+	minorStr, patchStr, ok := strings.Cut(rest, ".")
+	if !ok {
 		return "invalid"
 	}
-	if dev {
-		return release + "-dev"
+	minor, ok := versionComponent(minorStr)
+	if !ok {
+		return "invalid"
+	}
+	patch, ok := versionComponent(patchStr)
+	switch {
+	case !ok:
+		return "invalid"
+	case minor > maxPionDTLSMinor:
+		return "v3." + strconv.Itoa(maxPionDTLSMinor+1) + "+"
+	case patch > maxPionDTLSPatch:
+		return "v3." + minorStr + "." + strconv.Itoa(maxPionDTLSPatch+1) + "+"
 	}
 	return release
 }
 
-func versionComponent(s string) bool {
+// versionComponent parses a canonical decimal version component.
+func versionComponent(s string) (int, bool) {
 	n, err := strconv.Atoi(s)
-	return err == nil && n >= 0 && n <= maxPionDTLSComponent && strconv.Itoa(n) == s
+	return n, err == nil && n >= 0 && strconv.Itoa(n) == s
 }
 
 // OutcomeConsumerDTLS maps the NormalizePionDTLS value Freddie cached for an attempt's offer onto

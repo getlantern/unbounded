@@ -1,6 +1,9 @@
 package common
 
-import "testing"
+import (
+	"strconv"
+	"testing"
+)
 
 func TestNormalizeProducerOutcome(t *testing.T) {
 	for in, want := range map[string]string{
@@ -77,18 +80,23 @@ func TestNormalizePionDTLS(t *testing.T) {
 		"v3.1.15":                             "v3.1.15",
 		"v3.1.2":                              "v3.1.2",
 		"v3.0.0":                              "v3.0.0",
-		"v3.99.99":                            "v3.99.99",
-		"v3.1.16-0.20261020120000-abcdef0123": "v3.1.16-dev",
-		"v3.2.0-rc.1":                         "v3.2.0-dev",
+		"v3.3.31":                             "v3.3.31",
+		"v3.1.32":                             "v3.1.32+",
+		"v3.1.999999":                         "v3.1.32+",
+		"v3.4.0":                              "v3.4+",
+		"v3.999999.0":                         "v3.4+",
+		"v3.1.16-0.20261020120000-abcdef0123": "v3.1.16",
+		"v3.2.0-rc.1":                         "v3.2.0",
 		PionDTLSBrowser:                       PionDTLSBrowser,
 		PionDTLSNoBuildInfo:                   PionDTLSNoBuildInfo,
-		"v3.100.0":                            "invalid",
-		"v3.1.100":                            "invalid",
 		"v3.01.2":                             "invalid",
+		"v3.1.02":                             "invalid",
 		"v3.1.-1":                             "invalid",
+		"v3.1.+1":                             "invalid",
 		"v3.1":                                "invalid",
 		"v3.1.2.3":                            "invalid",
 		"v3.1.2-":                             "invalid",
+		"v3.1.99999999999999999999":           "invalid",
 		"v2.2.7":                              "invalid",
 		"3.1.15":                              "invalid",
 		"(devel)":                             "invalid",
@@ -96,6 +104,22 @@ func TestNormalizePionDTLS(t *testing.T) {
 		if got := NormalizePionDTLS(in); got != want {
 			t.Errorf("NormalizePionDTLS(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestNormalizePionDTLSBounded checks the label's value space stays small however the header is
+// chosen.
+func TestNormalizePionDTLSBounded(t *testing.T) {
+	seen := map[string]bool{}
+	for minor := 0; minor <= 50; minor++ {
+		for patch := 0; patch <= 100; patch++ {
+			v := "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
+			seen[NormalizePionDTLS(v)] = true
+			seen[NormalizePionDTLS(v+"-0.20261020120000-abcdef012345")] = true
+		}
+	}
+	if want := (maxPionDTLSMinor+1)*(maxPionDTLSPatch+2) + 1; len(seen) != want {
+		t.Fatalf("%d label values, want %d", len(seen), want)
 	}
 }
 
