@@ -46,6 +46,10 @@ func dtlsVersion(info *debug.BuildInfo, ok bool) string {
 		if m.Replace != nil {
 			m = m.Replace
 		}
+		// A replacement by a local directory has no version.
+		if m.Version == "" {
+			return common.PionDTLSNoBuildInfo
+		}
 		return m.Version
 	}
 	return common.PionDTLSNoBuildInfo

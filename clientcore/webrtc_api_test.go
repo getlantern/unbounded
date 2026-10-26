@@ -41,6 +41,7 @@ func TestDTLSVersion(t *testing.T) {
 	}{
 		{"linked", &debug.BuildInfo{Deps: []*debug.Module{other, dtls}}, true, "v3.1.15"},
 		{"replaced", &debug.BuildInfo{Deps: []*debug.Module{replaced}}, true, "v3.1.16-0.20261020120000-abcdef012345"},
+		{"replaced by a directory", &debug.BuildInfo{Deps: []*debug.Module{{Path: "github.com/pion/dtls/v3", Version: "v3.1.15", Replace: &debug.Module{Path: "../dtls"}}}}, true, common.PionDTLSNoBuildInfo},
 		{"not linked", &debug.BuildInfo{Deps: []*debug.Module{other}}, true, common.PionDTLSNoBuildInfo},
 		{"no build info", nil, false, common.PionDTLSNoBuildInfo},
 	} {
