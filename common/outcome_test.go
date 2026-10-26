@@ -2,7 +2,9 @@ package common
 
 import (
 	"strconv"
+	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestNormalizeProducerOutcome(t *testing.T) {
@@ -120,6 +122,26 @@ func TestNormalizePionDTLSBounded(t *testing.T) {
 	}
 	if want := (maxPionDTLSMinor+1)*(maxPionDTLSPatch+2) + 1; len(seen) != want {
 		t.Fatalf("%d label values, want %d", len(seen), want)
+	}
+}
+
+// TestNormalizePionDTLSDoesNotRetainInput checks a label never aliases the header it came from,
+// which Freddie caches for up to a day.
+func TestNormalizePionDTLSDoesNotRetainInput(t *testing.T) {
+	for _, in := range []string{
+		"v3.1.15-" + strings.Repeat("x", 4096),
+		"v3.1.15",
+		"v3.1.40",
+		"v3.9.0",
+		strings.Clone(PionDTLSBrowser),
+		strings.Clone(PionDTLSNoBuildInfo),
+	} {
+		got := NormalizePionDTLS(in)
+		start := uintptr(unsafe.Pointer(unsafe.StringData(in)))
+		p := uintptr(unsafe.Pointer(unsafe.StringData(got)))
+		if p >= start && p < start+uintptr(len(in)) {
+			t.Errorf("NormalizePionDTLS(%.20q) = %q shares the input's memory", in, got)
+		}
 	}
 }
 

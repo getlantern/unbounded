@@ -143,12 +143,16 @@ const (
 // "v3.MINOR.PATCH", or "v3.MINOR.32+" or "v3.4+" past the bounds above; PionDTLSBrowser or
 // PionDTLSNoBuildInfo; "not_sent" when the consumer sent nothing; or "invalid". A pre-release or
 // pseudo-version is labeled as the release it precedes.
+//
+// The result never shares memory with s, so caching it doesn't keep a large header alive.
 func NormalizePionDTLS(s string) string {
 	switch s {
 	case "":
 		return "not_sent"
-	case PionDTLSBrowser, PionDTLSNoBuildInfo:
-		return s
+	case PionDTLSBrowser:
+		return PionDTLSBrowser
+	case PionDTLSNoBuildInfo:
+		return PionDTLSNoBuildInfo
 	}
 	release, suffix, pre := strings.Cut(s, "-")
 	if pre && suffix == "" {
@@ -173,9 +177,9 @@ func NormalizePionDTLS(s string) string {
 	case minor > maxPionDTLSMinor:
 		return "v3." + strconv.Itoa(maxPionDTLSMinor+1) + "+"
 	case patch > maxPionDTLSPatch:
-		return "v3." + minorStr + "." + strconv.Itoa(maxPionDTLSPatch+1) + "+"
+		return "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(maxPionDTLSPatch+1) + "+"
 	}
-	return release
+	return "v3." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
 }
 
 // versionComponent parses a canonical decimal version component.
