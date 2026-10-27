@@ -52,6 +52,39 @@ type natClass struct {
 	portPreserved bool
 }
 
+// Outcome NAT labels, the consumer_nat and volunteer_nat labels on freddie.producer.outcomes. Each
+// folds a natClass into one value, since a separate label per field would multiply the outcome
+// series. A pion peer gathers each srflx on its own socket, so it never shows a symmetric NAT, and
+// port preservation is the most it reveals.
+const (
+	outcomeNATNoSrflx         = natNoSrflx
+	outcomeNATSymmetric       = natSymmetric
+	outcomeNATHiddenSymmetric = "hidden_symmetric"
+	outcomeNATHidden          = "hidden"
+	outcomeNATPortPreserved   = "port_preserved"
+	outcomeNATPortChanged     = "port_changed"
+	// outcomeNATNone means Freddie remembers the offer but relayed no candidates for this peer:
+	// for a consumer, it never sent its ICE message.
+	outcomeNATNone = "none"
+)
+
+func (c natClass) outcomeLabel() string {
+	switch {
+	case c.nat == natNoSrflx:
+		return outcomeNATNoSrflx
+	case c.baseHidden && c.nat == natSymmetric:
+		return outcomeNATHiddenSymmetric
+	case c.baseHidden:
+		return outcomeNATHidden
+	case c.nat == natSymmetric:
+		return outcomeNATSymmetric
+	case c.portPreserved:
+		return outcomeNATPortPreserved
+	default:
+		return outcomeNATPortChanged
+	}
+}
+
 func classifyNAT(cands []iceCandidate) natClass {
 	mappings := make(map[string]map[string]bool)
 	baseHidden := false
@@ -86,42 +119,53 @@ func classifyNAT(cands []iceCandidate) natClass {
 	return class
 }
 
-// recordICENAT classifies the ICE candidates a signaling message carries: a volunteer's answer
-// SDP, or a consumer's ICE message. Other message types carry none. A late reply that freddie
-// couldn't deliver still describes a real peer's NAT, so it is counted, labeled
-// reply.delivered=false like freddie.signal.replies.
-func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string, delivered attribute.KeyValue) {
-	var role string
+// peerNAT is how freddie classified the ICE candidates one signaling message carries.
+type peerNAT struct {
+	role       string
+	class      natClass
+	candidates int
+}
+
+// classifyMessage classifies the ICE candidates a signaling message carries: a volunteer's answer
+// SDP, or a consumer's ICE message. Other message types carry none. ok is false for a message
+// without candidates (data={}, or an SDP without a=candidate lines), which says nothing about the
+// peer's NAT and would otherwise land in no_srflx.
+func classifyMessage(msgType common.SignalMsgType, data string) (n peerNAT, ok bool) {
 	var cands []iceCandidate
-	var ok bool
 	switch msgType {
 	case common.SignalMsgAnswer:
-		role = "volunteer"
+		n.role = "volunteer"
 		cands, ok = sdpCandidates(data)
 	case common.SignalMsgICE:
-		role = "consumer"
+		n.role = "consumer"
 		cands, ok = iceMsgCandidates(data)
 	default:
-		return
+		return peerNAT{}, false
 	}
-	// A payload with no candidates (data={}, or an SDP without a=candidate lines) says nothing
-	// about the peer's NAT and would otherwise land in no_srflx.
 	if !ok || len(cands) == 0 {
-		return
+		return peerNAT{}, false
 	}
-	class := classifyNAT(cands)
+	n.class = classifyNAT(cands)
+	n.candidates = len(cands)
+	return n, true
+}
+
+// recordICENAT counts a classified message. A late reply that freddie couldn't deliver still
+// describes a real peer's NAT, so it is counted, labeled reply.delivered=false like
+// freddie.signal.replies.
+func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, n peerNAT, delivered attribute.KeyValue) {
 	attrs := []attribute.KeyValue{
-		attribute.String("role", role),
-		attribute.String("nat", class.nat),
-		attribute.Bool("base_hidden", class.baseHidden),
-		attribute.Bool("port_preserved", class.portPreserved),
+		attribute.String("role", n.role),
+		attribute.String("nat", n.class.nat),
+		attribute.Bool("base_hidden", n.class.baseHidden),
+		attribute.Bool("port_preserved", n.class.portPreserved),
 		delivered,
 	}
 	f.iceNAT.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(
-		attribute.String("ice.role", role),
-		attribute.String("ice.nat", class.nat),
-		attribute.Int("ice.candidates", len(cands)),
+		attribute.String("ice.role", n.role),
+		attribute.String("ice.nat", n.class.nat),
+		attribute.Int("ice.candidates", n.candidates),
 	)
 }
 
