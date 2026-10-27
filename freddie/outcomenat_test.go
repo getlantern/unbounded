@@ -89,16 +89,18 @@ func TestOfferConsumerCache_IgnoresUnknownOffersAndAnswers(t *testing.T) {
 	}
 }
 
-func TestOfferConsumerCache_ReansweredOfferForgetsOldAnswer(t *testing.T) {
+func TestOfferConsumerCache_FirstAnswerWins(t *testing.T) {
 	c := newOfferConsumerCache(time.Now)
 	c.add("offer", newOffer())
 	c.answered("offer", "first", "port_changed")
+	// A second answer to the same offer gets a 404, and must not unlink the delivered one.
 	c.answered("offer", "second", "port_preserved")
-	c.consumerICE("first", "no_srflx")
-	if _, ok := c.answers["first"]; ok || len(c.answers) != 1 {
-		t.Fatalf("a replaced answer must be forgotten, answers %v", c.answers)
+	c.consumerICE("second", "no_srflx")
+	c.consumerICE("first", "port_preserved")
+	if len(c.answers) != 1 {
+		t.Fatalf("a rejected answer must not be remembered, answers %v", c.answers)
 	}
-	if got := c.take("offer"); got.volunteerNAT != "port_preserved" || got.consumerNAT != outcomeNATNone {
+	if got := c.take("offer"); got.volunteerNAT != "port_changed" || got.consumerNAT != "port_preserved" {
 		t.Fatalf("got %+v", got)
 	}
 }
@@ -237,5 +239,43 @@ func TestDeliveredOffer_UnansweredNATsAreNone(t *testing.T) {
 	}
 	if c, v := s.natLabels(""); c != "unreported" || v != "unreported" {
 		t.Fatalf("a producer that sends no offer ID must be unreported, got %q, %q", c, v)
+	}
+}
+
+// The consumer can send its ICE message the moment it receives the answer, so the answer must be
+// linked to its offer by then.
+func TestSignaling_LinksAnswerBeforePublishingIt(t *testing.T) {
+	s := startTestServer(t, headerHook)
+	s.f.offerConsumers.add("offer", newOffer())
+	consumer := signalTable.Add("offer")
+	defer signalTable.Delete("offer")
+
+	answerDone := make(chan int, 1)
+	go func() {
+		status, _ := s.post("offer", common.SignalMsgAnswer, sdpJSON(t,
+			"a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 40001 generation 0",
+		), nil)
+		answerDone <- status
+	}()
+	var answer common.SignalMsg
+	select {
+	case raw := <-consumer:
+		if err := json.Unmarshal([]byte(raw), &answer); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer never reached the consumer")
+	}
+	s.f.offerConsumers.Lock()
+	offerID := s.f.offerConsumers.answers[answer.ReplyTo]
+	s.f.offerConsumers.Unlock()
+	if offerID != "offer" {
+		t.Fatalf("the answer was published before it was linked to its offer")
+	}
+
+	// Release the answer request, which waits for the consumer's ICE message.
+	signalTable.SendOnce(answer.ReplyTo, "{}")
+	if status := <-answerDone; status != http.StatusOK {
+		t.Fatalf("answer status %d", status)
 	}
 }

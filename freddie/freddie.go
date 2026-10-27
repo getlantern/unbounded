@@ -843,6 +843,21 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			}
 			f.offerConsumers.add(reqID, oc)
 		}
+		// Likewise each peer's NAT is linked to the offer before the message is published: the
+		// recipient can act on it at once, so the consumer's ICE message, and then the producer's
+		// outcome report, could otherwise overtake the link. A volunteer's answer is sent to the
+		// offer's ID, and the consumer's ICE message to the answer's.
+		peer, hasCandidates := classifyMessage(common.SignalMsgType(msgType), data)
+		var nat string
+		if hasCandidates {
+			nat = peer.class.outcomeLabel()
+		}
+		switch common.SignalMsgType(msgType) {
+		case common.SignalMsgAnswer:
+			f.offerConsumers.answered(sendTo, reqID, nat)
+		case common.SignalMsgICE:
+			f.offerConsumers.consumerICE(sendTo, nat)
+		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
 		if isOffer && !ok {
 			f.offerConsumers.take(reqID)
@@ -853,14 +868,8 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			delivered,
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
-		// A volunteer's answer is sent to the offer's ID, and the consumer's ICE message to the
-		// answer's, so this links both peers' NATs to the offer the producer reports.
-		nat := f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
-		switch common.SignalMsgType(msgType) {
-		case common.SignalMsgAnswer:
-			f.offerConsumers.answered(sendTo, reqID, nat)
-		case common.SignalMsgICE:
-			f.offerConsumers.consumerICE(sendTo, nat)
+		if hasCandidates {
+			f.recordICENAT(ctx, span, peer, delivered)
 		}
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,

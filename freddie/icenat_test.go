@@ -1,15 +1,10 @@
 package freddie
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
 	"github.com/pion/webrtc/v4"
-	"go.opentelemetry.io/otel/attribute"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -107,31 +102,28 @@ func TestClassifyNAT_ConsumerPortTranslatedAndSymmetric(t *testing.T) {
 	}
 }
 
-func TestRecordICENAT_SkipsPayloadsWithoutCandidates(t *testing.T) {
-	f, err := New(context.Background(), "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	reader := sdkmetric.NewManualReader()
-	f.iceNAT, err = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Int64Counter("freddie.ice.nat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, span := noop.NewTracerProvider().Tracer("test").Start(context.Background(), "test")
-	delivered := attribute.Bool("reply.delivered", true)
-
-	f.recordICENAT(context.Background(), span, common.SignalMsgICE, "{}", delivered)
-	f.recordICENAT(context.Background(), span, common.SignalMsgAnswer, "{}", delivered)
-	f.recordICENAT(context.Background(), span, common.SignalMsgAnswer, sdpJSON(t), delivered)
-
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatal(err)
-	}
-	for _, sm := range rm.ScopeMetrics {
-		if len(sm.Metrics) > 0 {
-			t.Fatalf("payloads without candidates must not be counted, got %+v", sm.Metrics)
+func TestClassifyMessage_SkipsPayloadsWithoutCandidates(t *testing.T) {
+	for _, tc := range []struct {
+		msgType common.SignalMsgType
+		data    string
+	}{
+		{common.SignalMsgICE, "{}"},
+		{common.SignalMsgAnswer, "{}"},
+		{common.SignalMsgAnswer, sdpJSON(t)},
+		// An offer carries no candidates freddie classifies.
+		{common.SignalMsgOffer, sdpJSON(t, "a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 40001 generation 0")},
+	} {
+		if n, ok := classifyMessage(tc.msgType, tc.data); ok {
+			t.Errorf("%v %q: got %+v, want no classification", tc.msgType, tc.data, n)
 		}
+	}
+
+	n, ok := classifyMessage(common.SignalMsgAnswer, sdpJSON(t,
+		"a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 40001 generation 0",
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 1}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
 	}
 }
 

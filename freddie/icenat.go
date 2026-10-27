@@ -119,45 +119,54 @@ func classifyNAT(cands []iceCandidate) natClass {
 	return class
 }
 
-// recordICENAT classifies the ICE candidates a signaling message carries: a volunteer's answer
-// SDP, or a consumer's ICE message. Other message types carry none. A late reply that freddie
-// couldn't deliver still describes a real peer's NAT, so it is counted, labeled
-// reply.delivered=false like freddie.signal.replies. It returns the set's outcomeLabel, or "" when
-// the message carries no candidates.
-func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string, delivered attribute.KeyValue) string {
-	var role string
+// peerNAT is how freddie classified the ICE candidates one signaling message carries.
+type peerNAT struct {
+	role       string
+	class      natClass
+	candidates int
+}
+
+// classifyMessage classifies the ICE candidates a signaling message carries: a volunteer's answer
+// SDP, or a consumer's ICE message. Other message types carry none. ok is false for a message
+// without candidates (data={}, or an SDP without a=candidate lines), which says nothing about the
+// peer's NAT and would otherwise land in no_srflx.
+func classifyMessage(msgType common.SignalMsgType, data string) (n peerNAT, ok bool) {
 	var cands []iceCandidate
-	var ok bool
 	switch msgType {
 	case common.SignalMsgAnswer:
-		role = "volunteer"
+		n.role = "volunteer"
 		cands, ok = sdpCandidates(data)
 	case common.SignalMsgICE:
-		role = "consumer"
+		n.role = "consumer"
 		cands, ok = iceMsgCandidates(data)
 	default:
-		return ""
+		return peerNAT{}, false
 	}
-	// A payload with no candidates (data={}, or an SDP without a=candidate lines) says nothing
-	// about the peer's NAT and would otherwise land in no_srflx.
 	if !ok || len(cands) == 0 {
-		return ""
+		return peerNAT{}, false
 	}
-	class := classifyNAT(cands)
+	n.class = classifyNAT(cands)
+	n.candidates = len(cands)
+	return n, true
+}
+
+// recordICENAT counts a classified message. A late reply that freddie couldn't deliver still
+// describes a real peer's NAT, so it is counted, labeled reply.delivered=false like
+// freddie.signal.replies.
+func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, n peerNAT, delivered attribute.KeyValue) {
 	attrs := []attribute.KeyValue{
-		attribute.String("role", role),
-		attribute.String("nat", class.nat),
-		attribute.Bool("base_hidden", class.baseHidden),
-		attribute.Bool("port_preserved", class.portPreserved),
+		attribute.String("role", n.role),
+		attribute.String("nat", n.class.nat),
+		attribute.Bool("base_hidden", n.class.baseHidden),
+		attribute.Bool("port_preserved", n.class.portPreserved),
 		delivered,
 	}
 	f.iceNAT.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(
-		attribute.String("ice.role", role),
-		attribute.String("ice.nat", class.nat),
-		attribute.Int("ice.candidates", len(cands)),
+		attribute.String("ice.role", n.role),
+		attribute.String("ice.nat", n.class.nat),
+		attribute.Int("ice.candidates", n.candidates),
 	)
-	return class.outcomeLabel()
 }
 
 // sdpCandidates parses the a=candidate lines of a JSON-encoded webrtc.SessionDescription, the form

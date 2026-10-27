@@ -89,7 +89,8 @@ func (c *offerConsumerCache) take(offerID string) offerConsumer {
 }
 
 // answered records the volunteer's answer to offerID: the answer's request ID, and the
-// volunteer's NAT label, which "" leaves unset.
+// volunteer's NAT label, which "" leaves unset. The first answer wins: an offer's request takes
+// only its first reply, so a later answer is one the consumer never received.
 func (c *offerConsumerCache) answered(offerID, answerID, nat string) {
 	c.Lock()
 	defer c.Unlock()
@@ -99,7 +100,7 @@ func (c *offerConsumerCache) answered(offerID, answerID, nat string) {
 	}
 	entry := e.Value.(offerConsumerEntry)
 	if entry.answerID != "" {
-		delete(c.answers, entry.answerID)
+		return
 	}
 	entry.answerID = answerID
 	c.answers[answerID] = offerID
