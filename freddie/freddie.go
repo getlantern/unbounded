@@ -833,7 +833,11 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// report the attempt before Freddie can label it.
 		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
 		if isOffer {
-			oc := offerConsumer{version: common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)}
+			oc := offerConsumer{
+				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
+				volunteerNAT: outcomeNATNone,
+				consumerNAT:  outcomeNATNone,
+			}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
 			}
@@ -849,7 +853,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			delivered,
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
-		f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
+		// A volunteer's answer is sent to the offer's ID, and the consumer's ICE message to the
+		// answer's, so this links both peers' NATs to the offer the producer reports.
+		nat := f.recordICENAT(ctx, span, common.SignalMsgType(msgType), data, delivered)
+		switch common.SignalMsgType(msgType) {
+		case common.SignalMsgAnswer:
+			f.offerConsumers.answered(sendTo, reqID, nat)
+		case common.SignalMsgICE:
+			f.offerConsumers.consumerICE(sendTo, nat)
+		}
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.

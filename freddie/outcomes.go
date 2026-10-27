@@ -30,8 +30,8 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
 }
 
-// attemptConsumerAttrs are the consumer_country and consumer_version labels for an attempt that
-// answered offerID.
+// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat and volunteer_nat
+// labels for an attempt that answered offerID.
 func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	reported := offerID != ""
 	var oc offerConsumer
@@ -41,5 +41,20 @@ func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.String("consumer_country", common.OutcomeConsumerCountry(reported, oc.country)),
 		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
+		attribute.String("consumer_nat", outcomeNAT(reported, oc.consumerNAT)),
+		attribute.String("volunteer_nat", outcomeNAT(reported, oc.volunteerNAT)),
+	}
+}
+
+// outcomeNAT labels a peer's NAT like common.OutcomeConsumerVersion labels the version: unreported
+// when the producer sent no offer ID, and unknown when Freddie doesn't remember the offer.
+func outcomeNAT(offerIDReported bool, nat string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case nat == "":
+		return "unknown"
+	default:
+		return nat
 	}
 }

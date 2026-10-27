@@ -18,33 +18,41 @@ const (
 )
 
 // offerConsumer is what Freddie labels a delivered offer's attempt with: the consumer country it
-// derived for the request, and the consumer's common.NormalizeConsumerVersion value.
+// derived for the request, the consumer's common.NormalizeConsumerVersion value, and the
+// outcomeLabel of each peer's NAT, outcomeNATNone until Freddie relays that peer's candidates.
 type offerConsumer struct {
-	country string
-	version string
+	country      string
+	version      string
+	volunteerNAT string
+	consumerNAT  string
 }
 
 type offerConsumerEntry struct {
 	offerID string
+	// answerID is the request ID of the volunteer's answer, which the consumer sends its ICE
+	// message to.
+	answerID string
 	offerConsumer
 	expires time.Time
 }
 
 // offerConsumerCache maps the request ID of a delivered offer, which the producer sees as its
 // ReplyTo and echoes back as common.PrevOfferIDField, to the offerConsumer for that request. It
-// holds no addresses and nothing the producer didn't already have.
+// holds no addresses and nothing the producer didn't already have. answers maps each answered
+// offer's answerID back to its offerID.
 //
 // Entries are kept in insertion order, which is also expiry order, so expired and evicted entries
 // come off the front and every operation is O(1).
 type offerConsumerCache struct {
 	sync.Mutex
-	m     map[string]*list.Element
-	order *list.List // of offerConsumerEntry, oldest first
-	now   func() time.Time
+	m       map[string]*list.Element
+	answers map[string]string
+	order   *list.List // of offerConsumerEntry, oldest first
+	now     func() time.Time
 }
 
 func newOfferConsumerCache(now func() time.Time) *offerConsumerCache {
-	return &offerConsumerCache{m: make(map[string]*list.Element), order: list.New(), now: now}
+	return &offerConsumerCache{m: make(map[string]*list.Element), answers: make(map[string]string), order: list.New(), now: now}
 }
 
 func (c *offerConsumerCache) add(offerID string, oc offerConsumer) {
@@ -80,7 +88,49 @@ func (c *offerConsumerCache) take(offerID string) offerConsumer {
 	return entry.offerConsumer
 }
 
+// answered records the volunteer's answer to offerID: the answer's request ID, and the
+// volunteer's NAT label, which "" leaves unset.
+func (c *offerConsumerCache) answered(offerID, answerID, nat string) {
+	c.Lock()
+	defer c.Unlock()
+	e, ok := c.m[offerID]
+	if !ok {
+		return
+	}
+	entry := e.Value.(offerConsumerEntry)
+	if entry.answerID != "" {
+		delete(c.answers, entry.answerID)
+	}
+	entry.answerID = answerID
+	c.answers[answerID] = offerID
+	if nat != "" {
+		entry.volunteerNAT = nat
+	}
+	e.Value = entry
+}
+
+// consumerICE records the consumer's NAT label for the offer answered by answerID.
+func (c *offerConsumerCache) consumerICE(answerID, nat string) {
+	if nat == "" {
+		return
+	}
+	c.Lock()
+	defer c.Unlock()
+	offerID, ok := c.answers[answerID]
+	if !ok {
+		return
+	}
+	e := c.m[offerID]
+	entry := e.Value.(offerConsumerEntry)
+	entry.consumerNAT = nat
+	e.Value = entry
+}
+
 func (c *offerConsumerCache) remove(e *list.Element) {
-	delete(c.m, e.Value.(offerConsumerEntry).offerID)
+	entry := e.Value.(offerConsumerEntry)
+	delete(c.m, entry.offerID)
+	if entry.answerID != "" {
+		delete(c.answers, entry.answerID)
+	}
 	c.order.Remove(e)
 }

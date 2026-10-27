@@ -52,6 +52,39 @@ type natClass struct {
 	portPreserved bool
 }
 
+// Outcome NAT labels, the consumer_nat and volunteer_nat labels on freddie.producer.outcomes. Each
+// folds a natClass into one value, since a separate label per field would multiply the outcome
+// series. A pion peer gathers each srflx on its own socket, so it never shows a symmetric NAT, and
+// port preservation is the most it reveals.
+const (
+	outcomeNATNoSrflx         = natNoSrflx
+	outcomeNATSymmetric       = natSymmetric
+	outcomeNATHiddenSymmetric = "hidden_symmetric"
+	outcomeNATHidden          = "hidden"
+	outcomeNATPortPreserved   = "port_preserved"
+	outcomeNATPortChanged     = "port_changed"
+	// outcomeNATNone means Freddie remembers the offer but relayed no candidates for this peer:
+	// for a consumer, it never sent its ICE message.
+	outcomeNATNone = "none"
+)
+
+func (c natClass) outcomeLabel() string {
+	switch {
+	case c.nat == natNoSrflx:
+		return outcomeNATNoSrflx
+	case c.baseHidden && c.nat == natSymmetric:
+		return outcomeNATHiddenSymmetric
+	case c.baseHidden:
+		return outcomeNATHidden
+	case c.nat == natSymmetric:
+		return outcomeNATSymmetric
+	case c.portPreserved:
+		return outcomeNATPortPreserved
+	default:
+		return outcomeNATPortChanged
+	}
+}
+
 func classifyNAT(cands []iceCandidate) natClass {
 	mappings := make(map[string]map[string]bool)
 	baseHidden := false
@@ -89,8 +122,9 @@ func classifyNAT(cands []iceCandidate) natClass {
 // recordICENAT classifies the ICE candidates a signaling message carries: a volunteer's answer
 // SDP, or a consumer's ICE message. Other message types carry none. A late reply that freddie
 // couldn't deliver still describes a real peer's NAT, so it is counted, labeled
-// reply.delivered=false like freddie.signal.replies.
-func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string, delivered attribute.KeyValue) {
+// reply.delivered=false like freddie.signal.replies. It returns the set's outcomeLabel, or "" when
+// the message carries no candidates.
+func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType common.SignalMsgType, data string, delivered attribute.KeyValue) string {
 	var role string
 	var cands []iceCandidate
 	var ok bool
@@ -102,12 +136,12 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType com
 		role = "consumer"
 		cands, ok = iceMsgCandidates(data)
 	default:
-		return
+		return ""
 	}
 	// A payload with no candidates (data={}, or an SDP without a=candidate lines) says nothing
 	// about the peer's NAT and would otherwise land in no_srflx.
 	if !ok || len(cands) == 0 {
-		return
+		return ""
 	}
 	class := classifyNAT(cands)
 	attrs := []attribute.KeyValue{
@@ -123,6 +157,7 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, msgType com
 		attribute.String("ice.nat", class.nat),
 		attribute.Int("ice.candidates", len(cands)),
 	)
+	return class.outcomeLabel()
 }
 
 // sdpCandidates parses the a=candidate lines of a JSON-encoded webrtc.SessionDescription, the form
