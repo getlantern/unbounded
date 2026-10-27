@@ -384,6 +384,11 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 			}
 
 			// TODO: here we assume valid answer SDP, but we need to handle the invalid case too
+			answerSDP, ok := answer.(webrtc.SessionDescription)
+			if !ok {
+				slog.Debug("Signal message is not an answer", "msg", string(answerBytes))
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
 
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
@@ -406,15 +411,12 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 				return 0, []interface{}{}
 			}
 
-			// Assign the answer to our connection
-			err = peerConnection.SetRemoteDescription(answer.(webrtc.SessionDescription))
-			if err != nil {
-				slog.Debug("Error setting remote description", "error", err)
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
+			// The answer is applied only once our candidates have reached the producer (state 3).
+			// Applying it starts our ICE checks, but the producer starts its own only when it gets
+			// our candidates, after we finish gathering, which usually waits out the STUN gather
+			// timeout on an unreachable server. Until then the producer's NAT drops our checks, and
+			// pion's controlling agent gives up on a pair after maxBindingRequests unanswered checks
+			// (about 1.6s) and never rechecks it, even once the producer's checks arrive.
 			<-gatherComplete
 			slog.Debug("ICE gathering complete!")
 			slog.Debug("Local candidates", "candidates", candidates)
@@ -439,7 +441,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 				return 0, []interface{}{}
 			}
 
-			return 3, []interface{}{peerConnection, replyTo, candidates, connectionEstablished, connectionChange, connectionClosed}
+			return 3, []interface{}{peerConnection, replyTo, candidates, connectionEstablished, connectionChange, connectionClosed, answerSDP}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 3
@@ -449,12 +451,14 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 			// input[3]: chan *webrtc.DataChannel
 			// input[4]: chan webrtc.PeerConnectionState
 			// input[5]: chan struct{}
+			// input[6]: webrtc.SessionDescription (the producer's answer)
 			peerConnection := input[0].(*webrtc.PeerConnection)
 			replyTo := input[1].(string)
 			candidates := input[2].([]webrtc.ICECandidate)
 			connectionEstablished := input[3].(chan *webrtc.DataChannel)
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
+			answer := input[6].(webrtc.SessionDescription)
 			slog.Debug("Consumer state 3...")
 
 			iceMsg := common.ICEMsg{
@@ -529,7 +533,14 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			case http.StatusOK:
-				// Signaling is complete, so we can short circuit instead of awaiting the response body
+				// Signaling is complete, so we can short circuit instead of awaiting the response body.
+				// The producer now has our candidates, so our checks start alongside its own.
+				if err := peerConnection.SetRemoteDescription(answer); err != nil {
+					slog.Debug("Error setting remote description", "error", err)
+					// Borked!
+					peerConnection.Close() // TODO: there's an err we should handle here
+					return 0, []interface{}{}
+				}
 				return 4, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			default:
 				slog.Debug("Received unexpected status code", "status_code", res.StatusCode)
