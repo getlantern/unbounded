@@ -164,8 +164,14 @@ func TestCheckingForOutlastsCandidateArrivals(t *testing.T) {
 	}
 	time.Sleep(window*9/10 - time.Since(start))
 
+	stats := agent.GetCandidatePairsStats()
+	// Taken after reading the stats, so a failure counts only if it happened within the window
+	// however late this goroutine woke up.
+	if elapsed := time.Since(start); elapsed >= window {
+		t.Skipf("read the pairs %v after the first candidate, too late to tell", elapsed)
+	}
 	checking := 0
-	for _, s := range agent.GetCandidatePairsStats() {
+	for _, s := range stats {
 		if s.RemoteCandidateID != first.ID() {
 			continue
 		}
