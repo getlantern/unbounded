@@ -3,9 +3,12 @@
 package clientcore
 
 import (
+	"context"
+	"net"
 	"testing"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common/covertdtls"
@@ -96,5 +99,82 @@ func TestTunedPeersConnect(t *testing.T) {
 	case <-open:
 	case <-time.After(15 * time.Second):
 		t.Fatal("tuned peers never opened a data channel")
+	}
+}
+
+// pion runs an extra pass over every pair whenever a candidate is added, which spends the same
+// budget as the timed checks. A pair formed by the first remote candidate must still be checking
+// near the end of the window after more candidates arrive one at a time, as a producer adds them.
+func TestCheckingForOutlastsCandidateArrivals(t *testing.T) {
+	const window = 2 * time.Second
+	budget := WebRTCTuning{}.checkingFor(window).ICEMaxBindingRequests
+	agent, err := ice.NewAgent(&ice.AgentConfig{
+		NetworkTypes:       []ice.NetworkType{ice.NetworkTypeUDP4},
+		CandidateTypes:     []ice.CandidateType{ice.CandidateTypeHost},
+		IncludeLoopback:    true,
+		MaxBindingRequests: &budget,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agent.Close()
+	gathered := make(chan struct{})
+	if err := agent.OnCandidate(func(c ice.Candidate) {
+		if c == nil {
+			close(gathered)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := agent.GatherCandidates(); err != nil {
+		t.Fatal(err)
+	}
+	<-gathered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _, _ = agent.Dial(ctx, "remoteufrag", "remotepasswordremotepassword") }()
+
+	// Silent remote candidates: bound, so checks aren't refused, but never answered.
+	addRemote := func() ice.Candidate {
+		conn, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { conn.Close() })
+		c, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+			Network:   "udp",
+			Address:   "127.0.0.1",
+			Port:      conn.LocalAddr().(*net.UDPAddr).Port,
+			Component: ice.ComponentRTP,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := agent.AddRemoteCandidate(c); err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	start := time.Now()
+	first := addRemote()
+	for range 5 {
+		time.Sleep(30 * time.Millisecond)
+		addRemote()
+	}
+	time.Sleep(window*9/10 - time.Since(start))
+
+	checking := 0
+	for _, s := range agent.GetCandidatePairsStats() {
+		if s.RemoteCandidateID != first.ID() {
+			continue
+		}
+		if s.State == ice.CandidatePairStateFailed {
+			t.Fatalf("pair failed after %d checks, before the %v window ended", s.RequestsSent, window)
+		}
+		checking++
+	}
+	if checking == 0 {
+		t.Fatal("no pair with the first remote candidate")
 	}
 }

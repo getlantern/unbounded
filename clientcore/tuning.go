@@ -52,11 +52,15 @@ const maxICEBindingRequests = 100
 // while a browser keeps checking until our NATFailTimeout closes the connection. Behind NATs that
 // change ports, a pair only opens once both peers have sent checks to each other, so a native peer
 // that stops early misses the other peer's checks.
+//
+// pion also runs an extra pass over every pair whenever a candidate is added, and those checks
+// count against the same budget, so it allows twice the window's worth. Overshooting costs
+// nothing: the NATFailTimeout that bounds window closes the connection on time either way.
 func (t WebRTCTuning) checkingFor(window time.Duration) WebRTCTuning {
 	if t.ICEMaxBindingRequests > 0 || window <= 0 {
 		return t
 	}
-	t.ICEMaxBindingRequests = uint16(min(window/pionICECheckInterval, maxICEBindingRequests))
+	t.ICEMaxBindingRequests = uint16(min(2*window/pionICECheckInterval, maxICEBindingRequests))
 	return t
 }
 

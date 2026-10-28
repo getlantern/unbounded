@@ -106,8 +106,9 @@ func TestParseWebRTCTuningEmpty(t *testing.T) {
 }
 
 func TestCheckingForFillsTheWindow(t *testing.T) {
-	if got := (WebRTCTuning{}).checkingFor(5 * time.Second).ICEMaxBindingRequests; got != 25 {
-		t.Fatalf("5s of checks every 200ms should be 25, got %d", got)
+	// 25 timed checks fill 5s, doubled for the checks pion runs when candidates are added.
+	if got := (WebRTCTuning{}).checkingFor(5 * time.Second).ICEMaxBindingRequests; got != 50 {
+		t.Fatalf("5s should allow 50 checks, got %d", got)
 	}
 	if got := (WebRTCTuning{}).checkingFor(time.Hour).ICEMaxBindingRequests; got != maxICEBindingRequests {
 		t.Fatalf("a long window should be capped at %d, got %d", maxICEBindingRequests, got)
