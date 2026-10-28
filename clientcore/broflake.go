@@ -138,6 +138,25 @@ func (b *BroflakeEngine) setTargetCountries(countries []string) {
 	slog.Debug("Target countries set", "countries", b.rtcOpt.targetCountries())
 }
 
+// setRoomTickets gives the widget the volunteer tickets of its helper
+// pairings. Each worker reads them at its next genesis message. It logs
+// nothing: tickets are credentials.
+func (b *BroflakeEngine) setRoomTickets(tickets []string) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetRoomTickets(tickets)
+}
+
+// setServePool sets whether the widget also serves the general pool ("help
+// others too") or only its pairings' rooms.
+func (b *BroflakeEngine) setServePool(serve bool) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetServePool(serve)
+}
+
 func (b *BroflakeEngine) debug() {
 	slog.Debug("NumGoroutine", "goroutines", runtime.NumGoroutine())
 }

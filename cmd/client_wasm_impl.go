@@ -79,5 +79,7 @@ func main() {
 		}),
 	)
 
+	installHelperInvite()
+
 	select {}
 }
