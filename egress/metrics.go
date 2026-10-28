@@ -62,6 +62,9 @@ import (
 var nClientsCounter metric.Int64ObservableUpDownCounter
 var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
 var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
+
+// quicDialedCounter is the cumulative count behind nQUICConnectionsDialed.
+var quicDialedCounter metric.Int64ObservableCounter
 var nIngressBytesCounter metric.Int64ObservableUpDownCounter
 
 // refusedCounter tallies connections turned away before a session span exists.
@@ -230,6 +233,10 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 	if handshakeFailureCounter, err = m.Int64ObservableCounter("quic-handshake-failures"); err != nil {
 		return nil, shutdownAfter(ctx, shutdown, err)
 	}
+	if quicDialedCounter, err = m.Int64ObservableCounter("quic-connections-dialed",
+		metric.WithDescription("QUIC connections the egress dialed, each a consumer whose volunteer hop came up")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
 	if clientCertExpiryGauge, err = m.Int64ObservableGauge("client-cert-expiry-seconds",
 		metric.WithUnit("s"),
 		metric.WithDescription("seconds until the egress's CA-issued QUIC client certificate expires")); err != nil {
@@ -264,6 +271,7 @@ func initMetrics(ctx context.Context) (func(context.Context) error, error) {
 		observeMetrics,
 		nClientsCounter,
 		nQUICConnectionsCounter,
+		quicDialedCounter,
 		nQUICStreamsCounter,
 		nIngressBytesCounter,
 		refusedCounter,
@@ -363,6 +371,7 @@ func observeMetrics(ctx context.Context, o metric.Observer) error {
 		o.ObserveInt64(clientCertVerifiableGauge, value, metric.WithAttributes(attribute.String("source", source)))
 	}
 	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
+	o.ObserveInt64(quicDialedCounter, int64(atomic.LoadUint64(&nQUICConnectionsDialed)))
 	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))
 
 	// concurrent-websockets and ingress-bytes are reported per donor country

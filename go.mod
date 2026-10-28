@@ -15,8 +15,9 @@ require (
 	github.com/getlantern/telemetry v0.0.0-20250606052628-8960164ec1f5
 	github.com/google/uuid v1.6.0
 	github.com/jellydator/ttlcache/v3 v3.4.1
-	github.com/pion/transport/v4 v4.0.1
-	github.com/pion/webrtc/v4 v4.2.11
+	github.com/pion/dtls/v3 v3.1.15
+	github.com/pion/transport/v5 v5.1.1
+	github.com/pion/webrtc/v4 v4.2.25
 	github.com/quic-go/quic-go v0.62.0
 	github.com/theodorsm/covert-dtls v1.5.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.11.0
@@ -66,20 +67,19 @@ require (
 	github.com/oschwald/maxminddb-golang v1.11.0 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
-	github.com/pion/datachannel v1.6.0 // indirect
-	github.com/pion/dtls/v3 v3.1.2 // indirect
-	github.com/pion/ice/v4 v4.2.2 // indirect
-	github.com/pion/interceptor v0.1.44 // indirect
+	github.com/pion/datachannel v1.6.3 // indirect
+	github.com/pion/ice/v4 v4.4.8 // indirect
+	github.com/pion/interceptor v0.1.49 // indirect
 	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/mdns/v2 v2.1.0 // indirect
+	github.com/pion/mdns/v2 v2.2.2 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.16 // indirect
-	github.com/pion/rtp v1.10.1 // indirect
-	github.com/pion/sctp v1.9.4 // indirect
-	github.com/pion/sdp/v3 v3.0.18 // indirect
-	github.com/pion/srtp/v3 v3.0.10 // indirect
-	github.com/pion/stun/v3 v3.1.1 // indirect
-	github.com/pion/turn/v4 v4.1.4 // indirect
+	github.com/pion/rtcp v1.2.20 // indirect
+	github.com/pion/rtp v1.10.6 // indirect
+	github.com/pion/sctp v1.12.0 // indirect
+	github.com/pion/sdp/v3 v3.0.20 // indirect
+	github.com/pion/srtp/v3 v3.1.3 // indirect
+	github.com/pion/stun/v4 v4.0.1 // indirect
+	github.com/pion/turn/v5 v5.1.2 // indirect
 	github.com/sorairolake/lzip-go v0.3.8 // indirect
 	github.com/spf13/afero v1.15.0 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
@@ -97,7 +97,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
-	golang.org/x/time v0.10.0 // indirect
+	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4 // indirect
 	google.golang.org/grpc v1.79.1 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

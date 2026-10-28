@@ -1,0 +1,60 @@
+package freddie
+
+import (
+	"context"
+	"net/http"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/getlantern/broflake/common"
+)
+
+// recordProducerOutcome counts how a producer's previous connection attempt ended, which it
+// reports on its next genesis message. Every value is normalized onto a fixed set, so a report
+// can't mint label values. A producer that reports nothing is not counted.
+func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r *http.Request) {
+	outcome := common.NormalizeProducerOutcome(r.Form.Get(common.PrevOutcomeField))
+	if outcome == "" {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("outcome", outcome),
+		attribute.String("ice_state", common.NormalizeICEState(r.Form.Get(common.PrevICEStateField))),
+		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
+		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
+	}
+	attrs = append(attrs, f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))...)
+	f.producerOutcomes.Add(ctx, 1, metric.WithAttributes(attrs...))
+	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
+}
+
+// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat and volunteer_nat
+// labels for an attempt that answered offerID.
+func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
+	reported := offerID != ""
+	var oc offerConsumer
+	if reported {
+		oc = f.offerConsumers.take(offerID)
+	}
+	return []attribute.KeyValue{
+		attribute.String("consumer_country", common.OutcomeConsumerCountry(reported, oc.country)),
+		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
+		attribute.String("consumer_nat", outcomeNAT(reported, oc.consumerNAT)),
+		attribute.String("volunteer_nat", outcomeNAT(reported, oc.volunteerNAT)),
+	}
+}
+
+// outcomeNAT labels a peer's NAT like common.OutcomeConsumerVersion labels the version: unreported
+// when the producer sent no offer ID, and unknown when Freddie doesn't remember the offer.
+func outcomeNAT(offerIDReported bool, nat string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case nat == "":
+		return "unknown"
+	default:
+		return nat
+	}
+}

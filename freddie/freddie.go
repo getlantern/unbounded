@@ -309,6 +309,9 @@ type Freddie struct {
 	// consumer untargeted: it still receives untargeted and fallback broadcasts, but is never
 	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
 	// is read without synchronization by concurrent request handlers.
+	//
+	// Freddie also calls it on each offer POST, so freddie.producer.outcomes can say
+	// which country the consumer behind each attempt was in.
 	ConsumerCountry func(r *http.Request) string
 
 	// RoomTicket, if non-nil, verifies a helper pairing ticket presented for role and returns the
@@ -348,8 +351,11 @@ type Freddie struct {
 	consumerSubs      metric.Int64Counter
 	roomMatches       metric.Int64Counter
 	roomsDisabled     metric.Int64Counter
+	iceNAT            metric.Int64Counter
+	producerOutcomes  metric.Int64Counter
 
-	tickets *ticketCache
+	tickets        *ticketCache
+	offerConsumers *offerConsumerCache
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -363,11 +369,12 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 			Addr:         listenAddr,
 			Handler:      mux,
 		},
-		currentGets:  atomic.Int64{},
-		currentPosts: atomic.Int64{},
-		tracer:       otel.Tracer("github.com/getlantern/broflake/freddie"),
-		meter:        otel.Meter("github.com/getlantern/broflake/freddie"),
-		tickets:      newTicketCache(maxCachedTickets, time.Now),
+		currentGets:    atomic.Int64{},
+		currentPosts:   atomic.Int64{},
+		tracer:         otel.Tracer("github.com/getlantern/broflake/freddie"),
+		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
+		tickets:        newTicketCache(maxCachedTickets, time.Now),
+		offerConsumers: newOfferConsumerCache(time.Now),
 	}
 
 	var err error
@@ -447,6 +454,20 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.roomsDisabled, err = f.meter.Int64Counter("freddie.rooms.disabled",
 		metric.WithDescription("signaling requests served with helper pairing rooms disabled, because no room ticket verifier is configured"),
 		metric.WithUnit("request"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.iceNAT, err = f.meter.Int64Counter("freddie.ice.nat",
+		metric.WithDescription("ICE candidate sets received, by role, by how the peer's NAT mapped its sockets (see icenat.go), and by whether freddie delivered them"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
+		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go)"),
+		metric.WithUnit("attempt"))
 	if err != nil {
 		return nil, err
 	}
@@ -780,6 +801,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
 		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
 		// first room-aware clients did, to SignalSendToGenesis with pool=0.
+		f.recordProducerOutcome(ctx, span, r)
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
@@ -807,13 +829,48 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
+		// An offer's consumer is cached before the offer is published, so the producer can't
+		// report the attempt before Freddie can label it.
+		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
+		if isOffer {
+			oc := offerConsumer{
+				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
+				volunteerNAT: outcomeNATNone,
+				consumerNAT:  outcomeNATNone,
+			}
+			if f.ConsumerCountry != nil {
+				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
+			}
+			f.offerConsumers.add(reqID, oc)
+		}
+		// Likewise each peer's NAT is linked to the offer before the message is published: the
+		// recipient can act on it at once, so the consumer's ICE message, and then the producer's
+		// outcome report, could otherwise overtake the link. A volunteer's answer is sent to the
+		// offer's ID, and the consumer's ICE message to the answer's.
+		peer, hasCandidates := classifyMessage(common.SignalMsgType(msgType), data)
+		var nat string
+		if hasCandidates {
+			nat = peer.class.outcomeLabel()
+		}
+		switch common.SignalMsgType(msgType) {
+		case common.SignalMsgAnswer:
+			f.offerConsumers.answered(sendTo, reqID, nat)
+		case common.SignalMsgICE:
+			f.offerConsumers.consumerICE(sendTo, nat)
+		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
+		if isOffer && !ok {
+			f.offerConsumers.take(reqID)
+		}
 		delivered := attribute.Bool("reply.delivered", ok)
 		span.SetAttributes(delivered)
 		f.signalReplies.Add(ctx, 1, metric.WithAttributes(
 			delivered,
 			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 		))
+		if hasCandidates {
+			f.recordICENAT(ctx, span, peer, delivered)
+		}
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
