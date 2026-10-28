@@ -7,7 +7,8 @@ import "time"
 // zero value changes nothing. A browser's WebRTC stack can't be tuned, so the widget ignores it.
 type WebRTCTuning struct {
 	// ICEMaxBindingRequests caps the connectivity checks sent on a candidate pair before it is
-	// marked failed. pion's default is 7.
+	// marked failed. Unset, native peers check for their whole NATFailTimeout (see checkingFor)
+	// rather than stopping at pion's default of 7.
 	ICEMaxBindingRequests uint16
 	// STUNGatherTimeout bounds how long gathering waits on each STUN server. pion's default is 5s,
 	// so one unresponsive server in a batch delays every handshake by that much.
@@ -39,6 +40,25 @@ const (
 	pionICEFailedTimeout       = 25 * time.Second
 	pionICEKeepaliveInterval   = 2 * time.Second
 )
+
+// pion checks its candidate pairs this often while connecting.
+const pionICECheckInterval = 200 * time.Millisecond
+
+// maxICEBindingRequests bounds ICEMaxBindingRequests, from config or from checkingFor.
+const maxICEBindingRequests = 100
+
+// checkingFor returns t with ICEMaxBindingRequests, when unset, raised so that pion keeps checking
+// each candidate pair for window. pion's default of 7 checks gives up on a pair after about 1.6s,
+// while a browser keeps checking until our NATFailTimeout closes the connection. Behind NATs that
+// change ports, a pair only opens once both peers have sent checks to each other, so a native peer
+// that stops early misses the other peer's checks.
+func (t WebRTCTuning) checkingFor(window time.Duration) WebRTCTuning {
+	if t.ICEMaxBindingRequests > 0 || window <= 0 {
+		return t
+	}
+	t.ICEMaxBindingRequests = uint16(min(window/pionICECheckInterval, maxICEBindingRequests))
+	return t
+}
 
 func orDefault(d, def time.Duration) time.Duration {
 	if d > 0 {
