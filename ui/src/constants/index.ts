@@ -131,6 +131,6 @@ export const WASM_CLIENT_CONFIG = {
 export const APP_STORE_LINKS = {
 	chrome: 'https://chromewebstore.google.com/detail/unbounded/jonhnkjdlimggpmbehgkgpjgphoepfdj',
 	// chrome: 'https://unbounded.lantern.io/coming-soon',
-	firefox: 'https://addons.mozilla.org/en-US/firefox/addon/unbounded/',
+	firefox: 'https://addons.mozilla.org/en-US/firefox/addon/lanternactionmode/',
 	// firefox: 'https://unbounded.lantern.io/coming-soon',
 }
