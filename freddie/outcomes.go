@@ -13,7 +13,8 @@ import (
 
 // recordProducerOutcome counts how a producer's previous connection attempt ended, which it
 // reports on its next genesis message. Every value is normalized onto a fixed set, so a report
-// can't mint label values. A producer that reports nothing is not counted.
+// can't mint label values. A producer that reports nothing is not counted. volunteer_version comes
+// from the reporting genesis's VersionHeader, since the process that made the attempt reports it.
 func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r *http.Request) {
 	outcome := common.NormalizeProducerOutcome(r.Form.Get(common.PrevOutcomeField))
 	if outcome == "" {
@@ -24,6 +25,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("ice_state", common.NormalizeICEState(r.Form.Get(common.PrevICEStateField))),
 		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
 		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
+		attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
 	}
 	attrs = append(attrs, f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))...)
 	f.producerOutcomes.Add(ctx, 1, metric.WithAttributes(attrs...))
