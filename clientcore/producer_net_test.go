@@ -23,13 +23,19 @@ type countingNet struct {
 }
 
 func (n *countingNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
-	n.listens.Add(1)
-	return n.Net.ListenUDP(network, laddr)
+	c, err := n.Net.ListenUDP(network, laddr)
+	if err == nil {
+		n.listens.Add(1)
+	}
+	return c, err
 }
 
 func (n *countingNet) ListenPacket(network, address string) (net.PacketConn, error) {
-	n.listens.Add(1)
-	return n.Net.ListenPacket(network, address)
+	c, err := n.Net.ListenPacket(network, address)
+	if err == nil {
+		n.listens.Add(1)
+	}
+	return c, err
 }
 
 // A producer built with no tuning and no covert DTLS, the production
