@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/transport/v5"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -65,7 +66,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout))
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), options.Net)
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -703,10 +704,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	})
 }
 
-func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning) (*webrtc.PeerConnection, error) {
+// newProducerPeerConnection builds a producer's peer connection. net, when
+// non-nil on a native build, is the transport pion opens its UDP sockets on,
+// so a host can rate-limit or route a widget's WebRTC traffic; see
+// WebRTCOptions.Net.
+func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, net transport.Net) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
 	tuned := tuning.apply(&se)
-	if !dtls.Enabled() && !tuned {
+	netSet := applyProducerNet(&se, net)
+	if !dtls.Enabled() && !tuned && !netSet {
 		return webrtc.NewPeerConnection(config)
 	}
 	if err := covertdtls.Apply(dtls, &se); err != nil {
