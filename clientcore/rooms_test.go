@@ -569,3 +569,26 @@ func TestRoomPreferenceLogsWhereTrafficGoes(t *testing.T) {
 		}
 	}
 }
+
+// While room preference is suspended, a random pick that lands on a room
+// helper is still a connection through that helper.
+func TestRoomPreferenceLogsARoomHelperPickedDuringCooldown(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	now := time.Unix(0, 0)
+	p := newRoomPreference(func() time.Time { return now })
+	for i := 0; i < roomPreferenceMaxFailures+1; i++ {
+		p.pick(context.Background(), []string{"helper"}, []string{"helper"})
+	}
+	buf.Reset()
+	if got := p.pick(context.Background(), []string{"helper"}, []string{"helper"}); got != "helper" {
+		t.Fatalf("picked %q", got)
+	}
+	p.succeeded()
+	if out := buf.String(); !strings.Contains(out, "Connected through a room helper") || strings.Contains(out, "pool volunteer") {
+		t.Errorf("a room helper picked during cooldown was not logged as one:\n%s", out)
+	}
+}

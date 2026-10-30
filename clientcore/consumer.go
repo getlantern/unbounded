@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -737,6 +738,9 @@ type roomPreference struct {
 	// a pool connection made while room helpers advertise is logged: that is
 	// a helper consumer carrying its user's traffic through a stranger.
 	sawRoom bool
+	// pickedRoom is whether the current attempt's genesis came through a
+	// room, whether or not room preference picked it.
+	pickedRoom bool
 }
 
 func newRoomPreference(now func() time.Time) *roomPreference {
@@ -759,6 +763,7 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 		}
 	}
 	p.clearLocked()
+	offered := room
 	if len(room) > 0 {
 		p.sawRoom = true
 		if now.Before(p.suspendedUntil) {
@@ -774,7 +779,9 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 		attempt := p.attempt
 		p.stopWatch = context.AfterFunc(ctx, func() { p.cancelled(attempt) })
 	}
-	return pickGenesis(all, room)
+	replyTo := pickGenesis(all, room)
+	p.pickedRoom = slices.Contains(offered, replyTo)
+	return replyTo
 }
 
 // succeeded records that the current attempt connected.
@@ -782,7 +789,7 @@ func (p *roomPreference) succeeded() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	switch {
-	case p.pending:
+	case p.pickedRoom:
 		slog.Info("Connected through a room helper")
 	case p.sawRoom:
 		slog.Info("Connected through a pool volunteer while room helpers advertise")
@@ -816,4 +823,5 @@ func (p *roomPreference) clearLocked() {
 		p.stopWatch = nil
 	}
 	p.pending = false
+	p.pickedRoom = false
 }
