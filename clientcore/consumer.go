@@ -734,10 +734,10 @@ type roomPreference struct {
 	suspendedUntil time.Time
 	attempt        uint64      // counts room-picked attempts, so a stale cancel is ignored
 	stopWatch      func() bool // stops the current attempt's cancel watch
-	// sawRoom is set once a room genesis has been offered to this worker, so
-	// a pool connection made while room helpers advertise is logged: that is
-	// a helper consumer carrying its user's traffic through a stranger.
-	sawRoom bool
+	// roomOffered is whether the current attempt was offered a room genesis,
+	// so a pool connection made despite one is logged: that is a helper
+	// consumer carrying its user's traffic through a stranger.
+	roomOffered bool
 	// pickedRoom is whether the current attempt's genesis came through a
 	// room, whether or not room preference picked it.
 	pickedRoom bool
@@ -753,6 +753,11 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
+	if p.pickedRoom && !p.pending {
+		// A cooldown pick that landed on a room helper and failed: logged, but
+		// not counted, since cooldown picks never count toward suspension.
+		slog.Info("Room helper attempt failed during cooldown")
+	}
 	if p.pending {
 		p.failures++
 		slog.Info("Room helper attempt failed", "consecutive_failures", p.failures)
@@ -764,10 +769,10 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	}
 	p.clearLocked()
 	offered := room
+	p.roomOffered = len(room) > 0
 	if len(room) > 0 {
-		p.sawRoom = true
 		if now.Before(p.suspendedUntil) {
-			slog.Info("Room helper offers skipped while room preference is suspended",
+			slog.Info("Room preference suspended, picking from all candidates including room helpers",
 				"room_candidates", len(room), "candidates", len(all), "resumes_in", p.suspendedUntil.Sub(now).Round(time.Second))
 			room = nil
 		}
@@ -791,8 +796,8 @@ func (p *roomPreference) succeeded() {
 	switch {
 	case p.pickedRoom:
 		slog.Info("Connected through a room helper")
-	case p.sawRoom:
-		slog.Info("Connected through a pool volunteer while room helpers advertise")
+	case p.roomOffered:
+		slog.Info("Connected through a pool volunteer although a room helper offered")
 	}
 	p.clearLocked()
 	p.failures = 0
@@ -824,4 +829,5 @@ func (p *roomPreference) clearLocked() {
 	}
 	p.pending = false
 	p.pickedRoom = false
+	p.roomOffered = false
 }

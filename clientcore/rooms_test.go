@@ -553,8 +553,9 @@ func TestRoomPreferenceLogsWhereTrafficGoes(t *testing.T) {
 	for i := 0; i < roomPreferenceMaxFailures+1; i++ {
 		p.pick(context.Background(), all, room)
 	}
-	// A pool-only pick, so the connection is a stranger's whatever the dice say.
-	p.pick(context.Background(), []string{"stranger"}, nil)
+	// A room helper offers, but the suspended preference picks the only other
+	// candidate, a stranger: traffic goes through the pool despite the offer.
+	p.pick(context.Background(), []string{"stranger"}, []string{"helper"})
 	p.succeeded()
 
 	out := buf.String()
@@ -563,8 +564,8 @@ func TestRoomPreferenceLogsWhereTrafficGoes(t *testing.T) {
 		"Connected through a room helper",
 		"Room helper attempt failed",
 		"Room helper attempts keep failing",
-		"Room helper offers skipped while room preference is suspended",
-		"Connected through a pool volunteer while room helpers advertise",
+		"Room preference suspended, picking from all candidates including room helpers",
+		"Connected through a pool volunteer although a room helper offered",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("log lacks %q:\n%s", want, out)
@@ -592,5 +593,47 @@ func TestRoomPreferenceLogsARoomHelperPickedDuringCooldown(t *testing.T) {
 	p.succeeded()
 	if out := buf.String(); !strings.Contains(out, "Connected through a room helper") || strings.Contains(out, "pool volunteer") {
 		t.Errorf("a room helper picked during cooldown was not logged as one:\n%s", out)
+	}
+}
+
+// A pool connection is logged as bypassing a helper only when this attempt was
+// offered one, not because an earlier attempt was.
+func TestRoomPreferenceLogsBypassOnlyWhenOffered(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	p := newRoomPreference(time.Now)
+	p.pick(context.Background(), []string{"helper"}, []string{"helper"})
+	p.succeeded()
+	buf.Reset()
+	p.pick(context.Background(), []string{"stranger"}, nil)
+	p.succeeded()
+	if out := buf.String(); strings.Contains(out, "pool volunteer") {
+		t.Errorf("a pool connection with no room offer was logged as bypassing one:\n%s", out)
+	}
+}
+
+// A room helper picked at random during the cooldown that then fails is logged
+// as a failure, without counting toward another suspension.
+func TestRoomPreferenceLogsACooldownRoomHelperFailure(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	now := time.Unix(0, 0)
+	p := newRoomPreference(func() time.Time { return now })
+	for i := 0; i < roomPreferenceMaxFailures+1; i++ {
+		p.pick(context.Background(), []string{"helper"}, []string{"helper"})
+	}
+	buf.Reset()
+	p.pick(context.Background(), []string{"helper"}, []string{"helper"})
+	if _, failures := p.snapshot(); failures != 0 {
+		t.Fatalf("a cooldown attempt counted toward suspension: %d", failures)
+	}
+	if out := buf.String(); !strings.Contains(out, "Room helper attempt failed during cooldown") {
+		t.Errorf("a failed cooldown room helper attempt was not logged:\n%s", out)
 	}
 }
