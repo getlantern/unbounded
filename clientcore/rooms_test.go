@@ -553,6 +553,8 @@ func TestRoomPreferenceLogsWhereTrafficGoes(t *testing.T) {
 	for i := 0; i < roomPreferenceMaxFailures+1; i++ {
 		p.pick(context.Background(), all, room)
 	}
+	// A pool-only pick, so the connection is a stranger's whatever the dice say.
+	p.pick(context.Background(), []string{"stranger"}, nil)
 	p.succeeded()
 
 	out := buf.String()
