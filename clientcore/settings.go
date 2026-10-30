@@ -219,8 +219,8 @@ type ConnectionChangeInfoFunc func(state int, workerIdx int, info common.Consume
 // ConsumerSlotChangeFunc is a callback for a consumer's own WebRTC connection
 // slots. state: 1 = connected, -1 = disconnected. workerIdx is the slot.
 // When state == 1, pairing is the helper pairing of the room genesis the slot
-// answered, or "" for a pool producer, or when Freddie or the producer
-// predates pairing attribution. When state == -1, pairing is "". It is called
+// answered, or "" for a pool producer, or when Freddie predates pairing
+// attribution. When state == -1, pairing is "". It is called
 // on the slot's own goroutine, so it must be cheap and must not block.
 // pairing must never be logged.
 type ConsumerSlotChangeFunc func(state int, workerIdx int, pairing string)

@@ -42,8 +42,8 @@ type ConsumerSlot struct {
 	WorkerIdx int
 	Connected bool
 	// Pairing is the helper pairing of the room genesis a connected slot
-	// answered, or "" for a pool producer, or when Freddie or the producer
-	// predates pairing attribution. Never log it.
+	// answered, or "" for a pool producer, or when Freddie predates pairing
+	// attribution. Never log it.
 	Pairing string
 }
 

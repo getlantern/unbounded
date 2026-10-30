@@ -863,11 +863,17 @@ func TestConsumerSlotReportsPairing(t *testing.T) {
 	connectionClosed := make(chan struct{}, 1)
 	go func() {
 		// Let state 5 announce the slot before the connection closes.
+		deadline := time.Now().Add(5 * time.Second)
 		for {
 			if s := slots.snapshot(); s[1].Connected {
 				if s[1].Pairing != "pairing-a" || s[0].Connected {
 					t.Errorf("slots while connected: %+v", s)
 				}
+				connectionClosed <- struct{}{}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("slot 1 did not connect within 5s")
 				connectionClosed <- struct{}{}
 				return
 			}
