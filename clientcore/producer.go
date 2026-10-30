@@ -22,6 +22,7 @@ import (
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/covertdtls"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
@@ -237,7 +238,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Looks like we got some kind of response. It ought to be an offer SDP wrapped in a SignalMsg
 			replyTo, offer, err := common.DecodeSignalMsg(offerBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "msg", string(offerBytes))
+				// Not the raw message: an offer may carry its consumer's pairing.
+				slog.Debug("Error decoding signal message", "error", err, "bytes", len(offerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -595,7 +597,13 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Announce the new connectivity situation for this slot
 			if !sendCtx(ctx, com.tx, IPCMsg{
 				IpcType: ConsumerInfoIPC,
-				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID, Country: offer.Country},
+				Data: common.ConsumerInfo{
+					Addr:      remoteAddr,
+					Tag:       offer.Tag,
+					SessionID: consumerSessionID,
+					Country:   offer.Country,
+					Pairing:   offerPairing(options, offer.Pairing),
+				},
 			}) {
 				return 0, input
 			}
@@ -781,4 +789,23 @@ func genesisForm(options *WebRTCOptions, g []byte) url.Values {
 		form.Add(common.RoomTicketField, tk)
 	}
 	return form
+}
+
+// offerPairing returns claimed, the pairing an offer claims, if it is the
+// pairing of one of the producer's own current volunteer tickets, and ""
+// otherwise. The claim is the consumer's echo of what Freddie stamped on the
+// room genesis it answered, so an honest consumer's claim always matches. A
+// consumer that lies can at worst name another of this producer's pairings,
+// which it would have to know. The tickets were verified by whoever issued
+// them to this producer, so they are only peeked at here.
+func offerPairing(options *WebRTCOptions, claimed string) string {
+	if claimed == "" {
+		return ""
+	}
+	for _, tk := range options.CurrentRoomTickets() {
+		if role, pairing := helperticket.Peek(tk); role == helperticket.RoleVolunteer && pairing == claimed {
+			return claimed
+		}
+	}
+	return ""
 }

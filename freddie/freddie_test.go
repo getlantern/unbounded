@@ -408,6 +408,15 @@ func recv(ch chan string) string {
 	}
 }
 
+// sameRoomMsg is rooms, each delivering msg.
+func sameRoomMsg(msg string, rooms ...string) []roomGenesis {
+	var out []roomGenesis
+	for _, room := range rooms {
+		out = append(out, roomGenesis{room: room, msg: msg})
+	}
+	return out
+}
+
 // Precedence per genesis message: room, then (only when the producer serves
 // the pool) country, then everyone.
 func TestConsumerIndex_RoomsFirst(t *testing.T) {
@@ -416,7 +425,7 @@ func TestConsumerIndex_RoomsFirst(t *testing.T) {
 	ir := idx.AddConsumer("ir", "IR", nil)
 	other := idx.AddWithCountry("other", "")
 
-	matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, []string{"IR"})
+	matched, outcome := idx.DeliverGenesis("m", sameRoomMsg("r", "room-a"), true, []string{"IR"})
 	if !matched || outcome != "" {
 		t.Fatalf("room-a: matched=%v outcome=%q, want a room match and no pool step", matched, outcome)
 	}
@@ -427,7 +436,7 @@ func TestConsumerIndex_RoomsFirst(t *testing.T) {
 		t.Error("a room match still reached pool consumers")
 	}
 
-	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"IR"})
+	matched, outcome = idx.DeliverGenesis("m", sameRoomMsg("r", "room-b"), true, []string{"IR"})
 	if matched || outcome != genesisMatched {
 		t.Fatalf("room-b, IR: matched=%v outcome=%q, want the country step", matched, outcome)
 	}
@@ -435,7 +444,7 @@ func TestConsumerIndex_RoomsFirst(t *testing.T) {
 		t.Error("with nobody in room-b the IR consumer, and only it, should get the plain message")
 	}
 
-	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, true, []string{"CN"})
+	matched, outcome = idx.DeliverGenesis("m", sameRoomMsg("r", "room-b"), true, []string{"CN"})
 	if matched || outcome != genesisFallback {
 		t.Fatalf("room-b, CN: matched=%v outcome=%q, want the fallback", matched, outcome)
 	}
@@ -443,11 +452,11 @@ func TestConsumerIndex_RoomsFirst(t *testing.T) {
 		t.Error("the fallback must reach everyone with the plain message, room members included")
 	}
 
-	matched, outcome = idx.DeliverGenesis("m", "r", []string{"room-b"}, false, []string{"IR"})
+	matched, outcome = idx.DeliverGenesis("m", sameRoomMsg("r", "room-b"), false, []string{"IR"})
 	if matched || outcome != "" {
 		t.Fatalf("pool=0, nobody in room-b: matched=%v outcome=%q, want no delivery", matched, outcome)
 	}
-	matched, outcome = idx.DeliverGenesis("m", "r", nil, false, nil)
+	matched, outcome = idx.DeliverGenesis("m", nil, false, nil)
 	if matched || outcome != "" {
 		t.Fatalf("pool=0, no rooms: matched=%v outcome=%q, want no delivery", matched, outcome)
 	}
@@ -455,7 +464,7 @@ func TestConsumerIndex_RoomsFirst(t *testing.T) {
 		t.Error("a pool=0 genesis with no room consumer reached someone")
 	}
 
-	matched, _ = idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil)
+	matched, _ = idx.DeliverGenesis("m", sameRoomMsg("r", "room-a"), false, nil)
 	if !matched || recv(paired) != "r" {
 		t.Error("pool=0 must still reach the room")
 	}
@@ -469,13 +478,13 @@ func TestConsumerIndex_UndeliverableRoomMatch(t *testing.T) {
 	pool := idx.AddWithCountry("pool", "")
 	paired <- "already full"
 
-	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, true, nil); matched || outcome != genesisUntargeted {
+	if matched, outcome := idx.DeliverGenesis("m", sameRoomMsg("r", "room-a"), true, nil); matched || outcome != genesisUntargeted {
 		t.Fatalf("matched=%v outcome=%q, want an untargeted pool broadcast", matched, outcome)
 	}
 	if recv(pool) != "m" {
 		t.Error("the pool consumer did not get the fallback")
 	}
-	if matched, outcome := idx.DeliverGenesis("m", "r", []string{"room-a"}, false, nil); matched || outcome != "" {
+	if matched, outcome := idx.DeliverGenesis("m", sameRoomMsg("r", "room-a"), false, nil); matched || outcome != "" {
 		t.Fatalf("pool=0: matched=%v outcome=%q, want nothing", matched, outcome)
 	}
 	if received(pool) {
@@ -489,7 +498,7 @@ func TestConsumerIndex_RoomMessageOncePerConsumer(t *testing.T) {
 	// the non-blocking select and the test would pass even if broadcastToRooms sent twice.
 	idx := newConsumerIndex(2)
 	ch := idx.AddConsumer("u", "", []string{"room-a", "room-b"})
-	if n := idx.broadcastToRooms("r", []string{"room-a", "room-b"}); n != 1 {
+	if n := idx.broadcastToRooms(sameRoomMsg("r", "room-a", "room-b")); n != 1 {
 		t.Errorf("delivered %d times, want 1", n)
 	}
 	if len(ch) != 1 {

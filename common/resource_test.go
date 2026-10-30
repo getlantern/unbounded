@@ -323,3 +323,88 @@ func TestNormalizeCountry_DeclinesNonCountryCodes(t *testing.T) {
 		}
 	}
 }
+
+// OfferMsg gained Pairing. It is omitted when empty, so a pool offer is
+// byte-identical to one from before it, an old producer ignores it, and a new
+// producer reads an old consumer's offer as unattributed.
+func TestOfferMsgPairing_WireCompatibleBothWays(t *testing.T) {
+	sdp := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: "x"}
+	type prePairingOfferMsg struct {
+		SDP     webrtc.SessionDescription
+		Tag     string
+		Country string
+	}
+	old, _ := json.Marshal(prePairingOfferMsg{SDP: sdp, Tag: "t", Country: "IR"})
+	pool, _ := json.Marshal(OfferMsg{SDP: sdp, Tag: "t", Country: "IR"})
+	if string(old) != string(pool) {
+		t.Errorf("a pool offer changed on the wire: old %s, new %s", old, pool)
+	}
+
+	var fromOld OfferMsg
+	if err := json.Unmarshal(old, &fromOld); err != nil || fromOld.Pairing != "" || fromOld.Tag != "t" || fromOld.Country != "IR" {
+		t.Errorf("new decode of an old offer = %+v, %v", fromOld, err)
+	}
+
+	paired, _ := json.Marshal(OfferMsg{SDP: sdp, Tag: "t", Country: "IR", Pairing: "p"})
+	var toOld prePairingOfferMsg
+	if err := json.Unmarshal(paired, &toOld); err != nil || toOld.Tag != "t" || toOld.Country != "IR" {
+		t.Errorf("old decode of a paired offer = %+v, %v", toOld, err)
+	}
+	var toNew OfferMsg
+	if err := json.Unmarshal(paired, &toNew); err != nil || toNew.Pairing != "p" {
+		t.Errorf("new decode of a paired offer = %+v, %v", toNew, err)
+	}
+
+	// And through the signaling envelope, as the producer decodes it.
+	env, _ := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgOffer, Payload: string(old)})
+	if _, got, err := DecodeSignalMsg(env); err != nil || got.(OfferMsg).Pairing != "" {
+		t.Errorf("DecodeSignalMsg(old offer) = %+v, %v", got, err)
+	}
+}
+
+// SignalMsg gained Pairing, which Freddie sets only with Room. A room genesis
+// from a Freddie that predates it decodes with no pairing, and an old consumer
+// decodes a stamped one.
+func TestSignalMsgPairing_WireCompatibleBothWays(t *testing.T) {
+	type prePairingSignalMsg struct {
+		ReplyTo string
+		Type    SignalMsgType
+		Payload string
+		Room    bool `json:",omitempty"`
+	}
+	oldRoom, _ := json.Marshal(prePairingSignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}", Room: true})
+	newRoom, _ := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}", Room: true})
+	if string(oldRoom) != string(newRoom) {
+		t.Errorf("an unstamped room genesis changed on the wire: old %s, new %s", oldRoom, newRoom)
+	}
+	msg, _, err := DecodeSignal(oldRoom)
+	if err != nil || !msg.IsRoomGenesis() || msg.RoomPairing() != "" {
+		t.Errorf("DecodeSignal(old room genesis) = %+v, %v", msg, err)
+	}
+
+	stamped, _ := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}", Room: true, Pairing: "p"})
+	var o prePairingSignalMsg
+	if err := json.Unmarshal(stamped, &o); err != nil || o.ReplyTo != "r" || !o.Room {
+		t.Errorf("old decode of a stamped room genesis = %+v, %v", o, err)
+	}
+	msg, _, err = DecodeSignal(stamped)
+	if err != nil || msg.RoomPairing() != "p" {
+		t.Errorf("DecodeSignal(stamped) = %+v, %v", msg, err)
+	}
+
+	// A pairing is only a room genesis's: on anything else RoomPairing ignores it.
+	for _, m := range []SignalMsg{
+		{Type: SignalMsgGenesis, Pairing: "p"},
+		{Type: SignalMsgOffer, Room: true, Pairing: "p"},
+	} {
+		if got := m.RoomPairing(); got != "" {
+			t.Errorf("RoomPairing(%+v) = %q, want empty", m, got)
+		}
+	}
+}
+
+func TestConsumerInfoNil_IgnoresPairing(t *testing.T) {
+	if !(ConsumerInfo{Pairing: "p"}).Nil() {
+		t.Error("a ConsumerInfo with only a Pairing must be Nil()")
+	}
+}

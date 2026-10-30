@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -803,5 +804,89 @@ func TestFreddie_FlushRoomTicketCache(t *testing.T) {
 	}
 	if n := calls.Load(); n != 2 {
 		t.Errorf("verified %d times after the flush, want 2", n)
+	}
+}
+
+// expectPairing is expectFrom for a room genesis message that must carry pairing, or for a pool
+// one (pairing "") that must carry no pairing at all.
+func (s *testServer) expectPairing(name string, ch chan string, pairing string) {
+	s.t.Helper()
+	select {
+	case raw := <-ch:
+		var msg common.SignalMsg
+		if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+			s.t.Fatalf("%s consumer: %v", name, err)
+		}
+		if msg.IsRoomGenesis() != (pairing != "") || msg.Pairing != pairing {
+			s.t.Errorf("%s consumer: room=%v pairing=%q, want pairing %q", name, msg.Room, msg.Pairing, pairing)
+		}
+		if pairing == "" && strings.Contains(raw, "Pairing") {
+			s.t.Errorf("%s consumer: a pool genesis carries a pairing field: %s", name, raw)
+		}
+	case <-time.After(300 * time.Millisecond):
+		s.t.Errorf("%s consumer did not receive a genesis message", name)
+	}
+}
+
+// Each room's genesis message is stamped with that room's pairing, and only with it: a consumer in
+// two rooms gets each room's message stamped with that room's pairing, and a pool message carries
+// none.
+func TestHandleSignal_RoomGenesisStampsPairing(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	inP := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+	inQ := s.subscribe("", "", k.ticket(pairingQ, helperticket.RoleInviter, ticketOK))
+	inBoth := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK), k.ticket(pairingQ, helperticket.RoleInviter, ticketOK))
+	s.waitForConsumers(3)
+	vP := k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)
+	vQ := k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)
+
+	s.roomGenesis([]string{vP}, false)
+	s.expectPairing("P", inP, pairingP)
+	s.expectPairing("both", inBoth, pairingP)
+	s.expect("Q", inQ, false)
+
+	s.roomGenesis([]string{vQ}, false)
+	s.expectPairing("Q", inQ, pairingQ)
+	s.expectPairing("both", inBoth, pairingQ)
+	s.expect("P", inP, false)
+
+	// A volunteer in both rooms: each consumer gets its own room's pairing, and the consumer in
+	// both gets one message, stamped with the first of the volunteer's rooms it is in.
+	s.roomGenesis([]string{vP, vQ}, false)
+	s.expectPairing("P", inP, pairingP)
+	s.expectPairing("Q", inQ, pairingQ)
+	s.expectPairing("both", inBoth, pairingP)
+	s.expect("both, again", inBoth, false)
+
+	// A pool genesis carries no pairing.
+	s.genesis(nil)
+	s.expectPairing("P", inP, "")
+	s.expectPairing("Q", inQ, "")
+	s.expectPairing("both", inBoth, "")
+}
+
+// At the index level: every room's consumers get that room's message.
+func TestConsumerIndex_PerRoomMessages(t *testing.T) {
+	idx := newConsumerIndex(2)
+	a := idx.AddConsumer("a", "", []string{"room-a"})
+	b := idx.AddConsumer("b", "", []string{"room-b"})
+	ab := idx.AddConsumer("ab", "", []string{"room-b", "room-a"})
+	pool := idx.AddWithCountry("pool", "")
+	rooms := []roomGenesis{{room: "room-a", msg: "for a"}, {room: "room-b", msg: "for b"}}
+	if matched, outcome := idx.DeliverGenesis("m", rooms, true, nil); !matched || outcome != "" {
+		t.Fatalf("matched=%v outcome=%q, want a room match", matched, outcome)
+	}
+	if got := recv(a); got != "for a" {
+		t.Errorf("room-a consumer got %q", got)
+	}
+	if got := recv(b); got != "for b" {
+		t.Errorf("room-b consumer got %q", got)
+	}
+	if got := recv(ab); got != "for a" {
+		t.Errorf("consumer in both got %q, want the first room's message", got)
+	}
+	if received(ab) || received(pool) {
+		t.Error("a consumer got a duplicate, or a pool consumer got a room message")
 	}
 }

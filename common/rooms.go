@@ -121,3 +121,13 @@ func IsRoomGenesis(raw []byte) bool {
 func (msg SignalMsg) IsRoomGenesis() bool {
 	return msg.Type == SignalMsgGenesis && msg.Room
 }
+
+// RoomPairing returns the pairing Freddie stamped on msg, a room genesis
+// message, or "" if msg is not a room genesis message or Freddie predates
+// pairing attribution.
+func (msg SignalMsg) RoomPairing() string {
+	if !msg.IsRoomGenesis() {
+		return ""
+	}
+	return msg.Pairing
+}

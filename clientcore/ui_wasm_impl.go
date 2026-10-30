@@ -15,11 +15,12 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine         *BroflakeEngine
-	ID                     string
-	OnConnectionChangeFunc ConnectionChangeFunc
-	OnDownstreamChunkFunc  ChunkFunc
-	OnUpstreamChunkFunc    ChunkFunc
+	BroflakeEngine             *BroflakeEngine
+	ID                         string
+	OnConnectionChangeFunc     ConnectionChangeFunc
+	OnConnectionChangeInfoFunc ConnectionChangeInfoFunc
+	OnDownstreamChunkFunc      ChunkFunc
+	OnUpstreamChunkFunc        ChunkFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {

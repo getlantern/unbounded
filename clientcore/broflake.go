@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -32,6 +33,69 @@ type BroflakeEngine struct {
 	activation *activation
 	// rtcOpt is shared with the WebRTC workers; kept so the UI can retarget a live instance.
 	rtcOpt *WebRTCOptions
+	// consumerSlots are a consumer's WebRTC slots. nil for a widget.
+	consumerSlots *consumerSlots
+}
+
+// ConsumerSlot is one of a consumer's WebRTC connection slots.
+type ConsumerSlot struct {
+	WorkerIdx int
+	Connected bool
+	// Pairing is the helper pairing of the room genesis a connected slot
+	// answered, or "" for a pool producer, or when Freddie or the producer
+	// predates pairing attribution. Never log it.
+	Pairing string
+}
+
+// consumerSlots tracks a consumer's WebRTC slots for ConsumerSlots and
+// ConsumerSlotChangeFunc.
+type consumerSlots struct {
+	mu       sync.Mutex
+	slots    []ConsumerSlot
+	onChange ConsumerSlotChangeFunc
+}
+
+func newConsumerSlots(n int, onChange ConsumerSlotChangeFunc) *consumerSlots {
+	s := &consumerSlots{slots: make([]ConsumerSlot, n), onChange: onChange}
+	for i := range s.slots {
+		s.slots[i].WorkerIdx = i
+	}
+	return s
+}
+
+// reporter returns the function slot idx's worker reports through.
+func (s *consumerSlots) reporter(idx int) func(connected bool, pairing string) {
+	return func(connected bool, pairing string) {
+		if !connected {
+			pairing = ""
+		}
+		s.mu.Lock()
+		s.slots[idx] = ConsumerSlot{WorkerIdx: idx, Connected: connected, Pairing: pairing}
+		s.mu.Unlock()
+		if s.onChange != nil {
+			state := -1
+			if connected {
+				state = 1
+			}
+			s.onChange(state, idx, pairing)
+		}
+	}
+}
+
+func (s *consumerSlots) snapshot() []ConsumerSlot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.slots)
+}
+
+// ConsumerSlots returns a consumer's (ClientType "desktop") WebRTC slots: for
+// each, whether it is connected and, if so, the helper pairing it came
+// through. nil for a widget.
+func (b *BroflakeEngine) ConsumerSlots() []ConsumerSlot {
+	if b == nil || b.consumerSlots == nil {
+		return nil
+	}
+	return b.consumerSlots.snapshot()
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -194,6 +258,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// switches on clientType during the boot process, which can probably be improved upon.
 
 	act := &activation{}
+	var slots *consumerSlots
 
 	// Step 1: Build consumer table and producer table
 	switch bfOpt.ClientType {
@@ -212,8 +277,10 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		// inflicted by cardinality relationships as we implement connection migration. See:
 		// https://github.com/getlantern/unbounded/pull/301
 		var pfsms []WorkerFSM
-		for i := 0; i < 1; i++ { // i < bfOpt.PTableSize
-			pfsms = append(pfsms, *NewConsumerWebRTC(rtcOpt, &wgReady))
+		nConsumers := 1 // bfOpt.PTableSize
+		slots = newConsumerSlots(nConsumers, bfOpt.OnConsumerSlotChangeFunc)
+		for i := 0; i < nConsumers; i++ {
+			pfsms = append(pfsms, *newConsumerWebRTCSlot(rtcOpt, &wgReady, newRoomPreference(time.Now), slots.reporter(i)))
 		}
 		pTable = NewWorkerTable(pfsms)
 	case "widget":
@@ -236,6 +303,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag)
 	broflake.activation = act
 	broflake.rtcOpt = rtcOpt
+	broflake.consumerSlots = slots
 
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
@@ -244,6 +312,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	if bfOpt.OnConnectionChangeFunc != nil {
 		ui.OnConnectionChangeFunc = bfOpt.OnConnectionChangeFunc
 	}
+	ui.OnConnectionChangeInfoFunc = bfOpt.OnConnectionChangeInfoFunc
 	ui.OnDownstreamChunkFunc = bfOpt.OnDownstreamChunkFunc
 	ui.OnUpstreamChunkFunc = bfOpt.OnUpstreamChunkFunc
 

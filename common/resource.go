@@ -79,9 +79,15 @@ type ConsumerInfo struct {
 	// it: the consumer sits behind the donor's data channel, so the egress only ever
 	// observes the *donor's* address.
 	Country string
+	// Pairing is the helper pairing (room) this consumer reached the producer
+	// through, or "" for a pool consumer, for a consumer or Freddie that
+	// predates pairing attribution, or for a pairing the producer couldn't
+	// match to one of its own volunteer tickets. Local to the producer: it is
+	// never sent to the egress, and must never be logged.
+	Pairing string
 }
 
-// Nil deliberately ignores Country. A ConsumerInfo carrying nothing but a country
+// Nil deliberately ignores Country and Pairing. A ConsumerInfo carrying nothing but a country
 // describes no consumer, and jit_egress_consumer keys "has a consumer claimed this
 // slot" on this method — treating a stray country as an occupied slot would wedge
 // the slot waiting for a session that does not exist.
@@ -116,6 +122,12 @@ type OfferMsg struct {
 	// the field and a new producer reads "", while an old producer ignores a field a
 	// new consumer sends.
 	Country string
+	// Pairing is the helper pairing of the room genesis this offer answers, as
+	// Freddie stamped it (see SignalMsg.Pairing), or "" for a pool genesis.
+	// It is a claim: the producer accepts it only if it names one of its own
+	// volunteer tickets' pairings. Omitted when empty, so a pool offer is
+	// byte-identical to releases before it, and an old producer ignores it.
+	Pairing string `json:",omitempty"`
 }
 
 // NB: in the last segment of our signaling handshake, the consumer sends the producer an ICEMsg,
@@ -137,6 +149,13 @@ type SignalMsg struct {
 	// helpers. Producers cannot set it: they only supply Payload. Omitted
 	// otherwise, so every other message is unchanged on the wire.
 	Room bool `json:",omitempty"`
+	// Pairing is set by Freddie, with Room, to the pairing ID of the room it
+	// delivered this genesis message through. Freddie sends it only to a
+	// consumer that is itself in that room, so it reveals nothing the
+	// consumer's own tickets don't. The consumer echoes it in its OfferMsg so
+	// the producer can tell which of its pairings it is serving. Omitted
+	// otherwise. Never logged.
+	Pairing string `json:",omitempty"`
 }
 
 // TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?

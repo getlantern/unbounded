@@ -9,10 +9,11 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine         *BroflakeEngine
-	OnConnectionChangeFunc ConnectionChangeFunc
-	OnDownstreamChunkFunc  ChunkFunc
-	OnUpstreamChunkFunc    ChunkFunc
+	BroflakeEngine             *BroflakeEngine
+	OnConnectionChangeFunc     ConnectionChangeFunc
+	OnConnectionChangeInfoFunc ConnectionChangeInfoFunc
+	OnDownstreamChunkFunc      ChunkFunc
+	OnUpstreamChunkFunc        ChunkFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {

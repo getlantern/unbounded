@@ -48,7 +48,23 @@ func NewConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 // newConsumerWebRTC is NewConsumerWebRTC with the worker's room preference
 // supplied, so tests can observe it.
 func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference) *WorkerFSM {
+	return newConsumerWebRTCSlot(options, wg, rooms, nil)
+}
+
+// newConsumerWebRTCSlot is newConsumerWebRTC reporting the worker's slot to
+// report, if non-nil: connected with its pairing when a connection opens, and
+// disconnected when it ends.
+func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string)) *WorkerFSM {
 	var scache STUNCache
+	rooms.setRoomsOnly(options.ConsumerRoomsOnly)
+	// pairing is the helper pairing of the room genesis the current attempt
+	// answers, as Freddie stamped it, or "" for a pool genesis. State 1 sets
+	// it at every pick; states 2 and 5 read it. A worker's states run on one
+	// goroutine, so it needs no lock. It is never logged.
+	var pairing string
+	if report == nil {
+		report = func(bool, string) {}
+	}
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -198,6 +214,8 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 			// Genesis messages Freddie delivered through one of our rooms:
 			// they come from our own helpers, so they are answered first.
 			roomCandidates := []string{}
+			// The pairing Freddie stamped on each room candidate, by ReplyTo.
+			roomPairings := map[string]string{}
 
 		listenLoop:
 			for {
@@ -226,7 +244,8 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 
 					msg, _, err := common.DecodeSignal(rawMsg)
 					if err != nil {
-						slog.Debug("Error decoding signal message", "error", err, "msg", string(rawMsg))
+						// Not the raw message: a room genesis carries its pairing.
+						slog.Debug("Error decoding signal message", "error", err, "bytes", len(rawMsg))
 						sleepOrDone(ctx, options.ErrorBackoff)
 						if ctx.Err() != nil {
 							// Cancelled during backoff: hand control back to the FSM
@@ -238,10 +257,20 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 						continue
 					}
 
+					// A rooms-only consumer answers only its own helpers, so it
+					// ignores everything else, never collecting a pool candidate
+					// to fall back to.
+					if options.ConsumerRoomsOnly && !msg.IsRoomGenesis() {
+						continue
+					}
+
 					// TODO: post-MVP, evaluate the genesis message for suitability!
 					genesisCandidates = append(genesisCandidates, msg.ReplyTo)
 					if msg.IsRoomGenesis() {
 						roomCandidates = append(roomCandidates, msg.ReplyTo)
+						if p := msg.RoomPairing(); p != "" {
+							roomPairings[msg.ReplyTo] = p
+						}
 					}
 					if len(genesisCandidates) == 1 {
 						patienceExpired = time.After(options.Patience)
@@ -269,6 +298,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 			}
 
 			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
+			pairing = roomPairings[replyTo]
 			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{
@@ -307,7 +337,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 				}
 			}()
 
-			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag, Country: options.ConsumerCountry})
+			offerJSON, err := json.Marshal(common.OfferMsg{SDP: sdp, Tag: options.Tag, Country: options.ConsumerCountry, Pairing: pairing})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -583,6 +613,8 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
 			rooms.succeeded()
+			report(true, pairing)
+			defer report(false, "")
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -741,10 +773,21 @@ type roomPreference struct {
 	// pickedRoom is whether the current attempt's genesis came through a
 	// room, whether or not room preference picked it.
 	pickedRoom bool
+	// roomsOnly is WebRTCOptions.ConsumerRoomsOnly: failures are still
+	// counted and logged, but never suspend room preference, since the pool
+	// is not an option.
+	roomsOnly bool
 }
 
 func newRoomPreference(now func() time.Time) *roomPreference {
 	return &roomPreference{now: now}
+}
+
+// setRoomsOnly sets whether this worker is rooms-only (see roomsOnly).
+func (p *roomPreference) setRoomsOnly(roomsOnly bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.roomsOnly = roomsOnly
 }
 
 // pick picks the genesis to answer for an attempt that runs under ctx: as
@@ -761,7 +804,7 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	if p.pending {
 		p.failures++
 		slog.Info("Room helper attempt failed", "consecutive_failures", p.failures)
-		if p.failures >= roomPreferenceMaxFailures {
+		if p.failures >= roomPreferenceMaxFailures && !p.roomsOnly {
 			p.failures = 0
 			p.suspendedUntil = now.Add(roomPreferenceCooldown)
 			slog.Info("Room helper attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
@@ -770,7 +813,7 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	p.clearLocked()
 	offered := room
 	p.roomOffered = len(room) > 0
-	if len(room) > 0 {
+	if len(room) > 0 && !p.roomsOnly {
 		if now.Before(p.suspendedUntil) {
 			slog.Info("Room preference suspended, picking from all candidates including room helpers",
 				"room_candidates", len(room), "candidates", len(all), "resumes_in", p.suspendedUntil.Sub(now).Round(time.Second))
