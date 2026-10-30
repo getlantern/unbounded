@@ -14,6 +14,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -733,6 +734,13 @@ type roomPreference struct {
 	suspendedUntil time.Time
 	attempt        uint64      // counts room-picked attempts, so a stale cancel is ignored
 	stopWatch      func() bool // stops the current attempt's cancel watch
+	// roomOffered is whether the current attempt was offered a room genesis,
+	// so a pool connection made despite one is logged: that is a helper
+	// consumer carrying its user's traffic through a stranger.
+	roomOffered bool
+	// pickedRoom is whether the current attempt's genesis came through a
+	// room, whether or not room preference picked it.
+	pickedRoom bool
 }
 
 func newRoomPreference(now func() time.Time) *roomPreference {
@@ -745,31 +753,52 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := p.now()
+	if p.pickedRoom && !p.pending {
+		// A cooldown pick that landed on a room helper and failed: logged, but
+		// not counted, since cooldown picks never count toward suspension.
+		slog.Info("Room helper attempt failed during cooldown")
+	}
 	if p.pending {
 		p.failures++
+		slog.Info("Room helper attempt failed", "consecutive_failures", p.failures)
 		if p.failures >= roomPreferenceMaxFailures {
 			p.failures = 0
 			p.suspendedUntil = now.Add(roomPreferenceCooldown)
-			slog.Debug("Room genesis attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
+			slog.Info("Room helper attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
 		}
 	}
 	p.clearLocked()
-	if now.Before(p.suspendedUntil) {
-		room = nil
+	offered := room
+	p.roomOffered = len(room) > 0
+	if len(room) > 0 {
+		if now.Before(p.suspendedUntil) {
+			slog.Info("Room preference suspended, picking from all candidates including room helpers",
+				"room_candidates", len(room), "candidates", len(all), "resumes_in", p.suspendedUntil.Sub(now).Round(time.Second))
+			room = nil
+		}
 	}
 	if len(room) > 0 {
+		slog.Info("Answering a room helper's offer", "room_candidates", len(room), "candidates", len(all))
 		p.pending = true
 		p.attempt++
 		attempt := p.attempt
 		p.stopWatch = context.AfterFunc(ctx, func() { p.cancelled(attempt) })
 	}
-	return pickGenesis(all, room)
+	replyTo := pickGenesis(all, room)
+	p.pickedRoom = slices.Contains(offered, replyTo)
+	return replyTo
 }
 
 // succeeded records that the current attempt connected.
 func (p *roomPreference) succeeded() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	switch {
+	case p.pickedRoom:
+		slog.Info("Connected through a room helper")
+	case p.roomOffered:
+		slog.Info("Connected through a pool volunteer although a room helper offered")
+	}
 	p.clearLocked()
 	p.failures = 0
 }
@@ -799,4 +828,6 @@ func (p *roomPreference) clearLocked() {
 		p.stopWatch = nil
 	}
 	p.pending = false
+	p.pickedRoom = false
+	p.roomOffered = false
 }
