@@ -733,6 +733,10 @@ type roomPreference struct {
 	suspendedUntil time.Time
 	attempt        uint64      // counts room-picked attempts, so a stale cancel is ignored
 	stopWatch      func() bool // stops the current attempt's cancel watch
+	// sawRoom is set once a room genesis has been offered to this worker, so
+	// a pool connection made while room helpers advertise is logged: that is
+	// a helper consumer carrying its user's traffic through a stranger.
+	sawRoom bool
 }
 
 func newRoomPreference(now func() time.Time) *roomPreference {
@@ -747,17 +751,24 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 	now := p.now()
 	if p.pending {
 		p.failures++
+		slog.Info("Room helper attempt failed", "consecutive_failures", p.failures)
 		if p.failures >= roomPreferenceMaxFailures {
 			p.failures = 0
 			p.suspendedUntil = now.Add(roomPreferenceCooldown)
-			slog.Debug("Room genesis attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
+			slog.Info("Room helper attempts keep failing, picking from all candidates", "cooldown", roomPreferenceCooldown)
 		}
 	}
 	p.clearLocked()
-	if now.Before(p.suspendedUntil) {
-		room = nil
+	if len(room) > 0 {
+		p.sawRoom = true
+		if now.Before(p.suspendedUntil) {
+			slog.Info("Room helper offers skipped while room preference is suspended",
+				"room_candidates", len(room), "candidates", len(all), "resumes_in", p.suspendedUntil.Sub(now).Round(time.Second))
+			room = nil
+		}
 	}
 	if len(room) > 0 {
+		slog.Info("Answering a room helper's offer", "room_candidates", len(room), "candidates", len(all))
 		p.pending = true
 		p.attempt++
 		attempt := p.attempt
@@ -770,6 +781,12 @@ func (p *roomPreference) pick(ctx context.Context, all, room []string) string {
 func (p *roomPreference) succeeded() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	switch {
+	case p.pending:
+		slog.Info("Connected through a room helper")
+	case p.sawRoom:
+		slog.Info("Connected through a pool volunteer while room helpers advertise")
+	}
 	p.clearLocked()
 	p.failures = 0
 }

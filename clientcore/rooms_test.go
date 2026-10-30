@@ -3,6 +3,7 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -531,5 +532,40 @@ func TestRoomPreferenceCancelledAttemptIsAbandoned(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 	if pending, failures := p.snapshot(); !pending || failures != 1 {
 		t.Errorf("after a stale cancel: pending=%v failures=%d, want the second attempt pending and the first counted", pending, failures)
+	}
+}
+
+// A room helper attempt, a failure, the suspension and a pool connection made
+// while room helpers advertise are each logged at Info, so a helper consumer
+// carrying its user's traffic through strangers shows in production logs.
+func TestRoomPreferenceLogsWhereTrafficGoes(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	now := time.Unix(0, 0)
+	p := newRoomPreference(func() time.Time { return now })
+	all, room := []string{"helper", "stranger"}, []string{"helper"}
+
+	p.pick(context.Background(), all, room)
+	p.succeeded()
+	for i := 0; i < roomPreferenceMaxFailures+1; i++ {
+		p.pick(context.Background(), all, room)
+	}
+	p.succeeded()
+
+	out := buf.String()
+	for _, want := range []string{
+		"Answering a room helper's offer",
+		"Connected through a room helper",
+		"Room helper attempt failed",
+		"Room helper attempts keep failing",
+		"Room helper offers skipped while room preference is suspended",
+		"Connected through a pool volunteer while room helpers advertise",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log lacks %q:\n%s", want, out)
+		}
 	}
 }
