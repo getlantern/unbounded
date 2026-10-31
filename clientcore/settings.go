@@ -101,6 +101,9 @@ type WebRTCOptions struct {
 	// ConnectGrace is the least time left for DTLS and the data channel to open once ICE connects,
 	// extending NATFailTimeout when ICE connects near its end.
 	ConnectGrace time.Duration
+	// OnSTUNPreflight, if set, is called with each producer STUN preflight's result, on the
+	// producer worker's goroutine, so it must not block.
+	OnSTUNPreflight func(STUNPreflightResult)
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
