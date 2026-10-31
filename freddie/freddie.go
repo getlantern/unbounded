@@ -253,22 +253,30 @@ func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
 	return genesisFallback
 }
 
-// broadcastToRooms sends msg, with Broadcast's unreliable delivery semantics, to every user indexed
-// under one of rooms, at most once per user. It returns the number of users the message was
+// roomGenesis is a genesis message as it is delivered through one room: stamped with that room's
+// pairing (see common.SignalMsg.Pairing).
+type roomGenesis struct {
+	room string
+	msg  string
+}
+
+// broadcastToRooms sends each room's message, with Broadcast's unreliable delivery semantics, to
+// every user indexed under that room, at most once per user: a user in several of the rooms gets
+// the message of the first of them it is in. It returns the number of users a message was
 // delivered to.
-func (t *consumerIndex) broadcastToRooms(msg string, rooms []string) int {
+func (t *consumerIndex) broadcastToRooms(rooms []roomGenesis) int {
 	t.RLock()
 	defer t.RUnlock()
 	delivered := 0
 	seen := make(map[string]struct{})
-	for _, room := range rooms {
-		for userID := range t.byRoom[room] {
+	for _, rg := range rooms {
+		for userID := range t.byRoom[rg.room] {
 			if _, dup := seen[userID]; dup {
 				continue
 			}
 			seen[userID] = struct{}{}
 			select {
-			case t.Data[userID] <- msg:
+			case t.Data[userID] <- rg.msg:
 				delivered++
 			default:
 			}
@@ -278,18 +286,19 @@ func (t *consumerIndex) broadcastToRooms(msg string, rooms []string) int {
 }
 
 // DeliverGenesis delivers a genesis message from a producer in rooms. A waiting consumer in one of
-// rooms comes first: if any takes roomMsg, nobody else gets the genesis. Otherwise, if servePool, it
-// goes on to BroadcastGenesis(msg, targets), the country-then-everyone step. Without servePool it
-// goes nowhere: the producer waits out its TTL and its slot loops, so a waiting room consumer gets
-// the next free slot of a producer before any pool consumer does. roomMatched reports whether a
-// room consumer took it; outcome is BroadcastGenesis's, or "" when the pool step did not run.
+// rooms comes first: if any takes its room's message, nobody else gets the genesis. Otherwise, if
+// servePool, it goes on to BroadcastGenesis(msg, targets), the country-then-everyone step. Without
+// servePool it goes nowhere: the producer waits out its TTL and its slot loops, so a waiting room
+// consumer gets the next free slot of a producer before any pool consumer does. roomMatched reports
+// whether a room consumer took it; outcome is BroadcastGenesis's, or "" when the pool step did not
+// run.
 //
 // The room step and the pool step take the read lock separately, on purpose. Precedence is per
 // message, not atomic across the table: a consumer that joins between the two steps may get the
 // message from either. Holding the read lock across both would mean nesting read locks, which
 // deadlocks once a writer is waiting between them.
-func (t *consumerIndex) DeliverGenesis(msg, roomMsg string, rooms []string, servePool bool, targets []string) (roomMatched bool, outcome string) {
-	if len(rooms) > 0 && t.broadcastToRooms(roomMsg, rooms) > 0 {
+func (t *consumerIndex) DeliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	if len(rooms) > 0 && t.broadcastToRooms(rooms) > 0 {
 		return true, ""
 	}
 	if !servePool {
@@ -805,17 +814,28 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
-		var roomMsg []byte
-		if len(rooms) > 0 {
-			roomMsg, err = json.Marshal(common.SignalMsg{ReplyTo: reqID, Type: common.SignalMsgType(msgType), Payload: data, Room: true})
+		// Each room's message carries that room's pairing, so the consumer can tell its volunteer
+		// which pairing it came through. One marshal per room, not per consumer. Rooms are pairing
+		// IDs (see RoomTicket), and a consumer only ever receives the message of a room it is in.
+		// Neither the rooms nor these messages go on the span.
+		roomMsgs := make([]roomGenesis, 0, len(rooms))
+		for _, room := range rooms {
+			roomMsg, err := json.Marshal(common.SignalMsg{
+				ReplyTo: reqID,
+				Type:    common.SignalMsgType(msgType),
+				Payload: data,
+				Room:    true,
+				Pairing: room,
+			})
 			if err != nil {
 				span.SetStatus(codes.Error, "malformed request")
 				w.WriteHeader(http.StatusBadRequest)
 				w.Write([]byte("400\n"))
 				return
 			}
+			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
-		matched, outcome := consumerTable.DeliverGenesis(string(msg), string(roomMsg), rooms, servePool, targets)
+		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
 		if len(rooms) > 0 {
 			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
 		}

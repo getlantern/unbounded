@@ -2,8 +2,10 @@ package clientcore
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +21,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // A producer that uses no rooms sends exactly the form releases before rooms
@@ -635,5 +639,412 @@ func TestRoomPreferenceLogsACooldownRoomHelperFailure(t *testing.T) {
 	}
 	if out := buf.String(); !strings.Contains(out, "Room helper attempt failed during cooldown") {
 		t.Errorf("a failed cooldown room helper attempt was not logged:\n%s", out)
+	}
+}
+
+// pairedGenesisLine is a room genesis message as Freddie streams it once it
+// stamps pairings.
+func pairedGenesisLine(t *testing.T, replyTo, pairing string) string {
+	t.Helper()
+	b, err := json.Marshal(common.SignalMsg{ReplyTo: replyTo, Type: common.SignalMsgGenesis, Payload: `{}`, Room: true, Pairing: pairing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b) + "\n"
+}
+
+// fakeFreddie streams lines() to each subscribe, and records each offer's
+// payload, refusing it with a 404 (the genesis race lost) so the consumer
+// moves on at once.
+type fakeFreddie struct {
+	t      *testing.T
+	url    string
+	lines  atomic.Pointer[string]
+	offers chan string
+}
+
+func newFakeFreddie(t *testing.T, lines string) *fakeFreddie {
+	t.Helper()
+	f := &fakeFreddie{t: t, offers: make(chan string, 16)}
+	f.lines.Store(&lines)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Write([]byte(*f.lines.Load()))
+			return
+		}
+		if err := r.ParseForm(); err == nil && r.Form.Get("type") == strconv.Itoa(int(common.SignalMsgOffer)) {
+			f.offers <- r.Form.Get("data")
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	f.url = srv.URL
+	return f
+}
+
+func (f *fakeFreddie) setLines(lines string) { f.lines.Store(&lines) }
+
+// offer returns the next offer the consumer sent, raw and decoded.
+func (f *fakeFreddie) offer() (string, common.OfferMsg) {
+	f.t.Helper()
+	select {
+	case raw := <-f.offers:
+		var o common.OfferMsg
+		if err := json.Unmarshal([]byte(raw), &o); err != nil {
+			f.t.Fatal(err)
+		}
+		return raw, o
+	case <-time.After(2 * time.Second):
+		f.t.Fatal("no offer")
+		return "", common.OfferMsg{}
+	}
+}
+
+// runSubscribe runs consumer state 1, the subscribe and pick, returning the
+// next state and the genesis it answered, if any.
+func runSubscribe(t *testing.T, fsm *WorkerFSM) (int, string) {
+	t.Helper()
+	pc, _ := newTestPeerConnection(t)
+	next, out := fsm.state[1](context.Background(), fsm.com, []interface{}{pc, make(chan *webrtc.DataChannel, 1), make(chan webrtc.PeerConnectionState, 1), make(chan struct{}, 1)})
+	if next != 2 {
+		return next, ""
+	}
+	return next, out[1].(string)
+}
+
+func poolLines(t *testing.T, n int) string {
+	var lines strings.Builder
+	for i := 0; i < n; i++ {
+		lines.WriteString(genesisLine(t, "pool-genesis-"+strconv.Itoa(i), false))
+	}
+	return lines.String()
+}
+
+// A rooms-only consumer never answers a pool genesis: with only pool genesis
+// on offer it answers nothing and subscribes again, and with a room genesis
+// among them it answers that.
+func TestRoomsOnlyConsumerIgnoresPoolGenesis(t *testing.T) {
+	f := newFakeFreddie(t, poolLines(t, 20))
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = f.url
+	o.Patience = 200 * time.Millisecond
+	o.ConsumerRoomsOnly = true
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+
+	for i := 0; i < 5; i++ {
+		if next, picked := runSubscribe(t, fsm); next != 1 {
+			t.Fatalf("a rooms-only consumer answered pool genesis %q", picked)
+		}
+	}
+
+	f.setLines(poolLines(t, 20) + pairedGenesisLine(t, "room-genesis", "pairing-a") + poolLines(t, 20))
+	if next, picked := runSubscribe(t, fsm); next != 2 || picked != "room-genesis" {
+		t.Fatalf("state %d answered %q, want the room genesis", next, picked)
+	}
+
+	// The same consumer without rooms-only answers the pool.
+	o.ConsumerRoomsOnly = false
+	f.setLines(poolLines(t, 20))
+	if next, _ := runSubscribe(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now))); next != 2 {
+		t.Fatalf("an ordinary consumer went to state %d with pool genesis on offer, want 2", next)
+	}
+}
+
+// A rooms-only consumer's room helper failing over and over never suspends
+// room preference: every attempt goes to a room helper, however many fail,
+// and nothing says the pool is being tried.
+func TestRoomsOnlyConsumerNeverFallsBackDuringCooldown(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	now := time.Unix(1_700_000_000, 0)
+	rooms := newRoomPreference(func() time.Time { return now })
+	f := newFakeFreddie(t, poolLines(t, 20)+pairedGenesisLine(t, "room-genesis", "pairing-a"))
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = f.url
+	o.Patience = 200 * time.Millisecond
+	o.ConsumerRoomsOnly = true
+	fsm := newConsumerWebRTC(o, nil, rooms)
+
+	// Each attempt is left pending, as one Freddie accepted that then came to
+	// nothing, so the next pick counts it as failed.
+	for i := 0; i < 4*roomPreferenceMaxFailures; i++ {
+		if next, picked := runSubscribe(t, fsm); next != 2 || picked != "room-genesis" {
+			t.Fatalf("attempt %d: state %d answered %q, want the room genesis", i+1, next, picked)
+		}
+		now = now.Add(time.Second)
+	}
+	rooms.mu.Lock()
+	suspended := !rooms.suspendedUntil.IsZero()
+	rooms.mu.Unlock()
+	if suspended {
+		t.Error("a rooms-only consumer's room preference was suspended")
+	}
+
+	// The pick itself, offered strangers too, never opens the pool.
+	p := newRoomPreference(func() time.Time { return now })
+	p.setRoomsOnly(true)
+	for i := 0; i < 200; i++ {
+		if got := p.pick(context.Background(), []string{"helper", "p1", "p2"}, []string{"helper"}); got != "helper" {
+			t.Fatalf("attempt %d picked %q, want the room helper", i+1, got)
+		}
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "Room helper attempt failed") {
+		t.Errorf("failures were not logged:\n%s", out)
+	}
+	for _, unwanted := range []string{"picking from all candidates", "suspended", "pairing-a"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("log has %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+// The consumer echoes the pairing Freddie stamped on the room genesis it
+// answers, and sends none for a pool genesis or an unstamped room genesis
+// from an older Freddie, so those offers are unchanged on the wire.
+func TestConsumerEchoesPairingInOffer(t *testing.T) {
+	cases := []struct {
+		name, lines, pairing string
+	}{
+		{"stamped room", poolLines(t, 5) + pairedGenesisLine(t, "g", "pairing-a"), "pairing-a"},
+		{"unstamped room", poolLines(t, 5) + genesisLine(t, "g", true), ""},
+		{"pool", genesisLine(t, "g", false), ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeFreddie(t, c.lines)
+			o := NewDefaultWebRTCOptions()
+			o.DiscoverySrv = f.url
+			o.Patience = 200 * time.Millisecond
+			fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+			if next, picked := runSubscribe(t, fsm); next != 2 || picked != "g" {
+				t.Fatalf("state %d answered %q, want g", next, picked)
+			}
+			if next := runOffer(t, fsm, context.Background(), "g"); next != 1 {
+				t.Fatalf("state 2 went to state %d, want 1", next)
+			}
+			raw, offer := f.offer()
+			if offer.Pairing != c.pairing {
+				t.Errorf("offer pairing %q, want %q", offer.Pairing, c.pairing)
+			}
+			if c.pairing == "" && strings.Contains(raw, "Pairing") {
+				t.Errorf("an unattributed offer carries a pairing field: %s", raw)
+			}
+		})
+	}
+}
+
+// A consumer slot reports its pairing when it connects, and clears it when
+// the connection ends.
+func TestConsumerSlotReportsPairing(t *testing.T) {
+	f := newFakeFreddie(t, pairedGenesisLine(t, "g", "pairing-a"))
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = f.url
+	o.Patience = 100 * time.Millisecond
+
+	type event struct {
+		state, idx int
+		pairing    string
+	}
+	var events []event
+	slots := newConsumerSlots(2, func(state, idx int, pairing string) {
+		events = append(events, event{state, idx, pairing})
+	})
+	fsm := newConsumerWebRTCSlot(o, nil, newRoomPreference(time.Now), slots.reporter(1))
+	if next, _ := runSubscribe(t, fsm); next != 2 {
+		t.Fatalf("state 1 went to state %d", next)
+	}
+
+	pc, d := newTestPeerConnection(t)
+	connectionClosed := make(chan struct{}, 1)
+	go func() {
+		// Let state 5 announce the slot before the connection closes.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if s := slots.snapshot(); s[1].Connected {
+				if s[1].Pairing != "pairing-a" || s[0].Connected {
+					t.Errorf("slots while connected: %+v", s)
+				}
+				connectionClosed <- struct{}{}
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Errorf("slot 1 did not connect within 5s")
+				connectionClosed <- struct{}{}
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	if next, _ := fsm.state[5](context.Background(), fsm.com, []interface{}{pc, d, make(chan webrtc.PeerConnectionState, 1), connectionClosed}); next != 0 {
+		t.Fatalf("state 5 went to state %d", next)
+	}
+	want := []event{{1, 1, "pairing-a"}, {-1, 1, ""}}
+	if !reflect.DeepEqual(events, want) {
+		t.Errorf("events %+v, want %+v", events, want)
+	}
+	if s := slots.snapshot(); s[1] != (ConsumerSlot{WorkerIdx: 1}) {
+		t.Errorf("slot after disconnect %+v", s[1])
+	}
+
+	var nilEngine *BroflakeEngine
+	if nilEngine.ConsumerSlots() != nil || (&BroflakeEngine{}).ConsumerSlots() != nil {
+		t.Error("an engine without consumer slots must report none")
+	}
+	if got := (&BroflakeEngine{consumerSlots: slots}).ConsumerSlots(); len(got) != 2 || got[0].WorkerIdx != 0 || got[1].WorkerIdx != 1 {
+		t.Errorf("ConsumerSlots() = %+v", got)
+	}
+}
+
+// volunteerTicket is a ticket for pairing in role, signed by a throwaway key:
+// the producer only peeks at its own tickets.
+func volunteerTicket(t *testing.T, pairing string, role helperticket.Role) string {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, err := helperticket.Sign(priv, helperticket.Ticket{PairingID: pairing, Role: role, Expires: time.Now().Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tk
+}
+
+const (
+	testPairingP = "6f1c2b0e-8a7d-4c1e-9f00-0123456789ab"
+	testPairingQ = "0b6f3a52-2d4e-4f7a-8c1d-9e0f1a2b3c4d"
+	testPairingR = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+)
+
+// The producer accepts an offer's pairing only if it is one of its own
+// volunteer tickets' pairings.
+func TestOfferPairingMustBeTheProducersOwn(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	if got := offerPairing(o, testPairingP); got != "" {
+		t.Errorf("a producer without tickets accepted pairing %q", got)
+	}
+	o.SetRoomTickets([]string{
+		volunteerTicket(t, testPairingP, helperticket.RoleVolunteer),
+		volunteerTicket(t, testPairingQ, helperticket.RoleVolunteer),
+		// An inviter ticket a producer somehow holds names no pairing it serves.
+		volunteerTicket(t, testPairingR, helperticket.RoleInviter),
+	})
+	for claimed, want := range map[string]string{
+		testPairingP:                  testPairingP,
+		testPairingQ:                  testPairingQ,
+		testPairingR:                  "",
+		"":                            "",
+		"not-a-pairing":               "",
+		strings.ToUpper(testPairingP): "",
+	} {
+		if got := offerPairing(o, claimed); got != want {
+			t.Errorf("offerPairing(%q) = %q, want %q", claimed, got, want)
+		}
+	}
+
+	// RoomTicketSource, as a widget fed by radiance uses, is honored too.
+	o.RoomTicketSource = func() []string { return []string{volunteerTicket(t, testPairingR, helperticket.RoleVolunteer)} }
+	if got := offerPairing(o, testPairingR); got != testPairingR {
+		t.Errorf("offerPairing with a ticket source = %q", got)
+	}
+	if got := offerPairing(o, testPairingP); got != "" {
+		t.Errorf("offerPairing ignored the ticket source: %q", got)
+	}
+}
+
+// runProducerConnected runs producer state 5 for offer until its connection
+// closes, and returns the ConsumerInfo it announced.
+func runProducerConnected(t *testing.T, o *WebRTCOptions, offer common.OfferMsg) common.ConsumerInfo {
+	t.Helper()
+	fsm := NewProducerWebRTC(o, nil)
+	pc, d := newTestPeerConnection(t)
+	connectionClosed := make(chan struct{}, 1)
+	connectionClosed <- struct{}{}
+	next, _ := fsm.state[5](context.Background(), fsm.com, []interface{}{
+		pc, d, make(chan webrtc.PeerConnectionState, 1), connectionClosed,
+		net.ParseIP("192.0.2.1"), offer, "csid",
+	})
+	if next != 0 {
+		t.Fatalf("state 5 went to state %d", next)
+	}
+	connected := <-fsm.com.tx
+	if reset := (<-fsm.com.tx).Data.(common.ConsumerInfo); !reset.Nil() || reset.Pairing != "" {
+		t.Errorf("reset announcement %+v", reset)
+	}
+	return connected.Data.(common.ConsumerInfo)
+}
+
+// The producer announces a matching pairing with its consumer, and blanks one
+// that isn't its own, whether spoofed or from a stale pairing.
+func TestProducerAnnouncesOnlyItsOwnPairing(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.SetRoomTickets([]string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)})
+	for claimed, want := range map[string]string{testPairingP: testPairingP, testPairingQ: "", "": ""} {
+		ci := runProducerConnected(t, o, common.OfferMsg{
+			SDP: webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: "x"}, Tag: "t", Country: "IR", Pairing: claimed,
+		})
+		if ci.Pairing != want || ci.Tag != "t" || ci.Country != "IR" || ci.SessionID != "csid" || !ci.Addr.Equal(net.ParseIP("192.0.2.1")) {
+			t.Errorf("claimed %q: announced %+v, want pairing %q", claimed, ci, want)
+		}
+	}
+}
+
+// ConnectionChangeInfoFunc fires with the whole ConsumerInfo, pairing
+// included, after ConnectionChangeFunc, which is unchanged.
+func TestConnectionChangeInfoFuncCarriesPairing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	type event struct {
+		kind       string
+		state, idx int
+		info       common.ConsumerInfo
+	}
+	var mu sync.Mutex
+	var events []event
+	ui := UIImpl{
+		OnConnectionChangeFunc: func(state, idx int, addr net.IP) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, event{"addr", state, idx, common.ConsumerInfo{Addr: addr}})
+		},
+		OnConnectionChangeInfoFunc: func(state, idx int, info common.ConsumerInfo) {
+			mu.Lock()
+			defer mu.Unlock()
+			events = append(events, event{"info", state, idx, info})
+		},
+	}
+	handle := UpstreamUIHandler(ctx, ui, "", "")
+	defer connectedConsumers.set(3, common.ConsumerInfo{})
+
+	ci := common.ConsumerInfo{Addr: net.ParseIP("192.0.2.1"), Tag: "t", SessionID: "csid", Pairing: testPairingP}
+	handle(IPCMsg{IpcType: ConsumerInfoIPC, Data: ci, Wid: 3})
+	handle(IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}, Wid: 3})
+
+	want := []event{
+		{"addr", 1, 3, common.ConsumerInfo{Addr: ci.Addr}},
+		{"info", 1, 3, ci},
+		{"addr", -1, 3, common.ConsumerInfo{}},
+		{"info", -1, 3, common.ConsumerInfo{}},
+	}
+	mu.Lock()
+	if !reflect.DeepEqual(events, want) {
+		t.Errorf("events %+v, want %+v", events, want)
+	}
+	events = nil
+	mu.Unlock()
+
+	// Without it, ConnectionChangeFunc alone fires, as before.
+	ui.OnConnectionChangeInfoFunc = nil
+	UpstreamUIHandler(ctx, ui, "", "")(IPCMsg{IpcType: ConsumerInfoIPC, Data: ci, Wid: 3})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(events) != 1 || events[0].kind != "addr" || events[0].state != 1 {
+		t.Errorf("events without the info callback %+v", events)
 	}
 }

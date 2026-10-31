@@ -80,6 +80,15 @@ type WebRTCOptions struct {
 	// common.SignalSendToGenesisRooms), so it is offered to nobody there.
 	// On a running instance use SetServePool.
 	RoomsOnly bool
+	// ConsumerRoomsOnly, on a consumer, makes it answer only genesis messages
+	// Freddie delivered through one of its rooms (see RoomTickets), so it
+	// connects only through its own helpers and never through a stranger.
+	// Pool genesis messages are ignored, and repeated failures with room
+	// helpers never fall back to the pool. Without a room helper online the
+	// consumer has no connection at all. The zero value answers everyone, as
+	// every release before it did. It changes nothing on the wire. Set it
+	// before NewBroflake.
+	ConsumerRoomsOnly bool
 	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
 	Net transport.Net
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
@@ -199,6 +208,23 @@ func NewDefaultEgressOptions() *EgressOptions {
 // When state == -1 (disconnected), addr may be nil and should not be assumed to be non-nil.
 type ConnectionChangeFunc func(state int, workerIdx int, addr net.IP)
 
+// ConnectionChangeInfoFunc is ConnectionChangeFunc with the whole ConsumerInfo
+// in place of its address. state and workerIdx are as for ConnectionChangeFunc.
+// When state == 1, info.Addr is the consumer's address, and info.Pairing is the
+// helper pairing the consumer came through, or "" for a pool consumer or one
+// whose pairing couldn't be attributed (see common.ConsumerInfo.Pairing). When
+// state == -1, info is zero. info.Pairing must never be logged.
+type ConnectionChangeInfoFunc func(state int, workerIdx int, info common.ConsumerInfo)
+
+// ConsumerSlotChangeFunc is a callback for a consumer's own WebRTC connection
+// slots. state: 1 = connected, -1 = disconnected. workerIdx is the slot.
+// When state == 1, pairing is the helper pairing of the room genesis the slot
+// answered, or "" for a pool producer, or when Freddie predates pairing
+// attribution. When state == -1, pairing is "". It is called
+// on the slot's own goroutine, so it must be cheap and must not block.
+// pairing must never be logged.
+type ConsumerSlotChangeFunc func(state int, workerIdx int, pairing string)
+
 // ChunkFunc is a callback for data relayed for a consumer. size is in bytes; workerIdx is the
 // consumer's connection slot, matching the workerIdx passed to ConnectionChangeFunc. Downstream
 // callbacks fire once per chunk on the data path, so implementations must be cheap and
@@ -212,6 +238,14 @@ type BroflakeOptions struct {
 	BusBufferSz            int
 	Netstated              string
 	OnConnectionChangeFunc ConnectionChangeFunc
+	// OnConnectionChangeInfoFunc, if non-nil, is called with each producer
+	// connection change, after OnConnectionChangeFunc, with the whole
+	// ConsumerInfo, including its pairing.
+	OnConnectionChangeInfoFunc ConnectionChangeInfoFunc
+	// OnConsumerSlotChangeFunc, if non-nil, is called when one of a
+	// consumer's (ClientType "desktop") WebRTC slots connects or disconnects.
+	// See also BroflakeEngine.ConsumerSlots.
+	OnConsumerSlotChangeFunc ConsumerSlotChangeFunc
 	// OnDownstreamChunkFunc receives bytes relayed from the egress to a consumer
 	OnDownstreamChunkFunc ChunkFunc
 	// OnUpstreamChunkFunc receives bytes relayed from a consumer to the egress

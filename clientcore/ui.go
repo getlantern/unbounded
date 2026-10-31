@@ -77,6 +77,15 @@ type UI interface {
 	OnConsumerConnectionChange(state int, workerIdx int, addr net.IP)
 }
 
+// onConsumerConnectionChangeInfo calls OnConnectionChangeInfoFunc, if set. It is
+// not on the UI interface, and not fired to JavaScript on wasm: it carries the
+// consumer's pairing, which stays in Go.
+func (ui UIImpl) onConsumerConnectionChangeInfo(state int, workerIdx int, info common.ConsumerInfo) {
+	if ui.OnConnectionChangeInfoFunc != nil {
+		ui.OnConnectionChangeInfoFunc(state, workerIdx, info)
+	}
+}
+
 func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	var bytesPerSec int64
 	var tick uint
@@ -176,6 +185,7 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 			}
 
 			ui.OnConsumerConnectionChange(state, int(msg.Wid), ci.Addr)
+			ui.onConsumerConnectionChangeInfo(state, int(msg.Wid), ci)
 			deliverMu.Unlock()
 
 			// Update our cumulative local state for all connected consumers
