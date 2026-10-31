@@ -369,17 +369,21 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 		}
 		return answer(req, from)
 	})
-	// The first genesis is refused, as for a bad protocol version, before Freddie counts anything.
+	// The first genesis is refused, as for a bad protocol version, and the second fails at a proxy
+	// in front of Freddie, both before Freddie counts anything.
 	forms := make(chan url.Values, 4)
 	var requests atomic.Int32
 	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		forms <- r.PostForm
-		if requests.Add(1) == 1 {
+		switch requests.Add(1) {
+		case 1:
 			w.WriteHeader(http.StatusTeapot)
-			return
+		case 2:
+			w.WriteHeader(http.StatusBadGateway)
+		default:
+			w.WriteHeader(http.StatusOK)
 		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(freddie.Close)
 
@@ -430,8 +434,8 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 		common.PrevPreflightOutcomeField:  STUNPreflightNoReply,
 		common.PrevPreflightVPNField:      "connected",
 	}
-	// The refused genesis and the one after it both carry the report; the next one doesn't.
-	for i, form := range []url.Values{genesis(), genesis()} {
+	// The two that didn't reach Freddie and the one that did all carry the report; the next doesn't.
+	for i, form := range []url.Values{genesis(), genesis(), genesis()} {
 		for field, w := range want {
 			if got := form.Get(field); got != w {
 				t.Errorf("genesis %d: %s = %q, want %q", i+1, field, got, w)

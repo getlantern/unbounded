@@ -73,7 +73,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					return 0, []interface{}{}
 				}
 				preflight.passed(preflightNow(), STUNSrvs)
-				preflightRep.record(res.Outcome, vpnStatus(options))
+				if !res.Skipped {
+					preflightRep.record(res.Outcome, vpnStatus(options))
+				}
 			}
 
 			config := webrtc.Configuration{
@@ -244,9 +246,12 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-			// Past the version check, Freddie took the genesis and counted the report, unless the
-			// form was malformed, which sending it again wouldn't fix.
-			preflightRep.delivered()
+			// Past the version check and short of a server error, which may come from a proxy in
+			// front of Freddie, Freddie took the genesis and counted the report, unless the form
+			// was malformed, which sending it again wouldn't fix.
+			if res.StatusCode < http.StatusInternalServerError {
+				preflightRep.delivered()
+			}
 
 			// A Freddie that predates rooms answers a rooms-only genesis (see
 			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and

@@ -18,6 +18,9 @@ type STUNPreflightResult struct {
 	Servers int
 	// Elapsed is how long the preflight took.
 	Elapsed time.Duration
+	// Skipped is set when nothing was sent, as in the browser, so the pass measured nothing and
+	// isn't reported to Freddie.
+	Skipped bool
 }
 
 // STUN preflight outcomes; see common's Preflight* for what each means.
