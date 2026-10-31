@@ -37,6 +37,12 @@ func awaitDataChannel(
 
 	deadline := time.NewTimer(natFail)
 	defer deadline.Stop()
+	extend := func() {
+		iceConnected = nil
+		if natFail-time.Since(start) < grace {
+			deadline.Reset(grace)
+		}
+	}
 	for {
 		select {
 		case d := <-established:
@@ -44,11 +50,18 @@ func awaitDataChannel(
 		case <-ctx.Done():
 			return nil, false
 		case <-iceConnected:
-			iceConnected = nil
-			if natFail-time.Since(start) < grace {
-				deadline.Reset(grace)
-			}
+			extend()
 		case <-deadline.C:
+			// select picks at random among ready cases, so ICE connecting or the data channel
+			// opening just as the deadline fired may not have been chosen yet.
+			select {
+			case d := <-established:
+				return d, true
+			case <-iceConnected:
+				extend()
+				continue
+			default:
+			}
 			return nil, false
 		}
 	}

@@ -86,6 +86,19 @@ func TestAwaitDataChannelExtendsOnceICEConnects(t *testing.T) {
 	}
 }
 
+// With ICE already connected and natFail elapsed by the first select, both cases are ready and
+// select picks at random, so repeat it: the grace must apply every time.
+func TestAwaitDataChannelExtendsWhenDeadlineIsAlsoReady(t *testing.T) {
+	pc := connectedPair(t)
+	for i := 0; i < 20; i++ {
+		established := make(chan *webrtc.DataChannel, 1)
+		time.AfterFunc(50*time.Millisecond, func() { established <- &webrtc.DataChannel{} })
+		if _, ok := awaitDataChannel(context.Background(), pc, established, time.Nanosecond, time.Second); !ok {
+			t.Fatalf("run %d gave up at the deadline though ICE had connected", i)
+		}
+	}
+}
+
 func TestAwaitDataChannelGivesUpAfterGrace(t *testing.T) {
 	pc := connectedPair(t)
 	const natFail, grace = 100 * time.Millisecond, 300 * time.Millisecond
