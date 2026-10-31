@@ -28,6 +28,7 @@ import (
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
 	var preflight preflightState
+	var preflightRep preflightReport
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
@@ -64,6 +65,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					if ctx.Err() != nil {
 						return 0, []interface{}{}
 					}
+					preflightRep.record(res.Outcome, vpnStatus(options))
 					scache.drop()
 					wait := preflight.failed()
 					slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
@@ -71,6 +73,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					return 0, []interface{}{}
 				}
 				preflight.passed(preflightNow(), STUNSrvs)
+				if !res.Skipped {
+					preflightRep.record(res.Outcome, vpnStatus(options))
+				}
 			}
 
 			config := webrtc.Configuration{
@@ -211,6 +216,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Signal the genesis message
 			form := genesisForm(options, g)
 			last.addTo(form, options.NATFailTimeout)
+			preflightRep.addTo(form)
 
 			req, err := http.NewRequestWithContext(
 				ctx,
@@ -240,7 +246,6 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-
 			// A Freddie that predates rooms answers a rooms-only genesis (see
 			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and
 			// try again, as for any other refusal, rather than decode the error body as an offer.
@@ -249,6 +254,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
+			// Only Freddie taking the genesis says it counted the report. Any refusal, which may
+			// come from a proxy in front of it, leaves the report for the next genesis.
+			preflightRep.delivered()
 
 			// The HTTP request is complete
 			offerBytes, err := io.ReadAll(res.Body)

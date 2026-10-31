@@ -1,8 +1,12 @@
 package clientcore
 
 import (
+	"net/url"
 	"slices"
+	"strconv"
 	"time"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // STUNPreflightResult is how a producer's STUN preflight went, reported to
@@ -14,18 +18,17 @@ type STUNPreflightResult struct {
 	Servers int
 	// Elapsed is how long the preflight took.
 	Elapsed time.Duration
+	// Skipped is set when nothing was sent, as in the browser, so the pass measured nothing and
+	// isn't reported to Freddie.
+	Skipped bool
 }
 
+// STUN preflight outcomes; see common's Preflight* for what each means.
 const (
-	// STUNPreflightOK: a STUN server answered with our mapped address.
-	STUNPreflightOK = "ok"
-	// STUNPreflightNoReply: requests went out, but no server answered before the timeout. Seen when
-	// something on the path drops UDP, such as a firewall or a tunnel that doesn't carry it.
-	STUNPreflightNoReply = "no_reply"
-	// STUNPreflightNoSocket: no UDP socket could be opened, or no request could be sent on it.
-	STUNPreflightNoSocket = "no_socket"
-	// STUNPreflightNoServers: no server in the cohort could be parsed or resolved.
-	STUNPreflightNoServers = "no_servers"
+	STUNPreflightOK        = common.PreflightOK
+	STUNPreflightNoReply   = common.PreflightNoReply
+	STUNPreflightNoSocket  = common.PreflightNoSocket
+	STUNPreflightNoServers = common.PreflightNoServers
 )
 
 const (
@@ -78,4 +81,52 @@ func (p *preflightState) failed() time.Duration {
 // invalidate makes the next attempt run a preflight.
 func (p *preflightState) invalidate() {
 	p.verifiedAt = time.Time{}
+}
+
+// preflightReport is what a producer worker tells Freddie about its preflights on the genesis that
+// follows the next one to pass: a worker that fails doesn't send genesis, so failures wait for it.
+type preflightReport struct {
+	// passed is set when a preflight has passed since the last report.
+	passed      bool
+	passVPN     string
+	failures    int
+	lastFailure string
+	failureVPN  string
+}
+
+func (r *preflightReport) record(outcome, vpn string) {
+	if outcome == STUNPreflightOK {
+		r.passed = true
+		r.passVPN = vpn
+		return
+	}
+	r.failures = min(r.failures+1, common.MaxReportedPreflightFailures)
+	r.lastFailure = outcome
+	r.failureVPN = vpn
+}
+
+// addTo puts the report on a genesis form once a preflight has passed. It stays pending until
+// delivered, since the first genesis after a run of failures is the one most likely to fail too.
+func (r *preflightReport) addTo(form url.Values) {
+	if !r.passed {
+		return
+	}
+	form.Set(common.PreflightVPNField, r.passVPN)
+	if r.failures > 0 {
+		form.Set(common.PrevPreflightFailuresField, strconv.Itoa(r.failures))
+		form.Set(common.PrevPreflightOutcomeField, r.lastFailure)
+		form.Set(common.PrevPreflightVPNField, r.failureVPN)
+	}
+}
+
+// delivered clears the report once Freddie has accepted a genesis that carried it.
+func (r *preflightReport) delivered() {
+	*r = preflightReport{}
+}
+
+func vpnStatus(options *WebRTCOptions) string {
+	if options.VPNStatus == nil {
+		return ""
+	}
+	return options.VPNStatus()
 }

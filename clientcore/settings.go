@@ -104,6 +104,9 @@ type WebRTCOptions struct {
 	// OnSTUNPreflight, if set, is called with each producer STUN preflight's result, on the
 	// producer worker's goroutine, so it must not block.
 	OnSTUNPreflight func(STUNPreflightResult)
+	// VPNStatus, if set, returns the embedding app's VPN state, which a producer reports to Freddie
+	// with its STUN preflights. Freddie counts radiance's vpn.VPNStatus values and no others.
+	VPNStatus func() string
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {

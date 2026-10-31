@@ -60,3 +60,28 @@ func outcomeNAT(offerIDReported bool, nat string) string {
 		return nat
 	}
 }
+
+// recordSTUNPreflights counts the STUN preflights a producer reports on its genesis: the pass that
+// preceded it, and any failures since its last report. A producer that ran no preflight since its
+// last genesis, or predates them, reports nothing.
+func (f *Freddie) recordSTUNPreflights(ctx context.Context, r *http.Request) {
+	passVPN, ok := r.Form[common.PreflightVPNField]
+	if !ok {
+		return
+	}
+	version := attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version))
+	f.stunPreflights.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("result", common.PreflightOK),
+		attribute.String("vpn", common.NormalizeVPNState(passVPN[0])),
+		version,
+	))
+	n, ok := common.ParsePreflightFailures(r.Form.Get(common.PrevPreflightFailuresField))
+	if !ok {
+		return
+	}
+	f.stunPreflights.Add(ctx, int64(n), metric.WithAttributes(
+		attribute.String("result", common.NormalizePreflightFailure(r.Form.Get(common.PrevPreflightOutcomeField))),
+		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevPreflightVPNField))),
+		version,
+	))
+}

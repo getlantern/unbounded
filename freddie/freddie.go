@@ -362,6 +362,7 @@ type Freddie struct {
 	roomsDisabled     metric.Int64Counter
 	iceNAT            metric.Int64Counter
 	producerOutcomes  metric.Int64Counter
+	stunPreflights    metric.Int64Counter
 
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
@@ -477,6 +478,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
 		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go)"),
 		metric.WithUnit("attempt"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.stunPreflights, err = f.meter.Int64Counter("freddie.producer.stun_preflights",
+		metric.WithDescription("producers' STUN preflights, as reported on the genesis after one passes: passes as result=ok and earlier failures by how the last failed, each with the producer's VPN state (see common/preflight.go)"),
+		metric.WithUnit("preflight"))
 	if err != nil {
 		return nil, err
 	}
@@ -811,6 +819,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
 		// first room-aware clients did, to SignalSendToGenesis with pool=0.
 		f.recordProducerOutcome(ctx, span, r)
+		f.recordSTUNPreflights(ctx, r)
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
