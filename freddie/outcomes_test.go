@@ -109,3 +109,102 @@ func TestRecordProducerOutcome_LabelsVolunteerVersion(t *testing.T) {
 		}
 	}
 }
+
+// preflightCounts records one genesis with form, keyed result/vpn/volunteer_version.
+func preflightCounts(t *testing.T, form url.Values) map[string]int64 {
+	t.Helper()
+	f, err := New(context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := sdkmetric.NewManualReader()
+	f.stunPreflights, err = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Int64Counter("freddie.producer.stun_preflights")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "/v1/signal", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set(common.VersionHeader, common.Version)
+	if err := r.ParseForm(); err != nil {
+		t.Fatal(err)
+	}
+	f.recordSTUNPreflights(context.Background(), r)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+				res, _ := dp.Attributes.Value("result")
+				vpn, _ := dp.Attributes.Value("vpn")
+				v, _ := dp.Attributes.Value("volunteer_version")
+				counts[res.AsString()+"/"+vpn.AsString()+"/"+v.AsString()] += dp.Value
+			}
+		}
+	}
+	return counts
+}
+
+func TestRecordSTUNPreflights_PassOnly(t *testing.T) {
+	got := preflightCounts(t, url.Values{common.PreflightVPNField: {"connected"}})
+	if got["ok/connected/"+common.Version] != 1 || len(got) != 1 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// A pass reported with an empty VPN state, as from a browser or an app without a VPN, still counts.
+func TestRecordSTUNPreflights_PassWithoutVPN(t *testing.T) {
+	got := preflightCounts(t, url.Values{common.PreflightVPNField: {""}})
+	if got["ok/unknown/"+common.Version] != 1 || len(got) != 1 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestRecordSTUNPreflights_FailuresThenPass(t *testing.T) {
+	got := preflightCounts(t, url.Values{
+		common.PreflightVPNField:          {"disconnected"},
+		common.PrevPreflightFailuresField: {"12"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
+		common.PrevPreflightVPNField:      {"connected"},
+	})
+	want := map[string]int64{
+		"ok/disconnected/" + common.Version:    1,
+		"no_reply/connected/" + common.Version: 12,
+	}
+	if len(got) != len(want) || got["ok/disconnected/"+common.Version] != 1 || got["no_reply/connected/"+common.Version] != 12 {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A report can't mint label values or inflate the count.
+func TestRecordSTUNPreflights_Normalizes(t *testing.T) {
+	got := preflightCounts(t, url.Values{
+		common.PreflightVPNField:          {"bogus"},
+		common.PrevPreflightFailuresField: {"3"},
+		common.PrevPreflightOutcomeField:  {"made_up"},
+		common.PrevPreflightVPNField:      {"also bogus"},
+	})
+	if got["ok/invalid/"+common.Version] != 1 || got["invalid/invalid/"+common.Version] != 3 || len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	got = preflightCounts(t, url.Values{
+		common.PreflightVPNField:          {"connected"},
+		common.PrevPreflightFailuresField: {"99999999"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
+	})
+	if got["ok/connected/"+common.Version] != 1 || len(got) != 1 {
+		t.Fatalf("an out-of-range failure count must be dropped, got %v", got)
+	}
+}
+
+func TestRecordSTUNPreflights_NoReportNoCount(t *testing.T) {
+	if got := preflightCounts(t, url.Values{
+		common.PrevPreflightFailuresField: {"5"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
+	}); len(got) != 0 {
+		t.Fatalf("failures without the pass that reports them must not be counted, got %v", got)
+	}
+}

@@ -28,6 +28,7 @@ import (
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
 	var preflight preflightState
+	var preflightRep preflightReport
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
@@ -64,6 +65,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					if ctx.Err() != nil {
 						return 0, []interface{}{}
 					}
+					preflightRep.record(res.Outcome, vpnStatus(options))
 					scache.drop()
 					wait := preflight.failed()
 					slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
@@ -71,6 +73,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					return 0, []interface{}{}
 				}
 				preflight.passed(preflightNow(), STUNSrvs)
+				preflightRep.record(res.Outcome, vpnStatus(options))
 			}
 
 			config := webrtc.Configuration{
@@ -211,6 +214,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Signal the genesis message
 			form := genesisForm(options, g)
 			last.addTo(form, options.NATFailTimeout)
+			preflightRep.addTo(form)
 
 			req, err := http.NewRequestWithContext(
 				ctx,
