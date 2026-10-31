@@ -591,16 +591,15 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionClosed := input[3].(chan struct{})
 			slog.Debug("Consumer state 4, signaling complete!")
 
-			select {
-			case d := <-connectionEstablished:
-				slog.Debug("A WebRTC connection has been established!")
-				return 5, []interface{}{peerConnection, d, connectionChange, connectionClosed}
-			case <-time.After(options.NATFailTimeout):
+			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, options.NATFailTimeout, options.ConnectGrace)
+			if !ok {
 				slog.Debug("NAT failure, aborting!")
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
+			slog.Debug("A WebRTC connection has been established!")
+			return 5, []interface{}{peerConnection, d, connectionChange, connectionClosed}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 5

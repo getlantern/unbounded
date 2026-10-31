@@ -521,28 +521,28 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			consumerSessionID := input[6].(string)
 			slog.Debug("Producer state 4, signaling complete!")
 
-			select {
-			case <-ctx.Done():
-				peerConnection.Close()
-				return 0, []interface{}{}
-			case d := <-connectionEstablished:
-				slog.Debug("A WebRTC connection has been established!")
-				last.record(common.OutcomeConnected, peerConnection)
-				return 5, []interface{}{
-					peerConnection,
-					d,
-					connectionChange,
-					connectionClosed,
-					remoteAddr,
-					offer,
-					consumerSessionID,
+			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, options.NATFailTimeout, options.ConnectGrace)
+			if !ok {
+				if ctx.Err() != nil {
+					peerConnection.Close()
+					return 0, []interface{}{}
 				}
-			case <-time.After(options.NATFailTimeout):
 				slog.Debug("NAT traversal timeout, aborting!")
 				last.record(common.OutcomeNATTimeout, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			}
+			slog.Debug("A WebRTC connection has been established!")
+			last.record(common.OutcomeConnected, peerConnection)
+			return 5, []interface{}{
+				peerConnection,
+				d,
+				connectionChange,
+				connectionClosed,
+				remoteAddr,
+				offer,
+				consumerSessionID,
 			}
 
 			// XXX: This loop represents an alternate strategy for detecting NAT traversal success or

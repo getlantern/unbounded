@@ -98,6 +98,9 @@ type WebRTCOptions struct {
 	// Tuning overrides pion's ICE, DTLS and SCTP defaults on native builds.
 	// The zero value keeps every default.
 	Tuning WebRTCTuning
+	// ConnectGrace is the least time left for DTLS and the data channel to open once ICE connects,
+	// extending NATFailTimeout when ICE connects near its end.
+	ConnectGrace time.Duration
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
@@ -106,6 +109,7 @@ func NewDefaultWebRTCOptions() *WebRTCOptions {
 		Endpoint:          "/v1/signal",
 		GenesisAddr:       "genesis",
 		NATFailTimeout:    5 * time.Second,
+		ConnectGrace:      10 * time.Second,
 		STUNBatch:         DefaultSTUNBatchFunc,
 		STUNBatchSize:     5,
 		Tag:               "",
