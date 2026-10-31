@@ -55,7 +55,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("STUN cache size", "size", scache.size())
 
 			// Confirm the cohort answers before asking for an offer, rather than after taking one.
-			if preflight.due(time.Now()) {
+			if preflight.due(time.Now(), STUNSrvs) {
 				res := stunPreflight(ctx, STUNSrvs, stunPreflightTimeout)
 				if options.OnSTUNPreflight != nil {
 					options.OnSTUNPreflight(res)
@@ -70,7 +70,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					sleepOrDone(ctx, wait)
 					return 0, []interface{}{}
 				}
-				preflight.passed(time.Now())
+				preflight.passed(time.Now(), STUNSrvs)
 			}
 
 			config := webrtc.Configuration{

@@ -1,6 +1,9 @@
 package clientcore
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // STUNPreflightResult is how a producer's STUN preflight went, reported to
 // WebRTCOptions.OnSTUNPreflight.
@@ -28,27 +31,30 @@ const (
 const (
 	// stunPreflightTimeout bounds one preflight. Requests are sent again halfway through.
 	stunPreflightTimeout = 3 * time.Second
-	// stunPreflightValidFor is how long a passed preflight vouches for a worker's STUN servers. An
-	// attempt that gathers no server reflexive candidate ends it early.
+	// stunPreflightValidFor is how long a passed preflight vouches for the cohort it checked. A new
+	// cohort, or an attempt that gathers no server reflexive candidate, ends it early.
 	stunPreflightValidFor   = 10 * time.Minute
 	stunPreflightMinBackoff = 5 * time.Second
 	stunPreflightMaxBackoff = 5 * time.Minute
 )
 
-// preflightState is when a producer worker last confirmed that its STUN servers answer, and how
+// preflightState is which STUN cohort a producer worker last confirmed answers, and when, and how
 // long it waits after a failed preflight. A producer only learns that STUN failed after it has
 // taken a consumer's offer, so without a preflight a volunteer whose STUN never works spends a
 // consumer's attempt on every try, retrying as fast as gathering times out.
 type preflightState struct {
+	cohort     []string
 	verifiedAt time.Time
 	backoff    time.Duration
 }
 
-func (p *preflightState) due(now time.Time) bool {
-	return p.verifiedAt.IsZero() || now.Sub(p.verifiedAt) > stunPreflightValidFor
+func (p *preflightState) due(now time.Time, cohort []string) bool {
+	return p.verifiedAt.IsZero() || now.Sub(p.verifiedAt) > stunPreflightValidFor ||
+		!slices.Equal(p.cohort, cohort)
 }
 
-func (p *preflightState) passed(now time.Time) {
+func (p *preflightState) passed(now time.Time, cohort []string) {
+	p.cohort = slices.Clone(cohort)
 	p.verifiedAt = now
 	p.backoff = 0
 }

@@ -5,6 +5,8 @@ package clientcore
 import (
 	"context"
 	"net"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -102,6 +104,24 @@ func TestSTUNPreflightIPv6(t *testing.T) {
 	}
 }
 
+// A name with both an IPv4 and an IPv6 address passes when only one family answers.
+func TestSTUNPreflightTriesBothFamilies(t *testing.T) {
+	ips, err := net.DefaultResolver.LookupIP(context.Background(), "ip", "localhost")
+	if err != nil || !slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.To4() != nil }) ||
+		!slices.ContainsFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }) {
+		t.Skip("localhost doesn't resolve to both families here:", ips, err)
+	}
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+	if err != nil {
+		t.Skip("no IPv6 loopback:", err)
+	}
+	serveSTUN(t, conn, answer)
+	server := "stun:localhost:" + strconv.Itoa(conn.LocalAddr().(*net.UDPAddr).Port)
+	if res := stunPreflight(context.Background(), []string{server}, time.Second); res.Outcome != STUNPreflightOK {
+		t.Fatalf("got %+v from %s, want ok over IPv6", res, server)
+	}
+}
+
 // Servers are probed independently: one that doesn't resolve or doesn't answer doesn't keep
 // another's answer from counting.
 func TestSTUNPreflightProbesServersIndependently(t *testing.T) {
@@ -144,7 +164,8 @@ func TestSTUNPreflightStopsWithCtx(t *testing.T) {
 func TestPreflightStateBacksOffAndResets(t *testing.T) {
 	var p preflightState
 	now := time.Now()
-	if !p.due(now) {
+	cohort := []string{"stun:192.0.2.1:3478"}
+	if !p.due(now, cohort) {
 		t.Fatal("a new worker must preflight")
 	}
 	want := stunPreflightMinBackoff
@@ -154,19 +175,22 @@ func TestPreflightStateBacksOffAndResets(t *testing.T) {
 		}
 		want = min(2*want, stunPreflightMaxBackoff)
 	}
-	p.passed(now)
-	if p.due(now.Add(stunPreflightValidFor)) {
+	p.passed(now, cohort)
+	if p.due(now.Add(stunPreflightValidFor), cohort) {
 		t.Fatal("a passed preflight must hold for stunPreflightValidFor")
 	}
-	if !p.due(now.Add(stunPreflightValidFor + time.Second)) {
+	if !p.due(now.Add(stunPreflightValidFor+time.Second), cohort) {
 		t.Fatal("a passed preflight must expire")
+	}
+	if !p.due(now, []string{"stun:192.0.2.2:3478"}) {
+		t.Fatal("a passed preflight must not vouch for another cohort")
 	}
 	if got := p.failed(); got != stunPreflightMinBackoff {
 		t.Fatalf("a pass must reset the backoff, got %v", got)
 	}
-	p.passed(now)
+	p.passed(now, cohort)
 	p.invalidate()
-	if !p.due(now) {
+	if !p.due(now, cohort) {
 		t.Fatal("invalidate must make the next attempt preflight")
 	}
 }

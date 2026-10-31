@@ -5,6 +5,7 @@ package clientcore
 import (
 	"context"
 	"net"
+	"slices"
 	"time"
 
 	"github.com/pion/stun/v4"
@@ -17,22 +18,28 @@ func stunPreflight(ctx context.Context, servers []string, timeout time.Duration)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	results := make(chan string, len(servers))
-	for _, s := range servers {
-		go func() { results <- probeSTUN(ctx, s, timeout/2) }()
+	outcome := firstOK(len(servers), func(i int) string { return probeSTUN(ctx, servers[i], timeout/2) })
+	return STUNPreflightResult{Outcome: outcome, Servers: len(servers), Elapsed: time.Since(start)}
+}
+
+// firstOK runs probe(0) to probe(n-1) at once and returns ok as soon as one returns it, or else the
+// furthest any got. Probes still running when it returns must end with their ctx.
+func firstOK(n int, probe func(i int) string) string {
+	results := make(chan string, n)
+	for i := range n {
+		go func() { results <- probe(i) }()
 	}
 	outcome := STUNPreflightNoServers
-	for range servers {
+	for range n {
 		r := <-results
 		if r == STUNPreflightOK {
-			outcome = r
-			break
+			return r
 		}
 		if preflightRank[r] > preflightRank[outcome] {
 			outcome = r
 		}
 	}
-	return STUNPreflightResult{Outcome: outcome, Servers: len(servers), Elapsed: time.Since(start)}
+	return outcome
 }
 
 // preflightRank orders failures by how far a probe got.
@@ -42,19 +49,32 @@ var preflightRank = map[string]int{
 	STUNPreflightNoReply:   2,
 }
 
-// probeSTUN sends a binding request to server, again after resendAfter, and waits for an answer
-// until ctx ends. Each probe resolves and dials on its own, so a slow lookup doesn't hold up the
-// rest, and the socket matches the server's address family.
+// probeSTUN resolves server and probes its first IPv4 and first IPv6 address at once, as ICE
+// gathers from both families. Each server resolves on its own, so a slow lookup doesn't hold up
+// the rest.
 func probeSTUN(ctx context.Context, server string, resendAfter time.Duration) string {
 	uri, err := stun.ParseURI(server)
 	if err != nil || uri.Scheme != stun.SchemeTypeSTUN {
 		return STUNPreflightNoServers
 	}
 	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", uri.Host)
-	if err != nil || len(ips) == 0 {
+	if err != nil {
 		return STUNPreflightNoServers
 	}
-	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: ips[0], Port: uri.Port})
+	var targets []*net.UDPAddr
+	if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() != nil }); i >= 0 {
+		targets = append(targets, &net.UDPAddr{IP: ips[i], Port: uri.Port})
+	}
+	if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }); i >= 0 {
+		targets = append(targets, &net.UDPAddr{IP: ips[i], Port: uri.Port})
+	}
+	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, targets[i], resendAfter) })
+}
+
+// probeAddr sends a binding request to addr, again after resendAfter, and waits for an answer
+// until ctx ends.
+func probeAddr(ctx context.Context, addr *net.UDPAddr, resendAfter time.Duration) string {
+	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		return STUNPreflightNoSocket
 	}
