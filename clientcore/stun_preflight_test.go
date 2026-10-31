@@ -5,13 +5,18 @@ package clientcore
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/pion/stun/v4"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // stunServer starts a local UDP server that answers binding requests with reply, or never answers
@@ -144,6 +149,28 @@ func TestSTUNPreflightReportsFurthestFailure(t *testing.T) {
 	}
 }
 
+// A probe that starts late, after a slow lookup, still gets its resend before the deadline.
+func TestProbeAddrResendsWithinRemainingTime(t *testing.T) {
+	var seen int
+	dropFirst := func(req *stun.Message, from *net.UDPAddr) *stun.Message {
+		if seen++; seen == 1 {
+			return nil
+		}
+		return answer(req, from)
+	}
+	server := stunServer(t, dropFirst)
+	uri, err := stun.ParseURI(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What's left of stunPreflightTimeout after a 2.4s lookup, less than half of it.
+	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
+	defer cancel()
+	if got := probeAddr(ctx, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
+		t.Fatalf("got %s, want ok from the resent request", got)
+	}
+}
+
 func TestSTUNPreflightNoServers(t *testing.T) {
 	res := stunPreflight(context.Background(), []string{"", "not a uri", "turn:127.0.0.1:3478"}, time.Second)
 	if res.Outcome != STUNPreflightNoServers {
@@ -168,6 +195,9 @@ func TestPreflightStateBacksOffAndResets(t *testing.T) {
 	if !p.due(now, cohort) {
 		t.Fatal("a new worker must preflight")
 	}
+	if p.expired(now) {
+		t.Fatal("a worker that hasn't passed has nothing to expire; state 0 checks it")
+	}
 	want := stunPreflightMinBackoff
 	for i := 0; i < 10; i++ {
 		if got := p.failed(); got != want {
@@ -179,8 +209,11 @@ func TestPreflightStateBacksOffAndResets(t *testing.T) {
 	if p.due(now.Add(stunPreflightValidFor), cohort) {
 		t.Fatal("a passed preflight must hold for stunPreflightValidFor")
 	}
-	if !p.due(now.Add(stunPreflightValidFor+time.Second), cohort) {
+	if !p.due(now.Add(stunPreflightValidFor+time.Second), cohort) || !p.expired(now.Add(stunPreflightValidFor+time.Second)) {
 		t.Fatal("a passed preflight must expire")
+	}
+	if p.expired(now.Add(stunPreflightValidFor)) {
+		t.Fatal("a pass mustn't expire early")
 	}
 	if !p.due(now, []string{"stun:192.0.2.2:3478"}) {
 		t.Fatal("a passed preflight must not vouch for another cohort")
@@ -241,5 +274,44 @@ func TestProducerContinuesWhenPreflightPasses(t *testing.T) {
 	}
 	if next != 1 || len(got) != 1 || got[0].Outcome != STUNPreflightOK {
 		t.Fatalf("state %d, OnSTUNPreflight got %+v, want one ok", next, got)
+	}
+}
+
+// A worker that loops through states 1 and 2 past its pass goes back to state 0 to check again,
+// without sending genesis.
+func TestProducerRechecksExpiredPassBeforeGenesis(t *testing.T) {
+	server := stunServer(t, answer)
+	var genesis atomic.Int32
+	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		genesis.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(freddie.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = freddie.URL
+	o.STUNBatch = func(uint32) ([]string, error) { return []string{server}, nil }
+
+	now := time.Now()
+	preflightNow = func() time.Time { return now }
+	t.Cleanup(func() { preflightNow = time.Now })
+
+	fsm := NewProducerWebRTC(o, nil)
+	next, out := fsm.state[0](context.Background(), fsm.com, nil)
+	if next != 1 {
+		t.Fatalf("went to state %d after a passed preflight, want 1", next)
+	}
+	pc := out[0].(*webrtc.PeerConnection)
+	defer pc.Close()
+
+	now = now.Add(stunPreflightValidFor + time.Second)
+	next, _ = fsm.state[2](context.Background(), fsm.com, []interface{}{
+		pc,
+		common.PathAssertion{},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	})
+	if next != 0 || genesis.Load() != 0 {
+		t.Fatalf("went to state %d after %d genesis requests, want state 0 and none", next, genesis.Load())
 	}
 }

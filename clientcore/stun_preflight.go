@@ -38,6 +38,9 @@ const (
 	stunPreflightMaxBackoff = 5 * time.Minute
 )
 
+// preflightNow is the producer's clock for preflight validity, replaceable in tests.
+var preflightNow = time.Now
+
 // preflightState is which STUN cohort a producer worker last confirmed answers, and when, and how
 // long it waits after a failed preflight. A producer only learns that STUN failed after it has
 // taken a consumer's offer, so without a preflight a volunteer whose STUN never works spends a
@@ -57,6 +60,12 @@ func (p *preflightState) passed(now time.Time, cohort []string) {
 	p.cohort = slices.Clone(cohort)
 	p.verifiedAt = now
 	p.backoff = 0
+}
+
+// expired reports whether a pass has run out. Unlike due, it's false for a worker that hasn't
+// passed yet, which state 0 handles.
+func (p *preflightState) expired(now time.Time) bool {
+	return !p.verifiedAt.IsZero() && now.Sub(p.verifiedAt) > stunPreflightValidFor
 }
 
 // failed returns how long to wait before the next preflight, doubling with each failure in a row.

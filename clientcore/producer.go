@@ -55,7 +55,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("STUN cache size", "size", scache.size())
 
 			// Confirm the cohort answers before asking for an offer, rather than after taking one.
-			if preflight.due(time.Now(), STUNSrvs) {
+			if preflight.due(preflightNow(), STUNSrvs) {
 				res := stunPreflight(ctx, STUNSrvs, stunPreflightTimeout)
 				if options.OnSTUNPreflight != nil {
 					options.OnSTUNPreflight(res)
@@ -70,7 +70,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 					sleepOrDone(ctx, wait)
 					return 0, []interface{}{}
 				}
-				preflight.passed(time.Now(), STUNSrvs)
+				preflight.passed(preflightNow(), STUNSrvs)
 			}
 
 			config := webrtc.Configuration{
@@ -191,6 +191,15 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionChange := input[3].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[4].(chan struct{})
 			slog.Debug("Producer state 2...")
+
+			// A worker can loop through states 1 and 2 for longer than a preflight pass lasts, so
+			// go back to state 0 to check again rather than take an offer on an expired pass.
+			if preflight.expired(preflightNow()) {
+				if peerConnection != nil {
+					peerConnection.Close()
+				}
+				return 0, []interface{}{}
+			}
 
 			// Construct a genesis message
 			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa})
