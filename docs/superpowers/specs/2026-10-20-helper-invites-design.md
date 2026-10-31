@@ -148,7 +148,7 @@ pending claim, the invite is burned, and she sends a new one.
 | Who | Limit |
 |---|---|
 | Inviter | 20 pending invites, 20 active pairings, 20 new invites per device per day |
-| Volunteer | 20 pairings; still at most 10 concurrent clients (`MaxClientsPerPeer`) |
+| Volunteer | 20 pairings; at most 10 pool clients (`MaxClientsPerPeer`). Paired clients skip that reservation, so the total can briefly exceed 10 (see Section 2) |
 | Claims | Rate-limited per source IP (per /64 for IPv6, one shared bucket for Lantern egresses). No per-device rate, since clients choose their device IDs; the 20-pairing cap applies per device |
 
 All limits are configuration and are expected to change after the pilot.
