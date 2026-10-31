@@ -100,7 +100,7 @@ func (r *preflightReport) record(outcome, vpn string) {
 		r.passVPN = vpn
 		return
 	}
-	r.failures++
+	r.failures = min(r.failures+1, common.MaxReportedPreflightFailures)
 	r.lastFailure = outcome
 	r.failureVPN = vpn
 }

@@ -63,15 +63,16 @@ func NormalizeVPNState(s string) string {
 	return normalizeEnum(s, vpnStates)
 }
 
-// maxReportedPreflightFailures bounds one report's failure count. A producer backing off from 5s
-// to 5 minutes fails about 300 times a day, so this covers more than a month offline.
-const maxReportedPreflightFailures = 10000
+// MaxReportedPreflightFailures bounds one report's failure count, and producers stop counting
+// there. A producer backing off from 5s to 5 minutes fails about 300 times a day, so this covers
+// more than a month offline.
+const MaxReportedPreflightFailures = 10000
 
 // ParsePreflightFailures parses a reported failure count, reporting false for anything but a
-// whole number from 1 to maxReportedPreflightFailures.
+// whole number from 1 to MaxReportedPreflightFailures.
 func ParsePreflightFailures(s string) (int, bool) {
 	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > maxReportedPreflightFailures || strconv.Itoa(n) != s {
+	if err != nil || n < 1 || n > MaxReportedPreflightFailures || strconv.Itoa(n) != s {
 		return 0, false
 	}
 	return n, true

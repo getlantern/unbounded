@@ -246,13 +246,6 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-			// Past the version check and short of a server error, which may come from a proxy in
-			// front of Freddie, Freddie took the genesis and counted the report, unless the form
-			// was malformed, which sending it again wouldn't fix.
-			if res.StatusCode < http.StatusInternalServerError {
-				preflightRep.delivered()
-			}
-
 			// A Freddie that predates rooms answers a rooms-only genesis (see
 			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and
 			// try again, as for any other refusal, rather than decode the error body as an offer.
@@ -261,6 +254,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
+			// Only Freddie taking the genesis says it counted the report. Any refusal, which may
+			// come from a proxy in front of it, leaves the report for the next genesis.
+			preflightRep.delivered()
 
 			// The HTTP request is complete
 			offerBytes, err := io.ReadAll(res.Body)

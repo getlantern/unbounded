@@ -352,7 +352,20 @@ func TestPreflightReportWaitsForAPass(t *testing.T) {
 	if len(form) != 0 {
 		t.Fatalf("a delivered report must not be sent again, got %v", form)
 	}
+
+	// The count stops where Freddie stops accepting it.
+	for range common.MaxReportedPreflightFailures + 5 {
+		r.record(STUNPreflightNoReply, "")
+	}
 	r.record(STUNPreflightOK, "")
+	form = url.Values{}
+	r.addTo(form)
+	if n, ok := common.ParsePreflightFailures(form.Get(common.PrevPreflightFailuresField)); !ok || n != common.MaxReportedPreflightFailures {
+		t.Fatalf("a long run of failures must report the cap, got %q", form.Get(common.PrevPreflightFailuresField))
+	}
+	r.delivered()
+	r.record(STUNPreflightOK, "")
+	form = url.Values{}
 	r.addTo(form)
 	if !reflect.DeepEqual(form, url.Values{common.PreflightVPNField: {""}}) {
 		t.Fatalf("a pass with no failures reports only its VPN state, got %v", form)
@@ -370,7 +383,8 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 		return answer(req, from)
 	})
 	// The first genesis is refused, as for a bad protocol version, and the second fails at a proxy
-	// in front of Freddie, both before Freddie counts anything.
+	// in front of Freddie, both before Freddie counts anything. Only a genesis Freddie takes clears
+	// the report.
 	forms := make(chan url.Values, 4)
 	var requests atomic.Int32
 	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -380,7 +394,7 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 		case 1:
 			w.WriteHeader(http.StatusTeapot)
 		case 2:
-			w.WriteHeader(http.StatusBadGateway)
+			w.WriteHeader(http.StatusTooManyRequests)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
