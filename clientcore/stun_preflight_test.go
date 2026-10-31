@@ -20,6 +20,11 @@ func stunServer(t *testing.T, reply func(req *stun.Message, from *net.UDPAddr) *
 	if err != nil {
 		t.Fatal(err)
 	}
+	return serveSTUN(t, conn, reply)
+}
+
+func serveSTUN(t *testing.T, conn *net.UDPConn, reply func(req *stun.Message, from *net.UDPAddr) *stun.Message) string {
+	t.Helper()
 	t.Cleanup(func() { conn.Close() })
 	go func() {
 		buf := make([]byte, 1500)
@@ -83,6 +88,39 @@ func TestSTUNPreflightResends(t *testing.T) {
 	}
 	if res := stunPreflight(context.Background(), []string{stunServer(t, dropFirst)}, time.Second); res.Outcome != STUNPreflightOK {
 		t.Fatalf("got %+v, want ok from the resent request", res)
+	}
+}
+
+func TestSTUNPreflightIPv6(t *testing.T) {
+	conn, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback})
+	if err != nil {
+		t.Skip("no IPv6 loopback:", err)
+	}
+	server := serveSTUN(t, conn, answer)
+	if res := stunPreflight(context.Background(), []string{server}, time.Second); res.Outcome != STUNPreflightOK {
+		t.Fatalf("got %+v from %s, want ok", res, server)
+	}
+}
+
+// Servers are probed independently: one that doesn't resolve or doesn't answer doesn't keep
+// another's answer from counting.
+func TestSTUNPreflightProbesServersIndependently(t *testing.T) {
+	servers := []string{"stun:no-such-host.invalid:3478", stunServer(t, nil), stunServer(t, answer)}
+	start := time.Now()
+	res := stunPreflight(context.Background(), servers, 5*time.Second)
+	if res.Outcome != STUNPreflightOK || res.Servers != 3 {
+		t.Fatalf("got %+v, want ok from 3 servers", res)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("took %v; the answering server should decide at once", waited)
+	}
+}
+
+// Without an answer, the result is the furthest any server got.
+func TestSTUNPreflightReportsFurthestFailure(t *testing.T) {
+	res := stunPreflight(context.Background(), []string{"not a uri", stunServer(t, nil)}, 300*time.Millisecond)
+	if res.Outcome != STUNPreflightNoReply {
+		t.Fatalf("got %+v, want no_reply", res)
 	}
 }
 
