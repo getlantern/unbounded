@@ -244,6 +244,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
+			// Past the version check, Freddie took the genesis and counted the report, unless the
+			// form was malformed, which sending it again wouldn't fix.
+			preflightRep.delivered()
 
 			// A Freddie that predates rooms answers a rooms-only genesis (see
 			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and

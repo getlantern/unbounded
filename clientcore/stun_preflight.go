@@ -102,7 +102,8 @@ func (r *preflightReport) record(outcome, vpn string) {
 	r.failureVPN = vpn
 }
 
-// addTo puts the report on a genesis form once a preflight has passed, then clears it.
+// addTo puts the report on a genesis form once a preflight has passed. It stays pending until
+// delivered, since the first genesis after a run of failures is the one most likely to fail too.
 func (r *preflightReport) addTo(form url.Values) {
 	if !r.passed {
 		return
@@ -113,6 +114,10 @@ func (r *preflightReport) addTo(form url.Values) {
 		form.Set(common.PrevPreflightOutcomeField, r.lastFailure)
 		form.Set(common.PrevPreflightVPNField, r.failureVPN)
 	}
+}
+
+// delivered clears the report once Freddie has accepted a genesis that carried it.
+func (r *preflightReport) delivered() {
 	*r = preflightReport{}
 }
 

@@ -340,11 +340,17 @@ func TestPreflightReportWaitsForAPass(t *testing.T) {
 		t.Fatalf("got %v, want %v", form, want)
 	}
 
-	// Reported once, then cleared.
+	// Pending until delivered, so a genesis that never reached Freddie doesn't lose it.
+	again := url.Values{}
+	r.addTo(again)
+	if !reflect.DeepEqual(again, want) {
+		t.Fatalf("an undelivered report must be sent again, got %v", again)
+	}
+	r.delivered()
 	form = url.Values{}
 	r.addTo(form)
 	if len(form) != 0 {
-		t.Fatalf("a report must be sent once, got %v", form)
+		t.Fatalf("a delivered report must not be sent again, got %v", form)
 	}
 	r.record(STUNPreflightOK, "")
 	r.addTo(form)
@@ -363,10 +369,16 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 		}
 		return answer(req, from)
 	})
+	// The first genesis is refused, as for a bad protocol version, before Freddie counts anything.
 	forms := make(chan url.Values, 4)
+	var requests atomic.Int32
 	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		forms <- r.PostForm
+		if requests.Add(1) == 1 {
+			w.WriteHeader(http.StatusTeapot)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(freddie.Close)
@@ -376,6 +388,7 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 	o.DiscoverySrv = freddie.URL
 	o.STUNBatch = func(uint32) ([]string, error) { return []string{server}, nil }
 	o.VPNStatus = func() string { return vpn }
+	o.ErrorBackoff = time.Millisecond
 	fsm := NewProducerWebRTC(o, nil)
 
 	// The failed preflight's backoff ends with ctx, which the hook cancels once the result is in.
@@ -397,25 +410,35 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 	}
 	pc := out[0].(*webrtc.PeerConnection)
 	defer pc.Close()
-	fsm.state[2](context.Background(), fsm.com, []interface{}{
-		pc, common.PathAssertion{}, make(chan *webrtc.DataChannel, 1),
-		make(chan webrtc.PeerConnectionState, 1), make(chan struct{}, 1),
-	})
-
-	var form url.Values
-	select {
-	case form = <-forms:
-	default:
-		t.Fatal("no genesis was sent")
+	genesis := func() url.Values {
+		t.Helper()
+		fsm.state[2](context.Background(), fsm.com, []interface{}{
+			pc, common.PathAssertion{}, make(chan *webrtc.DataChannel, 1),
+			make(chan webrtc.PeerConnectionState, 1), make(chan struct{}, 1),
+		})
+		select {
+		case form := <-forms:
+			return form
+		default:
+			t.Fatal("no genesis was sent")
+			return nil
+		}
 	}
-	for field, want := range map[string]string{
+	want := map[string]string{
 		common.PreflightVPNField:          "disconnected",
 		common.PrevPreflightFailuresField: "1",
 		common.PrevPreflightOutcomeField:  STUNPreflightNoReply,
 		common.PrevPreflightVPNField:      "connected",
-	} {
-		if got := form.Get(field); got != want {
-			t.Errorf("%s = %q, want %q", field, got, want)
+	}
+	// The refused genesis and the one after it both carry the report; the next one doesn't.
+	for i, form := range []url.Values{genesis(), genesis()} {
+		for field, w := range want {
+			if got := form.Get(field); got != w {
+				t.Errorf("genesis %d: %s = %q, want %q", i+1, field, got, w)
+			}
 		}
+	}
+	if form := genesis(); form.Has(common.PreflightVPNField) {
+		t.Errorf("a delivered report was sent again: %v", form)
 	}
 }
