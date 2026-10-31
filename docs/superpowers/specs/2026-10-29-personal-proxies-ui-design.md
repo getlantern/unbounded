@@ -47,7 +47,7 @@ The tab shows while helper invites are available or the device has proxies or in
 
 ## 4. Volunteer side
 
-- #9229's "You're helping" section is unchanged: names, today's totals, "Help others too". No live connected status, per the base spec.
+- #9229's "You're helping" section is unchanged: names, today's totals, "Help others too". No live connected status, per the base spec. (lantern#9246 later added live Connected / Not connected per friend.)
 - The Action Mode tab gets a permanent row, **"Have an invite link?"**, opening HelpFriend with a field to paste a link into (accepting `https://lantern.io/help/#…`, `/help#…` and `lantern://help#…`, normalized as the deep-link path does). It replaces the conditional "Help a friend" button. The row is hidden where `helperAutoStartAllowed(CountryCode.current)` is false (unknown or censored country) and in stealth builds.
 
 ## Out of scope

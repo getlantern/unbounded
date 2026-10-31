@@ -20,7 +20,7 @@
 - Invite expiry: 48 hours.
 - Inviter limits: 20 pending invites, 20 active pairings, 20 new invites per device per day. Volunteer limit: 20 pairings.
 - Pairings are device-bound in this plan. Account binding needs authenticated user identity and is deferred to Plan 4.
-- Every endpoint except `GET /v1/helper/ticket-key` requires `X-Lantern-Device-Id` and the `helper_invites` feature flag (overridable in tests with `X-Lantern-Feature-Override: helper_invites`).
+- Every endpoint except `GET /v1/helper/ticket-key` requires `X-Lantern-Device-Id` and the `helper_invites` feature flag (overridable in tests with `X-Lantern-Feature-Override: helper_invites`). Plan 4 later exempted the volunteer endpoints (`ClaimInvite`, `ListPairings`, `EndPairing`, `IssueTickets`) from the flag; that is what shipped.
 - Tickets live 15 minutes.
 - Repo conventions: run `make sqlc` after query changes and `make proto` after proto changes, and commit the generated files with the change. Tests run with `bin/testsetup go test -tags=test ./cmd/api/...`.
 
@@ -1341,7 +1341,7 @@ func (s helperService) DecideInvite(ctx context.Context, req *services.HelperDec
 }
 ```
 
-`VolunteerDeviceID` is a nullable column, so sqlc generates `pgtype.Text`; adjust `.String` if your sqlc config maps it to `*string`. Run the pairing insert and invite delete in one transaction if `s.apiDB` exposes one (`peer_handler.go` shows the pattern); otherwise a crash between them leaves an invite that already has a pairing, which the expiry sweep in Task 8 removes.
+`VolunteerDeviceID` is a nullable column, so sqlc generates `pgtype.Text`; adjust `.String` if your sqlc config maps it to `*string`. Run the pairing insert and the invite update in one transaction (`peer_handler.go` shows the pattern), and consume the invite with a conditional update so only one approval can create a pairing. The shipped handler does both, and a retry gets a 409.
 
 - [ ] **Step 3: Run the tests**
 

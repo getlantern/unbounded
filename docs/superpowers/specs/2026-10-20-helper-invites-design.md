@@ -1,6 +1,10 @@
 # Helper invites: dedicated volunteers for users in Iran
 
-Status: design approved in discussion, 2026-10-20. Not yet implemented.
+Status: design approved in discussion, 2026-10-20. Implemented and merged in
+lantern-cloud, radiance, lantern and unbounded; this is the design record, and
+where it and the shipped code differ, the code wins. Later UI changes are in
+`2026-10-29-personal-proxies-ui-design.md`, and lantern#9246 added the
+volunteer's live Connected status.
 
 ## Goal
 
@@ -103,7 +107,7 @@ refused with "already claimed", and the claiming app shows that prominently.
 
 ### Matching code and approval
 
-1. Sara's app fetches the pending claim and decrypts the volunteer's name with `K`.
+1. Sara's app fetches the pending claim and decrypts the volunteer's name with `K_v`.
 2. Both apps compute the matching code locally:
    `code = truncate(HMAC-SHA256(K, "code" || volunteer_public_key))`, rendered
    as four digits or four emoji. The server cannot compute it, because it
@@ -118,7 +122,7 @@ refused with "already claimed", and the claiming app shows that prominently.
 5. On approval, lantern-cloud creates a random 128-bit **pairing ID**, marks the
    invite used, and stores `pairing ID → (inviter device or account, volunteer device)`.
    No names are stored.
-6. Sara's display name reaches the volunteer the same way: encrypted with `K`,
+6. Sara's display name reaches the volunteer the same way: encrypted with `K_i`,
    relayed once as an opaque blob, then deleted from the server.
 
 ### When a link leaks
@@ -145,7 +149,7 @@ pending claim, the invite is burned, and she sends a new one.
 |---|---|
 | Inviter | 20 pending invites, 20 active pairings, 20 new invites per device per day |
 | Volunteer | 20 pairings; still at most 10 concurrent clients (`MaxClientsPerPeer`) |
-| Claims | Rate-limited per volunteer device and per source IP |
+| Claims | Rate-limited per source IP (per /64 for IPv6, one shared bucket for Lantern egresses). No per-device rate, since clients choose their device IDs; the 20-pairing cap applies per device |
 
 All limits are configuration and are expected to change after the pilot.
 
