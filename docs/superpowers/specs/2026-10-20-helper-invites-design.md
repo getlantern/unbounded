@@ -12,7 +12,7 @@ acquisition channel for Lantern and Lantern Pro.
 
 Security is a primary requirement: a dedicated pairing must not become a way
 for an adversary to identify Lantern users, and a breach of Lantern's servers
-must not reveal who is helping whom.
+must not reveal anyone's name or the invite secrets.
 
 ## Terms
 
@@ -50,8 +50,10 @@ what her IP is.
 
 The design defends against that with a single-use secret the server never
 sees, a matching code both people compare, inviter approval before any
-traffic flows, and visible "already claimed" warnings. It also keeps the
-social graph off the server so a breach or legal demand cannot reveal it.
+traffic flows, and visible "already claimed" warnings. It also keeps names
+and invite secrets off the server. The server does keep which device is
+paired with which, so a breach or legal demand can reveal that device-level
+graph, though not the names behind it.
 
 Out of scope: an adversary with full read-and-modify control of the channel
 the invite is sent over. The app recommends comparing codes on a voice call or
@@ -205,9 +207,12 @@ normal Lantern. A pairing adds capacity and is never a single point of failure.
 lantern-cloud stops issuing tickets for the pairing. In direct mode the route
 drops from Sara's config at the next fetch, and the volunteer's inbound drops
 her pairing credentials at its next heartbeat (150 s), ending her open sessions.
-In Unbounded, freddie drops the room membership. Access ends within one ticket
-lifetime (15 minutes) at most, and within seconds where a revocation can be
-pushed. One exception in direct mode: a volunteer that can't reach lantern-cloud
+In Unbounded, freddie drops the room membership, so no new match starts more
+than one ticket lifetime (15 minutes) after the end. An established Unbounded
+session outlives its tickets: it ends when the volunteer's widget restarts at
+its next successful ticket fetch, and a volunteer that can't reach lantern-cloud
+keeps it open until then. Revocation within seconds needs a push channel, which
+is deferred. One exception in direct mode: a volunteer that can't reach lantern-cloud
 (or keeps getting failed heartbeats) keeps its last authoritative set, so a
 revoked pairing's IDs stay accepted until the volunteer's 48-hour
 unconfirmed-set expiry.
