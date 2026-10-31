@@ -27,6 +27,7 @@ import (
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	var scache STUNCache
+	var preflight preflightState
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
@@ -52,6 +53,25 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			STUNSrvs := scache.cohort()
 			slog.Debug("Using STUN servers", "count", len(STUNSrvs), "total", options.STUNBatchSize, "servers", STUNSrvs)
 			slog.Debug("STUN cache size", "size", scache.size())
+
+			// Confirm the cohort answers before asking for an offer, rather than after taking one.
+			if preflight.due(time.Now()) {
+				res := stunPreflight(ctx, STUNSrvs, stunPreflightTimeout)
+				if options.OnSTUNPreflight != nil {
+					options.OnSTUNPreflight(res)
+				}
+				if res.Outcome != STUNPreflightOK {
+					if ctx.Err() != nil {
+						return 0, []interface{}{}
+					}
+					scache.drop()
+					wait := preflight.failed()
+					slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
+					sleepOrDone(ctx, wait)
+					return 0, []interface{}{}
+				}
+				preflight.passed(time.Now())
+			}
 
 			config := webrtc.Configuration{
 				ICEServers: []webrtc.ICEServer{
@@ -326,6 +346,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 				last.record(common.OutcomeNoLocalSrflx, peerConnection)
 				scache.drop()
+				preflight.invalidate()
 				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
 
 				// Borked!
