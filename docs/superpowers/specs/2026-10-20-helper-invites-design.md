@@ -213,9 +213,11 @@ drops from Sara's config at the next fetch, and the volunteer's inbound drops
 her pairing credentials at its next heartbeat (150 s), ending her open sessions.
 In Unbounded, freddie drops the room membership, so no new match starts more
 than one ticket lifetime (15 minutes) after the end. An established Unbounded
-session outlives its tickets: it ends when the volunteer's widget restarts at
-its next successful ticket fetch, and a volunteer that can't reach lantern-cloud
-keeps it open until then. Revocation within seconds needs a push channel, which
+session outlives its tickets: in the app it ends when the volunteer's widget
+restarts at its next successful ticket fetch, and a volunteer that can't reach
+lantern-cloud keeps it open until then. Plan 4's browser volunteer
+(not yet live on lantern.io) only swaps in the new tickets and does not restart,
+so its established session lasts until the session drops or the page closes. Revocation within seconds needs a push channel, which
 is deferred. One exception in direct mode: a volunteer that can't reach lantern-cloud
 (or keeps getting failed heartbeats) keeps its last authoritative set, so a
 revoked pairing's IDs stay accepted until the volunteer's 48-hour
