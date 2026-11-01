@@ -107,6 +107,12 @@ type WebRTCOptions struct {
 	// VPNStatus, if set, returns the embedding app's VPN state, which a producer reports to Freddie
 	// with its STUN preflights. Freddie counts radiance's vpn.VPNStatus values and no others.
 	VPNStatus func() string
+	// VolunteerKind, on a producer, is one of common's VolunteerKind* values, which it reports on
+	// every genesis so Freddie can count each kind's connect rate. Empty sends nothing.
+	VolunteerKind string
+	// VolunteerMapped, on a producer, says its WebRTC traffic runs through a port mapped on its
+	// router and verified from outside. It is reported with VolunteerKind.
+	VolunteerMapped bool
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
