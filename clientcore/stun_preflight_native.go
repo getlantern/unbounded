@@ -5,7 +5,6 @@ package clientcore
 import (
 	"context"
 	"net"
-	"slices"
 	"strconv"
 	"time"
 
@@ -59,57 +58,76 @@ var preflightRank = map[string]int{
 // prober resolves STUN servers and dials them, on the host's stack or on a transport.Net.
 type prober struct {
 	dial dialFunc
-	// resolve returns at most one address per family for host:port.
-	resolve func(ctx context.Context, host string, port int) []*net.UDPAddr
+	// resolve returns, for each address family, a func that resolves host:port in that family and
+	// returns nil when it can't. probeSTUN runs them at once.
+	resolve func(host string, port int) []func(ctx context.Context) *net.UDPAddr
 }
 
 func hostProber() prober {
 	return prober{
 		dial: func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) },
-		resolve: func(ctx context.Context, host string, port int) []*net.UDPAddr {
-			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-			if err != nil {
-				return nil
+		resolve: func(host string, port int) []func(ctx context.Context) *net.UDPAddr {
+			family := func(ipNetwork string) func(ctx context.Context) *net.UDPAddr {
+				return func(ctx context.Context) *net.UDPAddr {
+					ips, err := net.DefaultResolver.LookupIP(ctx, ipNetwork, host)
+					if err != nil || len(ips) == 0 {
+						return nil
+					}
+					return &net.UDPAddr{IP: ips[0], Port: port}
+				}
 			}
-			var targets []*net.UDPAddr
-			if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() != nil }); i >= 0 {
-				targets = append(targets, &net.UDPAddr{IP: ips[i], Port: port})
-			}
-			if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }); i >= 0 {
-				targets = append(targets, &net.UDPAddr{IP: ips[i], Port: port})
-			}
-			return targets
+			return []func(ctx context.Context) *net.UDPAddr{family("ip4"), family("ip6")}
 		},
 	}
 }
 
 // netProber resolves through n as pion does, so a name only n can resolve still passes.
+// transport.Net's resolver takes no context, so each lookup's wait is bounded by ctx instead; a
+// lookup that outlives it is abandoned.
 func netProber(n transport.Net) prober {
 	return prober{
 		dial: func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) },
-		resolve: func(_ context.Context, host string, port int) []*net.UDPAddr {
+		resolve: func(host string, port int) []func(ctx context.Context) *net.UDPAddr {
 			hostPort := net.JoinHostPort(host, strconv.Itoa(port))
-			var targets []*net.UDPAddr
-			for _, network := range []string{"udp4", "udp6"} {
-				if addr, err := n.ResolveUDPAddr(network, hostPort); err == nil && addr != nil {
-					targets = append(targets, addr)
+			family := func(network string) func(ctx context.Context) *net.UDPAddr {
+				return func(ctx context.Context) *net.UDPAddr {
+					resolved := make(chan *net.UDPAddr, 1)
+					go func() {
+						addr, err := n.ResolveUDPAddr(network, hostPort)
+						if err != nil {
+							addr = nil
+						}
+						resolved <- addr
+					}()
+					select {
+					case addr := <-resolved:
+						return addr
+					case <-ctx.Done():
+						return nil
+					}
 				}
 			}
-			return targets
+			return []func(ctx context.Context) *net.UDPAddr{family("udp4"), family("udp6")}
 		},
 	}
 }
 
-// probeSTUN resolves server and probes its first IPv4 and first IPv6 address at once, as ICE
-// gathers from both families. Each server resolves on its own, so a slow lookup doesn't hold up
-// the rest.
+// probeSTUN resolves server in each address family and probes what it finds, every family at
+// once, as ICE gathers from both. Each server and family resolves on its own, so a slow lookup
+// doesn't hold up the rest.
 func (p prober) probeSTUN(ctx context.Context, server string) string {
 	uri, err := stun.ParseURI(server)
 	if err != nil || uri.Scheme != stun.SchemeTypeSTUN {
 		return STUNPreflightNoServers
 	}
-	targets := p.resolve(ctx, uri.Host, uri.Port)
-	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, p.dial, targets[i]) })
+	families := p.resolve(uri.Host, uri.Port)
+	return firstOK(len(families), func(i int) string {
+		addr := families[i](ctx)
+		if addr == nil {
+			return STUNPreflightNoServers
+		}
+		return probeAddr(ctx, p.dial, addr)
+	})
 }
 
 // probeAddr sends a binding request to addr, again halfway through the time left before ctx's
