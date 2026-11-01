@@ -6,6 +6,7 @@ import (
 	"context"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/pion/stun/v4"
@@ -14,17 +15,17 @@ import (
 
 // stunPreflight sends a STUN binding request to each of servers at once, and reports whether any
 // answered within timeout. Without an answer, it reports the furthest any server got. The probes
-// dial on n when it's set, as pion's sockets do, so the check tests the path ICE will use.
+// resolve and dial on n when it's set, as pion does, so the check tests the path ICE will use.
 func stunPreflight(ctx context.Context, n transport.Net, servers []string, timeout time.Duration) STUNPreflightResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	dial := func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) }
+	p := hostProber()
 	if n != nil {
-		dial = func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) }
+		p = netProber(n)
 	}
-	outcome := firstOK(len(servers), func(i int) string { return probeSTUN(ctx, dial, servers[i]) })
+	outcome := firstOK(len(servers), func(i int) string { return p.probeSTUN(ctx, servers[i]) })
 	return STUNPreflightResult{Outcome: outcome, Servers: len(servers), Elapsed: time.Since(start)}
 }
 
@@ -55,26 +56,60 @@ var preflightRank = map[string]int{
 	STUNPreflightNoReply:   2,
 }
 
+// prober resolves STUN servers and dials them, on the host's stack or on a transport.Net.
+type prober struct {
+	dial dialFunc
+	// resolve returns at most one address per family for host:port.
+	resolve func(ctx context.Context, host string, port int) []*net.UDPAddr
+}
+
+func hostProber() prober {
+	return prober{
+		dial: func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) },
+		resolve: func(ctx context.Context, host string, port int) []*net.UDPAddr {
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil
+			}
+			var targets []*net.UDPAddr
+			if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() != nil }); i >= 0 {
+				targets = append(targets, &net.UDPAddr{IP: ips[i], Port: port})
+			}
+			if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }); i >= 0 {
+				targets = append(targets, &net.UDPAddr{IP: ips[i], Port: port})
+			}
+			return targets
+		},
+	}
+}
+
+// netProber resolves through n as pion does, so a name only n can resolve still passes.
+func netProber(n transport.Net) prober {
+	return prober{
+		dial: func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) },
+		resolve: func(_ context.Context, host string, port int) []*net.UDPAddr {
+			hostPort := net.JoinHostPort(host, strconv.Itoa(port))
+			var targets []*net.UDPAddr
+			for _, network := range []string{"udp4", "udp6"} {
+				if addr, err := n.ResolveUDPAddr(network, hostPort); err == nil && addr != nil {
+					targets = append(targets, addr)
+				}
+			}
+			return targets
+		},
+	}
+}
+
 // probeSTUN resolves server and probes its first IPv4 and first IPv6 address at once, as ICE
 // gathers from both families. Each server resolves on its own, so a slow lookup doesn't hold up
 // the rest.
-func probeSTUN(ctx context.Context, dial dialFunc, server string) string {
+func (p prober) probeSTUN(ctx context.Context, server string) string {
 	uri, err := stun.ParseURI(server)
 	if err != nil || uri.Scheme != stun.SchemeTypeSTUN {
 		return STUNPreflightNoServers
 	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", uri.Host)
-	if err != nil {
-		return STUNPreflightNoServers
-	}
-	var targets []*net.UDPAddr
-	if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() != nil }); i >= 0 {
-		targets = append(targets, &net.UDPAddr{IP: ips[i], Port: uri.Port})
-	}
-	if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }); i >= 0 {
-		targets = append(targets, &net.UDPAddr{IP: ips[i], Port: uri.Port})
-	}
-	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, dial, targets[i]) })
+	targets := p.resolve(ctx, uri.Host, uri.Port)
+	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, p.dial, targets[i]) })
 }
 
 // probeAddr sends a binding request to addr, again halfway through the time left before ctx's
