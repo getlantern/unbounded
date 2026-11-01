@@ -4,7 +4,6 @@ package clientcore
 
 import (
 	"context"
-	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -489,67 +488,5 @@ func TestSTUNPreflightDialsOnNet(t *testing.T) {
 	}
 	if n.dials.Load() == 0 {
 		t.Fatal("the preflight dialed on the host's stack, not on the Net it was given")
-	}
-}
-
-// resolvingNet resolves one made-up name to a local STUN server, as a custom Net with its own
-// resolver might; the host's resolver can't.
-type resolvingNet struct {
-	*stdnet.Net
-	name string
-	addr *net.UDPAddr
-}
-
-func (n *resolvingNet) ResolveUDPAddr(network, address string) (*net.UDPAddr, error) {
-	host, _, err := net.SplitHostPort(address)
-	if err == nil && host == n.name && network == "udp4" {
-		return n.addr, nil
-	}
-	return n.Net.ResolveUDPAddr(network, address)
-}
-
-// With WebRTCOptions.Net set, the preflight resolves STUN hostnames through it too, as pion does.
-func TestSTUNPreflightResolvesOnNet(t *testing.T) {
-	std, err := stdnet.NewNet()
-	if err != nil {
-		t.Fatal(err)
-	}
-	uri, err := stun.ParseURI(stunServer(t, answer))
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := &resolvingNet{Net: std, name: "stun.only-the-net-knows.invalid", addr: &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}}
-	server := "stun:" + net.JoinHostPort(n.name, strconv.Itoa(uri.Port))
-	if res := stunPreflight(context.Background(), n, []string{server}, time.Second); res.Outcome != STUNPreflightOK {
-		t.Fatalf("got %+v, want ok through the Net's resolver", res)
-	}
-}
-
-// blockingNet's resolver never returns, as a stalled DNS lookup on a custom Net might.
-type blockingNet struct {
-	*stdnet.Net
-	release chan struct{}
-}
-
-func (n *blockingNet) ResolveUDPAddr(network, address string) (*net.UDPAddr, error) {
-	<-n.release
-	return nil, errors.New("released")
-}
-
-// A lookup that stalls on the Net doesn't hold the preflight past its timeout.
-func TestSTUNPreflightBoundsNetResolution(t *testing.T) {
-	std, err := stdnet.NewNet()
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := &blockingNet{Net: std, release: make(chan struct{})}
-	defer close(n.release)
-	start := time.Now()
-	res := stunPreflight(context.Background(), n, []string{"stun:stuck.example:3478"}, 300*time.Millisecond)
-	if res.Outcome != STUNPreflightNoServers {
-		t.Fatalf("got %+v, want no_servers", res)
-	}
-	if waited := time.Since(start); waited > 2*time.Second {
-		t.Fatalf("waited %v on a stalled lookup; the timeout is 300ms", waited)
 	}
 }

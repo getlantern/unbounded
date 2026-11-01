@@ -5,7 +5,6 @@ package clientcore
 import (
 	"context"
 	"net"
-	"strconv"
 	"time"
 
 	"github.com/pion/stun/v4"
@@ -14,7 +13,7 @@ import (
 
 // stunPreflight sends a STUN binding request to each of servers at once, and reports whether any
 // answered within timeout. Without an answer, it reports the furthest any server got. The probes
-// resolve and dial on n when it's set, as pion does, so the check tests the path ICE will use.
+// dial on n when it's set, as pion's sockets do, so the check tests the path ICE will use.
 func stunPreflight(ctx context.Context, n transport.Net, servers []string, timeout time.Duration) STUNPreflightResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -81,35 +80,12 @@ func hostProber() prober {
 	}
 }
 
-// netProber resolves through n as pion does, so a name only n can resolve still passes.
-// transport.Net's resolver takes no context, so each lookup's wait is bounded by ctx instead; a
-// lookup that outlives it is abandoned.
+// netProber dials on n, as pion's sockets do. STUN names still resolve with the host's resolver:
+// transport.Net's resolver takes no context, so an abandoned lookup could never be cancelled.
 func netProber(n transport.Net) prober {
-	return prober{
-		dial: func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) },
-		resolve: func(host string, port int) []func(ctx context.Context) *net.UDPAddr {
-			hostPort := net.JoinHostPort(host, strconv.Itoa(port))
-			family := func(network string) func(ctx context.Context) *net.UDPAddr {
-				return func(ctx context.Context) *net.UDPAddr {
-					resolved := make(chan *net.UDPAddr, 1)
-					go func() {
-						addr, err := n.ResolveUDPAddr(network, hostPort)
-						if err != nil {
-							addr = nil
-						}
-						resolved <- addr
-					}()
-					select {
-					case addr := <-resolved:
-						return addr
-					case <-ctx.Done():
-						return nil
-					}
-				}
-			}
-			return []func(ctx context.Context) *net.UDPAddr{family("udp4"), family("udp6")}
-		},
-	}
+	p := hostProber()
+	p.dial = func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) }
+	return p
 }
 
 // probeSTUN resolves server in each address family and probes what it finds, every family at
