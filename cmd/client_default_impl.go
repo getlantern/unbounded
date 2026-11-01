@@ -23,6 +23,10 @@ func main() {
 	// Configure slog to log at debug level by default — this standalone client is debug-by-design,
 	// preserving the prior always-on stderr behavior of common.Debugf/Debug.
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	if clientType == "action-mode-cli" {
+		runActionModeCLI()
+		return
+	}
 
 	pprof := os.Getenv("PPROF")
 	freddie := os.Getenv("FREDDIE")
