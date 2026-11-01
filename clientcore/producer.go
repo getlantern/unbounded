@@ -826,6 +826,14 @@ func genesisForm(options *WebRTCOptions, g []byte) url.Values {
 	for _, tk := range options.CurrentRoomTickets() {
 		form.Add(common.RoomTicketField, tk)
 	}
+	if options.VolunteerKind != "" {
+		form.Set(common.VolunteerKindField, options.VolunteerKind)
+		mapped := "0"
+		if options.VolunteerMapped {
+			mapped = "1"
+		}
+		form.Set(common.VolunteerMappedField, mapped)
+	}
 	return form
 }
 
