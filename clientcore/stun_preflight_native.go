@@ -9,16 +9,22 @@ import (
 	"time"
 
 	"github.com/pion/stun/v4"
+	"github.com/pion/transport/v5"
 )
 
 // stunPreflight sends a STUN binding request to each of servers at once, and reports whether any
-// answered within timeout. Without an answer, it reports the furthest any server got.
-func stunPreflight(ctx context.Context, servers []string, timeout time.Duration) STUNPreflightResult {
+// answered within timeout. Without an answer, it reports the furthest any server got. The probes
+// dial on n when it's set, as pion's sockets do, so the check tests the path ICE will use.
+func stunPreflight(ctx context.Context, n transport.Net, servers []string, timeout time.Duration) STUNPreflightResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	outcome := firstOK(len(servers), func(i int) string { return probeSTUN(ctx, servers[i]) })
+	dial := func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) }
+	if n != nil {
+		dial = func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) }
+	}
+	outcome := firstOK(len(servers), func(i int) string { return probeSTUN(ctx, dial, servers[i]) })
 	return STUNPreflightResult{Outcome: outcome, Servers: len(servers), Elapsed: time.Since(start)}
 }
 
@@ -52,7 +58,7 @@ var preflightRank = map[string]int{
 // probeSTUN resolves server and probes its first IPv4 and first IPv6 address at once, as ICE
 // gathers from both families. Each server resolves on its own, so a slow lookup doesn't hold up
 // the rest.
-func probeSTUN(ctx context.Context, server string) string {
+func probeSTUN(ctx context.Context, dial dialFunc, server string) string {
 	uri, err := stun.ParseURI(server)
 	if err != nil || uri.Scheme != stun.SchemeTypeSTUN {
 		return STUNPreflightNoServers
@@ -68,14 +74,14 @@ func probeSTUN(ctx context.Context, server string) string {
 	if i := slices.IndexFunc(ips, func(ip net.IP) bool { return ip.To4() == nil }); i >= 0 {
 		targets = append(targets, &net.UDPAddr{IP: ips[i], Port: uri.Port})
 	}
-	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, targets[i]) })
+	return firstOK(len(targets), func(i int) string { return probeAddr(ctx, dial, targets[i]) })
 }
 
 // probeAddr sends a binding request to addr, again halfway through the time left before ctx's
 // deadline, and waits for an answer until ctx ends. Timing the resend from here rather than from
 // the start of the preflight still leaves room for it after a slow lookup.
-func probeAddr(ctx context.Context, addr *net.UDPAddr) string {
-	conn, err := net.DialUDP("udp", nil, addr)
+func probeAddr(ctx context.Context, dial dialFunc, addr *net.UDPAddr) string {
+	conn, err := dial(addr)
 	if err != nil {
 		return STUNPreflightNoSocket
 	}
@@ -114,3 +120,12 @@ func probeAddr(ctx context.Context, addr *net.UDPAddr) string {
 		}
 	}
 }
+
+// udpConn is what a probe needs of its socket, which net.DialUDP and transport.Net both provide.
+type udpConn interface {
+	Read(b []byte) (int, error)
+	Write(b []byte) (int, error)
+	Close() error
+}
+
+type dialFunc func(addr *net.UDPAddr) (udpConn, error)

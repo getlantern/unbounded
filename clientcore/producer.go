@@ -58,7 +58,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			// Confirm the cohort answers before asking for an offer, rather than after taking one.
 			if preflight.due(preflightNow(), STUNSrvs) {
-				res := stunPreflight(ctx, STUNSrvs, stunPreflightTimeout)
+				res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
 				if options.OnSTUNPreflight != nil {
 					options.OnSTUNPreflight(res)
 				}
