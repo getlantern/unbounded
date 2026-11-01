@@ -4,6 +4,7 @@ package clientcore
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -170,8 +171,7 @@ func TestProbeAddrResendsWithinRemainingTime(t *testing.T) {
 	// What's left of stunPreflightTimeout after a 2.4s lookup, less than half of it.
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
-	dial := func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) }
-	if got := probeAddr(ctx, dial, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
+	if got := probeAddr(ctx, hostProber().listen, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
 		t.Fatalf("got %s, want ok from the resent request", got)
 	}
 }
@@ -464,15 +464,36 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 	}
 }
 
-// dialCountingNet counts the UDP sockets the preflight dials on it.
-type dialCountingNet struct {
+// listenCountingNet counts the UDP sockets the preflight opens on it. Like ICE's server-reflexive
+// gathering, the preflight listens and never dials, so DialUDP fails.
+type listenCountingNet struct {
 	*stdnet.Net
-	dials atomic.Int32
+	listens atomic.Int32
 }
 
-func (n *dialCountingNet) DialUDP(network string, laddr, raddr *net.UDPAddr) (transport.UDPConn, error) {
-	n.dials.Add(1)
-	return n.Net.DialUDP(network, laddr, raddr)
+func (n *listenCountingNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
+	n.listens.Add(1)
+	return n.Net.ListenUDP(network, laddr)
+}
+
+func (n *listenCountingNet) DialUDP(string, *net.UDPAddr, *net.UDPAddr) (transport.UDPConn, error) {
+	return nil, errors.New("DialUDP not supported")
+}
+
+// blockingNet's ListenUDP blocks until release closes, then opens a socket.
+type blockingNet struct {
+	*stdnet.Net
+	release chan struct{}
+	opened  chan transport.UDPConn
+}
+
+func (n *blockingNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
+	<-n.release
+	c, err := n.Net.ListenUDP(network, laddr)
+	if err == nil {
+		n.opened <- c
+	}
+	return c, err
 }
 
 // With WebRTCOptions.Net set, the preflight probes through it, as pion's sockets do, so it tests
@@ -482,11 +503,38 @@ func TestSTUNPreflightDialsOnNet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n := &dialCountingNet{Net: std}
+	n := &listenCountingNet{Net: std}
 	if res := stunPreflight(context.Background(), n, []string{stunServer(t, answer)}, time.Second); res.Outcome != STUNPreflightOK {
 		t.Fatalf("got %+v, want ok", res)
 	}
-	if n.dials.Load() == 0 {
-		t.Fatal("the preflight dialed on the host's stack, not on the Net it was given")
+	if n.listens.Load() == 0 {
+		t.Fatal("the preflight opened its socket on the host's stack, not on the Net it was given")
+	}
+}
+
+// A Net whose ListenUDP blocks can't hold the preflight past its timeout, and the socket it opens
+// late is closed.
+func TestSTUNPreflightBoundsABlockedListen(t *testing.T) {
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &blockingNet{Net: std, release: make(chan struct{}), opened: make(chan transport.UDPConn, 1)}
+	start := time.Now()
+	res := stunPreflight(context.Background(), n, []string{stunServer(t, answer)}, 200*time.Millisecond)
+	if res.Outcome != STUNPreflightNoSocket {
+		t.Fatalf("got %+v, want %s", res, STUNPreflightNoSocket)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the preflight waited %v on a blocked ListenUDP", took)
+	}
+	close(n.release)
+	c := <-n.opened
+	deadline := time.Now().Add(2 * time.Second)
+	for c.SetReadDeadline(time.Time{}) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("a socket opened after the preflight ended was left open")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

@@ -13,7 +13,7 @@ import (
 
 // stunPreflight sends a STUN binding request to each of servers at once, and reports whether any
 // answered within timeout. Without an answer, it reports the furthest any server got. The probes
-// dial on n when it's set, as pion's sockets do, so the check tests the path ICE will use.
+// open their sockets on n when it's set, as pion's do, so the check tests the path ICE will use.
 func stunPreflight(ctx context.Context, n transport.Net, servers []string, timeout time.Duration) STUNPreflightResult {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -54,9 +54,10 @@ var preflightRank = map[string]int{
 	STUNPreflightNoReply:   2,
 }
 
-// prober resolves STUN servers and dials them, on the host's stack or on a transport.Net.
+// prober resolves STUN servers and opens sockets to probe them, on the host's stack or on a
+// transport.Net.
 type prober struct {
-	dial dialFunc
+	listen listenFunc
 	// resolve returns, for each address family, a func that resolves host:port in that family and
 	// returns nil when it can't. probeSTUN runs them at once.
 	resolve func(host string, port int) []func(ctx context.Context) *net.UDPAddr
@@ -64,7 +65,7 @@ type prober struct {
 
 func hostProber() prober {
 	return prober{
-		dial: func(addr *net.UDPAddr) (udpConn, error) { return net.DialUDP("udp", nil, addr) },
+		listen: func(network string) (udpConn, error) { return net.ListenUDP(network, &net.UDPAddr{}) },
 		resolve: func(host string, port int) []func(ctx context.Context) *net.UDPAddr {
 			family := func(ipNetwork string) func(ctx context.Context) *net.UDPAddr {
 				return func(ctx context.Context) *net.UDPAddr {
@@ -80,11 +81,12 @@ func hostProber() prober {
 	}
 }
 
-// netProber dials on n, as pion's sockets do. STUN names still resolve with the host's resolver:
-// transport.Net's resolver takes no context, so an abandoned lookup could never be cancelled.
+// netProber opens its sockets on n, as pion's are. STUN names still resolve with the host's
+// resolver: transport.Net's resolver takes no context, so an abandoned lookup could never be
+// cancelled.
 func netProber(n transport.Net) prober {
 	p := hostProber()
-	p.dial = func(addr *net.UDPAddr) (udpConn, error) { return n.DialUDP("udp", nil, addr) }
+	p.listen = func(network string) (udpConn, error) { return n.ListenUDP(network, &net.UDPAddr{}) }
 	return p
 }
 
@@ -102,16 +104,23 @@ func (p prober) probeSTUN(ctx context.Context, server string) string {
 		if addr == nil {
 			return STUNPreflightNoServers
 		}
-		return probeAddr(ctx, p.dial, addr)
+		return probeAddr(ctx, p.listen, addr)
 	})
 }
 
 // probeAddr sends a binding request to addr, again halfway through the time left before ctx's
 // deadline, and waits for an answer until ctx ends. Timing the resend from here rather than from
 // the start of the preflight still leaves room for it after a slow lookup.
-func probeAddr(ctx context.Context, dial dialFunc, addr *net.UDPAddr) string {
-	conn, err := dial(addr)
-	if err != nil {
+//
+// Like ICE's server-reflexive gathering, it listens on an unspecified address in addr's family
+// and writes to addr, rather than dialing it.
+func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) string {
+	network := "udp6"
+	if addr.IP.To4() != nil {
+		network = "udp4"
+	}
+	conn := openSocket(ctx, listen, network)
+	if conn == nil {
 		return STUNPreflightNoSocket
 	}
 	defer conn.Close()
@@ -122,20 +131,20 @@ func probeAddr(ctx context.Context, dial dialFunc, addr *net.UDPAddr) string {
 	if err != nil {
 		return STUNPreflightNoSocket
 	}
-	if _, err := conn.Write(req.Raw); err != nil {
+	if _, err := conn.WriteTo(req.Raw, addr); err != nil {
 		return STUNPreflightNoSocket
 	}
 	resendAfter := stunPreflightTimeout / 2
 	if deadline, ok := ctx.Deadline(); ok {
 		resendAfter = time.Until(deadline) / 2
 	}
-	resend := time.AfterFunc(resendAfter, func() { _, _ = conn.Write(req.Raw) })
+	resend := time.AfterFunc(resendAfter, func() { _, _ = conn.WriteTo(req.Raw, addr) })
 	defer resend.Stop()
 
 	buf := make([]byte, 1500)
 	for {
-		// A read fails when ctx ends and closes conn, or when the server's host refuses the port.
-		n, err := conn.Read(buf)
+		// A read fails when ctx ends and closes conn.
+		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
 			return STUNPreflightNoReply
 		}
@@ -150,11 +159,39 @@ func probeAddr(ctx context.Context, dial dialFunc, addr *net.UDPAddr) string {
 	}
 }
 
-// udpConn is what a probe needs of its socket, which net.DialUDP and transport.Net both provide.
+// openSocket listens on network, or returns nil if it can't before ctx ends. A transport.Net's
+// ListenUDP takes no context, so it runs aside, and a socket it opens after ctx ends is closed.
+func openSocket(ctx context.Context, listen listenFunc, network string) udpConn {
+	type opened struct {
+		conn udpConn
+		err  error
+	}
+	ch := make(chan opened, 1)
+	go func() {
+		conn, err := listen(network)
+		ch <- opened{conn, err}
+	}()
+	select {
+	case o := <-ch:
+		if o.err != nil {
+			return nil
+		}
+		return o.conn
+	case <-ctx.Done():
+		go func() {
+			if o := <-ch; o.err == nil {
+				o.conn.Close()
+			}
+		}()
+		return nil
+	}
+}
+
+// udpConn is what a probe needs of its socket, which net.ListenUDP and transport.Net both provide.
 type udpConn interface {
-	Read(b []byte) (int, error)
-	Write(b []byte) (int, error)
+	ReadFrom(b []byte) (int, net.Addr, error)
+	WriteTo(b []byte, addr net.Addr) (int, error)
 	Close() error
 }
 
-type dialFunc func(addr *net.UDPAddr) (udpConn, error)
+type listenFunc func(network string) (udpConn, error)
