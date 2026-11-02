@@ -20,7 +20,7 @@ Copied from the spec:
 - Missing countries: "Existing rows stay NULL and are reported as `unknown`."
 - Pool: "Pool bytes are the total minus paired bytes, floored at 0."
 - Gauges: "Gauges are sampled by every api replica. The dashboard therefore takes the max across instances, never the sum."
-- Migrations: "Migrations ship through the normal lantern-cloud deploy. Nobody runs them by hand." Never run a migration or any SQL against staging or production.
+- Migrations: lantern-cloud's deploy does not apply them. An operator runs `bin/migrator migrate up --live` on staging and production before the lantern-cloud PR merges. Agents never run a migration or any SQL against staging or production. One table per migration, each with `SET lock_timeout = '5s'`.
 
 Process and repository rules:
 

@@ -23,7 +23,7 @@ Nothing records this today. lantern-cloud's helper handlers log errors only. Its
 
 `inviter_cc` and `volunteer_cc` come from the same request-country lookup the config handler uses (`clientCountry`). It has to resolve a censored user's country even when their API calls arrive through Lantern's own proxies. The plan must confirm the helper handlers get the same value, not the IP of a Lantern egress.
 
-Schema: one migration adds a nullable `inviter_country char(2)` to `helper_invites`, and `inviter_country` and `volunteer_country` to `helper_pairings`. Existing rows stay NULL and are reported as `unknown`. Migrations ship through the normal lantern-cloud deploy. Nobody runs them by hand.
+Schema: one migration adds a nullable `inviter_country char(2)` to `helper_invites`, and `inviter_country` and `volunteer_country` to `helper_pairings`. Existing rows stay NULL and are reported as `unknown`. lantern-cloud's deploy does not apply migrations. An operator applies them with `bin/migrator migrate up --live` on staging and production before the PR merges, because the merge deploys code that reads the new columns. Agents never run them. The tables are altered one per migration, each with `SET lock_timeout = '5s'`, following 000149-000152.
 
 Privacy: until now the server knew an inviter's country only in passing, from requests it doesn't store. From now on, the invite and pairing rows record it next to the inviter's device ID. That is the accepted cost of the user's decision. Nothing else about the inviter is added, and the rows keep their existing lifetimes: invites are swept at expiry, pairings are deleted when they end.
 
