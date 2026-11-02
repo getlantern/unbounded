@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/transport/v5"
 	"github.com/pion/webrtc/v4"
 
@@ -57,7 +58,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("STUN cache size", "size", scache.size())
 
 			// Confirm the cohort answers before asking for an offer, rather than after taking one.
-			if preflight.due(preflightNow(), STUNSrvs) {
+			// A producer with a mapped address needs no STUN to be reached, so
+			// a failing STUN cohort doesn't stop it taking offers.
+			if !producerNetOf(options).mapped() && preflight.due(preflightNow(), STUNSrvs) {
 				res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
 				if options.OnSTUNPreflight != nil {
 					options.OnSTUNPreflight(res)
@@ -92,7 +95,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), options.Net)
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), producerNetOf(options))
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -353,14 +356,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
 			// We don't want to bother signaling those, so here's our escape hatch.
-			var hasNonHostCandidate bool
-			for _, c := range localCandidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					hasNonHostCandidate = true
-				}
-			}
-
-			if !hasNonHostCandidate {
+			if !reachableCandidates(localCandidates, producerNetOf(options)) {
 				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 				last.record(common.OutcomeNoLocalSrflx, peerConnection)
 				scache.drop()
@@ -750,14 +746,47 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 	})
 }
 
-// newProducerPeerConnection builds a producer's peer connection. net, when
-// non-nil on a native build, is the transport pion opens its UDP sockets on,
-// so a host can rate-limit or route a widget's WebRTC traffic; see
-// WebRTCOptions.Net.
-func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, net transport.Net) (*webrtc.PeerConnection, error) {
+// reachableCandidates reports whether a consumer outside the producer's LAN
+// could reach any of cands: a server-reflexive or relay candidate, or a host
+// candidate on the producer's mapped address.
+func reachableCandidates(cands []webrtc.ICECandidate, pn producerNet) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost || (pn.mapped() && c.Address == pn.externalIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// producerNet is how a native producer's peer connections reach the network;
+// see WebRTCOptions.Net, ICEUDPMux and ICEUDPMuxExternalIP. The zero value is
+// pion's default.
+type producerNet struct {
+	net        transport.Net
+	mux        ice.UDPMux
+	externalIP string
+}
+
+func producerNetOf(options *WebRTCOptions) producerNet {
+	return producerNet{net: options.Net, mux: options.ICEUDPMux, externalIP: options.ICEUDPMuxExternalIP}
+}
+
+// mapped reports whether the producer advertises a mapped address of its own,
+// which consumers can reach whatever its STUN servers say.
+func (pn producerNet) mapped() bool {
+	return pn.mux != nil && pn.externalIP != ""
+}
+
+// newProducerPeerConnection builds a producer's peer connection. pn, on a
+// native build, is the transport, UDP mux and mapped address pion uses, so a
+// host can rate-limit, route or port-map a widget's WebRTC traffic.
+func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, pn producerNet) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
 	tuned := tuning.apply(&se)
-	netSet := applyProducerNet(&se, net)
+	netSet, err := applyProducerNet(&se, pn)
+	if err != nil {
+		return nil, err
+	}
 	if !dtls.Enabled() && !tuned && !netSet {
 		return webrtc.NewPeerConnection(config)
 	}

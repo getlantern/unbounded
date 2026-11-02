@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/ice/v4"
 	"github.com/pion/transport/v5"
 
 	"github.com/getlantern/broflake/common"
@@ -93,6 +94,19 @@ type WebRTCOptions struct {
 	// consumer and the producer. nil uses the host's network stack. Browser
 	// (wasm) builds ignore it: the WebRTC stack there is the browser's.
 	Net transport.Net
+	// ICEUDPMux, if set on a native producer, carries all of its WebRTC
+	// traffic on one UDP socket, which a node can map on its router so
+	// consumers reach it directly. pion tells sessions apart by ICE username,
+	// so every slot shares it. Build it on Net, or traffic through it escapes
+	// Net. The caller owns it and closes it once the producer has stopped.
+	// Browser builds ignore it.
+	ICEUDPMux ice.UDPMux
+	// ICEUDPMuxExternalIP is the IPv4 address ICEUDPMux's port is reachable at
+	// from outside, through a router mapping that keeps the port. The producer
+	// adds it as a host candidate on that port, so consumers can connect
+	// whatever its STUN servers say, and it skips its STUN check, which only
+	// guards the addresses STUN finds. Ignored without ICEUDPMux.
+	ICEUDPMuxExternalIP string
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
 	// producer/widget side. See common/covertdtls and net4people/bbs#603
 	// for background. The zero value disables the feature.
