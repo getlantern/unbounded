@@ -41,53 +41,52 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// (no input data)
 			slog.Debug("Producer state 0, constructing RTCPeerConnection...")
 
-			// Populate the STUN cache if necessary
-			if scache.size() == 0 {
-				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
-				if err != nil {
-					slog.Debug("Error creating STUN batch", "error", err)
-					return 0, []interface{}{}
-				}
-
-				scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
-				slog.Debug("Populated the STUN cache", "servers", scache.size())
-			}
-
-			STUNSrvs := scache.cohort()
-			slog.Debug("Using STUN servers", "count", len(STUNSrvs), "total", options.STUNBatchSize, "servers", STUNSrvs)
-			slog.Debug("STUN cache size", "size", scache.size())
-
-			// Confirm the cohort answers before asking for an offer, rather than after taking one.
-			// A producer with a mapped address needs no STUN to be reached, so
-			// a failing STUN cohort doesn't stop it taking offers.
-			if !producerNetOf(options).mapped() && preflight.due(preflightNow(), STUNSrvs) {
-				res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
-				if options.OnSTUNPreflight != nil {
-					options.OnSTUNPreflight(res)
-				}
-				if res.Outcome != STUNPreflightOK {
-					if ctx.Err() != nil {
+			// A producer with a mapped address is reached on it, so it uses no STUN
+			// at all: it doesn't need the STUN list, the STUN check or the
+			// server-reflexive candidates STUN would add, which pion gathers on
+			// fresh sockets off the mapped port.
+			config := webrtc.Configuration{}
+			if !producerNetOf(options).mapped() {
+				// Populate the STUN cache if necessary
+				if scache.size() == 0 {
+					allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
+					if err != nil {
+						slog.Debug("Error creating STUN batch", "error", err)
 						return 0, []interface{}{}
 					}
-					preflightRep.record(res.Outcome, vpnStatus(options))
-					scache.drop()
-					wait := preflight.failed()
-					slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
-					sleepOrDone(ctx, wait)
-					return 0, []interface{}{}
-				}
-				preflight.passed(preflightNow(), STUNSrvs)
-				if !res.Skipped {
-					preflightRep.record(res.Outcome, vpnStatus(options))
-				}
-			}
 
-			config := webrtc.Configuration{
-				ICEServers: []webrtc.ICEServer{
-					{
-						URLs: STUNSrvs,
-					},
-				},
+					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
+					slog.Debug("Populated the STUN cache", "servers", scache.size())
+				}
+
+				STUNSrvs := scache.cohort()
+				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "total", options.STUNBatchSize, "servers", STUNSrvs)
+				slog.Debug("STUN cache size", "size", scache.size())
+
+				// Confirm the cohort answers before asking for an offer, rather than after taking one.
+				if preflight.due(preflightNow(), STUNSrvs) {
+					res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
+					if options.OnSTUNPreflight != nil {
+						options.OnSTUNPreflight(res)
+					}
+					if res.Outcome != STUNPreflightOK {
+						if ctx.Err() != nil {
+							return 0, []interface{}{}
+						}
+						preflightRep.record(res.Outcome, vpnStatus(options))
+						scache.drop()
+						wait := preflight.failed()
+						slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
+						sleepOrDone(ctx, wait)
+						return 0, []interface{}{}
+					}
+					preflight.passed(preflightNow(), STUNSrvs)
+					if !res.Skipped {
+						preflightRep.record(res.Outcome, vpnStatus(options))
+					}
+				}
+
+				config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
 			}
 
 			// Producers are the answerers, which makes them the active peer in

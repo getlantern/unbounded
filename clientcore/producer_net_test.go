@@ -4,6 +4,7 @@ package clientcore
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strconv"
 	"strings"
@@ -183,13 +184,17 @@ func TestReachableCandidates(t *testing.T) {
 	}
 }
 
-// A producer with a mapped address takes offers even when its STUN servers
-// don't answer, without running the STUN check.
-func TestProducerWithMappedAddressSkipsPreflight(t *testing.T) {
-	silent := stunServer(t, nil)
+// A producer with a mapped address uses no STUN: it takes offers even when
+// its STUN list can't be fetched, never runs the STUN check, and gives pion no
+// ICE servers, so no candidate is gathered off the mapped port.
+func TestProducerWithMappedAddressUsesNoSTUN(t *testing.T) {
 	mux, _ := newTestMux(t)
 	o := NewDefaultWebRTCOptions()
-	o.STUNBatch = func(uint32) ([]string, error) { return []string{silent}, nil }
+	var fetched atomic.Bool
+	o.STUNBatch = func(uint32) ([]string, error) {
+		fetched.Store(true)
+		return nil, errors.New("STUN list unavailable")
+	}
 	o.ICEUDPMux = mux
 	o.ICEUDPMuxExternalIP = "203.0.113.9"
 	var ran atomic.Bool
@@ -197,15 +202,23 @@ func TestProducerWithMappedAddressSkipsPreflight(t *testing.T) {
 
 	fsm := NewProducerWebRTC(o, nil)
 	next, out := fsm.state[0](context.Background(), fsm.com, nil)
+	var pc *webrtc.PeerConnection
 	if len(out) > 0 {
-		if pc, ok := out[0].(*webrtc.PeerConnection); ok {
-			defer pc.Close()
-		}
+		pc, _ = out[0].(*webrtc.PeerConnection)
 	}
-	if next != 1 {
-		t.Fatalf("went to state %d, want 1", next)
+	if pc != nil {
+		defer pc.Close()
+	}
+	if next != 1 || pc == nil {
+		t.Fatalf("went to state %d with %v, want 1 and a peer connection", next, out)
+	}
+	if fetched.Load() {
+		t.Error("a producer with a mapped address fetched the STUN list")
 	}
 	if ran.Load() {
-		t.Fatal("a producer with a mapped address ran the STUN check")
+		t.Error("a producer with a mapped address ran the STUN check")
+	}
+	if servers := pc.GetConfiguration().ICEServers; len(servers) != 0 {
+		t.Errorf("ICE servers %v, want none", servers)
 	}
 }
