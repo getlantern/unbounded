@@ -766,10 +766,6 @@ type producerNet struct {
 	externalIP string
 }
 
-func producerNetOf(options *WebRTCOptions) producerNet {
-	return producerNet{net: options.Net, mux: options.ICEUDPMux, externalIP: options.ICEUDPMuxExternalIP}
-}
-
 // mapped reports whether the producer advertises a mapped address of its own,
 // which consumers can reach whatever its STUN servers say.
 func (pn producerNet) mapped() bool {

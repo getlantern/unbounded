@@ -6,6 +6,10 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+func producerNetOf(options *WebRTCOptions) producerNet {
+	return producerNet{net: options.Net, mux: options.ICEUDPMux, externalIP: options.ICEUDPMuxExternalIP}
+}
+
 // applyProducerNet gives the producer's SettingEngine the caller's transport,
 // UDP mux and the mux's external address, and reports whether it set any. A
 // zero producerNet keeps pion's defaults, which is what every release before
