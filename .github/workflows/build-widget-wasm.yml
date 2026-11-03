@@ -112,6 +112,16 @@ jobs:
         # can't be mistaken for something publishable.
         run: go build -ldflags "-s -w" -o /dev/null ./cmd
 
+      - name: Run browser-only tests for js/wasm
+        # The native test job skips files built only for wasm. go_js_wasm_exec
+        # runs the test binary under Node, which the runner image includes.
+        # env -i keeps the environment under the size the wasm runtime accepts.
+        run: |
+          env -i HOME="$HOME" PATH="$(go env GOROOT)/lib/wasm:$PATH" \
+            GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" GOPATH="$(go env GOPATH)" \
+            GOOS=js GOARCH=wasm \
+            go test -run 'TestProducerNetOfIgnoresMappedOptionsInTheBrowser' ./clientcore/
+
   test:
     name: go test (native)
     runs-on: ubuntu-latest
