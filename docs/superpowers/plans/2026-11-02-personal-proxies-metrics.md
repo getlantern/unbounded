@@ -1,5 +1,11 @@
 # Personal Proxies Metrics Implementation Plan
 
+> **Executed, historical.** This plan was carried out on 2026-11-02 and 2026-11-03 and is kept as a record. Don't run it as a runbook: some steps were refined during review, and the merged code is the authority.
+> - getlantern/lantern-cloud#3818: server metrics, and migrations 000161 (`helper_invites`) and 000162 (`helper_pairings`), one table each with `lock_timeout`, applied by an operator before merge. Task 1 below shows the earlier single-migration draft.
+> - getlantern/radiance#732: usage reporting from volunteer devices, with per-slot rooms attribution, the HTTP 400 fallback and same-origin redirects.
+> - getlantern/lantern#9265: the radiance bump.
+> - SigNoz dashboard "Personal proxies": https://lantern.us.signoz.cloud/dashboard/01a1a22c-fd28-7122-a4ad-bdf878ddb91a (Task 12's widget 15, the inviter-side cross-check, was left out: the client metrics aren't in SigNoz).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Count how personal proxies are used (the invite funnel, its timings, live pairings, and paired and residential traffic) as OpenTelemetry metrics from lantern-cloud, broken down by inviter and volunteer country, and show them on a SigNoz dashboard.

@@ -23,7 +23,7 @@ Nothing records this today. lantern-cloud's helper handlers log errors only. Its
 
 `inviter_cc` and `volunteer_cc` come from the same request-country lookup the config handler uses (`clientCountry`). It has to resolve a censored user's country even when their API calls arrive through Lantern's own proxies. The plan must confirm the helper handlers get the same value, not the IP of a Lantern egress.
 
-Schema: one migration adds a nullable `inviter_country char(2)` to `helper_invites`, and `inviter_country` and `volunteer_country` to `helper_pairings`. Existing rows stay NULL and are reported as `unknown`. lantern-cloud's deploy does not apply migrations. An operator applies them with `bin/migrator migrate up --live` on staging and production before the PR merges, because the merge deploys code that reads the new columns. Agents never run them. The tables are altered one per migration, each with `SET lock_timeout = '5s'`, following 000149-000152.
+Schema: two migrations, one table each, each with `SET lock_timeout = '5s'` (following 000149-000152). 000161 adds `inviter_country`, `volunteer_country` and `claimed_at` to `helper_invites`: the volunteer's country is kept from claim until decision, and `claimed_at` times the decision. 000162 adds `inviter_country` and `volunteer_country` to `helper_pairings`, copied from the invite at approval. Country columns are `VARCHAR(2)` with a `CHECK` for two capital letters, and `claimed_at` is `TIMESTAMP WITH TIME ZONE`. Existing rows stay NULL and are reported as `unknown`. lantern-cloud's deploy does not apply migrations. An operator applies them with `bin/migrator migrate up --live` on staging and production before the PR merges, because the merge deploys code that reads the new columns. Agents never run them.
 
 Privacy: until now the server knew an inviter's country only in passing, from requests it doesn't store. From now on, the invite and pairing rows record it next to the inviter's device ID. That is the accepted cost of the user's decision. Nothing else about the inviter is added, and the rows keep their existing lifetimes: invites are swept at expiry, pairings are deleted when they end.
 
@@ -66,7 +66,7 @@ Gauges are sampled by every api replica. The dashboard therefore takes the max a
 
 ### Inviter-side cross-check
 
-radiance already exports `downlink_bytes`/`uplink_bytes` for `outbound_name="helper"` from clients who opted into telemetry. The dashboard shows it next to the volunteer-reported totals as a sanity check. Nothing changes there.
+Deferred. The plan was to show radiance's `downlink_bytes`/`uplink_bytes` for `outbound_name="helper"` next to the volunteer-reported totals as a sanity check, but those client metrics are not exported to the SigNoz workspace, so the shipped dashboard has no such panel. Add it if the client metrics are ever exported.
 
 ## Dashboard
 
