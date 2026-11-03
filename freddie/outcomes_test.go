@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -17,6 +18,12 @@ import (
 // outcomeCounts records one producer report with form and, unless empty, VersionHeader version,
 // keyed outcome/ice_state/pc_state/nat_timeout_s/consumer_country/consumer_version/volunteer_version.
 func outcomeCounts(t *testing.T, form url.Values, version string) map[string]int64 {
+	t.Helper()
+	return outcomeLabels(t, form, version, "outcome", "ice_state", "pc_state", "nat_timeout_s", "consumer_country", "consumer_version", "volunteer_version")
+}
+
+// outcomeLabels records one producer report like outcomeCounts, keyed by the given labels.
+func outcomeLabels(t *testing.T, form url.Values, version string, keys ...string) map[string]int64 {
 	t.Helper()
 	f, err := New(context.Background(), "127.0.0.1:0")
 	if err != nil {
@@ -37,7 +44,13 @@ func outcomeCounts(t *testing.T, form url.Values, version string) map[string]int
 	}
 	_, span := noop.NewTracerProvider().Tracer("test").Start(context.Background(), "test")
 	f.recordProducerOutcome(context.Background(), span, r)
+	return sumByLabels(t, reader, keys...)
+}
 
+// sumByLabels collects reader's counters, summing data points keyed by the values of keys joined
+// with "/".
+func sumByLabels(t *testing.T, reader sdkmetric.Reader, keys ...string) map[string]int64 {
+	t.Helper()
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatal(err)
@@ -46,14 +59,12 @@ func outcomeCounts(t *testing.T, form url.Values, version string) map[string]int
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
 			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
-				o, _ := dp.Attributes.Value("outcome")
-				i, _ := dp.Attributes.Value("ice_state")
-				p, _ := dp.Attributes.Value("pc_state")
-				n, _ := dp.Attributes.Value("nat_timeout_s")
-				c, _ := dp.Attributes.Value("consumer_country")
-				v, _ := dp.Attributes.Value("consumer_version")
-				vv, _ := dp.Attributes.Value("volunteer_version")
-				counts[o.AsString()+"/"+i.AsString()+"/"+p.AsString()+"/"+n.AsString()+"/"+c.AsString()+"/"+v.AsString()+"/"+vv.AsString()] += dp.Value
+				vals := make([]string, len(keys))
+				for i, k := range keys {
+					v, _ := dp.Attributes.Value(attribute.Key(k))
+					vals[i] = v.AsString()
+				}
+				counts[strings.Join(vals, "/")] += dp.Value
 			}
 		}
 	}
@@ -113,6 +124,12 @@ func TestRecordProducerOutcome_LabelsVolunteerVersion(t *testing.T) {
 // preflightCounts records one genesis with form, keyed result/vpn/volunteer_version.
 func preflightCounts(t *testing.T, form url.Values) map[string]int64 {
 	t.Helper()
+	return preflightLabels(t, form, "result", "vpn", "volunteer_version")
+}
+
+// preflightLabels records one genesis like preflightCounts, keyed by the given labels.
+func preflightLabels(t *testing.T, form url.Values, keys ...string) map[string]int64 {
+	t.Helper()
 	f, err := New(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -129,23 +146,7 @@ func preflightCounts(t *testing.T, form url.Values) map[string]int64 {
 		t.Fatal(err)
 	}
 	f.recordSTUNPreflights(context.Background(), r)
-
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatal(err)
-	}
-	counts := map[string]int64{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
-				res, _ := dp.Attributes.Value("result")
-				vpn, _ := dp.Attributes.Value("vpn")
-				v, _ := dp.Attributes.Value("volunteer_version")
-				counts[res.AsString()+"/"+vpn.AsString()+"/"+v.AsString()] += dp.Value
-			}
-		}
-	}
-	return counts
+	return sumByLabels(t, reader, keys...)
 }
 
 func TestRecordSTUNPreflights_PassOnly(t *testing.T) {
@@ -206,5 +207,43 @@ func TestRecordSTUNPreflights_NoReportNoCount(t *testing.T) {
 		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
 	}); len(got) != 0 {
 		t.Fatalf("failures without the pass that reports them must not be counted, got %v", got)
+	}
+}
+
+// A producer's kind and mapped flag label its outcomes, normalized so a report can't mint values,
+// and a producer that predates them is counted as unreported.
+func TestRecordProducerOutcome_LabelsVolunteerKind(t *testing.T) {
+	for _, tc := range []struct {
+		kind, mapped []string
+		want         string
+	}{
+		{[]string{common.VolunteerKindServer}, []string{"1"}, "server/true"},
+		{[]string{common.VolunteerKindBrowser}, []string{"0"}, "browser/false"},
+		{nil, nil, "unreported/unreported"},
+		{[]string{"toaster"}, []string{"yes"}, "invalid/invalid"},
+	} {
+		form := url.Values{common.PrevOutcomeField: {common.OutcomeConnected}}
+		if tc.kind != nil {
+			form[common.VolunteerKindField] = tc.kind
+			form[common.VolunteerMappedField] = tc.mapped
+		}
+		got := outcomeLabels(t, form, common.Version, "volunteer_kind", "volunteer_mapped")
+		if got[tc.want] != 1 || len(got) != 1 {
+			t.Errorf("kind %v mapped %v: want %s, got %v", tc.kind, tc.mapped, tc.want, got)
+		}
+	}
+}
+
+// Both the pass and the failures it reports carry the producer's kind.
+func TestRecordSTUNPreflights_LabelsVolunteerKind(t *testing.T) {
+	got := preflightLabels(t, url.Values{
+		common.PreflightVPNField:          {"disconnected"},
+		common.PrevPreflightFailuresField: {"4"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
+		common.VolunteerKindField:         {common.VolunteerKindApp},
+		common.VolunteerMappedField:       {"0"},
+	}, "result", "volunteer_kind", "volunteer_mapped")
+	if got["ok/app/false"] != 1 || got["no_reply/app/false"] != 4 || len(got) != 2 {
+		t.Fatalf("got %v", got)
 	}
 }

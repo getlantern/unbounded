@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/getlantern/broflake/clientcore"
+	"github.com/getlantern/broflake/common"
 )
 
 // widgetNATFailTimeout is how long a browser volunteer waits, once signaling completes, for the
@@ -61,6 +62,7 @@ func main() {
 			rtcOpt.STUNBatchSize = uint32(args[7].Int())
 			rtcOpt.Tag = args[8].String()
 			rtcOpt.NATFailTimeout = widgetNATFailTimeout
+			rtcOpt.VolunteerKind = common.VolunteerKindBrowser
 			if len(args) > 11 && args[11].Type() == js.TypeString {
 				rtcOpt.SetTargetCountries(strings.Split(args[11].String(), ","))
 			}

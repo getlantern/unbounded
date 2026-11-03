@@ -41,6 +41,21 @@ func TestGenesisFormWithoutRoomsIsUnchanged(t *testing.T) {
 	}
 }
 
+// A producer that sets its kind reports it, and its mapped flag, on genesis. One that doesn't sends
+// neither, as TestGenesisFormWithoutRoomsIsUnchanged checks.
+func TestGenesisFormReportsVolunteerKind(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.VolunteerKind = common.VolunteerKindServer
+	f := genesisForm(o, []byte(`{}`))
+	if f.Get(common.VolunteerKindField) != common.VolunteerKindServer || f.Get(common.VolunteerMappedField) != "0" {
+		t.Fatalf("form %s", f.Encode())
+	}
+	o.VolunteerMapped = true
+	if got := genesisForm(o, []byte(`{}`)).Get(common.VolunteerMappedField); got != "1" {
+		t.Fatalf("mapped %q, want 1", got)
+	}
+}
+
 // preRoomsGenesisForm and preRoomsSubscribeRequest are the producer's form and
 // the consumer's request exactly as the FSMs built them before rooms.
 func preRoomsGenesisForm(options *WebRTCOptions, g []byte) url.Values {

@@ -27,6 +27,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
 		attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
 	}
+	attrs = append(attrs, volunteerKindAttrs(r)...)
 	attrs = append(attrs, f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))...)
 	f.producerOutcomes.Add(ctx, 1, metric.WithAttributes(attrs...))
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
@@ -70,18 +71,28 @@ func (f *Freddie) recordSTUNPreflights(ctx context.Context, r *http.Request) {
 		return
 	}
 	version := attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version))
-	f.stunPreflights.Add(ctx, 1, metric.WithAttributes(
+	kind := volunteerKindAttrs(r)
+	f.stunPreflights.Add(ctx, 1, metric.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("result", common.PreflightOK),
 		attribute.String("vpn", common.NormalizeVPNState(passVPN[0])),
 		version,
-	))
+	}, kind...)...))
 	n, ok := common.ParsePreflightFailures(r.Form.Get(common.PrevPreflightFailuresField))
 	if !ok {
 		return
 	}
-	f.stunPreflights.Add(ctx, int64(n), metric.WithAttributes(
+	f.stunPreflights.Add(ctx, int64(n), metric.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("result", common.NormalizePreflightFailure(r.Form.Get(common.PrevPreflightOutcomeField))),
 		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevPreflightVPNField))),
 		version,
-	))
+	}, kind...)...))
+}
+
+// volunteerKindAttrs are the volunteer_kind and volunteer_mapped labels from the producer's
+// genesis.
+func volunteerKindAttrs(r *http.Request) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.String("volunteer_kind", common.NormalizeVolunteerKind(r.Form.Get(common.VolunteerKindField))),
+		attribute.String("volunteer_mapped", common.NormalizeVolunteerMapped(r.Form.Get(common.VolunteerMappedField))),
+	}
 }
