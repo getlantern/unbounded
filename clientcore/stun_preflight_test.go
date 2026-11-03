@@ -4,6 +4,7 @@ package clientcore
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pion/stun/v4"
+	"github.com/pion/transport/v5"
+	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -59,7 +62,7 @@ func answer(req *stun.Message, from *net.UDPAddr) *stun.Message {
 }
 
 func TestSTUNPreflightOK(t *testing.T) {
-	res := stunPreflight(context.Background(), []string{stunServer(t, nil), stunServer(t, answer)}, time.Second)
+	res := stunPreflight(context.Background(), nil, []string{stunServer(t, nil), stunServer(t, answer)}, time.Second)
 	if res.Outcome != STUNPreflightOK || res.Servers != 2 {
 		t.Fatalf("got %+v, want ok from 2 servers", res)
 	}
@@ -67,7 +70,7 @@ func TestSTUNPreflightOK(t *testing.T) {
 
 func TestSTUNPreflightNoReply(t *testing.T) {
 	const timeout = 300 * time.Millisecond
-	res := stunPreflight(context.Background(), []string{stunServer(t, nil)}, timeout)
+	res := stunPreflight(context.Background(), nil, []string{stunServer(t, nil)}, timeout)
 	if res.Outcome != STUNPreflightNoReply {
 		t.Fatalf("got %+v, want no_reply", res)
 	}
@@ -81,7 +84,7 @@ func TestSTUNPreflightIgnoresOtherTransactions(t *testing.T) {
 	other := func(_ *stun.Message, from *net.UDPAddr) *stun.Message {
 		return stun.MustBuild(stun.TransactionID, stun.BindingSuccess, &stun.XORMappedAddress{IP: from.IP, Port: from.Port})
 	}
-	if res := stunPreflight(context.Background(), []string{stunServer(t, other)}, 300*time.Millisecond); res.Outcome != STUNPreflightNoReply {
+	if res := stunPreflight(context.Background(), nil, []string{stunServer(t, other)}, 300*time.Millisecond); res.Outcome != STUNPreflightNoReply {
 		t.Fatalf("got %+v, want no_reply", res)
 	}
 }
@@ -95,7 +98,7 @@ func TestSTUNPreflightResends(t *testing.T) {
 		}
 		return answer(req, from)
 	}
-	if res := stunPreflight(context.Background(), []string{stunServer(t, dropFirst)}, time.Second); res.Outcome != STUNPreflightOK {
+	if res := stunPreflight(context.Background(), nil, []string{stunServer(t, dropFirst)}, time.Second); res.Outcome != STUNPreflightOK {
 		t.Fatalf("got %+v, want ok from the resent request", res)
 	}
 }
@@ -106,7 +109,7 @@ func TestSTUNPreflightIPv6(t *testing.T) {
 		t.Skip("no IPv6 loopback:", err)
 	}
 	server := serveSTUN(t, conn, answer)
-	if res := stunPreflight(context.Background(), []string{server}, time.Second); res.Outcome != STUNPreflightOK {
+	if res := stunPreflight(context.Background(), nil, []string{server}, time.Second); res.Outcome != STUNPreflightOK {
 		t.Fatalf("got %+v from %s, want ok", res, server)
 	}
 }
@@ -124,7 +127,7 @@ func TestSTUNPreflightTriesBothFamilies(t *testing.T) {
 	}
 	serveSTUN(t, conn, answer)
 	server := "stun:localhost:" + strconv.Itoa(conn.LocalAddr().(*net.UDPAddr).Port)
-	if res := stunPreflight(context.Background(), []string{server}, time.Second); res.Outcome != STUNPreflightOK {
+	if res := stunPreflight(context.Background(), nil, []string{server}, time.Second); res.Outcome != STUNPreflightOK {
 		t.Fatalf("got %+v from %s, want ok over IPv6", res, server)
 	}
 }
@@ -134,7 +137,7 @@ func TestSTUNPreflightTriesBothFamilies(t *testing.T) {
 func TestSTUNPreflightProbesServersIndependently(t *testing.T) {
 	servers := []string{"stun:no-such-host.invalid:3478", stunServer(t, nil), stunServer(t, answer)}
 	start := time.Now()
-	res := stunPreflight(context.Background(), servers, 5*time.Second)
+	res := stunPreflight(context.Background(), nil, servers, 5*time.Second)
 	if res.Outcome != STUNPreflightOK || res.Servers != 3 {
 		t.Fatalf("got %+v, want ok from 3 servers", res)
 	}
@@ -145,7 +148,7 @@ func TestSTUNPreflightProbesServersIndependently(t *testing.T) {
 
 // Without an answer, the result is the furthest any server got.
 func TestSTUNPreflightReportsFurthestFailure(t *testing.T) {
-	res := stunPreflight(context.Background(), []string{"not a uri", stunServer(t, nil)}, 300*time.Millisecond)
+	res := stunPreflight(context.Background(), nil, []string{"not a uri", stunServer(t, nil)}, 300*time.Millisecond)
 	if res.Outcome != STUNPreflightNoReply {
 		t.Fatalf("got %+v, want no_reply", res)
 	}
@@ -168,13 +171,13 @@ func TestProbeAddrResendsWithinRemainingTime(t *testing.T) {
 	// What's left of stunPreflightTimeout after a 2.4s lookup, less than half of it.
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
-	if got := probeAddr(ctx, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
+	if got := probeAddr(ctx, hostProber().listen, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
 		t.Fatalf("got %s, want ok from the resent request", got)
 	}
 }
 
 func TestSTUNPreflightNoServers(t *testing.T) {
-	res := stunPreflight(context.Background(), []string{"", "not a uri", "turn:127.0.0.1:3478"}, time.Second)
+	res := stunPreflight(context.Background(), nil, []string{"", "not a uri", "turn:127.0.0.1:3478"}, time.Second)
 	if res.Outcome != STUNPreflightNoServers {
 		t.Fatalf("got %+v, want no_servers", res)
 	}
@@ -184,7 +187,7 @@ func TestSTUNPreflightStopsWithCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(50*time.Millisecond, cancel)
 	start := time.Now()
-	stunPreflight(ctx, []string{stunServer(t, nil)}, time.Minute)
+	stunPreflight(ctx, nil, []string{stunServer(t, nil)}, time.Minute)
 	if waited := time.Since(start); waited > 5*time.Second {
 		t.Fatalf("waited %v after ctx ended", waited)
 	}
@@ -458,5 +461,80 @@ func TestProducerReportsPreflightsOnGenesis(t *testing.T) {
 	}
 	if form := genesis(); form.Has(common.PreflightVPNField) {
 		t.Errorf("a delivered report was sent again: %v", form)
+	}
+}
+
+// listenCountingNet counts the UDP sockets the preflight opens on it. Like ICE's server-reflexive
+// gathering, the preflight listens and never dials, so DialUDP fails.
+type listenCountingNet struct {
+	*stdnet.Net
+	listens atomic.Int32
+}
+
+func (n *listenCountingNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
+	n.listens.Add(1)
+	return n.Net.ListenUDP(network, laddr)
+}
+
+func (n *listenCountingNet) DialUDP(string, *net.UDPAddr, *net.UDPAddr) (transport.UDPConn, error) {
+	return nil, errors.New("DialUDP not supported")
+}
+
+// blockingNet's ListenUDP blocks until release closes, then opens a socket.
+type blockingNet struct {
+	*stdnet.Net
+	release chan struct{}
+	opened  chan transport.UDPConn
+}
+
+func (n *blockingNet) ListenUDP(network string, laddr *net.UDPAddr) (transport.UDPConn, error) {
+	<-n.release
+	c, err := n.Net.ListenUDP(network, laddr)
+	if err == nil {
+		n.opened <- c
+	}
+	return c, err
+}
+
+// With WebRTCOptions.Net set, the preflight probes through it, as pion's sockets do, so it tests
+// the path ICE will use rather than the host's default.
+func TestSTUNPreflightDialsOnNet(t *testing.T) {
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &listenCountingNet{Net: std}
+	if res := stunPreflight(context.Background(), n, []string{stunServer(t, answer)}, time.Second); res.Outcome != STUNPreflightOK {
+		t.Fatalf("got %+v, want ok", res)
+	}
+	if n.listens.Load() == 0 {
+		t.Fatal("the preflight opened its socket on the host's stack, not on the Net it was given")
+	}
+}
+
+// A Net whose ListenUDP blocks can't hold the preflight past its timeout, and the socket it opens
+// late is closed.
+func TestSTUNPreflightBoundsABlockedListen(t *testing.T) {
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &blockingNet{Net: std, release: make(chan struct{}), opened: make(chan transport.UDPConn, 1)}
+	start := time.Now()
+	res := stunPreflight(context.Background(), n, []string{stunServer(t, answer)}, 200*time.Millisecond)
+	if res.Outcome != STUNPreflightNoSocket {
+		t.Fatalf("got %+v, want %s", res, STUNPreflightNoSocket)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the preflight waited %v on a blocked ListenUDP", took)
+	}
+	close(n.release)
+	c := <-n.opened
+	deadline := time.Now().Add(2 * time.Second)
+	for c.SetReadDeadline(time.Time{}) == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("a socket opened after the preflight ended was left open")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

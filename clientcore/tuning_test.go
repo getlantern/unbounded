@@ -58,7 +58,7 @@ func TestTunedPeersConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer consumer.Close()
-	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, allTuning())
+	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, allTuning(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ func signalPair(t *testing.T) (*webrtc.PeerConnection, func()) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { consumer.Close() })
-	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, WebRTCTuning{})
+	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, WebRTCTuning{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

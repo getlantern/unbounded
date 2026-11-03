@@ -89,7 +89,9 @@ type WebRTCOptions struct {
 	// every release before it did. It changes nothing on the wire. Set it
 	// before NewBroflake.
 	ConsumerRoomsOnly bool
-	// 'Net' is currently only respected by the WebRTC *consumer*, and it won't work for Wasm builds!
+	// Net is the transport pion opens its UDP sockets on, for both the
+	// consumer and the producer. nil uses the host's network stack. Browser
+	// (wasm) builds ignore it: the WebRTC stack there is the browser's.
 	Net transport.Net
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
 	// producer/widget side. See common/covertdtls and net4people/bbs#603
