@@ -1968,7 +1968,7 @@ Expected: `metrics` and `cmd/api/...` are already listed under `on.push.paths` i
 
 Invoke `skills:create-pr`. Write the body to a literal path (`/tmp/lc-pp-metrics-pr.md`). Title: `Personal proxies metrics: funnel, gauges and reported traffic`. The body covers:
 - the metrics added, with their labels;
-- migration 000161 (additive nullable columns, applied by the normal deploy);
+- migrations 000161 and 000162 (additive nullable columns). The deploy does not run them: an operator applies them with `bin/migrator` on staging and production before merge, and the body says so at the top;
 - the label privacy rule, and that report values are not logged, traced or stored;
 - the 50 GB per-value cap;
 - that radiance's reports are optional fields, so old clients are unaffected;
