@@ -29,7 +29,7 @@ import (
 func TestGenesisFormWithoutRoomsIsUnchanged(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetTargetCountries([]string{"IR"})
-	got := genesisForm(o, []byte(`{"x":1}`))
+	got := genesisForm(o, []byte(`{"x":1}`), false)
 	want := url.Values{
 		"data":                    {`{"x":1}`},
 		"send-to":                 {o.GenesisAddr},
@@ -46,12 +46,12 @@ func TestGenesisFormWithoutRoomsIsUnchanged(t *testing.T) {
 func TestGenesisFormReportsVolunteerKind(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.VolunteerKind = common.VolunteerKindServer
-	f := genesisForm(o, []byte(`{}`))
+	f := genesisForm(o, []byte(`{}`), false)
 	if f.Get(common.VolunteerKindField) != common.VolunteerKindServer || f.Get(common.VolunteerMappedField) != "0" {
 		t.Fatalf("form %s", f.Encode())
 	}
 	o.VolunteerMapped = true
-	if got := genesisForm(o, []byte(`{}`)).Get(common.VolunteerMappedField); got != "1" {
+	if got := genesisForm(o, []byte(`{}`), false).Get(common.VolunteerMappedField); got != "1" {
 		t.Fatalf("mapped %q, want 1", got)
 	}
 }
@@ -101,8 +101,10 @@ func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 	for i, newOptions := range cases {
 		o := newOptions()
 		countries := o.targetCountries()
-		if got, want := genesisForm(o, g).Encode(), preRoomsGenesisForm(o, g).Encode(); got != want {
-			t.Errorf("case %d (countries %v): form %s, want %s", i, countries, got, want)
+		for _, roomSlot := range []bool{false, true} {
+			if got, want := genesisForm(o, g, roomSlot).Encode(), preRoomsGenesisForm(o, g).Encode(); got != want {
+				t.Errorf("case %d (countries %v, room slot %v): form %s, want %s", i, countries, roomSlot, got, want)
+			}
 		}
 
 		got, err := newSubscribeRequest(context.Background(), o)
@@ -124,7 +126,7 @@ func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetRoomTickets([]string{"a.b", "c.d"})
-	f := genesisForm(o, []byte(`{}`))
+	f := genesisForm(o, []byte(`{}`), false)
 	if got := f[common.RoomTicketField]; !slices.Equal(got, []string{"a.b", "c.d"}) {
 		t.Errorf("room tickets %q", got)
 	}
@@ -138,7 +140,7 @@ func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	// A rooms-only producer says so in send-to, which an old Freddie refuses,
 	// and not in the pool field, which an old Freddie ignores.
 	o.SetServePool(false)
-	f = genesisForm(o, []byte(`{}`))
+	f = genesisForm(o, []byte(`{}`), false)
 	if got := f.Get("send-to"); got != common.SignalSendToGenesisRooms {
 		t.Errorf("a rooms-only producer sends to %q, want %q", got, common.SignalSendToGenesisRooms)
 	}
@@ -147,6 +149,59 @@ func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	}
 	if got := f[common.RoomTicketField]; !slices.Equal(got, []string{"a.b", "c.d"}) {
 		t.Errorf("rooms-only room tickets %q", got)
+	}
+}
+
+// A room slot holding room tickets offers itself only to its rooms even while the producer serves
+// the pool, so the producer's other slots filling up with pool consumers can't leave its inviter
+// without one. Its other slots still serve the pool.
+func TestRoomSlotGenesisIsRoomsOnly(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.SetRoomTickets([]string{"a.b"})
+	if got := genesisForm(o, []byte(`{}`), true).Get("send-to"); got != common.SignalSendToGenesisRooms {
+		t.Errorf("a room slot sends to %q, want %q", got, common.SignalSendToGenesisRooms)
+	}
+	if got := genesisForm(o, []byte(`{}`), false).Get("send-to"); got != o.GenesisAddr {
+		t.Errorf("another slot sends to %q, want %q", got, o.GenesisAddr)
+	}
+
+	// Without tickets it has no rooms, so it serves the pool like any other slot.
+	o.SetRoomTickets(nil)
+	if got := genesisForm(o, []byte(`{}`), true).Get("send-to"); got != o.GenesisAddr {
+		t.Errorf("a room slot without tickets sends to %q, want %q", got, o.GenesisAddr)
+	}
+}
+
+// The room slot's FSM posts what genesisForm builds for it.
+func TestRoomSlotWorkerPostsRoomsOnlyGenesis(t *testing.T) {
+	sendTo := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			select {
+			case sendTo <- r.Form.Get("send-to"):
+			default:
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.SetRoomTickets([]string{"a.b"})
+	fsm := newProducerWebRTC(o, nil, true)
+	next, _ := fsm.state[2](context.Background(), fsm.com, []interface{}{
+		(*webrtc.PeerConnection)(nil),
+		common.PathAssertion{},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	})
+	if next != 1 {
+		t.Errorf("next state %d, want 1 (no offer)", next)
+	}
+	if got := <-sendTo; got != common.SignalSendToGenesisRooms {
+		t.Errorf("room slot posted to %q, want %q", got, common.SignalSendToGenesisRooms)
 	}
 }
 

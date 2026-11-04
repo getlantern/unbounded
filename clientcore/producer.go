@@ -28,6 +28,15 @@ import (
 )
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
+	return newProducerWebRTC(options, wg, false)
+}
+
+// newProducerWebRTC builds a producer worker. A room slot offers itself only to its rooms
+// whenever it has room tickets, even while the producer serves the pool. Freddie offers a genesis
+// to a room only if one of its consumers is waiting at that moment, and otherwise to the pool,
+// so a producer whose every slot serves the pool can be busy with strangers whenever its own
+// inviter looks for it. The room slot stays free for the inviter instead.
+func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool) *WorkerFSM {
 	var scache STUNCache
 	var preflight preflightState
 	var preflightRep preflightReport
@@ -217,7 +226,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			// Signal the genesis message
-			form := genesisForm(options, g)
+			form := genesisForm(options, g, roomSlot)
 			last.addTo(form, options.NATFailTimeout)
 			preflightRep.addTo(form)
 
@@ -791,15 +800,6 @@ func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Conf
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config)
 }
 
-// genesisForm is a genesis POST's form: the genesis message g, plus the
-// producer's target countries and room tickets. Each of those is omitted when
-// it says nothing, so a producer that uses none of them sends exactly what
-// releases before them did. They are form fields rather than part of the
-// payload so Freddie needn't parse signaling messages to honor them.
-//
-// A producer that serves only its rooms posts to
-// common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
-// that predates rooms refuses the genesis instead of broadcasting it.
 // attemptOutcome is how a producer worker's previous connection attempt ended (see
 // common/outcome.go).
 type attemptOutcome struct {
@@ -840,9 +840,20 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	*o = attemptOutcome{}
 }
 
-func genesisForm(options *WebRTCOptions, g []byte) url.Values {
+// genesisForm is a genesis POST's form: the genesis message g, plus the
+// producer's target countries and room tickets. Each of those is omitted when
+// it says nothing, so a producer that uses none of them sends exactly what
+// releases before them did. They are form fields rather than part of the
+// payload so Freddie needn't parse signaling messages to honor them.
+//
+// A producer that serves only its rooms posts to
+// common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
+// that predates rooms refuses the genesis instead of broadcasting it.
+// So does a room slot (see newProducerWebRTC) while it has room tickets.
+func genesisForm(options *WebRTCOptions, g []byte, roomSlot bool) url.Values {
+	tickets := options.CurrentRoomTickets()
 	sendTo := options.GenesisAddr
-	if !options.ServesPool() {
+	if !options.ServesPool() || (roomSlot && len(tickets) > 0) {
 		sendTo = common.SignalSendToGenesisRooms
 	}
 	form := url.Values{
@@ -853,7 +864,7 @@ func genesisForm(options *WebRTCOptions, g []byte) url.Values {
 	for _, c := range options.targetCountries() {
 		form.Add(common.TargetCountryField, c)
 	}
-	for _, tk := range options.CurrentRoomTickets() {
+	for _, tk := range tickets {
 		form.Add(common.RoomTicketField, tk)
 	}
 	if options.VolunteerKind != "" {
