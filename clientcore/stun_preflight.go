@@ -119,8 +119,13 @@ func (r *preflightReport) addTo(form url.Values) {
 	}
 }
 
-// delivered clears the report once Freddie has accepted a genesis that carried it.
+// delivered clears the report once Freddie has accepted a genesis that carried it. A genesis
+// sent before any pass, as a mapped producer sends one without STUN, carried nothing, so its
+// failures wait for the next pass.
 func (r *preflightReport) delivered() {
+	if !r.passed {
+		return
+	}
 	*r = preflightReport{}
 }
 
