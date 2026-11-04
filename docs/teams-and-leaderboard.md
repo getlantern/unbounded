@@ -34,7 +34,7 @@ team. Nothing was built on top, because the field is not the hard part.
   `common.NewSubprotocolsRequestWithCountry`. It is not open-ended,
   though: `ParseSubprotocolsRequestWithCountry` accepts exactly three or
   four elements, and the fourth is positional, so a team element needs a
-  tagged form (e.g. `team=<id>`) and the same egress-first rollout the
+  tagged form (e.g. `team.<id>` — subprotocols must be RFC 6455 tokens, so no `=`, and the ID alphabet has to be token-safe) and the same egress-first rollout the
   country element needed.
 - **An embed API and a snippet generator.** The widget hydrates `data-*`
   attributes into `Settings` (`ui/src/constants/index.ts`,
@@ -43,7 +43,8 @@ team. Nothing was built on top, because the field is not the hard part.
 - **Server-side measurement.** The egress already counts per-session
   bytes (`broflake.session_ingress_bytes`) and per-country ingress.
   Points can be derived from what the egress observed, never from what a
-  client claimed.
+  client claimed — though today's counter is raw ingress, counted before
+  QUIC validates it, so it is a starting point rather than a score.
 - **An unforgeable origin, currently unused.** Origin checking is off —
   `InsecureSkipVerify=true` in `egress/egresslib.go`, with a standing
   TODO to add `OriginPattern`. The header is still on every upgrade
@@ -94,9 +95,12 @@ their domain.
 That stops the cheap attack — embedding the widget on your own site with
 a rival's `data-team` — but not a custom client, which can set `Origin`
 to anything. Origin binding raises the cost of sabotage from editing an
-attribute to writing a client; past that, the defences are the per-origin
-ceilings and anomaly detection in the fraud model, and a clean history
-before anything is public.
+attribute to writing a client. Past that there is no attribution proof:
+per-origin ceilings and anomaly detection can limit how much a forged
+session counts, but they cannot say which publisher supplied it, and an
+attacker can still fill a rival's ceiling. This is an open risk, and it
+is why forged-looking traffic should never become a penalty against the
+team it names.
 
 ### Per-member attribution
 
@@ -213,8 +217,8 @@ as an order of magnitude, not as a calibration target.
 | --- | --- | --- |
 | Hidden widget in bought ad inventory | cookie stuffing | **The serious one.** Cheap ad slots, widget in a 1×1 iframe, points farmed from readers who never consented — and if a visitor is in a censored country we have conscripted the person we exist to protect. Require visibility and consent; the freeze watchdog already reports `hidden`, `sharing` and visibility state. |
 | Headless browser fleets | self-referral | Origin binding raises the cost to owning a domain; then per-origin ceilings against an independent traffic baseline, plus anomaly detection on session-length distribution. |
-| Crediting a rival's team | attribution fraud | Origin binding stops it from a web page, which is why it precedes any public board; a custom client forging `Origin` falls to the ceilings and anomaly detection above. |
-| Claiming work never done | fake leads | Already structurally prevented — the egress measures, the client never reports a total. Never accept a client-supplied score. |
+| Crediting a rival's team | attribution fraud | Origin binding stops it from a web page, which is why it precedes any public board. A custom client forging `Origin` is not stopped, only bounded by ceilings — an open risk (see Problem 1), so suspect traffic is discounted, never charged to the named team. |
+| Claiming work never done | fake leads | Half-prevented: the egress measures and the client never reports a total — never accept a client-supplied score. But `broflake.session_ingress_bytes` counts raw WebSocket payload in `egress/websocket.go` before QUIC validates it, so garbage counts too. Credit needs accounting of delivered QUIC traffic, not raw ingress. |
 | Farming, then cashing out | coupon abuse | Borrow F@h's shape: the Quick Return Bonus requires a passkey, ≥10 returned work units and an 80% completion rate. Gate bonuses and public standing on a clean history. |
 
 ## Suggested order of work
