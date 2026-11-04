@@ -6,7 +6,9 @@ step carries a cost to the people we are asking for help.
 
 Three things decide whether a leaderboard helps or hurts: what can be
 attributed without being lied to, what gets counted, and who is allowed
-to see it. The third is the only one that can hurt a publisher.
+to see it. The first decides whether a team can be framed with traffic
+it never sent; the third decides whether a publisher who did everything
+right ends up on a target list.
 
 ## Teams have been built twice and never carried a real team
 
@@ -22,15 +24,18 @@ attempts stopped in the same place — the wire format.
 - The egress now recognises those clients only to refuse them and signal
   an upgrade — `refusedLegacyTeamClient` in `egress/refusals.go`.
 
-So the wire carried a team field for four months and it never held a
+So the wire carried a team field for three months and it never held a
 team. Nothing was built on top, because the field is not the hard part.
 
 ## What can be built on today
 
 - **A carrier with an extension point.** The subprotocol is a positional
   list — `[cookie, csid, version, country?]` via
-  `common.NewSubprotocolsRequestWithCountry`. The country element was
-  added the same way a team element would be.
+  `common.NewSubprotocolsRequestWithCountry`. It is not open-ended,
+  though: `ParseSubprotocolsRequestWithCountry` accepts exactly three or
+  four elements, and the fourth is positional, so a team element needs a
+  tagged form (e.g. `team=<id>`) and the same egress-first rollout the
+  country element needed.
 - **An embed API and a snippet generator.** The widget hydrates `data-*`
   attributes into `Settings` (`ui/src/constants/index.ts`,
   `ui/src/index.tsx`), and there is already an editor that writes the
@@ -43,7 +48,8 @@ team. Nothing was built on top, because the field is not the hard part.
   `InsecureSkipVerify=true` in `egress/egresslib.go`, with a standing
   TODO to add `OriginPattern`. The header is still on every upgrade
   request and browsers do not let page JavaScript forge it. This is the
-  most useful item in the list.
+  most useful item in the list — with the caveat that only a browser
+  enforces it; a non-browser client can send any `Origin` it likes.
 
 ### House constraint
 
@@ -77,12 +83,20 @@ into someone else's name.
 | `data-team` attribute | whoever wrote the embed | by anyone |
 | `Origin` on the upgrade | the browser | bound to a domain |
 | team → origin registry | us, after a domain-control check | bound to an owner |
-| account key | the donor's own client | bound to a person |
+| account key | the donor's own client | bound to an account, not a person |
 
 **Proposal:** treat `data-team` as a hint and accept it only when the
 request's `Origin` is one the registry has bound to that team. Domain
 control is proven once, by DNS TXT record or a file at a well-known path.
-Forging another team's credit then requires controlling their domain.
+Forging another team's credit from a web page then requires controlling
+their domain.
+
+That stops the cheap attack — embedding the widget on your own site with
+a rival's `data-team` — but not a custom client, which can set `Origin`
+to anything. Origin binding raises the cost of sabotage from editing an
+attribute to writing a client; past that, the defences are the per-origin
+ceilings and anomaly detection in the fraud model, and a clean history
+before anything is public.
 
 ### Per-member attribution
 
@@ -91,10 +105,14 @@ There are two kinds of member and only one can be a named individual.
 - **Site visitors are not individually attributable, and should not be.**
   Identifying every visitor who ran the widget means building a tracking
   identity for people who never asked for one, on a circumvention tool.
-  Credit accrues to the *team*; the session is counted and forgotten.
+  Credit accrues to the *team*: a session adds to the team's aggregate,
+  and no per-visitor or per-session record is kept beyond what the egress
+  already emits.
 - **Extension and VPN donors can be.** Their client runs on their own
-  machine, so an account-bound key works exactly as a passkey does, and
-  they can pick a team in settings.
+  machine, so an account-bound key works much as a passkey does, and
+  they can pick a team in settings. The key identifies an account, not a
+  person: it can be shared or stolen, so it needs rotation and recovery,
+  and individual credit is pseudonymous account credit.
 
 That split is a feature. Sites compete as teams, individuals compete as
 individuals, and anyone wanting personal credit installs something. Say
@@ -110,7 +128,9 @@ influence routing, which is the last thing they should be optimising.
 
 So count **availability offered** — ready-and-online time — alongside
 service delivered. Availability is the part a donor controls, and it is
-what the network needs more of.
+what the network needs more of. It is also the easiest input to inflate,
+so it can only be ranked once it is measured server-side (time the egress
+saw the donor connected and ready), not reported by the client.
 
 **The ranked metric displaces the real one.** In a randomised trial
 (Chen, Dobrescu, Foster & Motta, *Labour Economics* 90, 2024,
@@ -126,7 +146,9 @@ strongest.
 **Rate, not just totals.** A team's raw score is roughly
 visitors × time-on-page × willingness, so totals rank site traffic and a
 large outlet always beats a blogger. Add measures a small site can win:
-contribution per visitor, or the share of visitors who left it running.
+contribution per session, or the share of sessions that stayed past a
+minimum. The egress sees sessions, not page visitors, so any per-visitor
+rate would rest on a site-supplied count and cannot be ranked on.
 Those reward persuading your readers, which is the behaviour worth
 spreading.
 
@@ -163,45 +185,56 @@ Concrete harms:
 Mitigations, none of which prevent the feature:
 
 - Publicity is **opt-in per team**; the default is a private dashboard.
-- **Pseudonyms are first-class.** A team can compete under a handle with
-  no domain attached. F@h has allowed `anonymous` folding for two decades
-  without hurting participation.
+- **Pseudonyms are first-class.** A team can appear under a handle with
+  no domain shown. The handle is a display label: the team is still
+  origin-bound in the registry, and only the binding is kept private. F@h
+  has allowed `anonymous` folding for two decades without hurting
+  participation.
 - **Publish bands, not figures.** Enough to compete on, less to
   prioritise from.
 - **Never publish a view that answers "who is most worth blocking"** — no
   absolute throughput per site, no per-country breakdown of which teams
   serve which censored regions.
+- **Leaving is immediate and total.** Withdrawing, a domain compromise
+  or a change of ownership removes the team's current and past standings
+  from the board and its feeds, not just future ones.
 - **Say all of this in the signup flow**, before anyone opts in.
 
 ## Fraud model
 
 Embedding a widget and crediting the site is structurally the same
 problem as affiliate attribution, which has a mature fraud literature and
-an unflattering benchmark: practitioner estimates put losses to
-attribution fraud around 8–15% of affiliate commission budgets.
+an unflattering benchmark: commonly quoted practitioner estimates put
+losses to attribution fraud around 8–15% of affiliate commission budgets.
+That figure is industry folklore rather than a measured result — useful
+as an order of magnitude, not as a calibration target.
 
 | Scheme | Analogue | What helps |
 | --- | --- | --- |
 | Hidden widget in bought ad inventory | cookie stuffing | **The serious one.** Cheap ad slots, widget in a 1×1 iframe, points farmed from readers who never consented — and if a visitor is in a censored country we have conscripted the person we exist to protect. Require visibility and consent; the freeze watchdog already reports `hidden`, `sharing` and visibility state. |
 | Headless browser fleets | self-referral | Origin binding raises the cost to owning a domain; then per-origin ceilings against an independent traffic baseline, plus anomaly detection on session-length distribution. |
-| Crediting a rival's team | attribution fraud | Origin binding is the entire defence, which is why it precedes any public board. |
+| Crediting a rival's team | attribution fraud | Origin binding stops it from a web page, which is why it precedes any public board; a custom client forging `Origin` falls to the ceilings and anomaly detection above. |
 | Claiming work never done | fake leads | Already structurally prevented — the egress measures, the client never reports a total. Never accept a client-supplied score. |
 | Farming, then cashing out | coupon abuse | Borrow F@h's shape: the Quick Return Bonus requires a passkey, ≥10 returned work units and an 80% completion rate. Gate bonuses and public standing on a clean history. |
 
 ## Suggested order of work
 
-The first three steps deliver something useful and cannot hurt anyone.
-Only the fourth carries a threat-model cost, and by then we will know
+The first three steps deliver something useful and carry no public
+exposure. Only the fourth carries a threat-model cost, and by then we will know
 whether the rest works.
 
-1. **Team ID on the wire, against a bounded registry.** A fifth
-   subprotocol element, validated as freeze `kind` is validated. Logged,
-   never a metric label. No UI, no scores.
+1. **Team ID on the wire, against a bounded registry.** A tagged
+   subprotocol element, validated as freeze `kind` is validated, rolled
+   out egress-first because today's parser rejects any arity but three or
+   four. Logged, never a metric label. No UI, no scores.
 2. **Capture and bind the origin.** Record `Origin` on the upgrade,
-   verify domain control once per team, accept a team claim only from a
-   bound origin. Closes a TODO that predates this idea.
+   verify domain control per team, accept a team claim only from a
+   bound origin. Bindings need revocation and periodic re-verification
+   from the start, so a sold or compromised domain stops carrying the old
+   team's credit. Closes a TODO that predates this idea.
 3. **Private per-team dashboard.** A publisher sees their own
-   contribution. Most of the motivational value of a leaderboard is
+   contribution, behind the same domain-control proof that bound the
+   team. Most of the motivational value of a leaderboard is
    watching your own number move, and this step risks nothing.
 4. **Opt-in public board** — seasonal, banded, bracketed by size. Small
    leagues of comparable teams rather than one global list, which is the
