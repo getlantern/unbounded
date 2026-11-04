@@ -77,31 +77,34 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, input
 			}
 
+			// A consumer with a mapped address can be reached on it without STUN, so for it the
+			// STUN list is best-effort: if it can't be fetched, this attempt goes ahead on the mapped
+			// address alone.
+			mapped := iceNetOf(options).mapped()
+
 			// Populate the STUN cache if necessary
 			if scache.size() == 0 {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 				if err != nil {
-					slog.Debug("Error creating STUN batch", "error", err)
-					return 0, []interface{}{}
+					slog.Debug("Error creating STUN batch", "error", err, "mapped", mapped)
+					if !mapped {
+						return 0, []interface{}{}
+					}
+				} else {
+					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
+					slog.Debug("Populated the STUN cache", "servers", scache.size())
 				}
-
-				scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
-				slog.Debug("Populated the STUN cache", "servers", scache.size())
 			}
 
-			STUNSrvs := scache.cohort()
-			slog.Debug("Using STUN servers", "count", len(STUNSrvs), "batch_size", options.STUNBatchSize, "servers", STUNSrvs)
-			slog.Debug("STUN cache size", "size", scache.size())
-
-			config := webrtc.Configuration{
-				ICEServers: []webrtc.ICEServer{
-					{
-						URLs: STUNSrvs,
-					},
-				},
+			config := webrtc.Configuration{}
+			if scache.size() > 0 {
+				STUNSrvs := scache.cohort()
+				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "batch_size", options.STUNBatchSize, "servers", STUNSrvs)
+				slog.Debug("STUN cache size", "size", scache.size())
+				config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
 			}
 
-			api, err := newWebRTCAPI(options.Net, options.Tuning.checkingFor(options.NATFailTimeout))
+			api, err := newWebRTCAPI(iceNetOf(options), options.Tuning.checkingFor(options.NATFailTimeout))
 			if err != nil {
 				slog.Debug("Error creating WebRTC API", "error", err)
 				return 0, []any{}
@@ -454,15 +457,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
-			// We don't want to bother signaling those, so here's our escape hatch.
-			var hasNonHostCandidate bool
-			for _, c := range candidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					hasNonHostCandidate = true
-				}
-			}
-
-			if !hasNonHostCandidate {
+			// We don't want to bother signaling those, so here's our escape hatch. A host candidate
+			// on our mapped address is reachable, so it's enough on its own.
+			if !reachableCandidates(candidates, iceNetOf(options)) {
 				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 				scache.drop()
 				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")

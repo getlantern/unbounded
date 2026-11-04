@@ -6,15 +6,15 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-func producerNetOf(options *WebRTCOptions) producerNet {
-	return producerNet{net: options.Net, mux: options.ICEUDPMux, externalIP: options.ICEUDPMuxExternalIP}
+func iceNetOf(options *WebRTCOptions) iceNet {
+	return iceNet{net: options.Net, mux: options.ICEUDPMux, externalIP: options.ICEUDPMuxExternalIP}
 }
 
-// applyProducerNet gives the producer's SettingEngine the caller's transport,
-// UDP mux and the mux's external address, and reports whether it set any. A
-// zero producerNet keeps pion's defaults, which is what every release before
-// these options used.
-func applyProducerNet(se *webrtc.SettingEngine, pn producerNet) (bool, error) {
+// applyICENet gives a peer connection's SettingEngine the caller's
+// transport, UDP mux and the mux's external address, and reports whether it
+// set any. A zero iceNet keeps pion's defaults, which is what every release
+// before these options used.
+func applyICENet(se *webrtc.SettingEngine, pn iceNet) (bool, error) {
 	set := false
 	if pn.net != nil {
 		se.SetNet(pn.net)
