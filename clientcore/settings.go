@@ -94,20 +94,22 @@ type WebRTCOptions struct {
 	// consumer and the producer. nil uses the host's network stack. Browser
 	// (wasm) builds ignore it: the WebRTC stack there is the browser's.
 	Net transport.Net
-	// ICEUDPMux, if set on a native producer, carries its host-candidate
-	// WebRTC traffic on one UDP socket, which a node can map on its router so
-	// consumers reach it directly. Without ICEUDPMuxExternalIP, pion still
-	// gathers STUN candidates on other sockets. pion tells sessions apart by ICE username,
-	// so every slot shares it. Build it on Net, or traffic through it escapes
-	// Net. The caller owns it and closes it once the producer has stopped.
-	// Browser builds ignore it.
+	// ICEUDPMux, if set on a native build, carries the consumer's or
+	// producer's host-candidate WebRTC traffic on one UDP socket, which a node
+	// can map on its router so the other side reaches it directly. pion tells
+	// sessions apart by ICE username, so every slot, consumer or producer,
+	// can share one. Server-reflexive candidates from STUN still use sockets
+	// of their own. Build it on Net, or traffic through it escapes Net. The
+	// caller owns it and closes it once the widget has stopped. Browser builds
+	// ignore it.
 	ICEUDPMux ice.UDPMux
 	// ICEUDPMuxExternalIP is the IPv4 address ICEUDPMux's port is reachable at
-	// from outside, through a router mapping that keeps the port. Set it only
-	// once the mapping has been verified from outside. The producer adds it as
-	// a host candidate on that port and then uses no STUN at all, so all of its
-	// traffic stays on the mapped port: without a working mapping it can't be
-	// reached. Ignored without ICEUDPMux.
+	// from outside, through a router mapping that keeps the port. The peer
+	// adds it as a host candidate on that port, alongside its usual
+	// candidates, and STUN becomes best-effort: if the STUN list or the STUN
+	// check fails, the peer still connects on the mapped address. A mapping
+	// that doesn't work costs only a candidate that never answers. Ignored
+	// without ICEUDPMux.
 	ICEUDPMuxExternalIP string
 	// CovertDTLS configures DTLS ClientHello fingerprint-resistance on the
 	// producer/widget side. See common/covertdtls and net4people/bbs#603
@@ -296,9 +298,12 @@ func NewDefaultBroflakeOptions() *BroflakeOptions {
 	}
 }
 
+var stunListClient = &http.Client{Timeout: 30 * time.Second}
+
 func DefaultSTUNBatchFunc(size uint32) (batch []string, err error) {
 	// Naive batch logic: at batch time, fetch a public list of servers and select N at random
-	res, err := http.Get("https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv4s.txt")
+	// Bounded, so a stalled download can't hold up a worker for good.
+	res, err := stunListClient.Get("https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv4s.txt")
 	if err != nil {
 		return batch, err
 	}

@@ -538,3 +538,23 @@ func TestSTUNPreflightBoundsABlockedListen(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A genesis accepted before any pass carried no report, so it leaves the failures for the next
+// pass to report.
+func TestPreflightReportKeepsFailuresUntilCarried(t *testing.T) {
+	var r preflightReport
+	r.record(STUNPreflightNoReply, "connected")
+	r.delivered()
+	r.record(STUNPreflightOK, "connected")
+	form := url.Values{}
+	r.addTo(form)
+	if got := form.Get(common.PrevPreflightFailuresField); got != "1" {
+		t.Fatalf("%s = %q after a delivery that carried nothing, want 1", common.PrevPreflightFailuresField, got)
+	}
+	if got := form.Get(common.PrevPreflightOutcomeField); got != STUNPreflightNoReply {
+		t.Fatalf("%s = %q after a delivery that carried nothing, want %s", common.PrevPreflightOutcomeField, got, STUNPreflightNoReply)
+	}
+	if got := form.Get(common.PrevPreflightVPNField); got != "connected" {
+		t.Fatalf("%s = %q after a delivery that carried nothing, want connected", common.PrevPreflightVPNField, got)
+	}
+}

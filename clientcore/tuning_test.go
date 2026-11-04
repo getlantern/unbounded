@@ -49,7 +49,7 @@ func TestWebRTCTuningEachFieldCounts(t *testing.T) {
 // Tuned consumer and producer peer connections must still connect to each other, so the
 // settings reach a real handshake rather than only a SettingEngine.
 func TestTunedPeersConnect(t *testing.T) {
-	api, err := newWebRTCAPI(nil, allTuning())
+	api, err := newWebRTCAPI(iceNet{}, allTuning())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestTunedPeersConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer consumer.Close()
-	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, allTuning(), producerNet{})
+	producer, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, allTuning(), iceNet{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,7 @@ func TestProducerNetOfIgnoresMappedOptionsInTheBrowser(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.ICEUDPMux = stubMux{}
 	o.ICEUDPMuxExternalIP = "203.0.113.9"
-	if pn := producerNetOf(o); pn.mapped() {
+	if pn := iceNetOf(o); pn.mapped() {
 		t.Fatal("a browser producer treated mapped-port options as mapped, so it would skip STUN")
 	}
 }

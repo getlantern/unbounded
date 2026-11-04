@@ -40,6 +40,13 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	var scache STUNCache
 	var preflight preflightState
 	var preflightRep preflightReport
+	// stunPausedUntil is when a producer with a mapped address next tries STUN after a failed
+	// STUN check, and listPausedUntil when it next fetches the STUN list after a failed fetch.
+	var stunPausedUntil, listPausedUntil time.Time
+	var listBackoff retryBackoff
+	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
+	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
+	var cohortDropped bool
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
@@ -50,22 +57,32 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// (no input data)
 			slog.Debug("Producer state 0, constructing RTCPeerConnection...")
 
-			// A producer with a mapped address is reached on it, so it uses no STUN
-			// at all: it doesn't need the STUN list, the STUN check or the
-			// server-reflexive candidates STUN would add, which pion gathers on
-			// fresh sockets off the mapped port.
+			// A producer with a mapped address is reached on it whatever STUN does, so for it STUN
+			// is best-effort: its server-reflexive candidates are another way in, but if the STUN
+			// list can't be fetched or the STUN check fails, it takes offers on its mapped address
+			// alone. After a failed check it skips STUN until the check's backoff ends, rather
+			// than wait out a failing check before every offer.
+			mapped := iceNetOf(options).mapped()
 			config := webrtc.Configuration{}
-			if !producerNetOf(options).mapped() {
+			useSTUN := false
+			cohortDropped = false
+			if !mapped || !preflightNow().Before(stunPausedUntil) {
 				// Populate the STUN cache if necessary
-				if scache.size() == 0 {
+				if scache.size() == 0 && (!mapped || !preflightNow().Before(listPausedUntil)) {
 					allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 					if err != nil {
-						slog.Debug("Error creating STUN batch", "error", err)
-						return 0, []interface{}{}
+						if !mapped {
+							slog.Debug("Error creating STUN batch", "error", err)
+							return 0, []interface{}{}
+						}
+						wait := listBackoff.failed()
+						listPausedUntil = preflightNow().Add(wait)
+						slog.Debug("Error creating STUN batch, going on with the mapped address alone", "error", err, "retry_in", wait)
+					} else {
+						listBackoff.reset()
+						scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
+						slog.Debug("Populated the STUN cache", "servers", scache.size())
 					}
-
-					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
-					slog.Debug("Populated the STUN cache", "servers", scache.size())
 				}
 
 				STUNSrvs := scache.cohort()
@@ -73,7 +90,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				slog.Debug("STUN cache size", "size", scache.size())
 
 				// Confirm the cohort answers before asking for an offer, rather than after taking one.
-				if preflight.due(preflightNow(), STUNSrvs) {
+				useSTUN = !mapped || len(STUNSrvs) > 0
+				if useSTUN && preflight.due(preflightNow(), STUNSrvs) {
 					res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
 					if options.OnSTUNPreflight != nil {
 						options.OnSTUNPreflight(res)
@@ -85,17 +103,30 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 						preflightRep.record(res.Outcome, vpnStatus(options))
 						scache.drop()
 						wait := preflight.failed()
-						slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait)
-						sleepOrDone(ctx, wait)
-						return 0, []interface{}{}
-					}
-					preflight.passed(preflightNow(), STUNSrvs)
-					if !res.Skipped {
-						preflightRep.record(res.Outcome, vpnStatus(options))
+						slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait, "mapped", mapped)
+						if !mapped {
+							sleepOrDone(ctx, wait)
+							return 0, []interface{}{}
+						}
+						stunPausedUntil = preflightNow().Add(wait)
+						useSTUN = false
+					} else {
+						preflight.passed(preflightNow(), STUNSrvs)
+						if !res.Skipped {
+							preflightRep.record(res.Outcome, vpnStatus(options))
+						}
 					}
 				}
 
-				config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
+				if useSTUN {
+					config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
+				}
+			}
+			if !useSTUN {
+				// An attempt without STUN has no pass to expire, so a pass left from an earlier
+				// attempt mustn't send it back here from state 2.
+				preflight.invalidate()
+				cohortDropped = true
 			}
 
 			// Producers are the answerers, which makes them the active peer in
@@ -103,7 +134,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), producerNetOf(options))
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), iceNetOf(options))
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -363,17 +394,24 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
-			// We don't want to bother signaling those, so here's our escape hatch.
-			if !reachableCandidates(localCandidates, producerNetOf(options)) {
-				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
-				last.record(common.OutcomeNoLocalSrflx, peerConnection)
-				scache.drop()
-				preflight.invalidate()
-				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
+			// don't want to bother signaling those, so here's our escape hatch.
+			if !hasNonHostCandidate(localCandidates) {
+				if !cohortDropped {
+					scache.drop()
+					preflight.invalidate()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				}
+				if !reachableCandidates(localCandidates, iceNetOf(options)) {
+					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+					last.record(common.OutcomeNoLocalSrflx, peerConnection)
 
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
+					// Borked!
+					peerConnection.Close() // TODO: there's an err we should handle here
+					return 0, []interface{}{}
+				}
+				slog.Debug("ICE gathered no non-host candidates, offering the mapped address alone")
 			}
 
 			// Our answer SDP with ICE candidates attached
@@ -441,8 +479,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// functioning coherently, nobody should be hanging up so hastily while their signaling partner
 				// is performing the ICE gathering step. Thus, dropping the cohort here is basically just
 				// voodoo, but it's probably harmless voodoo.
-				scache.drop()
-				slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				if !cohortDropped {
+					scache.drop()
+					slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				}
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -497,13 +537,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 
 			var remoteAddr net.IP
-			var remoteHasNonHostCandidate bool
 
 			// TODO: here we assume valid candidates, but we need to handle the invalid case too
 			for _, c := range iceMsg.(common.ICEMsg).Candidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					remoteHasNonHostCandidate = true
-				}
 
 				// XXX: webrtc.AddICECandidate accepts ICECandidateInit types, which are apparently
 				// just serialized ICECandidates?
@@ -519,16 +555,15 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// We extract an address from the remote ICE candidates just to send it to the UI for
 				// geolocation purposes. Under the assumption that any public address will suffice, we
 				// arbitrarily select the last public address found in the list of candidates
-				parsedIP := net.ParseIP(c.Address)
-				if parsedIP != nil && common.IsPublicAddr(parsedIP) {
-					remoteAddr = parsedIP
+				if isPublicIP(c.Address) {
+					remoteAddr = net.ParseIP(c.Address)
 				}
 			}
 
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
-			// us ICE candidates unless they contained at least one non-host type candidate. However, we
+			// us ICE candidates unless they contained at least one reachable candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
-			if !remoteHasNonHostCandidate {
+			if !remoteCandidatesReachable(iceMsg.(common.ICEMsg).Candidates) {
 				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
 				last.record(common.OutcomeConsumerHostOnly, peerConnection)
 				// Borked!
@@ -754,10 +789,21 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	})
 }
 
-// reachableCandidates reports whether a consumer outside the producer's LAN
-// could reach any of cands: a server-reflexive or relay candidate, or a host
-// candidate on the producer's mapped address.
-func reachableCandidates(cands []webrtc.ICECandidate, pn producerNet) bool {
+// hasNonHostCandidate reports whether any of cands is a server-reflexive or relay candidate,
+// which only a STUN or TURN server that answered could have given us.
+func hasNonHostCandidate(cands []webrtc.ICECandidate) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost {
+			return true
+		}
+	}
+	return false
+}
+
+// reachableCandidates reports whether a peer outside our LAN could reach any
+// of cands: a server-reflexive or relay candidate, or a host candidate on our
+// mapped address.
+func reachableCandidates(cands []webrtc.ICECandidate, pn iceNet) bool {
 	for _, c := range cands {
 		if c.Typ != webrtc.ICECandidateTypeHost || (pn.mapped() && c.Address == pn.externalIP) {
 			return true
@@ -766,28 +812,47 @@ func reachableCandidates(cands []webrtc.ICECandidate, pn producerNet) bool {
 	return false
 }
 
-// producerNet is how a native producer's peer connections reach the network;
+// remoteCandidatesReachable reports whether a producer could reach a consumer
+// at any of cands: a server-reflexive or relay candidate, or a host candidate
+// on a public address, which is how a consumer advertises a port mapped on its
+// router.
+func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost || isPublicIP(c.Address) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicIP reports whether addr is a public IP address.
+func isPublicIP(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && common.IsPublicAddr(ip)
+}
+
+// iceNet is how a native peer's connections reach the network;
 // see WebRTCOptions.Net, ICEUDPMux and ICEUDPMuxExternalIP. The zero value is
 // pion's default.
-type producerNet struct {
+type iceNet struct {
 	net        transport.Net
 	mux        ice.UDPMux
 	externalIP string
 }
 
-// mapped reports whether the producer advertises a mapped address of its own,
-// which consumers can reach whatever its STUN servers say.
-func (pn producerNet) mapped() bool {
+// mapped reports whether the peer advertises a mapped address of its own,
+// which the other side can reach whatever its STUN servers say.
+func (pn iceNet) mapped() bool {
 	return pn.mux != nil && pn.externalIP != ""
 }
 
 // newProducerPeerConnection builds a producer's peer connection. pn, on a
 // native build, is the transport, UDP mux and mapped address pion uses, so a
 // host can rate-limit, route or port-map a widget's WebRTC traffic.
-func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, pn producerNet) (*webrtc.PeerConnection, error) {
+func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, pn iceNet) (*webrtc.PeerConnection, error) {
 	se := webrtc.SettingEngine{}
 	tuned := tuning.apply(&se)
-	netSet, err := applyProducerNet(&se, pn)
+	netSet, err := applyICENet(&se, pn)
 	if err != nil {
 		return nil, err
 	}
