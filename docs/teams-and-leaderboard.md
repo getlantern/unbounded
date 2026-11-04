@@ -95,7 +95,13 @@ their domain.
 That stops the cheap attack — embedding the widget on your own site with
 a rival's `data-team` — but not a custom client, which can set `Origin`
 to anything. Origin binding raises the cost of sabotage from editing an
-attribute to writing a client. Past that there is no attribution proof:
+attribute to writing a client — or to framing the publisher's own page.
+A page that allows framing can be iframed, hidden or clickjacked, and its
+traffic still carries the publisher's genuine `Origin`; the freeze
+watchdog's `document.visibilityState` says the tab is visible, not that
+the widget is. Bound teams therefore need `frame-ancestors` set on the
+pages that embed the widget, or the widget must refuse to run framed.
+Past that there is no attribution proof:
 per-origin ceilings and anomaly detection can limit how much a forged
 session counts, but they cannot say which publisher supplied it, and an
 attacker can still fill a rival's ceiling. This is an open risk, and it
