@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/covertdtls"
 )
 
@@ -377,5 +380,99 @@ func TestUnmappedConsumerNeedsSTUNList(t *testing.T) {
 	fsm := newConsumerWebRTCSlot(o, nil, newRoomPreference(time.Now), nil)
 	if next, _ := fsm.state[0](context.Background(), fsm.com, nil); next != 0 {
 		t.Fatalf("went to state %d, want 0", next)
+	}
+}
+
+// A producer accepts a consumer that offers only host candidates when one is
+// on a public address, as a consumer behind a mapped port does when its STUN
+// found nothing, and still turns away one with only private host candidates.
+func TestRemoteCandidatesReachable(t *testing.T) {
+	lan := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Address: "192.168.1.10"}
+	mapped := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Address: "203.0.113.9"}
+	srflx := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Address: "198.51.100.1"}
+	mdns := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Address: "f3a1.local"}
+	for _, tc := range []struct {
+		cands []webrtc.ICECandidate
+		want  bool
+	}{
+		{nil, false},
+		{[]webrtc.ICECandidate{lan}, false},
+		{[]webrtc.ICECandidate{lan, mdns}, false},
+		{[]webrtc.ICECandidate{lan, srflx}, true},
+		{[]webrtc.ICECandidate{lan, mapped}, true},
+	} {
+		if got := remoteCandidatesReachable(tc.cands); got != tc.want {
+			t.Errorf("remoteCandidatesReachable(%v) = %v, want %v", tc.cands, got, tc.want)
+		}
+	}
+}
+
+// A mapped producer running without STUN drops a pass left from an earlier
+// attempt, so the pass expiring can't send every later attempt back to state 0
+// before it offers itself.
+func TestMappedProducerWithoutSTUNDropsOldPass(t *testing.T) {
+	server := stunServer(t, answer)
+	o := mappedOptions(t)
+	listUp := true
+	o.STUNBatch = func(uint32) ([]string, error) {
+		if listUp {
+			return []string{server}, nil
+		}
+		return nil, errors.New("STUN list unavailable")
+	}
+	now := time.Now()
+	preflightNow = func() time.Time { return now }
+	t.Cleanup(func() { preflightNow = time.Now })
+
+	// Freddie turns the producer's answer away, as when the consumer hung up,
+	// which drops the producer's only STUN server from its cache.
+	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(freddie.Close)
+	o.DiscoverySrv = freddie.URL
+
+	fsm := NewProducerWebRTC(o, nil)
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("first attempt went to state %d, want 1", next)
+	}
+	consumer, _ := newTestPeerConnection(t)
+	offer, err := consumer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	if next, _ := fsm.state[3](context.Background(), fsm.com, []interface{}{
+		pc,
+		"reply-to",
+		common.OfferMsg{SDP: *consumer.LocalDescription()},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	}); next != 0 {
+		t.Fatalf("state 3 went to state %d after a 404, want 0", next)
+	}
+
+	// The list is now down, so the next attempt runs on the mapped address alone.
+	listUp = false
+	next, pc = producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("second attempt went to state %d, want 1", next)
+	}
+	if servers := pc.GetConfiguration().ICEServers; len(servers) != 0 {
+		t.Fatalf("second attempt has ICE servers %v, want none", servers)
+	}
+	now = now.Add(stunPreflightValidFor + time.Second)
+	if next, _ := fsm.state[2](context.Background(), fsm.com, []interface{}{
+		pc,
+		common.PathAssertion{},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	}); next == 0 {
+		t.Fatal("state 2 went back to state 0 on a pass from an attempt that used STUN")
 	}
 }

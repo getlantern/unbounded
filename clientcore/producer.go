@@ -60,6 +60,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// than wait out a failing check before every offer.
 			mapped := iceNetOf(options).mapped()
 			config := webrtc.Configuration{}
+			useSTUN := false
 			if !mapped || !preflightNow().Before(stunPausedUntil) {
 				// Populate the STUN cache if necessary
 				if scache.size() == 0 {
@@ -80,7 +81,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				slog.Debug("STUN cache size", "size", scache.size())
 
 				// Confirm the cohort answers before asking for an offer, rather than after taking one.
-				useSTUN := !mapped || len(STUNSrvs) > 0
+				useSTUN = !mapped || len(STUNSrvs) > 0
 				if useSTUN && preflight.due(preflightNow(), STUNSrvs) {
 					res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
 					if options.OnSTUNPreflight != nil {
@@ -111,6 +112,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				if useSTUN {
 					config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
 				}
+			}
+			if !useSTUN {
+				// An attempt without STUN has no pass to expire, so a pass left from an earlier
+				// attempt mustn't send it back here from state 2.
+				preflight.invalidate()
 			}
 
 			// Producers are the answerers, which makes them the active peer in
@@ -512,13 +518,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 
 			var remoteAddr net.IP
-			var remoteHasNonHostCandidate bool
 
 			// TODO: here we assume valid candidates, but we need to handle the invalid case too
 			for _, c := range iceMsg.(common.ICEMsg).Candidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					remoteHasNonHostCandidate = true
-				}
 
 				// XXX: webrtc.AddICECandidate accepts ICECandidateInit types, which are apparently
 				// just serialized ICECandidates?
@@ -534,16 +536,15 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// We extract an address from the remote ICE candidates just to send it to the UI for
 				// geolocation purposes. Under the assumption that any public address will suffice, we
 				// arbitrarily select the last public address found in the list of candidates
-				parsedIP := net.ParseIP(c.Address)
-				if parsedIP != nil && common.IsPublicAddr(parsedIP) {
-					remoteAddr = parsedIP
+				if isPublicIP(c.Address) {
+					remoteAddr = net.ParseIP(c.Address)
 				}
 			}
 
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
-			// us ICE candidates unless they contained at least one non-host type candidate. However, we
+			// us ICE candidates unless they contained at least one reachable candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
-			if !remoteHasNonHostCandidate {
+			if !remoteCandidatesReachable(iceMsg.(common.ICEMsg).Candidates) {
 				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
 				last.record(common.OutcomeConsumerHostOnly, peerConnection)
 				// Borked!
@@ -779,6 +780,25 @@ func reachableCandidates(cands []webrtc.ICECandidate, pn iceNet) bool {
 		}
 	}
 	return false
+}
+
+// remoteCandidatesReachable reports whether a producer could reach a consumer
+// at any of cands: a server-reflexive or relay candidate, or a host candidate
+// on a public address, which is how a consumer advertises a port mapped on its
+// router.
+func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost || isPublicIP(c.Address) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicIP reports whether addr is a public IP address.
+func isPublicIP(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && common.IsPublicAddr(ip)
 }
 
 // iceNet is how a native peer's connections reach the network;

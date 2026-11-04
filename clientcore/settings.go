@@ -298,9 +298,12 @@ func NewDefaultBroflakeOptions() *BroflakeOptions {
 	}
 }
 
+var stunListClient = &http.Client{Timeout: 30 * time.Second}
+
 func DefaultSTUNBatchFunc(size uint32) (batch []string, err error) {
 	// Naive batch logic: at batch time, fetch a public list of servers and select N at random
-	res, err := http.Get("https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv4s.txt")
+	// Bounded, so a stalled download can't hold up a worker for good.
+	res, err := stunListClient.Get("https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv4s.txt")
 	if err != nil {
 		return batch, err
 	}
