@@ -78,6 +78,21 @@ func (p *preflightState) failed() time.Duration {
 	return p.backoff
 }
 
+// retryBackoff is how long to wait before retrying something that keeps failing: doubling with
+// each failure in a row, within the preflight's bounds.
+type retryBackoff struct {
+	wait time.Duration
+}
+
+func (b *retryBackoff) failed() time.Duration {
+	b.wait = min(max(2*b.wait, stunPreflightMinBackoff), stunPreflightMaxBackoff)
+	return b.wait
+}
+
+func (b *retryBackoff) reset() {
+	b.wait = 0
+}
+
 // invalidate makes the next attempt run a preflight.
 func (p *preflightState) invalidate() {
 	p.verifiedAt = time.Time{}

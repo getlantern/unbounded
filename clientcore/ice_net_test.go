@@ -4,6 +4,7 @@ package clientcore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
+	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v5"
 	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
@@ -474,5 +476,232 @@ func TestMappedProducerWithoutSTUNDropsOldPass(t *testing.T) {
 		make(chan struct{}, 1),
 	}); next == 0 {
 		t.Fatal("state 2 went back to state 0 on a pass from an attempt that used STUN")
+	}
+}
+
+// switchableSTUN is a local STUN server that answers only while up is true.
+func switchableSTUN(t *testing.T) (string, *atomic.Bool) {
+	t.Helper()
+	up := &atomic.Bool{}
+	up.Store(true)
+	return stunServer(t, func(req *stun.Message, from *net.UDPAddr) *stun.Message {
+		if !up.Load() {
+			return nil
+		}
+		return answer(req, from)
+	}), up
+}
+
+// signalBody is Freddie's reply carrying msg as a signal message of type typ.
+func signalBody(t *testing.T, typ common.SignalMsgType, msg any) []byte {
+	t.Helper()
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(common.SignalMsg{ReplyTo: "peer", Type: typ, Payload: string(payload)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// mappedProducerSTUNFailsWhileGathering runs a mapped producer whose STUN cohort passes its
+// check in state 0 but stops answering before state 3 gathers, against a Freddie that answers
+// the producer's answer with status, and returns the state 3 went to, the producer's worker, and
+// the server the first attempt used.
+func mappedProducerSTUNFailsWhileGathering(t *testing.T, status int) (int, *WorkerFSM, string, *atomic.Int32) {
+	t.Helper()
+	a, aUp := switchableSTUN(t)
+	b, bUp := switchableSTUN(t)
+	up := map[string]*atomic.Bool{a: aUp, b: bUp}
+	o := mappedOptions(t)
+	o.STUNBatchSize = 1
+	var fetches atomic.Int32
+	o.STUNBatch = func(uint32) ([]string, error) {
+		fetches.Add(1)
+		return []string{a, b}, nil
+	}
+	consumerICE := signalBody(t, common.SignalMsgICE, common.ICEMsg{
+		Candidates: []webrtc.ICECandidate{{
+			Foundation: "1", Priority: 1, Address: "198.51.100.7", Protocol: webrtc.ICEProtocolUDP,
+			Port: 4000, Typ: webrtc.ICECandidateTypeSrflx, Component: 1,
+		}},
+		ConsumerSessionID: "session",
+	})
+	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_, _ = w.Write(consumerICE)
+		}
+	}))
+	t.Cleanup(freddie.Close)
+	o.DiscoverySrv = freddie.URL
+
+	fsm := NewProducerWebRTC(o, nil)
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	servers := pc.GetConfiguration().ICEServers
+	if len(servers) != 1 || len(servers[0].URLs) != 1 {
+		t.Fatalf("ICE servers %v, want one", servers)
+	}
+	first := servers[0].URLs[0]
+	up[first].Store(false)
+
+	consumer, _ := newTestPeerConnection(t)
+	offer, err := consumer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	next, _ = fsm.state[3](context.Background(), fsm.com, []interface{}{
+		pc,
+		"reply-to",
+		common.OfferMsg{SDP: *consumer.LocalDescription()},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	})
+	return next, fsm, first, &fetches
+}
+
+// A mapped producer whose STUN finds nothing while gathering still answers, on its mapped
+// address.
+func TestMappedProducerAnswersWhenSTUNGathersNothing(t *testing.T) {
+	next, _, _, _ := mappedProducerSTUNFailsWhileGathering(t, http.StatusOK)
+	if next != 4 {
+		t.Fatalf("state 3 went to state %d, want 4", next)
+	}
+}
+
+// A mapped producer whose STUN finds nothing while gathering drops that cohort, and only that
+// one: the consumer hanging up afterwards doesn't drop the next, untried.
+func TestMappedProducerDropsOneCohortWhenSTUNGathersNothing(t *testing.T) {
+	next, fsm, first, fetches := mappedProducerSTUNFailsWhileGathering(t, http.StatusNotFound)
+	if next != 0 {
+		t.Fatalf("state 3 went to state %d after a 404, want 0", next)
+	}
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("next attempt went to state %d, want 1", next)
+	}
+	servers := pc.GetConfiguration().ICEServers
+	if len(servers) != 1 || len(servers[0].URLs) != 1 || servers[0].URLs[0] == first {
+		t.Errorf("next attempt's ICE servers %v, want the other server, not %s", servers, first)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("fetched the STUN list %d times, want 1", got)
+	}
+}
+
+// A mapped consumer whose STUN finds nothing still sends its candidates, with the mapped one
+// among them.
+func TestMappedConsumerOffersWhenSTUNGathersNothing(t *testing.T) {
+	o := mappedOptions(t)
+	o.ErrorBackoff = 10 * time.Millisecond
+	api, err := newWebRTCAPI(iceNetOf(o), WebRTCTuning{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { pc.Close() })
+	if _, err := pc.CreateDataChannel("data", nil); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { producer.Close() })
+	if err := producer.SetRemoteDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	ans, err := producer.CreateAnswer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := signalBody(t, common.SignalMsgAnswer, ans)
+	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(freddie.Close)
+	o.DiscoverySrv = freddie.URL
+
+	fsm := newConsumerWebRTCSlot(o, nil, newRoomPreference(time.Now), nil)
+	next, out := fsm.state[2](context.Background(), fsm.com, []interface{}{
+		pc,
+		"reply-to",
+		offer,
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	})
+	if next != 3 {
+		t.Fatalf("state 2 went to state %d, want 3", next)
+	}
+	var mapped bool
+	for _, c := range out[2].([]webrtc.ICECandidate) {
+		if c.Typ == webrtc.ICECandidateTypeHost && c.Address == "203.0.113.9" {
+			mapped = true
+		}
+	}
+	if !mapped {
+		t.Errorf("no mapped host candidate among %v", out[2])
+	}
+}
+
+// A mapped peer whose STUN list can't be fetched doesn't fetch it again on every attempt: it
+// waits out a backoff first, as a failed STUN check makes it wait.
+func TestMappedPeersBackOffAFailedSTUNList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		fsm  func(*WebRTCOptions) *WorkerFSM
+	}{
+		{"producer", func(o *WebRTCOptions) *WorkerFSM { return NewProducerWebRTC(o, nil) }},
+		{"consumer", func(o *WebRTCOptions) *WorkerFSM {
+			return newConsumerWebRTCSlot(o, nil, newRoomPreference(time.Now), nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := mappedOptions(t)
+			var fetches atomic.Int32
+			o.STUNBatch = func(uint32) ([]string, error) {
+				fetches.Add(1)
+				return nil, errors.New("STUN list unavailable")
+			}
+			now := time.Now()
+			preflightNow = func() time.Time { return now }
+			t.Cleanup(func() { preflightNow = time.Now })
+
+			fsm := tc.fsm(o)
+			for i, step := range []struct {
+				advance time.Duration
+				fetches int32
+			}{
+				{0, 1},
+				{stunPreflightMinBackoff - time.Second, 1},
+				{2 * time.Second, 2},
+			} {
+				now = now.Add(step.advance)
+				next, pc := producerState0(t, fsm)
+				if next != 1 || pc == nil {
+					t.Fatalf("attempt %d went to state %d, want 1", i, next)
+				}
+				if got := fetches.Load(); got != step.fetches {
+					t.Errorf("attempt %d: %d fetches so far, want %d", i, got, step.fetches)
+				}
+			}
+		})
 	}
 }

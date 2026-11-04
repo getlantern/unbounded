@@ -551,4 +551,10 @@ func TestPreflightReportKeepsFailuresUntilCarried(t *testing.T) {
 	if got := form.Get(common.PrevPreflightFailuresField); got != "1" {
 		t.Fatalf("%s = %q after a delivery that carried nothing, want 1", common.PrevPreflightFailuresField, got)
 	}
+	if got := form.Get(common.PrevPreflightOutcomeField); got != STUNPreflightNoReply {
+		t.Fatalf("%s = %q after a delivery that carried nothing, want %s", common.PrevPreflightOutcomeField, got, STUNPreflightNoReply)
+	}
+	if got := form.Get(common.PrevPreflightVPNField); got != "connected" {
+		t.Fatalf("%s = %q after a delivery that carried nothing, want connected", common.PrevPreflightVPNField, got)
+	}
 }

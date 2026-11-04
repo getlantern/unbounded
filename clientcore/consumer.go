@@ -56,6 +56,13 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 // disconnected when it ends.
 func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string)) *WorkerFSM {
 	var scache STUNCache
+	// listPausedUntil is when a consumer with a mapped address next fetches the STUN list after
+	// a failed fetch.
+	var listPausedUntil time.Time
+	var listBackoff retryBackoff
+	// cohortDropped is set once the current attempt has dropped its STUN cohort, so it drops
+	// one cohort at most, not also the next one, untried.
+	var cohortDropped bool
 	rooms.setRoomsOnly(options.ConsumerRoomsOnly)
 	// pairing is the helper pairing of the room genesis the current attempt
 	// answers, as Freddie stamped it, or "" for a pool genesis. State 1 sets
@@ -81,16 +88,21 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// STUN list is best-effort: if it can't be fetched, this attempt goes ahead on the mapped
 			// address alone.
 			mapped := iceNetOf(options).mapped()
+			cohortDropped = false
 
 			// Populate the STUN cache if necessary
-			if scache.size() == 0 {
+			if scache.size() == 0 && (!mapped || !preflightNow().Before(listPausedUntil)) {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 				if err != nil {
-					slog.Debug("Error creating STUN batch", "error", err, "mapped", mapped)
 					if !mapped {
+						slog.Debug("Error creating STUN batch", "error", err)
 						return 0, []interface{}{}
 					}
+					wait := listBackoff.failed()
+					listPausedUntil = preflightNow().Add(wait)
+					slog.Debug("Error creating STUN batch, going on with the mapped address alone", "error", err, "retry_in", wait)
 				} else {
+					listBackoff.reset()
 					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
 					slog.Debug("Populated the STUN cache", "servers", scache.size())
 				}
@@ -457,16 +469,20 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
-			// We don't want to bother signaling those, so here's our escape hatch. A host candidate
-			// on our mapped address is reachable, so it's enough on its own.
-			if !reachableCandidates(candidates, iceNetOf(options)) {
-				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
+			// don't want to bother signaling those, so here's our escape hatch.
+			if !hasNonHostCandidate(candidates) {
 				scache.drop()
+				cohortDropped = true
 				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				if !reachableCandidates(candidates, iceNetOf(options)) {
+					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
+					// Borked!
+					peerConnection.Close() // TODO: there's an err we should handle here
+					return 0, []interface{}{}
+				}
+				slog.Debug("ICE gathered no non-host candidates, offering the mapped address alone")
 			}
 
 			return 3, []interface{}{peerConnection, replyTo, candidates, connectionEstablished, connectionChange, connectionClosed, answerSDP}
@@ -554,8 +570,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				// functioning coherently, nobody should be hanging up so hastily while their signaling partner
 				// is performing the ICE gathering step. Thus, dropping the cohort here is basically just
 				// voodoo, but it's probably harmless voodoo.
-				scache.drop()
-				slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				if !cohortDropped {
+					scache.drop()
+					slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				}
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
