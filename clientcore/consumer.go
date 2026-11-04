@@ -60,8 +60,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// a failed fetch.
 	var listPausedUntil time.Time
 	var listBackoff retryBackoff
-	// cohortDropped is set once the current attempt has dropped its STUN cohort, so it drops
-	// one cohort at most, not also the next one, untried.
+	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
+	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
 	rooms.setRoomsOnly(options.ConsumerRoomsOnly)
 	// pairing is the helper pairing of the room genesis the current attempt
@@ -88,7 +88,6 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// STUN list is best-effort: if it can't be fetched, this attempt goes ahead on the mapped
 			// address alone.
 			mapped := iceNetOf(options).mapped()
-			cohortDropped = false
 
 			// Populate the STUN cache if necessary
 			if scache.size() == 0 && (!mapped || !preflightNow().Before(listPausedUntil)) {
@@ -109,6 +108,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			}
 
 			config := webrtc.Configuration{}
+			cohortDropped = scache.size() == 0
 			if scache.size() > 0 {
 				STUNSrvs := scache.cohort()
 				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "batch_size", options.STUNBatchSize, "servers", STUNSrvs)
@@ -472,9 +472,11 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
 			// don't want to bother signaling those, so here's our escape hatch.
 			if !hasNonHostCandidate(candidates) {
-				scache.drop()
-				cohortDropped = true
-				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				if !cohortDropped {
+					scache.drop()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				}
 				if !reachableCandidates(candidates, iceNetOf(options)) {
 					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 

@@ -44,8 +44,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	// STUN check, and listPausedUntil when it next fetches the STUN list after a failed fetch.
 	var stunPausedUntil, listPausedUntil time.Time
 	var listBackoff retryBackoff
-	// cohortDropped is set once the current attempt has dropped its STUN cohort, so it drops
-	// one cohort at most, not also the next one, untried.
+	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
+	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
@@ -126,6 +126,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// An attempt without STUN has no pass to expire, so a pass left from an earlier
 				// attempt mustn't send it back here from state 2.
 				preflight.invalidate()
+				cohortDropped = true
 			}
 
 			// Producers are the answerers, which makes them the active peer in
@@ -396,10 +397,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
 			// don't want to bother signaling those, so here's our escape hatch.
 			if !hasNonHostCandidate(localCandidates) {
-				scache.drop()
-				preflight.invalidate()
-				cohortDropped = true
-				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				if !cohortDropped {
+					scache.drop()
+					preflight.invalidate()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				}
 				if !reachableCandidates(localCandidates, iceNetOf(options)) {
 					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
 					last.record(common.OutcomeNoLocalSrflx, peerConnection)

@@ -705,3 +705,69 @@ func TestMappedPeersBackOffAFailedSTUNList(t *testing.T) {
 		})
 	}
 }
+
+// A mapped producer's attempts without STUN, after a failed check, drop no cohort: they never
+// tried one, so the next check still has the untried servers.
+func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
+	// Both servers stay silent, counting the requests they get.
+	var aHits, bHits atomic.Int32
+	counting := func(n *atomic.Int32) func(*stun.Message, *net.UDPAddr) *stun.Message {
+		return func(*stun.Message, *net.UDPAddr) *stun.Message { n.Add(1); return nil }
+	}
+	a, b := stunServer(t, counting(&aHits)), stunServer(t, counting(&bHits))
+	o := mappedOptions(t)
+	o.STUNBatchSize = 1
+	var fetches atomic.Int32
+	o.STUNBatch = func(uint32) ([]string, error) {
+		fetches.Add(1)
+		return []string{a, b}, nil
+	}
+	var checks atomic.Int32
+	o.OnSTUNPreflight = func(STUNPreflightResult) { checks.Add(1) }
+	freddie := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(freddie.Close)
+	o.DiscoverySrv = freddie.URL
+	now := time.Now()
+	preflightNow = func() time.Time { return now }
+	t.Cleanup(func() { preflightNow = time.Now })
+
+	fsm := NewProducerWebRTC(o, nil)
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil || checks.Load() != 1 {
+		t.Fatalf("first attempt went to state %d after %d checks, want 1 after 1", next, checks.Load())
+	}
+	if (aHits.Load() > 0) == (bHits.Load() > 0) {
+		t.Fatalf("first check reached a %d times and b %d times, want exactly one of them", aHits.Load(), bHits.Load())
+	}
+	consumer, _ := newTestPeerConnection(t)
+	offer, err := consumer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	if next, _ := fsm.state[3](context.Background(), fsm.com, []interface{}{
+		pc,
+		"reply-to",
+		common.OfferMsg{SDP: *consumer.LocalDescription()},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	}); next != 0 {
+		t.Fatalf("state 3 went to state %d after a 404, want 0", next)
+	}
+
+	now = now.Add(stunPreflightMinBackoff + time.Second)
+	if next, _ := producerState0(t, fsm); next != 1 {
+		t.Fatalf("attempt after the backoff went to state %d, want 1", next)
+	}
+	if checks.Load() != 2 || aHits.Load() == 0 || bHits.Load() == 0 {
+		t.Errorf("%d checks reached a %d times and b %d times, want 2 checks reaching both", checks.Load(), aHits.Load(), bHits.Load())
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("fetched the STUN list %d times, want 1", got)
+	}
+}
