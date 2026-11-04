@@ -284,10 +284,8 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	case "widget":
 		// Widget peers share connectivity over WebRTC
 		var cfsms []WorkerFSM
-		// With more than one slot, the first is a room slot (see newProducerWebRTC). A producer
-		// with only one keeps serving the pool with it.
 		for i := 0; i < bfOpt.CTableSize; i++ {
-			cfsms = append(cfsms, *newProducerWebRTC(rtcOpt, &wgReady, i == 0 && bfOpt.CTableSize > 1))
+			cfsms = append(cfsms, *newProducerWebRTC(rtcOpt, &wgReady, isRoomSlot(i, bfOpt.CTableSize)))
 		}
 		cTable = NewWorkerTable(cfsms)
 
@@ -340,4 +338,11 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	ui.OnReady()
 	ui.OnStartup()
 	return bfconn, ui, nil
+}
+
+// isRoomSlot reports whether slot i of a widget's size producer slots is a room slot (see
+// newProducerWebRTC). With more than one slot, the first is. A producer with only one keeps serving
+// the pool with it.
+func isRoomSlot(i, size int) bool {
+	return i == 0 && size > 1
 }

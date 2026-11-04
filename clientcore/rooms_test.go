@@ -200,8 +200,34 @@ func TestRoomSlotWorkerPostsRoomsOnlyGenesis(t *testing.T) {
 	if next != 1 {
 		t.Errorf("next state %d, want 1 (no offer)", next)
 	}
-	if got := <-sendTo; got != common.SignalSendToGenesisRooms {
-		t.Errorf("room slot posted to %q, want %q", got, common.SignalSendToGenesisRooms)
+	// The state posts synchronously, so its genesis is already here if it sent one.
+	select {
+	case got := <-sendTo:
+		if got != common.SignalSendToGenesisRooms {
+			t.Errorf("room slot posted to %q, want %q", got, common.SignalSendToGenesisRooms)
+		}
+	default:
+		t.Error("room slot posted no genesis")
+	}
+}
+
+// Only the first slot of a multi-slot widget is a room slot, so a one-slot widget keeps serving the
+// pool.
+func TestIsRoomSlot(t *testing.T) {
+	cases := []struct {
+		i, size int
+		want    bool
+	}{
+		{0, 1, false},
+		{0, 2, true},
+		{1, 2, false},
+		{0, 5, true},
+		{4, 5, false},
+	}
+	for _, c := range cases {
+		if got := isRoomSlot(c.i, c.size); got != c.want {
+			t.Errorf("isRoomSlot(%d, %d) = %v, want %v", c.i, c.size, got, c.want)
+		}
 	}
 }
 
