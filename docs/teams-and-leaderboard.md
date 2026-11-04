@@ -38,19 +38,25 @@ team. Nothing was built on top, because the field is not the hard part.
   country element needed.
 - **An embed API and a snippet generator.** The widget hydrates `data-*`
   attributes into `Settings` (`ui/src/constants/index.ts`,
-  `ui/src/index.tsx`), and there is already an editor that writes the
-  embed snippet. A `data-team` attribute needs no new surface.
+  `ui/src/index.tsx`), and the editor already rewrites the embed's
+  `dataset` in place. A `data-team` attribute reuses that path; it still
+  needs `team` added to `Settings` and `defaultSettings`, since hydration
+  only reads keys present there, and then passed through to the client.
 - **Server-side measurement.** The egress already counts per-session
   bytes (`broflake.session_ingress_bytes`) and per-country ingress.
   Points can be derived from what the egress observed, never from what a
-  client claimed — though today's counter is raw ingress, counted before
-  QUIC validates it, so it is a starting point rather than a score.
+  client claimed. Today's counters are diagnostics, not a ledger: the
+  per-session attribute rides on spans sampled at 1%, the per-country
+  observable resets each collection, and both count raw ingress before
+  QUIC validates it. Scoring needs an unsampled, durable per-team
+  aggregate of validated traffic.
 - **An unforgeable origin, currently unused.** Origin checking is off —
   `InsecureSkipVerify=true` in `egress/egresslib.go`, with a standing
-  TODO to add `OriginPattern`. The header is still on every upgrade
-  request and browsers do not let page JavaScript forge it. This is the
-  most useful item in the list — with the caveat that only a browser
-  enforces it; a non-browser client can send any `Origin` it likes.
+  TODO to add `OriginPattern`. Browsers send the header on every upgrade
+  and do not let page JavaScript forge it. This is the most useful item
+  in the list — with the caveat that only a browser enforces it; a
+  non-browser client can omit `Origin` or send any value it likes. A
+  connection with no `Origin` is unbound and earns no team credit.
 
 ### House constraint
 
