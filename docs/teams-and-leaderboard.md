@@ -94,7 +94,9 @@ into someone else's name.
 
 **Proposal:** treat `data-team` as a hint and accept it only when the
 request's `Origin` is one the registry has bound to that team. Domain
-control is proven once, by DNS TXT record or a file at a well-known path.
+control is proven by DNS TXT record or a file at a well-known path, and
+re-verified periodically; a revoked binding stops authorising credit
+immediately, including from any cached copy of the registry.
 Forging another team's credit from a web page then requires controlling
 their domain.
 
@@ -236,8 +238,10 @@ as an order of magnitude, not as a calibration target.
 ## Suggested order of work
 
 The first three steps deliver something useful and carry no public
-exposure. Only the fourth carries a threat-model cost, and by then we will know
-whether the rest works.
+exposure. Their risks are private ones — misattributed credit, a stale
+binding, a dashboard shown to the wrong person — and are covered by the
+registry and access rules above. The fourth is the one that puts a
+publisher on a list, and by then we will know whether the rest works.
 
 1. **Team ID on the wire, against a bounded registry.** A tagged
    subprotocol element, validated as freeze `kind` is validated, rolled
@@ -251,7 +255,8 @@ whether the rest works.
 3. **Private per-team dashboard.** A publisher sees their own
    contribution, behind the same domain-control proof that bound the
    team. Most of the motivational value of a leaderboard is
-   watching your own number move, and this step risks nothing.
+   watching your own number move, and this step exposes nothing
+   publicly.
 4. **Opt-in public board** — seasonal, banded, bracketed by size. Small
    leagues of comparable teams rather than one global list, which is the
    arrangement the trial found helps the bottom instead of demoralising
