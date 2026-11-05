@@ -38,6 +38,7 @@ const (
 	infoApprove       = "lantern-helper-invite-v1/approve"
 	infoVolunteerName = "lantern-helper-invite-v1/volunteer-name"
 	infoInviterName   = "lantern-helper-invite-v1/inviter-name"
+	infoPairing       = "lantern-helper-invite-v1/pairing"
 )
 
 var (
@@ -135,6 +136,10 @@ func VolunteerNameKey(s []byte) []byte { return derive(s, infoVolunteerName) }
 
 // InviterNameKey is K_i, which seals the inviter's name for the volunteer.
 func InviterNameKey(s []byte) []byte { return derive(s, infoInviterName) }
+
+// PairingKey is K_pair, the per-pairing key both apps keep after pairing to
+// seal reverse routes for each other. lantern-cloud never sees it.
+func PairingKey(s []byte) []byte { return derive(s, infoPairing) }
 
 // DeviceKey is the volunteer device's keypair for a 32-byte seed.
 func DeviceKey(seed []byte) (ed25519.PrivateKey, error) {
