@@ -48,6 +48,11 @@ func (r *netstateReporter) run(ctx context.Context) {
 			return
 		case <-r.wake:
 		}
+		// With a report pending when ctx ends, select can pick either case, so a wake after
+		// cancellation must not send another.
+		if ctx.Err() != nil {
+			return
+		}
 		r.mu.Lock()
 		consumers, pending := r.latest, r.pending
 		r.latest, r.pending = nil, false

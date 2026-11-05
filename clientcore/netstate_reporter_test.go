@@ -102,6 +102,39 @@ func TestNetstateReporterSendsTheLatest(t *testing.T) {
 	}
 }
 
+// A report pending when the context ends, while another is in flight, is never sent.
+func TestNetstateReporterDropsPendingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := make(chan struct{}, 4)
+	inFlight := make(chan struct{})
+	unblock := make(chan struct{})
+	r := &netstateReporter{netstated: "http://netstated.invalid", tag: "t", wake: make(chan struct{}, 1),
+		exec: func(string, *netstatecl.Instruction) error {
+			calls <- struct{}{}
+			if len(calls) == 1 {
+				close(inFlight)
+				<-unblock
+			}
+			return nil
+		}}
+	done := make(chan struct{})
+	go func() { r.run(ctx); close(done) }()
+
+	r.report([][]string{{"192.0.2.1", "t", "0"}})
+	<-inFlight
+	r.report([][]string{{"192.0.2.2", "t", "0"}})
+	cancel()
+	close(unblock)
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the reporter didn't stop")
+	}
+	if n := len(calls); n != 1 {
+		t.Fatalf("sent %d reports, want only the one in flight", n)
+	}
+}
+
 // The reporter stops with its context and sends nothing after.
 func TestNetstateReporterStopsWithContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
