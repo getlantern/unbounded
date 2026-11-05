@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 )
 
 var instanceID = uuid.NewString()
+
+// client bounds each report, so a netstated that accepts a request and never answers can't hold
+// a reporter, or a volunteer stopping, for long.
+var client = &http.Client{Timeout: 10 * time.Second}
 
 type operation int
 
@@ -52,7 +57,7 @@ func Exec(netstated string, inst *Instruction) error {
 		return err
 	}
 
-	res, err := http.Post(netstated, "application/json; charset=UTF-8", bytes.NewBuffer(serialized))
+	res, err := client.Post(netstated, "application/json; charset=UTF-8", bytes.NewBuffer(serialized))
 	if err != nil {
 		return err
 	}

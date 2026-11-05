@@ -3,7 +3,6 @@ package clientcore
 
 import (
 	"context"
-	"log/slog"
 	"net"
 	"strconv"
 	"sync"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/getlantern/broflake/common"
-	netstatecl "github.com/getlantern/broflake/netstate/client"
 )
 
 const (
@@ -127,6 +125,11 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 	// deliverMu orders batch delivery against connection changes, so bytes relayed for a
 	// worker slot are never delivered after that slot's next consumer has connected
 	var deliverMu sync.Mutex
+	// This handler runs on the forwarding path, so netstated is reported to from elsewhere.
+	var reporter *netstateReporter
+	if netstated != "" {
+		reporter = newNetstateReporter(ctx, netstated, tag)
+	}
 
 	flush := func() {
 		deliverMu.Lock()
@@ -191,25 +194,8 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 			// Update our cumulative local state for all connected consumers
 			connectedConsumers.set(msg.Wid, ci)
 
-			if netstated != "" {
-				// Encode our cumulative local state as a netstate instruction
-				args := connectedConsumers.slice()
-
-				inst := &netstatecl.Instruction{
-					Op:   netstatecl.OpConsumerState,
-					Args: netstatecl.EncodeArgsOpConsumerState(args),
-					Tag:  tag,
-				}
-
-				// Send it to netstated!
-				err := netstatecl.Exec(
-					netstated,
-					inst,
-				)
-
-				if err != nil {
-					slog.Debug("Netstate client Exec error", "error", err)
-				}
+			if reporter != nil {
+				reporter.report(connectedConsumers.slice())
 			}
 		}
 	}
