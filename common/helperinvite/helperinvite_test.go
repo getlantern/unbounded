@@ -161,6 +161,26 @@ func TestNamesSealUnderTheirOwnKeyOnly(t *testing.T) {
 	}
 }
 
+func TestPairingKey(t *testing.T) {
+	s := bytes.Repeat([]byte{7}, SecretLen)
+	k := PairingKey(s)
+	if len(k) != 32 {
+		t.Fatalf("len = %d", len(k))
+	}
+	want := expand(s, "lantern-helper-invite-v1/pairing")
+	if !bytes.Equal(k, want) {
+		t.Fatal("PairingKey does not use the pairing label")
+	}
+	for _, other := range [][]byte{DeriveKey(s), InviterNameKey(s), VolunteerNameKey(s), ApprovalKey(s).Seed()} {
+		if bytes.Equal(k, other) {
+			t.Fatal("PairingKey collides with another derived key")
+		}
+	}
+	if PairingKey(s[:31]) != nil {
+		t.Fatal("short secret must give nil")
+	}
+}
+
 func TestCleanName(t *testing.T) {
 	for _, bad := range []string{"", "   ", "a\x00b", "line\nbreak", strings.Repeat("a", MaxNameBytes+1), string([]byte{0xff}),
 		"\u202eilA", "Al\u200bi", "\ufeffAli", "A\u2066li", "A\u00adli", "A\u2060li", "A\u061cli",
@@ -283,6 +303,7 @@ func TestSecretLenEnforced(t *testing.T) {
 		eq(t, 0, len(Approve(s, pub)), "Approve")
 		eq(t, 0, len(VolunteerNameKey(s)), "VolunteerNameKey")
 		eq(t, 0, len(InviterNameKey(s)), "InviterNameKey")
+		eq(t, 0, len(PairingKey(s)), "PairingKey")
 	}
 	eq(t, "", MatchingCode(make([]byte, 31), make([]byte, 32)), "MatchingCode short key")
 	eq(t, "", MatchingCode(make([]byte, 32), make([]byte, 31)), "MatchingCode short volunteer key")
