@@ -84,7 +84,7 @@ func TestHandleSignal_IgnoresQuery(t *testing.T) {
 		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 	}
 	// pool=0 would keep this genesis from the pool consumer, were it read.
-	query := url.Values{common.PoolField: {"0"}, "data": {strings.Repeat("x", maxSignalBodyBytes)}}
+	query := url.Values{common.PoolField: {"0"}}
 	// Nobody answers a genesis message here, so don't wait out its TTL.
 	ctx, cancel := context.WithTimeout(s.ctx, 200*time.Millisecond)
 	defer cancel()

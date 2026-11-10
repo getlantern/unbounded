@@ -777,8 +777,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 
 	// Clients send every signaling field in the form-encoded body. ParseForm would also merge in
 	// the query, which MaxBytesReader doesn't bound, so ignore it. It is ignored, not refused,
-	// because a fronting CDN or other intermediary may add a query of its own.
-	r.URL.RawQuery = ""
+	// because a fronting CDN or other intermediary may add a query of its own. The request and URL
+	// are copied so the caller's stay intact for anything else that reads them.
+	bodyOnly, u := *r, *r.URL
+	u.RawQuery = ""
+	bodyOnly.URL = &u
+	r = &bodyOnly
 	r.Body = http.MaxBytesReader(w, r.Body, maxSignalBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		span.SetStatus(codes.Error, "failed to parse form")
