@@ -544,8 +544,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			if iceMsg.Candidates, err = filterRemoteCandidates(iceMsg.Candidates); err != nil {
-				slog.Debug("Rejecting signaling partner's ICE candidates", "error", err)
+			sent := len(iceMsg.Candidates)
+			if iceMsg.Candidates, err = filterRemoteCandidates(iceMsg.Candidates); err != nil || (sent > 0 && len(iceMsg.Candidates) == 0) {
+				// A list the filter emptied is bad ICE, not a host-only consumer.
+				slog.Debug("Rejecting signaling partner's ICE candidates", "error", err, "sent", sent)
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -852,17 +854,19 @@ func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
 // stops a peer from making a volunteer process, and send connectivity checks to, a huge list.
 const maxRemoteCandidates = 64
 
-// filterRemoteCandidates returns the consumer's candidates pion should be asked to check. It
-// rejects a list that is too long, or has a candidate with a bad port or protocol, or an address
-// that is neither an IP nor an mDNS name. It drops, without rejecting the list, a candidate on an
-// address no remote peer can be at (loopback, link-local, unspecified or multicast), which would
-// only aim the volunteer's checks at its own host and link. Duplicates are left to pion, which
-// skips a remote candidate equal to one it already has.
+// filterRemoteCandidates returns the consumer's candidates pion should be asked to check, filtered
+// in place. It rejects a list that is too long, or has a candidate with a bad port or protocol, or
+// an address that is neither an IP nor an mDNS name. It drops, without rejecting the list, a
+// candidate no remote peer can be at: an mDNS name, which pion would resolve on the volunteer's own
+// link (our consumers gather raw IPs, never mDNS), or a loopback, link-local, unspecified,
+// "this network", multicast or broadcast address. Those would only aim the volunteer's checks at
+// its own host and link. Duplicates are left to pion, which skips a remote candidate equal to one
+// it already has.
 func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate, error) {
 	if len(cands) > maxRemoteCandidates {
 		return nil, fmt.Errorf("%d candidates exceeds the limit of %d", len(cands), maxRemoteCandidates)
 	}
-	kept := make([]webrtc.ICECandidate, 0, len(cands))
+	kept := cands[:0]
 	for _, c := range cands {
 		if c.Port == 0 {
 			return nil, fmt.Errorf("candidate %v has port 0", c.Address)
@@ -875,12 +879,25 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 			if !strings.HasSuffix(c.Address, ".local") {
 				return nil, fmt.Errorf("candidate address %q is not an IP or mDNS name", c.Address)
 			}
-		} else if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			continue
+		}
+		if !remotePeerAddr(ip) {
 			continue
 		}
 		kept = append(kept, c)
 	}
 	return kept, nil
+}
+
+// remotePeerAddr reports whether ip is an address a remote peer could be reached at.
+func remotePeerAddr(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil && (ip4[0] == 0 || ip4.Equal(net.IPv4bcast)) {
+		return false
+	}
+	return true
 }
 
 // isPublicIP reports whether addr is a public IP address.

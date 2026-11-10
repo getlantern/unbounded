@@ -774,6 +774,7 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 
 // A producer turns away a consumer's candidate list it should not hand pion: too many, or a
 // candidate with a bad port, protocol or address. It drops candidates no remote peer can be at.
+// Each case gets its own slice, since the filter works in place.
 func TestFilterRemoteCandidates(t *testing.T) {
 	ok := func(addr string, port uint16) webrtc.ICECandidate {
 		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port}
@@ -793,7 +794,7 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		valid bool
 		kept  int
 	}{
-		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("f3a1.local", 5001), ok("198.51.100.1", 5000)}, true, 3},
+		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("198.51.100.1", 5000)}, true, 2},
 		{"at the limit", many[:maxRemoteCandidates], true, maxRemoteCandidates},
 		{"over the limit", many, false, 0},
 		{"same endpoint, different related address", []webrtc.ICECandidate{a, b}, true, 2},
@@ -801,10 +802,11 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
-			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("224.0.0.1", 1), ok("198.51.100.1", 5000),
+			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
+			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
 		}, true, 1},
 	} {
-		kept, err := filterRemoteCandidates(tc.cands)
+		kept, err := filterRemoteCandidates(append([]webrtc.ICECandidate(nil), tc.cands...))
 		if (err == nil) != tc.valid {
 			t.Errorf("%s: filterRemoteCandidates error = %v, want valid %v", tc.name, err, tc.valid)
 		}
