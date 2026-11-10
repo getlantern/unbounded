@@ -70,9 +70,12 @@ func TestHandleSignal_RejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// ParseForm merges the query into the form, so an oversized query is refused like a body.
-func TestHandleSignal_RejectsOversizedQuery(t *testing.T) {
+// Freddie reads signaling fields only from the capped body, so a genesis sent in the query is
+// never broadcast, however large.
+func TestHandleSignal_IgnoresQueryFields(t *testing.T) {
 	s := startTestServer(t, nil)
+	pool := s.subscribe("", "")
+	s.waitForConsumers(1)
 	q := url.Values{
 		"data":    {strings.Repeat("x", maxSignalBodyBytes)},
 		"send-to": {common.SignalSendToGenesis},
@@ -88,7 +91,8 @@ func TestHandleSignal_RejectsOversizedQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	res.Body.Close()
-	if res.StatusCode == http.StatusOK {
-		t.Errorf("oversized query: status %d, want it refused", res.StatusCode)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("genesis in the query: status %d, want 400", res.StatusCode)
 	}
+	s.expect("pool", pool, false)
 }
