@@ -21,12 +21,15 @@ var deniedPrefixes = func() []netip.Prefix {
 		"198.51.100.0/24", // documentation
 		"203.0.113.0/24",  // documentation
 		"240.0.0.0/4",     // reserved, and broadcast
+		"::/96",           // IPv4-compatible (deprecated)
+		"::ffff:0:0:0/96", // IPv4-translated (SIIT)
 		"64:ff9b::/96",    // NAT64
 		"64:ff9b:1::/48",  // local-use NAT64
 		"100::/64",        // discard-only
 		"2001::/23",       // IETF protocol assignments, including Teredo
 		"2001:db8::/32",   // documentation
 		"2002::/16",       // 6to4
+		"fec0::/10",       // site-local (deprecated)
 	} {
 		ps = append(ps, netip.MustParsePrefix(s))
 	}

@@ -38,6 +38,9 @@ func TestAllowedDestination(t *testing.T) {
 		{"::ffff:169.254.169.254", false},
 		{"64:ff9b::a9fe:a9fe", false},
 		{"2002:a9fe:a9fe::1", false},
+		{"::a9fe:a9fe", false},
+		{"::ffff:0:a9fe:a9fe", false},
+		{"fec0::1", false},
 	} {
 		if got := AllowedDestination(netip.MustParseAddr(tc.addr)); got != tc.want {
 			t.Errorf("AllowedDestination(%v) = %v, want %v", tc.addr, got, tc.want)

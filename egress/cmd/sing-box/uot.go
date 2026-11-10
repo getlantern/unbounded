@@ -148,6 +148,13 @@ func readSocksAddr(r io.Reader) (*net.UDPAddr, error) {
 		if len(ips) == 0 {
 			return nil, fmt.Errorf("no IP addresses found for %s", host)
 		}
+		// Prefer an answer the egress may relay to, so a name with a private first answer
+		// (split-horizon, ULA) still reaches its public one.
+		for _, a := range ips {
+			if dst, ok := netip.AddrFromSlice(a.IP); ok && egress.AllowedDestination(dst) {
+				return &net.UDPAddr{IP: a.IP, Port: int(port)}, nil
+			}
+		}
 		return &net.UDPAddr{IP: ips[0].IP, Port: int(port)}, nil
 	}
 
