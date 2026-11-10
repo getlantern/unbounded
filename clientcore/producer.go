@@ -883,6 +883,9 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 		if c.Protocol != webrtc.ICEProtocolUDP && c.Protocol != webrtc.ICEProtocolTCP {
 			return nil, fmt.Errorf("candidate %v has unsupported protocol %v", c.Address, c.Protocol)
 		}
+		if err := checkCandidateFields(c); err != nil {
+			return nil, err
+		}
 		ip := net.ParseIP(c.Address)
 		if ip == nil {
 			if !strings.HasSuffix(c.Address, ".local") {
@@ -893,8 +896,8 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 		if !remotePeerAddr(ip) {
 			continue
 		}
-		// Only a kept candidate needs this: a dropped one never reaches pion.
-		if err := checkCandidateFields(c); err != nil {
+		// Only a kept candidate reaches pion, and an mDNS one can't be marshaled.
+		if err := checkCandidateRoundTrip(c); err != nil {
 			return nil, err
 		}
 		kept = append(kept, c)
@@ -902,20 +905,36 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 	return kept, nil
 }
 
-// checkCandidateFields returns an error unless c's free-form string fields are well-formed.
-// ToJSON writes them verbatim into the candidate line AddICECandidate parses, so a Foundation
-// holding spaces, say, could splice a different address and port into what pion connects to.
+// checkCandidateFields returns an error unless c has a type and its free-form string fields are
+// well-formed. ToJSON writes Foundation and a non-host RelatedAddress verbatim into the candidate
+// line AddICECandidate parses, so one holding spaces could splice in a different address and
+// port. A candidate with no type marshals to an empty line, which pion takes as end-of-candidates.
 func checkCandidateFields(c webrtc.ICECandidate) error {
+	if c.Typ == webrtc.ICECandidateTypeUnknown {
+		return fmt.Errorf("candidate %v has no type", c.Address)
+	}
 	if !iceFoundation(c.Foundation) {
 		return fmt.Errorf("candidate %v has a malformed foundation %q", c.Address, c.Foundation)
 	}
-	if c.RelatedAddress != "" && net.ParseIP(c.RelatedAddress) == nil {
+	if c.Typ != webrtc.ICECandidateTypeHost && c.RelatedAddress != "" && net.ParseIP(c.RelatedAddress) == nil {
 		return fmt.Errorf("candidate %v has a malformed related address %q", c.Address, c.RelatedAddress)
 	}
-	switch c.TCPType {
-	case "", "active", "passive", "so":
-	default:
-		return fmt.Errorf("candidate %v has a malformed TCP type %q", c.Address, c.TCPType)
+	return nil
+}
+
+// checkCandidateRoundTrip returns an error unless pion, parsing c the way AddICECandidate will
+// (from c.ToJSON()), connects to the address, port, protocol and type the filter checked. It
+// backs up checkCandidateFields against any field a later pion writes verbatim. Fields pion
+// normalizes or omits, such as TCP type or a related address with port 0, are not compared.
+func checkCandidateRoundTrip(c webrtc.ICECandidate) error {
+	parsed, err := ice.UnmarshalCandidate(c.ToJSON().Candidate)
+	if err != nil {
+		return fmt.Errorf("candidate %v does not parse: %w", c.Address, err)
+	}
+	if parsed.Address() != c.Address || parsed.Port() != int(c.Port) ||
+		parsed.NetworkType().NetworkShort() != c.Protocol.String() || parsed.Type().String() != c.Typ.String() {
+		return fmt.Errorf("candidate %v:%v %v %v parses as %v:%v %v %v", c.Address, c.Port, c.Protocol, c.Typ,
+			parsed.Address(), parsed.Port(), parsed.NetworkType().NetworkShort(), parsed.Type())
 	}
 	return nil
 }

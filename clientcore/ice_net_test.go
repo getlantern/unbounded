@@ -785,8 +785,19 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		switch field {
 		case "foundation":
 			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
-		case "tcptype":
-			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "active raddr 127.0.0.1 rport 22"
+		case "tcp":
+			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "passive"
+		case "untyped":
+			c.Typ = webrtc.ICECandidateTypeUnknown
+		case "f32":
+			c.Foundation = strings.Repeat("a", 32)
+		case "f33":
+			c.Foundation = strings.Repeat("a", 33)
+		case "host":
+			c.Typ, c.RelatedAddress, c.RelatedPort = webrtc.ICECandidateTypeHost, "", 0
+		case "dropped":
+			c.Address = "127.0.0.1"
+			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
 		case "raddr":
 			c.RelatedAddress = "0.0.0.0 rport 0 ufrag evil"
 		case "masked":
@@ -818,7 +829,12 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
 		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, false, 0},
-		{"fields spliced in via tcptype", []webrtc.ICECandidate{injected("tcptype")}, false, 0},
+		{"tcp candidate", []webrtc.ICECandidate{injected("tcp")}, true, 1},
+		{"no type", []webrtc.ICECandidate{injected("untyped")}, false, 0},
+		{"32-char foundation", []webrtc.ICECandidate{injected("f32")}, true, 1},
+		{"33-char foundation", []webrtc.ICECandidate{injected("f33")}, false, 0},
+		{"host without related address", []webrtc.ICECandidate{injected("host")}, true, 1},
+		{"spliced foundation on a dropped address", []webrtc.ICECandidate{injected("dropped"), ok("198.51.100.1", 5000)}, false, 0},
 		{"fields spliced in via related address", []webrtc.ICECandidate{injected("raddr")}, false, 0},
 		{"masked related address", []webrtc.ICECandidate{injected("masked")}, true, 1},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
