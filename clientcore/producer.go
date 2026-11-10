@@ -527,7 +527,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 
 			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
-			replyTo, decoded, err := common.DecodeSignalMsg(iceBytes)
+			_, decoded, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
 				slog.Debug("Error decoding signal message", "error", err, "msg", string(iceBytes))
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
