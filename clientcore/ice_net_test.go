@@ -798,12 +798,13 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"at the limit", many[:maxRemoteCandidates], true, maxRemoteCandidates},
 		{"over the limit", many, false, 0},
 		{"same endpoint, different related address", []webrtc.ICECandidate{a, b}, true, 2},
+		{"240/4 other than broadcast kept", []webrtc.ICECandidate{ok("240.1.2.3", 5000)}, true, 1},
 		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false, 0},
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
 			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
-			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
+			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("::ffff:255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
 		}, true, 1},
 	} {
 		before := append([]webrtc.ICECandidate(nil), tc.cands...)
