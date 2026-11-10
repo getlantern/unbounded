@@ -45,6 +45,8 @@ import (
 const (
 	ttl        = 5 * time.Minute  // How long do vertices live before we prune them?
 	pruneEvery = 30 * time.Second // How often do we sweep for expired vertices?
+
+	maxExecBodyBytes = 64 << 10 // One reporter's consumer list is a few hundred bytes
 )
 
 const (
@@ -363,7 +365,13 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	b, err := ioutil.ReadAll(r.Body)
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Write([]byte("405\n"))
+		return
+	}
+
+	b, err := ioutil.ReadAll(http.MaxBytesReader(w, r.Body, maxExecBodyBytes))
 	if err != nil {
 		slog.Debug("Error", "error", err)
 		w.WriteHeader(http.StatusBadRequest)
@@ -448,6 +456,9 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 		var newEdges []edge
 
 		for _, c := range consumers {
+			if len(c) != 3 {
+				continue
+			}
 			remoteAddr, remoteTag, workerIdx := c[0], c[1], c[2]
 
 			parsedIP := net.ParseIP(remoteAddr)
