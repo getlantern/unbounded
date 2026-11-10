@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -802,15 +803,46 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
 			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
-			ok("224.0.0.1", 1), ok("240.0.0.1", 1), ok("255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
+			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
 		}, true, 1},
 	} {
+		before := append([]webrtc.ICECandidate(nil), tc.cands...)
 		kept, err := filterRemoteCandidates(tc.cands)
+		if !reflect.DeepEqual(tc.cands, before) {
+			t.Errorf("%s: filterRemoteCandidates modified its input", tc.name)
+		}
 		if (err == nil) != tc.valid {
 			t.Errorf("%s: filterRemoteCandidates error = %v, want valid %v", tc.name, err, tc.valid)
 		}
 		if len(kept) != tc.kept {
 			t.Errorf("%s: kept %d candidates, want %d", tc.name, len(kept), tc.kept)
+		}
+	}
+}
+
+// A consumer left with no reachable candidate is host-only if it sent only host candidates, and
+// bad ICE if the filter dropped a non-host one, whether or not a host candidate survived.
+func TestUnreachableConsumerOutcome(t *testing.T) {
+	host := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Protocol: webrtc.ICEProtocolUDP, Address: "192.168.1.5", Port: 5000}
+	loopSrflx := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: "127.0.0.1", Port: 5000}
+	for _, tc := range []struct {
+		name string
+		sent []webrtc.ICECandidate
+		want string
+	}{
+		{"private host only", []webrtc.ICECandidate{host}, common.OutcomeConsumerHostOnly},
+		{"bogus srflx only", []webrtc.ICECandidate{loopSrflx}, common.OutcomeBadConsumerICE},
+		{"private host and bogus srflx", []webrtc.ICECandidate{host, loopSrflx}, common.OutcomeBadConsumerICE},
+	} {
+		kept, err := filterRemoteCandidates(tc.sent)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if remoteCandidatesReachable(kept) {
+			t.Fatalf("%s: kept %v is reachable", tc.name, kept)
+		}
+		if got := unreachableConsumerOutcome(tc.sent); got != tc.want {
+			t.Errorf("%s: outcome %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -551,19 +551,6 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
-			if len(sent) > 0 && len(iceMsg.Candidates) == 0 {
-				// The filter emptied the list. Only host candidates is host-only, as it was before
-				// filtering; a non-host candidate at an address no peer can be at is bad ICE.
-				outcome := common.OutcomeConsumerHostOnly
-				if hasNonHostCandidate(sent) {
-					outcome = common.OutcomeBadConsumerICE
-				}
-				slog.Debug("No usable ICE candidates from signaling partner", "sent", len(sent))
-				last.record(outcome, peerConnection)
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
 			if iceMsg.ConsumerSessionID == "" {
 				slog.Debug("Missing session ID from signaling partner, aborting!")
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
@@ -599,8 +586,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// us ICE candidates unless they contained at least one reachable candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
 			if !remoteCandidatesReachable(iceMsg.Candidates) {
-				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
-				last.record(common.OutcomeConsumerHostOnly, peerConnection)
+				slog.Debug("Signaling partner sent no reachable ICE candidates, aborting!", "sent", len(sent), "kept", len(iceMsg.Candidates))
+				last.record(unreachableConsumerOutcome(sent), peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -847,6 +834,17 @@ func reachableCandidates(cands []webrtc.ICECandidate, pn iceNet) bool {
 	return false
 }
 
+// unreachableConsumerOutcome is the outcome of a consumer none of whose candidates, after
+// filterRemoteCandidates, is reachable. sent is the list as the consumer sent it: if it was all
+// host candidates the consumer is host-only, as before filtering; if it had a non-host candidate
+// the filter dropped, at an address no peer can be at, its ICE was bad.
+func unreachableConsumerOutcome(sent []webrtc.ICECandidate) string {
+	if hasNonHostCandidate(sent) {
+		return common.OutcomeBadConsumerICE
+	}
+	return common.OutcomeConsumerHostOnly
+}
+
 // remoteCandidatesReachable reports whether a producer could reach a consumer
 // at any of cands: a server-reflexive or relay candidate, or a host candidate
 // on a public address, which is how a consumer advertises a port mapped on its
@@ -870,7 +868,7 @@ const maxRemoteCandidates = 64
 // an address that is neither an IP nor an mDNS name. It drops, without rejecting the list, a
 // candidate no remote peer can be at: an mDNS name, which pion would resolve on the volunteer's own
 // link (our consumers gather raw IPs, never mDNS), or a loopback, link-local, unspecified,
-// "this network", multicast, reserved or broadcast address. Those would only aim the volunteer's checks at
+// "this network", multicast or broadcast address. Those would only aim the volunteer's checks at
 // its own host and link. Duplicates are left to pion, which skips a remote candidate equal to one
 // it already has.
 func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate, error) {
@@ -905,8 +903,9 @@ func remotePeerAddr(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
 		return false
 	}
-	// 0.0.0.0/8 is "this network"; 240.0.0.0/4 is reserved, and holds broadcast.
-	if ip4 := ip.To4(); ip4 != nil && (ip4[0] == 0 || ip4[0] >= 240) {
+	// 0.0.0.0/8 is "this network". The rest of 240.0.0.0/4 is left alone: some networks number
+	// hosts there, and a peer on the same one could reach them.
+	if ip4 := ip.To4(); ip4 != nil && (ip4[0] == 0 || ip4.Equal(net.IPv4bcast)) {
 		return false
 	}
 	return true
