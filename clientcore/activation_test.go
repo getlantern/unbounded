@@ -1,6 +1,8 @@
 package clientcore
 
 import (
+	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -133,5 +135,39 @@ func TestJITEgressConsumer_SendsActivationID(t *testing.T) {
 	act.end()
 	if _, id := parse(dial()); id != "" {
 		t.Errorf("sent ID %q after the activation ended, want none", id)
+	}
+}
+
+func TestJITEgressConsumer_DialsWithItsHTTPClient(t *testing.T) {
+	reached := make(chan struct{}, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached <- struct{}{}
+		http.Error(w, "test", http.StatusForbidden)
+	}))
+	t.Cleanup(srv.Close)
+
+	// The egress name doesn't resolve, so only a dial through this client,
+	// which sends every connection to the test server, reaches it.
+	var dialer net.Dialer
+	client := &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+	}}
+	fsm := NewJITEgressConsumer(&EgressOptions{
+		Addr:           "ws://egress.invalid",
+		Endpoint:       "/ws",
+		ConnectTimeout: 5 * time.Second,
+		ErrorBackoff:   10 * time.Millisecond,
+		HTTPClient:     client,
+	}, &activation{}, nil)
+	fsm.Start()
+	t.Cleanup(fsm.Stop)
+
+	fsm.com.rx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{SessionID: "csid-1"}}
+	select {
+	case <-reached:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the egress dial didn't use EgressOptions.HTTPClient")
 	}
 }

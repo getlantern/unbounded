@@ -85,6 +85,7 @@ func NewJITEgressConsumer(options *EgressOptions, act *activation, wg *sync.Wait
 				Subprotocols: common.NewSubprotocolsRequestWithActivation(
 					consumerInfoMsg.SessionID, common.Version, consumerInfoMsg.Country, act.id()),
 			}
+			setEgressHTTPClient(dialOpts, options.HTTPClient)
 			slog.
 				// Log only a short prefix of the CSID — enough to correlate
 				// with the egress's connection record in the same time
