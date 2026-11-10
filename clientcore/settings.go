@@ -227,6 +227,12 @@ type EgressOptions struct {
 	Endpoint       string
 	ConnectTimeout time.Duration
 	ErrorBackoff   time.Duration
+	// HTTPClient makes the WebSocket handshake to the egress; nil uses
+	// http.DefaultClient. A widget running inside a VPN's own process can't
+	// resolve the egress through the system resolver, which points into the
+	// tunnel its sockets bypass, so it passes a client that dials around it.
+	// Its Timeout must be zero: ConnectTimeout bounds the dial.
+	HTTPClient *http.Client
 }
 
 func NewDefaultEgressOptions() *EgressOptions {
