@@ -787,6 +787,10 @@ func TestFilterRemoteCandidates(t *testing.T) {
 			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
 		case "tcptype":
 			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "active raddr 127.0.0.1 rport 22"
+		case "raddr":
+			c.RelatedAddress = "0.0.0.0 rport 0 ufrag evil"
+		case "masked":
+			c.RelatedAddress, c.RelatedPort = "0.0.0.0", 0
 		}
 		return c
 	}
@@ -815,6 +819,8 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
 		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, false, 0},
 		{"fields spliced in via tcptype", []webrtc.ICECandidate{injected("tcptype")}, false, 0},
+		{"fields spliced in via related address", []webrtc.ICECandidate{injected("raddr")}, false, 0},
+		{"masked related address", []webrtc.ICECandidate{injected("masked")}, true, 1},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
 			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
 			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("::ffff:255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),

@@ -894,7 +894,7 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 			continue
 		}
 		// Only a kept candidate needs this: a dropped one never reaches pion.
-		if err := checkCandidateRoundTrip(c); err != nil {
+		if err := checkCandidateFields(c); err != nil {
 			return nil, err
 		}
 		kept = append(kept, c)
@@ -902,30 +902,36 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 	return kept, nil
 }
 
-// checkCandidateRoundTrip returns an error unless pion, parsing c the way AddICECandidate will
-// (from c.ToJSON()), reads the same endpoint the filter checked. ToJSON writes string fields such
-// as Foundation verbatim, so one holding spaces can splice a different address and port into the
-// candidate line that pion actually parses.
-func checkCandidateRoundTrip(c webrtc.ICECandidate) error {
-	parsed, err := ice.UnmarshalCandidate(c.ToJSON().Candidate)
-	if err != nil {
-		return fmt.Errorf("candidate %v does not parse: %w", c.Address, err)
+// checkCandidateFields returns an error unless c's free-form string fields are well-formed.
+// ToJSON writes them verbatim into the candidate line AddICECandidate parses, so a Foundation
+// holding spaces, say, could splice a different address and port into what pion connects to.
+func checkCandidateFields(c webrtc.ICECandidate) error {
+	if !iceFoundation(c.Foundation) {
+		return fmt.Errorf("candidate %v has a malformed foundation %q", c.Address, c.Foundation)
 	}
-	if parsed.Address() != c.Address || parsed.Port() != int(c.Port) ||
-		parsed.NetworkType().NetworkShort() != c.Protocol.String() || parsed.Type().String() != c.Typ.String() {
-		return fmt.Errorf("candidate %v:%v %v %v parses as %v:%v %v %v", c.Address, c.Port, c.Protocol, c.Typ,
-			parsed.Address(), parsed.Port(), parsed.NetworkType().NetworkShort(), parsed.Type())
+	if c.RelatedAddress != "" && net.ParseIP(c.RelatedAddress) == nil {
+		return fmt.Errorf("candidate %v has a malformed related address %q", c.Address, c.RelatedAddress)
 	}
-	if c.TCPType != "" && parsed.TCPType().String() != c.TCPType {
-		return fmt.Errorf("candidate %v TCP type %q does not survive parsing", c.Address, c.TCPType)
-	}
-	if c.RelatedAddress != "" {
-		rel := parsed.RelatedAddress()
-		if rel == nil || rel.Address != c.RelatedAddress || rel.Port != int(c.RelatedPort) {
-			return fmt.Errorf("candidate %v related address %v:%v does not survive parsing", c.Address, c.RelatedAddress, c.RelatedPort)
-		}
+	switch c.TCPType {
+	case "", "active", "passive", "so":
+	default:
+		return fmt.Errorf("candidate %v has a malformed TCP type %q", c.Address, c.TCPType)
 	}
 	return nil
+}
+
+// iceFoundation reports whether s could be an ICE foundation: at most 32 ice-chars (RFC 8445
+// section 5.1). An empty one can splice nothing in, and pion's parser rejects it anyway.
+func iceFoundation(s string) bool {
+	if len(s) > 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '+' || r == '/') {
+			return false
+		}
+	}
+	return true
 }
 
 // remotePeerAddr reports whether ip is an address a remote peer could be reached at.
