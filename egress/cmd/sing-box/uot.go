@@ -7,8 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
+
+	"github.com/getlantern/broflake/egress"
 )
 
 const (
@@ -168,8 +171,8 @@ func handleUoT(tcpConn net.Conn) {
 		return
 	}
 
-	if req.Destination.IP.IsLoopback() {
-		slog.Debug("UoT: refusing to relay to loopback address", "addr", req.Destination)
+	if dst, ok := netip.AddrFromSlice(req.Destination.IP); !ok || !egress.AllowedDestination(dst) {
+		slog.Debug("UoT: refusing to relay to non-public address", "addr", req.Destination)
 		return
 	}
 
@@ -270,7 +273,6 @@ func UoTDialer() func(ctx context.Context, network, addr string) (net.Conn, erro
 			}()
 			return &tcpPipeConn{Conn: client}, nil
 		}
-		var d net.Dialer
-		return d.DialContext(ctx, network, addr)
+		return egress.NewDestinationDialer().DialContext(ctx, network, addr)
 	}
 }

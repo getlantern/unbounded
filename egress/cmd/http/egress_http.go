@@ -41,6 +41,10 @@ func main() {
 	// Instantiate our local HTTP CONNECT proxy
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = true
+	// goproxy dials both plain HTTP and CONNECT targets through Tr.DialContext once ConnectDial is
+	// unset, so this one dialer covers every destination.
+	proxy.Tr.DialContext = egress.NewDestinationDialer().DialContext
+	proxy.ConnectDial = nil
 	slog.Debug("Starting HTTP CONNECT proxy...")
 
 	proxy.OnRequest().DoFunc(
