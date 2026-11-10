@@ -1,11 +1,13 @@
 package freddie
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/getlantern/broflake/common"
 )
@@ -70,29 +72,32 @@ func TestHandleSignal_RejectsOversizedBody(t *testing.T) {
 	}
 }
 
-// Freddie reads signaling fields only from the capped body, so a genesis sent in the query is
-// never broadcast, however large.
-func TestHandleSignal_IgnoresQueryFields(t *testing.T) {
+// Signaling fields come only from the capped body: a query, which an intermediary may add, can
+// neither add to nor reroute what the body says.
+func TestHandleSignal_IgnoresQuery(t *testing.T) {
 	s := startTestServer(t, nil)
 	pool := s.subscribe("", "")
 	s.waitForConsumers(1)
-	q := url.Values{
-		"data":    {strings.Repeat("x", maxSignalBodyBytes)},
+	body := url.Values{
+		"data":    {"{}"},
 		"send-to": {common.SignalSendToGenesis},
 		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 	}
-	req, err := http.NewRequestWithContext(s.ctx, http.MethodPost, s.url+"/v1/signal?"+q.Encode(), nil)
+	// pool=0 would keep this genesis from the pool consumer, were it read.
+	query := url.Values{common.PoolField: {"0"}, "data": {strings.Repeat("x", maxSignalBodyBytes)}}
+	// Nobody answers a genesis message here, so don't wait out its TTL.
+	ctx, cancel := context.WithTimeout(s.ctx, 200*time.Millisecond)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/v1/signal?"+query.Encode(), strings.NewReader(body.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set(common.VersionHeader, common.Version)
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Errorf("genesis in the query: status %d, want 400", res.StatusCode)
-	}
-	s.expect("pool", pool, false)
+	go func() {
+		if res, err := http.DefaultClient.Do(req); err == nil {
+			res.Body.Close()
+		}
+	}()
+	s.expect("pool", pool, true)
 }

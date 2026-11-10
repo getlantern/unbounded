@@ -775,8 +775,9 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	reqChan := signalTable.Add(reqID)
 	defer signalTable.Delete(reqID)
 
-	// Clients send every signaling field in the form-encoded body. ParseForm would also merge
-	// in the query, which MaxBytesReader doesn't bound, so drop it and read only the capped body.
+	// Clients send every signaling field in the form-encoded body. ParseForm would also merge in
+	// the query, which MaxBytesReader doesn't bound, so ignore it. It is ignored, not refused,
+	// because a fronting CDN or other intermediary may add a query of its own.
 	r.URL.RawQuery = ""
 	r.Body = http.MaxBytesReader(w, r.Body, maxSignalBodyBytes)
 	if err := r.ParseForm(); err != nil {
