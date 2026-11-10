@@ -773,8 +773,8 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 }
 
 // A producer turns away a consumer's candidate list it should not hand pion: too many, or a
-// candidate with a bad port, protocol or address.
-func TestValidateRemoteCandidates(t *testing.T) {
+// candidate with a bad port, protocol or address. It drops candidates no remote peer can be at.
+func TestFilterRemoteCandidates(t *testing.T) {
 	ok := func(addr string, port uint16) webrtc.ICECandidate {
 		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port}
 	}
@@ -784,26 +784,32 @@ func TestValidateRemoteCandidates(t *testing.T) {
 	}
 	badProto := ok("198.51.100.1", 1)
 	badProto.Protocol = webrtc.ICEProtocolUnknown
+	a, b := ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)
+	a.RelatedAddress, a.RelatedPort = "192.168.1.10", 6000
+	b.RelatedAddress, b.RelatedPort = "192.168.1.10", 6001
 	for _, tc := range []struct {
 		name  string
 		cands []webrtc.ICECandidate
 		valid bool
+		kept  int
 	}{
-		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("f3a1.local", 5001), ok("198.51.100.1", 5000)}, true},
-		{"at the limit", many[:maxRemoteCandidates], true},
-		{"over the limit", many, false},
-		{"same endpoint, different related address", func() []webrtc.ICECandidate {
-			a, b := ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)
-			a.RelatedAddress, a.RelatedPort = "192.168.1.10", 6000
-			b.RelatedAddress, b.RelatedPort = "192.168.1.10", 6001
-			return []webrtc.ICECandidate{a, b}
-		}(), true},
-		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false},
-		{"bad protocol", []webrtc.ICECandidate{badProto}, false},
-		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false},
+		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("f3a1.local", 5001), ok("198.51.100.1", 5000)}, true, 3},
+		{"at the limit", many[:maxRemoteCandidates], true, maxRemoteCandidates},
+		{"over the limit", many, false, 0},
+		{"same endpoint, different related address", []webrtc.ICECandidate{a, b}, true, 2},
+		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false, 0},
+		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
+		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
+		{"unreachable addresses dropped", []webrtc.ICECandidate{
+			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("224.0.0.1", 1), ok("198.51.100.1", 5000),
+		}, true, 1},
 	} {
-		if err := validateRemoteCandidates(tc.cands); (err == nil) != tc.valid {
-			t.Errorf("%s: validateRemoteCandidates = %v, want valid %v", tc.name, err, tc.valid)
+		kept, err := filterRemoteCandidates(tc.cands)
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: filterRemoteCandidates error = %v, want valid %v", tc.name, err, tc.valid)
+		}
+		if len(kept) != tc.kept {
+			t.Errorf("%s: kept %d candidates, want %d", tc.name, len(kept), tc.kept)
 		}
 	}
 }

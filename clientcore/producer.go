@@ -544,7 +544,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			if err := validateRemoteCandidates(iceMsg.Candidates); err != nil {
+			if iceMsg.Candidates, err = filterRemoteCandidates(iceMsg.Candidates); err != nil {
 				slog.Debug("Rejecting signaling partner's ICE candidates", "error", err)
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -852,26 +852,35 @@ func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
 // stops a peer from making a volunteer process, and send connectivity checks to, a huge list.
 const maxRemoteCandidates = 64
 
-// validateRemoteCandidates rejects a consumer's candidate list that is too long, or has a
-// candidate pion should not be asked to check: a bad port or protocol, or an address that is
-// neither an IP nor an mDNS name. Duplicates are left to pion, which skips a remote candidate
-// equal to one it already has.
-func validateRemoteCandidates(cands []webrtc.ICECandidate) error {
+// filterRemoteCandidates returns the consumer's candidates pion should be asked to check. It
+// rejects a list that is too long, or has a candidate with a bad port or protocol, or an address
+// that is neither an IP nor an mDNS name. It drops, without rejecting the list, a candidate on an
+// address no remote peer can be at (loopback, link-local, unspecified or multicast), which would
+// only aim the volunteer's checks at its own host and link. Duplicates are left to pion, which
+// skips a remote candidate equal to one it already has.
+func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate, error) {
 	if len(cands) > maxRemoteCandidates {
-		return fmt.Errorf("%d candidates exceeds the limit of %d", len(cands), maxRemoteCandidates)
+		return nil, fmt.Errorf("%d candidates exceeds the limit of %d", len(cands), maxRemoteCandidates)
 	}
+	kept := make([]webrtc.ICECandidate, 0, len(cands))
 	for _, c := range cands {
 		if c.Port == 0 {
-			return fmt.Errorf("candidate %v has port 0", c.Address)
+			return nil, fmt.Errorf("candidate %v has port 0", c.Address)
 		}
 		if c.Protocol != webrtc.ICEProtocolUDP && c.Protocol != webrtc.ICEProtocolTCP {
-			return fmt.Errorf("candidate %v has unsupported protocol %v", c.Address, c.Protocol)
+			return nil, fmt.Errorf("candidate %v has unsupported protocol %v", c.Address, c.Protocol)
 		}
-		if net.ParseIP(c.Address) == nil && !strings.HasSuffix(c.Address, ".local") {
-			return fmt.Errorf("candidate address %q is not an IP or mDNS name", c.Address)
+		ip := net.ParseIP(c.Address)
+		if ip == nil {
+			if !strings.HasSuffix(c.Address, ".local") {
+				return nil, fmt.Errorf("candidate address %q is not an IP or mDNS name", c.Address)
+			}
+		} else if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			continue
 		}
+		kept = append(kept, c)
 	}
-	return nil
+	return kept, nil
 }
 
 // isPublicIP reports whether addr is a public IP address.
