@@ -893,9 +893,39 @@ func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]webrtc.ICECandidate,
 		if !remotePeerAddr(ip) {
 			continue
 		}
+		// Only a kept candidate needs this: a dropped one never reaches pion.
+		if err := checkCandidateRoundTrip(c); err != nil {
+			return nil, err
+		}
 		kept = append(kept, c)
 	}
 	return kept, nil
+}
+
+// checkCandidateRoundTrip returns an error unless pion, parsing c the way AddICECandidate will
+// (from c.ToJSON()), reads the same endpoint the filter checked. ToJSON writes string fields such
+// as Foundation verbatim, so one holding spaces can splice a different address and port into the
+// candidate line that pion actually parses.
+func checkCandidateRoundTrip(c webrtc.ICECandidate) error {
+	parsed, err := ice.UnmarshalCandidate(c.ToJSON().Candidate)
+	if err != nil {
+		return fmt.Errorf("candidate %v does not parse: %w", c.Address, err)
+	}
+	if parsed.Address() != c.Address || parsed.Port() != int(c.Port) ||
+		parsed.NetworkType().NetworkShort() != c.Protocol.String() || parsed.Type().String() != c.Typ.String() {
+		return fmt.Errorf("candidate %v:%v %v %v parses as %v:%v %v %v", c.Address, c.Port, c.Protocol, c.Typ,
+			parsed.Address(), parsed.Port(), parsed.NetworkType().NetworkShort(), parsed.Type())
+	}
+	if c.TCPType != "" && parsed.TCPType().String() != c.TCPType {
+		return fmt.Errorf("candidate %v TCP type %q does not survive parsing", c.Address, c.TCPType)
+	}
+	if c.RelatedAddress != "" {
+		rel := parsed.RelatedAddress()
+		if rel == nil || rel.Address != c.RelatedAddress || rel.Port != int(c.RelatedPort) {
+			return fmt.Errorf("candidate %v related address %v:%v does not survive parsing", c.Address, c.RelatedAddress, c.RelatedPort)
+		}
+	}
+	return nil
 }
 
 // remotePeerAddr reports whether ip is an address a remote peer could be reached at.

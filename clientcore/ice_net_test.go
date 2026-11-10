@@ -777,7 +777,18 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 // candidate with a bad port, protocol or address. It drops candidates no remote peer can be at.
 func TestFilterRemoteCandidates(t *testing.T) {
 	ok := func(addr string, port uint16) webrtc.ICECandidate {
-		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port}
+		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port,
+			Foundation: "1", Priority: 1, Component: 1, RelatedAddress: "192.168.1.10", RelatedPort: 4000}
+	}
+	injected := func(field string) webrtc.ICECandidate {
+		c := ok("198.51.100.1", 5000)
+		switch field {
+		case "foundation":
+			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
+		case "tcptype":
+			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "active raddr 127.0.0.1 rport 22"
+		}
+		return c
 	}
 	many := make([]webrtc.ICECandidate, maxRemoteCandidates+1)
 	for i := range many {
@@ -802,6 +813,8 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false, 0},
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
+		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, false, 0},
+		{"fields spliced in via tcptype", []webrtc.ICECandidate{injected("tcptype")}, false, 0},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
 			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
 			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("::ffff:255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
