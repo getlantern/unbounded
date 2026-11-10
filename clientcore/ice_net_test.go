@@ -772,8 +772,8 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 	}
 }
 
-// A producer turns away a consumer's candidate list it should not hand pion: too many, a
-// duplicate, or a candidate with a bad port, protocol or address.
+// A producer turns away a consumer's candidate list it should not hand pion: too many, or a
+// candidate with a bad port, protocol or address.
 func TestValidateRemoteCandidates(t *testing.T) {
 	ok := func(addr string, port uint16) webrtc.ICECandidate {
 		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port}
@@ -792,7 +792,12 @@ func TestValidateRemoteCandidates(t *testing.T) {
 		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("f3a1.local", 5001), ok("198.51.100.1", 5000)}, true},
 		{"at the limit", many[:maxRemoteCandidates], true},
 		{"over the limit", many, false},
-		{"duplicate", []webrtc.ICECandidate{ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)}, false},
+		{"same endpoint, different related address", func() []webrtc.ICECandidate {
+			a, b := ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)
+			a.RelatedAddress, a.RelatedPort = "192.168.1.10", 6000
+			b.RelatedAddress, b.RelatedPort = "192.168.1.10", 6001
+			return []webrtc.ICECandidate{a, b}
+		}(), true},
 		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false},
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false},

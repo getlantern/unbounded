@@ -852,14 +852,14 @@ func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
 // stops a peer from making a volunteer process, and send connectivity checks to, a huge list.
 const maxRemoteCandidates = 64
 
-// validateRemoteCandidates rejects a consumer's candidate list that is too long, has a duplicate,
-// or has a candidate pion should not be asked to check: a bad port or protocol, or an address
-// that is neither an IP nor an mDNS name.
+// validateRemoteCandidates rejects a consumer's candidate list that is too long, or has a
+// candidate pion should not be asked to check: a bad port or protocol, or an address that is
+// neither an IP nor an mDNS name. Duplicates are left to pion, which skips a remote candidate
+// equal to one it already has.
 func validateRemoteCandidates(cands []webrtc.ICECandidate) error {
 	if len(cands) > maxRemoteCandidates {
 		return fmt.Errorf("%d candidates exceeds the limit of %d", len(cands), maxRemoteCandidates)
 	}
-	seen := make(map[string]struct{}, len(cands))
 	for _, c := range cands {
 		if c.Port == 0 {
 			return fmt.Errorf("candidate %v has port 0", c.Address)
@@ -870,11 +870,6 @@ func validateRemoteCandidates(cands []webrtc.ICECandidate) error {
 		if net.ParseIP(c.Address) == nil && !strings.HasSuffix(c.Address, ".local") {
 			return fmt.Errorf("candidate address %q is not an IP or mDNS name", c.Address)
 		}
-		key := fmt.Sprintf("%v|%v|%v|%v", c.Protocol, c.Address, c.Port, c.Typ)
-		if _, dup := seen[key]; dup {
-			return fmt.Errorf("duplicate candidate %v", key)
-		}
-		seen[key] = struct{}{}
 	}
 	return nil
 }
