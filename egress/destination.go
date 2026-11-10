@@ -2,6 +2,7 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -37,11 +38,20 @@ var deniedPrefixes = func() []netip.Prefix {
 	return ps
 }()
 
+// ErrNotPublic is the error a destination dialer returns for an address AllowedDestination
+// rejects, so callers can tell the policy's refusal from a network error.
+var ErrNotPublic = errors.New("egress: destination is not a public address")
+
 // AllowedDestination reports whether the egress may proxy to addr: a global unicast address
 // outside every private and special-use range. The egress is open to anyone who speaks its
 // protocol, so without this it is a vantage point onto its own host and network, e.g. cloud
 // metadata at 169.254.169.254.
 func AllowedDestination(addr netip.Addr) bool {
+	// A zone has no use on a public destination, and Prefix.Contains is false for any zoned
+	// address, so a zoned one would otherwise slip past the denylist.
+	if addr.Zone() != "" {
+		return false
+	}
 	addr = addr.Unmap()
 	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		// IsGlobalUnicast excludes loopback, link-local, multicast and unspecified.
@@ -68,7 +78,7 @@ func controlDestination(network, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("egress: unparseable destination %q: %w", address, err)
 	}
 	if !AllowedDestination(ap.Addr()) {
-		return fmt.Errorf("egress: destination %v is not a public address", ap.Addr())
+		return fmt.Errorf("%w: %v", ErrNotPublic, ap.Addr())
 	}
 	return nil
 }
@@ -88,7 +98,7 @@ func ResolveAllowed(ctx context.Context, name string) (net.IP, error) {
 	var v6 net.IP
 	for _, a := range ips {
 		dst, ok := netip.AddrFromSlice(a.IP)
-		if !ok || !AllowedDestination(dst) {
+		if !ok || !AllowedDestination(dst.WithZone(a.Zone)) {
 			continue
 		}
 		if dst.Unmap().Is4() {
@@ -101,7 +111,7 @@ func ResolveAllowed(ctx context.Context, name string) (net.IP, error) {
 	if v6 != nil {
 		return v6, nil
 	}
-	return nil, fmt.Errorf("egress: %s has no public address among %d answers", name, len(ips))
+	return nil, fmt.Errorf("%w: %s has none among %d answers", ErrNotPublic, name, len(ips))
 }
 
 // AllowedResolver is a go-socks5 NameResolver that resolves with ResolveAllowed.
