@@ -775,7 +775,14 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	reqChan := signalTable.Add(reqID)
 	defer signalTable.Delete(reqID)
 
+	// ParseForm merges the query into r.Form, so the query needs the body's cap too.
 	r.Body = http.MaxBytesReader(w, r.Body, maxSignalBodyBytes)
+	if len(r.URL.RawQuery) > maxSignalBodyBytes {
+		span.SetStatus(codes.Error, "query too large")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400\n"))
+		return
+	}
 	if err := r.ParseForm(); err != nil {
 		span.SetStatus(codes.Error, "failed to parse form")
 		w.WriteHeader(http.StatusBadRequest)
