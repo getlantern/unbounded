@@ -1,6 +1,7 @@
 package egress
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/netip"
@@ -70,4 +71,28 @@ func controlDestination(network, address string, _ syscall.RawConn) error {
 		return fmt.Errorf("egress: destination %v is not a public address", ap.Addr())
 	}
 	return nil
+}
+
+// ResolveAllowed resolves name and returns the first of its answers AllowedDestination accepts,
+// so a name whose first answer is private (split-horizon, ULA) still reaches its public one. It is
+// an error for a name to have no such answer.
+func ResolveAllowed(ctx context.Context, name string) (net.IP, error) {
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range ips {
+		if dst, ok := netip.AddrFromSlice(a.IP); ok && AllowedDestination(dst) {
+			return a.IP, nil
+		}
+	}
+	return nil, fmt.Errorf("egress: %s has no public address among %d answers", name, len(ips))
+}
+
+// AllowedResolver is a go-socks5 NameResolver that resolves with ResolveAllowed.
+type AllowedResolver struct{}
+
+func (AllowedResolver) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
+	ip, err := ResolveAllowed(ctx, name)
+	return ctx, ip, err
 }

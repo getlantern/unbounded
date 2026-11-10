@@ -66,3 +66,10 @@ func TestDestinationDialerRefusesLoopback(t *testing.T) {
 		}
 	}
 }
+
+// A name with only non-public answers is an error, not a disallowed address left for the dialer.
+func TestResolveAllowedRefusesLoopbackOnlyName(t *testing.T) {
+	if ip, err := ResolveAllowed(context.Background(), "localhost"); err == nil {
+		t.Errorf("ResolveAllowed(localhost) = %v, want an error", ip)
+	}
+}

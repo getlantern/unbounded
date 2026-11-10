@@ -37,14 +37,7 @@ func (r *UoTResolver) Resolve(ctx context.Context, name string) (context.Context
 		// allowing the Dial function to match on the magic address.
 		return ctx, nil, nil
 	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
-	if err != nil {
-		return ctx, nil, err
-	}
-	if len(ips) == 0 {
-		return ctx, nil, fmt.Errorf("no IP addresses found for %s", name)
-	}
-	return ctx, ips[0].IP, nil
+	return egress.AllowedResolver{}.Resolve(ctx, name)
 }
 
 func isUoTMagicName(name string) bool {
@@ -141,21 +134,11 @@ func readSocksAddr(r io.Reader) (*net.UDPAddr, error) {
 	if host != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		ip, err := egress.ResolveAllowed(ctx, host)
 		if err != nil {
 			return nil, fmt.Errorf("resolve %s: %w", host, err)
 		}
-		if len(ips) == 0 {
-			return nil, fmt.Errorf("no IP addresses found for %s", host)
-		}
-		// Prefer an answer the egress may relay to, so a name with a private first answer
-		// (split-horizon, ULA) still reaches its public one.
-		for _, a := range ips {
-			if dst, ok := netip.AddrFromSlice(a.IP); ok && egress.AllowedDestination(dst) {
-				return &net.UDPAddr{IP: a.IP, Port: int(port)}, nil
-			}
-		}
-		return &net.UDPAddr{IP: ips[0].IP, Port: int(port)}, nil
+		return &net.UDPAddr{IP: ip, Port: int(port)}, nil
 	}
 
 	return &net.UDPAddr{IP: ip, Port: int(port)}, nil
