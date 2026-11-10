@@ -3,6 +3,7 @@ package common
 import (
 	"encoding/json"
 	// "errors"
+	"fmt"
 	"net"
 	"slices"
 
@@ -240,6 +241,10 @@ func DecodeSignal(raw []byte) (SignalMsg, interface{}, error) {
 			var iceMsg ICEMsg
 			err := json.Unmarshal([]byte(msg.Payload), &iceMsg)
 			return msg, iceMsg, err
+		default:
+			// Without this, a well-formed envelope of an unknown type decodes to a nil payload and
+			// nil error, which callers then type-assert into a panic.
+			err = fmt.Errorf("invalid signal message type: %d", msg.Type)
 		}
 	}
 

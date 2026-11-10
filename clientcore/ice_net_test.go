@@ -771,3 +771,34 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 		t.Errorf("fetched the STUN list %d times, want 1", got)
 	}
 }
+
+// A producer turns away a consumer's candidate list it should not hand pion: too many, a
+// duplicate, or a candidate with a bad port, protocol or address.
+func TestValidateRemoteCandidates(t *testing.T) {
+	ok := func(addr string, port uint16) webrtc.ICECandidate {
+		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port}
+	}
+	many := make([]webrtc.ICECandidate, maxRemoteCandidates+1)
+	for i := range many {
+		many[i] = ok("198.51.100.1", uint16(1000+i))
+	}
+	badProto := ok("198.51.100.1", 1)
+	badProto.Protocol = webrtc.ICEProtocolUnknown
+	for _, tc := range []struct {
+		name  string
+		cands []webrtc.ICECandidate
+		valid bool
+	}{
+		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("f3a1.local", 5001), ok("198.51.100.1", 5000)}, true},
+		{"at the limit", many[:maxRemoteCandidates], true},
+		{"over the limit", many, false},
+		{"duplicate", []webrtc.ICECandidate{ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)}, false},
+		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false},
+		{"bad protocol", []webrtc.ICECandidate{badProto}, false},
+		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false},
+	} {
+		if err := validateRemoteCandidates(tc.cands); (err == nil) != tc.valid {
+			t.Errorf("%s: validateRemoteCandidates = %v, want valid %v", tc.name, err, tc.valid)
+		}
+	}
+}

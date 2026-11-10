@@ -408,3 +408,15 @@ func TestConsumerInfoNil_IgnoresPairing(t *testing.T) {
 		t.Error("a ConsumerInfo with only a Pairing must be Nil()")
 	}
 }
+
+// A well-formed envelope of an unknown type must be an error, not a nil payload a caller then
+// type-asserts into a panic.
+func TestDecodeSignal_UnknownTypeIsError(t *testing.T) {
+	raw, err := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgType(99), Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, payload, err := DecodeSignalMsg(raw); err == nil {
+		t.Errorf("DecodeSignalMsg(type 99) = %v, nil error; want an error", payload)
+	}
+}

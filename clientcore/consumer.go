@@ -257,7 +257,13 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 						return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 					}
 
-					msg, _, err := common.DecodeSignal(rawMsg)
+					msg, payload, err := common.DecodeSignal(rawMsg)
+					if _, isGenesis := payload.(common.GenesisMsg); err == nil && !isGenesis {
+						// Freddie relays whatever a producer posts to genesis; only a genesis is a producer
+						// advertisement we can answer.
+						slog.Debug("Ignoring non-genesis message on the genesis stream", "type", msg.Type)
+						continue
+					}
 					if err != nil {
 						// Not the raw message: a room genesis carries its pairing.
 						slog.Debug("Error decoding signal message", "error", err, "bytes", len(rawMsg))
