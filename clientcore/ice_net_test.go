@@ -789,15 +789,10 @@ func TestFilterRemoteCandidates(t *testing.T) {
 			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "passive"
 		case "untyped":
 			c.Typ = webrtc.ICECandidateTypeUnknown
-		case "f32":
-			c.Foundation = strings.Repeat("a", 32)
-		case "f33":
-			c.Foundation = strings.Repeat("a", 33)
 		case "host":
 			c.Typ, c.RelatedAddress, c.RelatedPort = webrtc.ICECandidateTypeHost, "", 0
 		case "dropped":
-			c.Address = "127.0.0.1"
-			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
+			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx"
 		case "raddr":
 			c.RelatedAddress = "0.0.0.0 rport 0 ufrag evil"
 		case "masked":
@@ -828,14 +823,12 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false, 0},
 		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
 		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
-		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, false, 0},
+		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, true, 0},
 		{"tcp candidate", []webrtc.ICECandidate{injected("tcp")}, true, 1},
 		{"no type", []webrtc.ICECandidate{injected("untyped")}, false, 0},
-		{"32-char foundation", []webrtc.ICECandidate{injected("f32")}, true, 1},
-		{"33-char foundation", []webrtc.ICECandidate{injected("f33")}, false, 0},
 		{"host without related address", []webrtc.ICECandidate{injected("host")}, true, 1},
-		{"spliced foundation on a dropped address", []webrtc.ICECandidate{injected("dropped"), ok("198.51.100.1", 5000)}, false, 0},
-		{"fields spliced in via related address", []webrtc.ICECandidate{injected("raddr")}, false, 0},
+		{"spliced foundation, next to a good candidate", []webrtc.ICECandidate{injected("dropped"), ok("198.51.100.1", 5000)}, true, 1},
+		{"fields spliced in via related address", []webrtc.ICECandidate{injected("raddr")}, true, 1},
 		{"masked related address", []webrtc.ICECandidate{injected("masked")}, true, 1},
 		{"unreachable addresses dropped", []webrtc.ICECandidate{
 			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
@@ -852,6 +845,15 @@ func TestFilterRemoteCandidates(t *testing.T) {
 		}
 		if len(kept) != tc.kept {
 			t.Errorf("%s: kept %d candidates, want %d", tc.name, len(kept), tc.kept)
+		}
+		// pion is handed exactly the line that was checked, and it never points at loopback.
+		for _, rc := range kept {
+			if p, err := ice.UnmarshalCandidate(rc.line.Candidate); err != nil || p.Address() != rc.cand.Address || p.Port() != int(rc.cand.Port) {
+				t.Errorf("%s: kept line %q does not parse to %v:%v", tc.name, rc.line.Candidate, rc.cand.Address, rc.cand.Port)
+			}
+			if net.ParseIP(rc.cand.Address).IsLoopback() {
+				t.Errorf("%s: kept a loopback candidate", tc.name)
+			}
 		}
 	}
 }
@@ -874,7 +876,7 @@ func TestUnreachableConsumerOutcome(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
-		if remoteCandidatesReachable(kept) {
+		if remoteCandidatesReachable(candidatesOf(kept)) {
 			t.Fatalf("%s: kept %v is reachable", tc.name, kept)
 		}
 		if got := unreachableConsumerOutcome(tc.sent); got != tc.want {
