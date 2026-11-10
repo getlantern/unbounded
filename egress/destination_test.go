@@ -67,9 +67,36 @@ func TestDestinationDialerRefusesLoopback(t *testing.T) {
 	}
 }
 
-// A name with only non-public answers is an error, not a disallowed address left for the dialer.
-func TestResolveAllowedRefusesLoopbackOnlyName(t *testing.T) {
-	if ip, err := ResolveAllowed(context.Background(), "localhost"); err == nil {
-		t.Errorf("ResolveAllowed(localhost) = %v, want an error", ip)
+func TestResolveAllowed(t *testing.T) {
+	answers := func(addrs ...string) func(context.Context, string) ([]net.IPAddr, error) {
+		return func(context.Context, string) ([]net.IPAddr, error) {
+			var ips []net.IPAddr
+			for _, a := range addrs {
+				ips = append(ips, net.IPAddr{IP: net.ParseIP(a)})
+			}
+			return ips, nil
+		}
+	}
+	orig := lookupIPAddr
+	t.Cleanup(func() { lookupIPAddr = orig })
+
+	for _, tc := range []struct {
+		name    string
+		answers []string
+		want    string // empty for an error
+	}{
+		{"private first answer skipped", []string{"10.0.0.5", "fd00::1", "198.51.99.7"}, "198.51.99.7"},
+		{"IPv4 preferred", []string{"2606:4700:4700::1111", "1.1.1.1"}, "1.1.1.1"},
+		{"IPv6 when no IPv4 is allowed", []string{"10.0.0.5", "2606:4700:4700::1111"}, "2606:4700:4700::1111"},
+		{"no allowed answer", []string{"127.0.0.1", "::1", "169.254.169.254"}, ""},
+	} {
+		lookupIPAddr = answers(tc.answers...)
+		ip, err := ResolveAllowed(context.Background(), "example.test")
+		switch {
+		case tc.want == "" && err == nil:
+			t.Errorf("%s: ResolveAllowed = %v, want an error", tc.name, ip)
+		case tc.want != "" && (err != nil || !ip.Equal(net.ParseIP(tc.want))):
+			t.Errorf("%s: ResolveAllowed = %v, %v; want %v", tc.name, ip, err, tc.want)
+		}
 	}
 }

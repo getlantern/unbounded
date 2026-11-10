@@ -73,18 +73,33 @@ func controlDestination(network, address string, _ syscall.RawConn) error {
 	return nil
 }
 
-// ResolveAllowed resolves name and returns the first of its answers AllowedDestination accepts,
-// so a name whose first answer is private (split-horizon, ULA) still reaches its public one. It is
-// an error for a name to have no such answer.
+// lookupIPAddr resolves names for ResolveAllowed; tests replace it.
+var lookupIPAddr = net.DefaultResolver.LookupIPAddr
+
+// ResolveAllowed resolves name and returns an answer AllowedDestination accepts, so a name whose
+// first answer is private (split-horizon, ULA) still reaches its public one. It prefers IPv4, as
+// go-socks5's own resolver did, since the caller dials the one address with no fallback. It is an
+// error for a name to have no allowed answer.
 func ResolveAllowed(ctx context.Context, name string) (net.IP, error) {
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, name)
+	ips, err := lookupIPAddr(ctx, name)
 	if err != nil {
 		return nil, err
 	}
+	var v6 net.IP
 	for _, a := range ips {
-		if dst, ok := netip.AddrFromSlice(a.IP); ok && AllowedDestination(dst) {
+		dst, ok := netip.AddrFromSlice(a.IP)
+		if !ok || !AllowedDestination(dst) {
+			continue
+		}
+		if dst.Unmap().Is4() {
 			return a.IP, nil
 		}
+		if v6 == nil {
+			v6 = a.IP
+		}
+	}
+	if v6 != nil {
+		return v6, nil
 	}
 	return nil, fmt.Errorf("egress: %s has no public address among %d answers", name, len(ips))
 }
