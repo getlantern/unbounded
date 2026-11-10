@@ -862,7 +862,9 @@ func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
 const maxRemoteCandidates = 64
 
 // remoteCandidate is a consumer's ICE candidate as the producer will add it: line is the exact
-// candidate AddICECandidate gets, and cand is what that line parses to.
+// candidate AddICECandidate gets, and cand is what that line parses to. pion may still skip a
+// kept line, such as one whose spliced-in ufrag doesn't match the offer; that only costs the
+// consumer that crafted it its own attempt.
 type remoteCandidate struct {
 	line webrtc.ICECandidateInit
 	cand webrtc.ICECandidate
