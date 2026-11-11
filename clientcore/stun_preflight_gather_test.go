@@ -36,6 +36,9 @@ func TestAwaitReflexive(t *testing.T) {
 		{"relay", []*webrtc.ICECandidate{host, cand(webrtc.ICECandidateTypeRelay)}, STUNPreflightOK},
 		{"gathering ends with host only", []*webrtc.ICECandidate{host, host, nil}, STUNPreflightNoReply},
 		{"gathering ends with nothing", []*webrtc.ICECandidate{nil}, STUNPreflightNoReply},
+		// A browser's end of gathering can be an empty candidate rather than null.
+		{"empty end-of-candidates", []*webrtc.ICECandidate{host, cand(webrtc.ICECandidateTypeUnknown), nil}, STUNPreflightNoReply},
+		{"peer reflexive", []*webrtc.ICECandidate{host, cand(webrtc.ICECandidateTypePrflx)}, STUNPreflightOK},
 		// A browser that blocks non-proxied UDP gathers no candidates and may never end gathering.
 		{"times out on host only", []*webrtc.ICECandidate{host}, STUNPreflightNoReply},
 		{"times out on nothing", nil, STUNPreflightNoReply},

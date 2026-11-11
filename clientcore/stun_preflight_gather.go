@@ -7,9 +7,10 @@ import (
 )
 
 // awaitReflexive reads a gather's candidates, where nil marks the end of gathering as pion reports
-// it, and passes on the first candidate that isn't a host candidate: the same test a producer
-// applies after taking an offer (see hasNonHostCandidate). A gather that ends, or runs past ctx,
-// with only host candidates means no STUN server answered.
+// it, and passes on the first server reflexive, peer reflexive or relay candidate. A gather that
+// ends, or runs past ctx, without one means no STUN server answered. Other types don't count: a
+// browser can end gathering with an empty candidate rather than null, which pion reports as one of
+// type Unknown.
 func awaitReflexive(ctx context.Context, cands <-chan *webrtc.ICECandidate) string {
 	for {
 		select {
@@ -17,7 +18,8 @@ func awaitReflexive(ctx context.Context, cands <-chan *webrtc.ICECandidate) stri
 			if c == nil {
 				return STUNPreflightNoReply
 			}
-			if c.Typ != webrtc.ICECandidateTypeHost {
+			switch c.Typ {
+			case webrtc.ICECandidateTypeSrflx, webrtc.ICECandidateTypePrflx, webrtc.ICECandidateTypeRelay:
 				return STUNPreflightOK
 			}
 		case <-ctx.Done():
