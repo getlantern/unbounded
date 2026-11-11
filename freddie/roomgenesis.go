@@ -7,14 +7,12 @@ import (
 )
 
 const (
-	// roomGenesisTTL bounds how long Freddie remembers that a room consumer took a genesis. An
-	// offer only reaches the producer while its genesis POST is still open, at most defaultMsgTTL
-	// seconds after delivery; a later one gets a 404 and is never labeled. A minute is many times
-	// that.
-	roomGenesisTTL = time.Minute
-	// maxRoomGeneses caps the set. Room consumers take a handful of geneses a day, so a minute of
-	// them is far below it. When full, the oldest genesis is forgotten and an offer to it is
-	// labeled pool.
+	// roomGenesisTTL bounds how long Freddie remembers that a room consumer took a genesis. The
+	// attempt is labeled when the producer reports it, which for a connected attempt is only once
+	// its session ends, so it matches offerConsumerTTL.
+	roomGenesisTTL = offerConsumerTTL
+	// maxRoomGeneses caps the set. Room consumers take tens of geneses a day, so a day of them is
+	// far below it. When full, the oldest genesis is forgotten and its attempt is labeled pool.
 	maxRoomGeneses = 10000
 )
 

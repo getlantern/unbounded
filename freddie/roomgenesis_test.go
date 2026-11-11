@@ -71,20 +71,19 @@ func TestRoomGenesisSet_FullEvictsOldest(t *testing.T) {
 
 func TestOutcomeDelivery(t *testing.T) {
 	remembered := newOffer()
-	room := newOffer()
-	room.room = true
 	for _, tc := range []struct {
 		reported bool
 		oc       offerConsumer
+		room     bool
 		want     string
 	}{
-		{false, room, "unreported"},
-		{true, offerConsumer{}, "unknown"},
-		{true, remembered, "pool"},
-		{true, room, "room"},
+		{false, remembered, true, "unreported"},
+		{true, offerConsumer{}, false, "unknown"},
+		{true, remembered, false, "pool"},
+		{true, remembered, true, "room"},
 	} {
-		if got := outcomeDelivery(tc.reported, tc.oc); got != tc.want {
-			t.Errorf("outcomeDelivery(%v, %+v) = %q, want %q", tc.reported, tc.oc, got, tc.want)
+		if got := outcomeDelivery(tc.reported, tc.oc, tc.room); got != tc.want {
+			t.Errorf("outcomeDelivery(%v, %+v, %v) = %q, want %q", tc.reported, tc.oc, tc.room, got, tc.want)
 		}
 	}
 }
@@ -97,6 +96,21 @@ func TestRecordProducerOutcome_LabelsDelivery(t *testing.T) {
 	got = outcomeLabels(t, url.Values{common.PrevOutcomeField: {"failed"}, common.PrevOfferIDField: {"forgotten"}}, common.Version, "delivery")
 	if got["unknown"] != 1 || len(got) != 1 {
 		t.Fatalf("a report of an offer Freddie doesn't remember: got %v, want unknown", got)
+	}
+}
+
+// An offer can reach Freddie before the genesis handler records that a room consumer took the
+// genesis. The attempt must still be labeled room, since the producer reports it only later.
+func TestAttemptConsumerAttrs_RoomRecordedAfterOffer(t *testing.T) {
+	f := &Freddie{offerConsumers: newOfferConsumerCache(time.Now), roomGeneses: newRoomGenesisSet(time.Now)}
+	oc := newOffer()
+	oc.genesisID = "genesis"
+	f.offerConsumers.add("offer", oc)
+	f.roomGeneses.add("genesis")
+	for _, kv := range f.attemptConsumerAttrs("offer") {
+		if kv.Key == "delivery" && kv.Value.AsString() != "room" {
+			t.Fatalf("got delivery %q, want room", kv.Value.AsString())
+		}
 	}
 }
 

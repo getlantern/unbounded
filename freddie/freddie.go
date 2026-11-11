@@ -848,9 +848,6 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		}
 		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
 		if matched {
-			// Its consumer has to receive the genesis and send an offer back over the network
-			// first, so this lands before the offer does, barring a stall here longer than that
-			// round trip.
 			f.roomGeneses.add(reqID)
 		}
 		if len(rooms) > 0 {
@@ -874,7 +871,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
 				volunteerNAT: outcomeNATNone,
 				consumerNAT:  outcomeNATNone,
-				room:         f.roomGeneses.has(sendTo),
+				genesisID:    sendTo,
 			}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
