@@ -112,9 +112,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 						useSTUN = false
 					} else {
 						preflight.passed(preflightNow(), STUNSrvs)
-						if !res.Skipped {
-							preflightRep.record(res.Outcome, vpnStatus(options))
-						}
+						preflightRep.record(res.Outcome, vpnStatus(options))
 					}
 				}
 
