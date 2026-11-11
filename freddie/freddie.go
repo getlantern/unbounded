@@ -366,6 +366,7 @@ type Freddie struct {
 
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
+	roomGeneses    *roomGenesisSet
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -385,6 +386,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
 		tickets:        newTicketCache(maxCachedTickets, time.Now),
 		offerConsumers: newOfferConsumerCache(time.Now),
+		roomGeneses:    newRoomGenesisSet(time.Now),
 	}
 
 	var err error
@@ -476,7 +478,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	}
 
 	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
-		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go)"),
+		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go), and with how the attempt's genesis was delivered: to a consumer in one of the producer's rooms or to the pool (delivery)"),
 		metric.WithUnit("attempt"))
 	if err != nil {
 		return nil, err
@@ -845,6 +847,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
 		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+		if matched {
+			// Its consumer has to receive the genesis and send an offer back over the network
+			// first, so this lands before the offer does, barring a stall here longer than that
+			// round trip.
+			f.roomGeneses.add(reqID)
+		}
 		if len(rooms) > 0 {
 			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
 		}
@@ -866,6 +874,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
 				volunteerNAT: outcomeNATNone,
 				consumerNAT:  outcomeNATNone,
+				room:         f.roomGeneses.has(sendTo),
 			}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))

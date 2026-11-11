@@ -18,13 +18,15 @@ const (
 )
 
 // offerConsumer is what Freddie labels a delivered offer's attempt with: the consumer country it
-// derived for the request, the consumer's common.NormalizeConsumerVersion value, and the
-// outcomeLabel of each peer's NAT, outcomeNATNone until Freddie relays that peer's candidates.
+// derived for the request, the consumer's common.NormalizeConsumerVersion value, the
+// outcomeLabel of each peer's NAT, outcomeNATNone until Freddie relays that peer's candidates, and
+// whether the offer answered a genesis a consumer in one of the producer's rooms took.
 type offerConsumer struct {
 	country      string
 	version      string
 	volunteerNAT string
 	consumerNAT  string
+	room         bool
 }
 
 type offerConsumerEntry struct {
