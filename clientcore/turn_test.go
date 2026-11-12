@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -262,20 +263,33 @@ func (n *blackholeNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (trans
 	return nil, errors.New("blackholed")
 }
 
+// shortTURNDial sets turnDialTimeout to d for the rest of the test.
+func shortTURNDial(t *testing.T, d time.Duration) {
+	t.Helper()
+	prev := turnDialTimeout
+	turnDialTimeout = d
+	t.Cleanup(func() { turnDialTimeout = prev })
+}
+
 // A blackholed TCP TURN server holds gathering, but the bounded wait gives up on it in time and
-// leaves the host candidates gathered so far, in the snapshot and in the local description.
+// leaves the host candidates gathered so far, in the snapshot and in the local description. And
+// closing the peer connection while the dial still hangs returns once the dial times out, not
+// when the OS gives up on it.
 func TestAwaitGatheringBoundsBlackholedTURN(t *testing.T) {
+	const limit = 500 * time.Millisecond
+	// Past limit, so gathering is still held when the bounded wait gives up.
+	shortTURNDial(t, 2*time.Second)
 	std, err := stdnet.NewNet()
 	if err != nil {
 		t.Fatal(err)
 	}
 	bh := &blackholeNet{Net: std, unblock: make(chan struct{})}
+	// Registered first, so it runs last: the endpoint stays blackholed through Close.
+	defer close(bh.unblock)
 	pc, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, WebRTCTuning{}, iceNet{net: bh})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pc.Close()
-	defer close(bh.unblock)
 	if err := addICEServers(pc, []webrtc.ICEServer{{URLs: []string{"turn:127.0.0.1:3478?transport=tcp"}, Username: "u", Credential: "p"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -293,7 +307,6 @@ func TestAwaitGatheringBoundsBlackholedTURN(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const limit = 500 * time.Millisecond
 	start := time.Now()
 	if awaitGathering(gatherComplete, limit) {
 		t.Fatal("gathering completed with its TURN server blackholed")
@@ -308,6 +321,70 @@ func TestAwaitGatheringBoundsBlackholedTURN(t *testing.T) {
 	if got := strings.Count(pc.LocalDescription().SDP, "a=candidate:"); got < len(cands) {
 		t.Fatalf("the local description carries %d candidates, want at least the %d gathered", got, len(cands))
 	}
+
+	closed := make(chan struct{})
+	go func() {
+		pc.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(turnDialTimeout + 2*time.Second):
+		t.Fatal("Close waited on the blackholed TURN dial past turnDialTimeout")
+	}
+}
+
+// slowNet is the host's network stack, except that a TCP dial waits until released.
+type slowNet struct {
+	*stdnet.Net
+	release chan struct{}
+}
+
+func (n *slowNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (transport.TCPConn, error) {
+	<-n.release
+	return n.Net.DialTCP(network, laddr, raddr)
+}
+
+// A TCP dial that outlasts turnDialTimeout fails at the timeout, and the connection it makes
+// after all is closed rather than leaked. One that finishes in time is returned as made.
+func TestBoundedDialNet(t *testing.T) {
+	shortTURNDial(t, 100*time.Millisecond)
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	raddr := ln.Addr().(*net.TCPAddr)
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := &slowNet{Net: std, release: make(chan struct{})}
+	n := boundedDialNet{slow}
+
+	start := time.Now()
+	if _, err := n.DialTCP("tcp4", nil, raddr); !errors.Is(err, errTURNDialTimeout) {
+		t.Fatalf("DialTCP = %v, want errTURNDialTimeout", err)
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("DialTCP took %v, want about %v", waited, turnDialTimeout)
+	}
+	close(slow.release)
+	late, err := ln.Accept()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer late.Close()
+	late.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := late.Read(make([]byte, 1)); err == nil || errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatalf("the late connection was not closed: read returned %v", err)
+	}
+
+	conn, err := n.DialTCP("tcp4", nil, raddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Close()
 }
 
 func TestAwaitGathering(t *testing.T) {

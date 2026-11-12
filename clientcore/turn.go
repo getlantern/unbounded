@@ -9,18 +9,6 @@ import (
 	"github.com/getlantern/broflake/common"
 )
 
-// addICEServers adds servers (TURN relays Freddie sent for a room pairing) to pc's ICE servers.
-// ICE gathers with the new servers only if this runs before SetLocalDescription. An empty list
-// changes nothing.
-func addICEServers(pc *webrtc.PeerConnection, servers []webrtc.ICEServer) error {
-	if len(servers) == 0 {
-		return nil
-	}
-	config := pc.GetConfiguration()
-	config.ICEServers = append(append([]webrtc.ICEServer(nil), config.ICEServers...), servers...)
-	return pc.SetConfiguration(config)
-}
-
 // turnGatherWait bounds ICE gathering on a peer connection that has a room pairing's TURN servers.
 // Gathering completes only once every server has answered or failed, and pion dials a TCP or TLS
 // TURN server with no timeout, so a censor that drops its SYNs would hold gathering for the OS
