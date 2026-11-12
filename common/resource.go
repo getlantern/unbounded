@@ -156,6 +156,13 @@ type SignalMsg struct {
 	// the producer can tell which of its pairings it is serving. Omitted
 	// otherwise. Never logged.
 	Pairing string `json:",omitempty"`
+	// ICEServers is set by Freddie, with Room, on a genesis message it delivered through a room,
+	// and on the offer it returns to a producer whose genesis a room consumer took. The peer adds
+	// them (TURN relays) to its peer connection before gathering, so a pairing that can't connect
+	// directly can connect through a relay. Producers and consumers cannot set it. Omitted
+	// otherwise, so every other message is unchanged on the wire. Never logged: it carries
+	// credentials.
+	ICEServers []webrtc.ICEServer `json:",omitempty"`
 }
 
 // TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?

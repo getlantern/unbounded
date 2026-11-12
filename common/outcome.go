@@ -21,6 +21,9 @@ const (
 	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
 	// Freddie label the outcome with the country it derived for that consumer.
 	PrevOfferIDField = "prev-offer-id"
+	// PrevPathField says whether a connected attempt's selected candidate pair went through a TURN
+	// relay: PathRelay or PathDirect. Only sent with OutcomeConnected.
+	PrevPathField = "prev-path"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
@@ -42,6 +45,24 @@ const (
 	// OutcomeConnected: the data channel opened.
 	OutcomeConnected = "connected"
 )
+
+// Values of PrevPathField.
+const (
+	PathRelay  = "relay"
+	PathDirect = "direct"
+)
+
+// OutcomePath maps a reported path onto the path label: relay, direct, or unreported when the
+// producer sent nothing (an attempt that didn't connect, or a producer that predates the field)
+// or something unknown.
+func OutcomePath(s string) string {
+	switch s {
+	case PathRelay, PathDirect:
+		return s
+	default:
+		return "unreported"
+	}
+}
 
 var producerOutcomes = map[string]bool{
 	OutcomeNoLocalSrflx:     true,
