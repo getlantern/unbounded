@@ -507,6 +507,33 @@ func TestPoolProducerNeedsSTUN(t *testing.T) {
 	}
 }
 
+// A producer that serves only its rooms but has no tickets can't be given TURN servers, so it
+// still needs STUN without a mapped address and posts no genesis.
+func TestTicketlessRoomsOnlyProducerNeedsSTUN(t *testing.T) {
+	for _, tc := range failingSTUN {
+		t.Run(tc.name, func(t *testing.T) {
+			o, posted := genesisFreddie(t)
+			o.RoomTickets = nil
+			o.SetServePool(false)
+			o.STUNBatch = tc.batch
+			fsm := newProducerWebRTC(o, nil, false)
+
+			// A failed preflight waits out its backoff, so cut that short.
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			next, out := fsm.state[0](ctx, fsm.com, nil)
+			if next != 0 || len(out) != 0 {
+				t.Fatalf("state 0 went to state %d with %d values, want 0 with none", next, len(out))
+			}
+			select {
+			case form := <-posted:
+				t.Errorf("posted a genesis to %q", form.Get("send-to"))
+			default:
+			}
+		})
+	}
+}
+
 // A room slot that went without STUN goes back to state 0 rather than offer itself to the pool
 // once its tickets are gone.
 func TestRoomProducerWithoutSTUNLeavesThePoolAlone(t *testing.T) {

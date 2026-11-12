@@ -48,7 +48,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
 	// roomsWithoutSTUN is set when the current attempt went without STUN only because it serves
-	// rooms alone, so state 2 sends it back to state 0 if it would now serve the pool.
+	// its rooms alone, so state 2 sends it back to state 0 if it no longer does.
 	var roomsWithoutSTUN bool
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
@@ -65,12 +65,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// list can't be fetched or the STUN check fails, it takes offers on its mapped address
 			// alone. After a failed check it skips STUN until the check's backoff ends, rather
 			// than wait out a failing check before every offer. STUN is best-effort in the same way
-			// for an attempt that serves rooms alone, since Freddie may hand it TURN servers with
-			// its room's offer: one that gets none gathers only host candidates and gives up in
+			// for an attempt that serves rooms alone and has room tickets, since Freddie may hand it
+			// TURN servers with its room's offer: one that gets none gathers only host candidates and gives up in
 			// state 3 rather than here.
 			mapped := iceNetOf(options).mapped()
-			roomsOnly := sendsToRoomsOnly(options, roomSlot, options.CurrentRoomTickets())
-			stunOptional := mapped || roomsOnly
+			stunOptional := mapped || servesTicketedRoomsOnly(options, roomSlot)
 			config := webrtc.Configuration{}
 			useSTUN := false
 			cohortDropped = false
@@ -255,9 +254,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				}
 				return 0, []interface{}{}
 			}
-			// Likewise an attempt that went without STUN only because it served rooms alone goes
-			// back to state 0 to fetch STUN rather than offer itself to the pool.
-			if roomsWithoutSTUN && !sendsToRoomsOnly(options, roomSlot, options.CurrentRoomTickets()) {
+			// Likewise an attempt that went without STUN only because it served its rooms alone goes
+			// back to state 0 for STUN once it no longer does, rather than offer itself without it.
+			if roomsWithoutSTUN && !servesTicketedRoomsOnly(options, roomSlot) {
 				if peerConnection != nil {
 					peerConnection.Close()
 				}
@@ -945,6 +944,13 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 // its rooms alone (see newProducerWebRTC).
 func sendsToRoomsOnly(options *WebRTCOptions, roomSlot bool, tickets []string) bool {
 	return !options.ServesPool() || (roomSlot && len(tickets) > 0)
+}
+
+// servesTicketedRoomsOnly reports whether a worker's genesis messages go to its rooms alone and
+// it has room tickets, so Freddie may give it TURN servers with an offer.
+func servesTicketedRoomsOnly(options *WebRTCOptions, roomSlot bool) bool {
+	tickets := options.CurrentRoomTickets()
+	return len(tickets) > 0 && sendsToRoomsOnly(options, roomSlot, tickets)
 }
 
 // genesisForm is a genesis POST's form: the genesis message g, plus the
