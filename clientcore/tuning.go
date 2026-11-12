@@ -33,8 +33,9 @@ type WebRTCTuning struct {
 	// window. pion's default is 1MiB.
 	SCTPMaxReceiveBuffer uint32
 	// DataChannelQueueTarget is the queuing delay a data channel's send buffer may hold above the
-	// path's own before packets are dropped (see sendGate). Zero is defaultQueueTarget. Unlike the
-	// fields above it isn't a pion setting, so it applies to the browser widget too.
+	// path's own before packets are dropped (see sendGate). Zero is defaultQueueTarget. It has no
+	// effect in the browser widget, whose WebRTC stack reports no round trip, so its gate never
+	// closes.
 	DataChannelQueueTarget time.Duration
 }
 

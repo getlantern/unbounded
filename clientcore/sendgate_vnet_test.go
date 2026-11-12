@@ -127,6 +127,7 @@ func TestSendGate_KeepsThroughputOnALongRoundTrip(t *testing.T) {
 
 	t.Logf("40ms round trip: ungated %.1f MB/s, gated %.1f MB/s (rtt %v), fixed 64KiB threshold %.1f MB/s",
 		ungated/1e6, gated/1e6, g.rtt, fixed/1e6)
+	require.Positive(t, g.rtt, "the gated run measured no round trip, so it never gated")
 	require.Greater(t, ungated, 0.0)
 	require.GreaterOrEqual(t, gated, 0.8*ungated, "the gate cut a long path's throughput")
 }

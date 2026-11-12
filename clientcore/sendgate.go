@@ -60,8 +60,6 @@ type sendMark struct {
 
 const (
 	defaultQueueTarget = 20 * time.Millisecond
-	// gateFloor is buffered data the gate never drops below, so a slow trickle is never cut.
-	gateFloor = 16 << 10
 	// gateRTTSlack scales the round trip before an older byte counts as queued: SCTP's smoothed
 	// round trip, refreshed every gateRTTEvery, can trail the path's.
 	gateRTTSlack = 1.25
@@ -113,7 +111,7 @@ func (g *sendGate) allow(n int, buffered uint64, now time.Time) bool {
 // the path's, and by more than a quarter of the target so that a burst's own serialization
 // doesn't count.
 func (g *sendGate) queue(buffered uint64, now time.Time) (time.Duration, bool) {
-	if g.rtt <= 0 || buffered <= gateFloor || g.first == len(g.marks) {
+	if g.rtt <= 0 || buffered == 0 || g.first == len(g.marks) {
 		return 0, false
 	}
 	age := now.Sub(g.marks[g.first].at)
@@ -165,6 +163,13 @@ func (g *sendGate) admits(buffered uint64, age time.Duration, queuing bool, now 
 // release forgets the marks of bytes the channel no longer buffers, leaving marks[first] as the
 // send that holds the oldest buffered byte, and returns how many bytes were released since the
 // last call.
+//
+// pion also releases bytes that are selectively acknowledged past a lost chunk, so while a hole
+// is outstanding sent-buffered runs ahead of the oldest byte, and the gate takes a younger byte
+// for the oldest. That errs towards admitting: the gate sees less queue, never more. The hole
+// lasts until the lost chunk is abandoned, as this unretransmitted channel does promptly, and a
+// QUIC sender is backing off for that loss anyway. The drain prediction, buffered/rate, uses
+// pion's exact buffered total and is unaffected.
 func (g *sendGate) release(buffered uint64) uint64 {
 	head := g.sent - min(buffered, g.sent)
 	released := head - min(g.head, head)

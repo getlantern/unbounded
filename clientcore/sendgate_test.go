@@ -64,14 +64,37 @@ func (c *simChannel) run(ms int) {
 	}
 }
 
-func TestSendGate_NeverDropsBelowTheFloor(t *testing.T) {
+// A slow trickle on a slow path is never cut: each packet is acknowledged before the next, so it
+// never queues behind another.
+func TestSendGate_DoesNotCutASlowTrickle(t *testing.T) {
 	g := newSendGate(0)
-	c := newSimChannel(1, 50*time.Millisecond)
-	for range 13 {
+	g.setRTT(50 * time.Millisecond)
+	c := newSimChannel(10, 50*time.Millisecond) // 10KB/s: 120ms to send each packet
+	for range 20 {
 		assert.True(t, c.offer(g, 1200))
 		c.run(1000)
 	}
 	assert.Zero(t, g.dropped)
+}
+
+// On a slow path, a small buffer can still be a long queue: 16KB at 32KB/s is half a second. The
+// gate judges it by delay, not size.
+func TestSendGate_HoldsASlowPathsQueueNearTheTarget(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(20 * time.Millisecond)
+	c := newSimChannel(32, 20*time.Millisecond) // 32KB/s
+	var worst time.Duration
+	for i := range 10_000 {
+		if i%30 == 0 {
+			c.offer(g, 1200) // 40KB/s offered
+		}
+		c.tick()
+		if i > 2000 {
+			worst = max(worst, time.Duration(c.queued/c.perMs)*time.Millisecond)
+		}
+	}
+	assert.Positive(t, g.dropped)
+	assert.LessOrEqual(t, worst, 100*time.Millisecond)
 }
 
 // On an idle, fast path with a long round trip, steadily paced traffic keeps a round trip's worth
@@ -106,7 +129,10 @@ func TestSendGate_BurstsWithIdleGaps(t *testing.T) {
 }
 
 // aimdSender offers packets as a congestion-controlled sender such as QUIC does: it halves its
-// rate on a drop, at most once a round trip, and otherwise adds about a packet a round trip.
+// rate on a drop, at most once a round trip. It regains a round trip's worth of rate each
+// millisecond, a round trip times faster than Reno's packet per round trip and nearer CUBIC's
+// recovery, which quic-go uses; Reno's would leave a long path idle after every drop whatever
+// the gate did.
 type aimdSender struct {
 	perMs    float64
 	backoff  time.Time
