@@ -113,10 +113,19 @@ func TestSendGate_KeepsThroughputOnALongRoundTrip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("runs data channels over a virtual network for several seconds")
 	}
+	if raceEnabled {
+		t.Skip("under the race detector pion is bound by CPU, not by the path this measures")
+	}
 	const oneWay, dur = 20 * time.Millisecond, 4 * time.Second
 
 	pc, d, received := vnetDataChannelPair(t, oneWay)
 	ungated := blast(t, pc, d, received, dur, func(int, uint64, time.Time) bool { return true }, nil)
+
+	// On a machine too slow to fill the path, the channel queues in pion, not on the path, and
+	// the gate rightly drops: that measures the machine, not the gate.
+	if ungated < 10e6 {
+		t.Skipf("ungated throughput %.1f MB/s: the channel is bound by CPU, not the path", ungated/1e6)
+	}
 
 	pc, d, received = vnetDataChannelPair(t, oneWay)
 	g := newSendGate(0)
