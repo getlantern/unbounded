@@ -1,0 +1,85 @@
+package clientcore
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+)
+
+// drainAt feeds g a channel that sends perTick bytes and drains drainPerTick of them every
+// gateSampleEvery, for ticks samples, and returns the buffered amount and time it ends at.
+func drainAt(g *sendGate, start time.Time, buffered uint64, perTick, drainPerTick uint64, ticks int) (uint64, time.Time) {
+	now := start
+	for range ticks {
+		g.allow(int(perTick), buffered, now)
+		buffered = buffered + perTick - min(drainPerTick, buffered+perTick)
+		now = now.Add(gateSampleEvery)
+	}
+	return buffered, now
+}
+
+func TestSendGate_NeverDropsBelowTheFloor(t *testing.T) {
+	g := newSendGate(0)
+	now := time.Now()
+	for i := range 100 {
+		assert.True(t, g.allow(1200, gateFloor, now.Add(time.Duration(i)*time.Millisecond)))
+	}
+	assert.Zero(t, g.dropped)
+}
+
+// Until a drain rate is measured, the buffer may grow to gateStartCap and no further.
+func TestSendGate_CapsTheBufferBeforeItKnowsTheRate(t *testing.T) {
+	g := newSendGate(0)
+	now := time.Now()
+	assert.True(t, g.allow(1200, gateStartCap, now))
+	assert.False(t, g.allow(1200, gateStartCap+1, now))
+}
+
+// With the drain rate known, the gate allows a round trip plus the target's worth of buffered
+// data and drops beyond it.
+func TestSendGate_DropsBeyondTheRoundTripPlusTarget(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	// 1MB/s: 60KB buffered is 60ms, the most the gate allows.
+	_, now := drainAt(g, time.Now(), 0, 50_000, 50_000, 20)
+	assert.InDelta(t, 1e6, g.rate, 1e5)
+
+	assert.True(t, g.admits(55_000), "55ms of drain is within 40ms + 20ms")
+	assert.False(t, g.admits(70_000), "70ms of drain is past it")
+	assert.False(t, g.allow(1200, 70_000, now.Add(time.Millisecond)))
+	assert.Equal(t, uint64(1), g.dropped)
+}
+
+// Where the round trip can't be measured, the gate assumes gateFallbackRTT rather than none, so a
+// distant browser peer's data in flight isn't taken for a queue.
+func TestSendGate_FallsBackToADefaultRoundTrip(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	drainAt(g, time.Now(), 0, 50_000, 50_000, 20)
+	assert.True(t, g.admits(110_000), "110ms of drain is within 100ms + 20ms")
+	assert.False(t, g.admits(130_000))
+	g.setRTT(0)
+	assert.Zero(t, g.rtt, "an unmeasured round trip doesn't replace the fallback")
+}
+
+// A channel that drains slower than it is fed stops being fed once its queue passes the target,
+// and its buffer stays bounded instead of growing with every send.
+func TestSendGate_HoldsTheQueueNearTheTarget(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(10 * time.Millisecond)
+	now := time.Now()
+	buffered := uint64(0)
+	// Offered 4MB/s into a 1MB/s channel, in 1200-byte packets.
+	for range 2000 {
+		for range 10 {
+			if g.allow(1200, buffered, now) {
+				buffered += 1200
+			}
+		}
+		buffered -= min(buffered, 1000) // 1MB/s at one tick per millisecond
+		now = now.Add(time.Millisecond)
+	}
+	assert.Positive(t, g.dropped)
+	// 10ms + 20ms at 1MB/s is 30KB; allow the rate estimate some slack.
+	assert.Less(t, buffered, uint64(45_000))
+}

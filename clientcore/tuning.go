@@ -32,6 +32,10 @@ type WebRTCTuning struct {
 	// SCTPMaxReceiveBuffer is the SCTP receive buffer in bytes, which bounds a reliable channel's
 	// window. pion's default is 1MiB.
 	SCTPMaxReceiveBuffer uint32
+	// DataChannelQueueTarget is the queuing delay a data channel's send buffer may hold above the
+	// path's own before packets are dropped (see sendGate). Zero is defaultQueueTarget. Unlike the
+	// fields above it isn't a pion setting, so it applies to the browser widget too.
+	DataChannelQueueTarget time.Duration
 }
 
 // pion's ICE liveness defaults, for filling in the timers SetICETimeouts needs together.

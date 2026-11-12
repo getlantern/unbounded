@@ -691,6 +691,12 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				defer close(dcStatsDone)
 			}
 
+			// One gate per data channel: its drain rate and round trip are this channel's.
+			gate := newSendGate(options.Tuning.DataChannelQueueTarget)
+			gate.setRTT(sctpRTT(peerConnection))
+			rttTicker := time.NewTicker(gateRTTEvery)
+			defer rttTicker.Stop()
+
 		proxyloop:
 			for {
 				select {
@@ -708,11 +714,16 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				case _ = <-connectionClosed:
 					slog.Debug("Connection closed, resetting!")
 					break proxyloop
-					// Handle messages from the router
+				case <-rttTicker.C:
+					gate.setRTT(sctpRTT(peerConnection))
+				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
 						payload := msg.Data.([]byte)
+						if !gate.allow(len(payload), d.BufferedAmount(), time.Now()) {
+							continue
+						}
 						if err := d.Send(payload); err != nil {
 							slog.Debug("Error sending to datachannel, resetting", "bytes", len(payload), "error", err)
 							break proxyloop
