@@ -45,6 +45,10 @@ const (
 	remoteICEGatheringTTL = 15
 )
 
+// maxSignalBodyBytes caps a signaling POST. Go's own form limit is 10MB; the largest real message,
+// an SDP or a full ICE candidate list plus room tickets, is a few kilobytes.
+const maxSignalBodyBytes = 64 << 10
+
 var (
 	consumerTable = newConsumerIndex(0)
 	signalTable   = userTable{Data: make(map[string]chan string), BufferSz: 1}
@@ -771,6 +775,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	reqChan := signalTable.Add(reqID)
 	defer signalTable.Delete(reqID)
 
+	// Clients send every signaling field in the form-encoded body. ParseForm would also merge in
+	// the query, which MaxBytesReader doesn't bound, so ignore it. It is ignored, not refused,
+	// because a fronting CDN or other intermediary may add a query of its own. The request and URL
+	// are copied so the caller's stay intact for anything else that reads them.
+	bodyOnly, u := *r, *r.URL
+	u.RawQuery = ""
+	bodyOnly.URL = &u
+	r = &bodyOnly
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalBodyBytes)
 	if err := r.ParseForm(); err != nil {
 		span.SetStatus(codes.Error, "failed to parse form")
 		w.WriteHeader(http.StatusBadRequest)
@@ -789,6 +802,15 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	}
 
 	isGenesis := sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms
+	// Only a genesis is broadcast, so only a genesis may be. Anything else on the genesis stream
+	// would be taken by consumers as a producer to answer.
+	validType := msgType >= int64(common.SignalMsgGenesis) && msgType <= int64(common.SignalMsgICE)
+	if !validType || (isGenesis && common.SignalMsgType(msgType) != common.SignalMsgGenesis) {
+		span.SetStatus(codes.Error, "message type does not match recipient")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("400\n"))
+		return
+	}
 	// A rooms-only genesis is traced as an ordinary one, so the span doesn't mark the producer as
 	// paired.
 	recipient := sendTo
@@ -943,6 +965,8 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	case <-time.After(optimizedTTL):
 		span.AddEvent("timeout waiting for response")
 		w.Write(nil)
+	case <-ctx.Done():
+		// The sender hung up, so free its reply slot now rather than at optimizedTTL.
 	}
 }
 

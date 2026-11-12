@@ -122,7 +122,10 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		runtime.Goexit()
 	}
 
-	copy(p, b)
+	// Return what was copied, never len(b): quic-go slices its pooled buffer to n, and that buffer's
+	// capacity is one max-size packet, so an n past it from an oversized message is a slice-bounds
+	// panic in quic-go's read loop. A truncated packet just fails to decrypt.
+	n = copy(p, b)
 	// Attribute bytes to this connection's donor country and to its session.
 	// Both are nil-checked because migration_test and other callers construct
 	// this type directly without the instrumentation fields.
@@ -139,7 +142,7 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 	if q.ioSets != nil {
 		addProxyIO(int64(len(b)), q.ioSets.rx)
 	}
-	return len(b), q.tcpAddr, err
+	return n, q.tcpAddr, err
 }
 
 func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {

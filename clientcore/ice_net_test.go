@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -769,5 +770,117 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 	}
 	if got := fetches.Load(); got != 1 {
 		t.Errorf("fetched the STUN list %d times, want 1", got)
+	}
+}
+
+// A producer turns away a consumer's candidate list it should not hand pion: too many, or a
+// candidate with a bad port, protocol or address. It drops candidates no remote peer can be at.
+func TestFilterRemoteCandidates(t *testing.T) {
+	ok := func(addr string, port uint16) webrtc.ICECandidate {
+		return webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: addr, Port: port,
+			Foundation: "1", Priority: 1, Component: 1, RelatedAddress: "192.168.1.10", RelatedPort: 4000}
+	}
+	injected := func(field string) webrtc.ICECandidate {
+		c := ok("198.51.100.1", 5000)
+		switch field {
+		case "foundation":
+			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx pad"
+		case "tcp":
+			c.Protocol, c.TCPType = webrtc.ICEProtocolTCP, "passive"
+		case "untyped":
+			c.Typ = webrtc.ICECandidateTypeUnknown
+		case "host":
+			c.Typ, c.RelatedAddress, c.RelatedPort = webrtc.ICECandidateTypeHost, "", 0
+		case "dropped":
+			c.Foundation = "x 1 udp 1 127.0.0.1 22 typ srflx"
+		case "raddr":
+			c.RelatedAddress = "0.0.0.0 rport 0 ufrag evil"
+		case "masked":
+			c.RelatedAddress, c.RelatedPort = "0.0.0.0", 0
+		}
+		return c
+	}
+	many := make([]webrtc.ICECandidate, maxRemoteCandidates+1)
+	for i := range many {
+		many[i] = ok("198.51.100.1", uint16(1000+i))
+	}
+	badProto := ok("198.51.100.1", 1)
+	badProto.Protocol = webrtc.ICEProtocolUnknown
+	a, b := ok("198.51.100.1", 5000), ok("198.51.100.1", 5000)
+	a.RelatedAddress, a.RelatedPort = "192.168.1.10", 6000
+	b.RelatedAddress, b.RelatedPort = "192.168.1.10", 6001
+	for _, tc := range []struct {
+		name  string
+		cands []webrtc.ICECandidate
+		valid bool
+		kept  int
+	}{
+		{"typical", []webrtc.ICECandidate{ok("192.168.1.10", 5000), ok("198.51.100.1", 5000)}, true, 2},
+		{"at the limit", many[:maxRemoteCandidates], true, maxRemoteCandidates},
+		{"over the limit", many, false, 0},
+		{"same endpoint, different related address", []webrtc.ICECandidate{a, b}, true, 2},
+		{"240/4 other than broadcast kept", []webrtc.ICECandidate{ok("240.1.2.3", 5000)}, true, 1},
+		{"port 0", []webrtc.ICECandidate{ok("198.51.100.1", 0)}, false, 0},
+		{"bad protocol", []webrtc.ICECandidate{badProto}, false, 0},
+		{"hostname", []webrtc.ICECandidate{ok("metadata.google.internal", 80)}, false, 0},
+		{"address spliced in via foundation", []webrtc.ICECandidate{injected("foundation")}, true, 0},
+		{"tcp candidate", []webrtc.ICECandidate{injected("tcp")}, true, 1},
+		{"no type", []webrtc.ICECandidate{injected("untyped")}, false, 0},
+		{"host without related address", []webrtc.ICECandidate{injected("host")}, true, 1},
+		{"spliced foundation, next to a good candidate", []webrtc.ICECandidate{injected("dropped"), ok("198.51.100.1", 5000)}, true, 1},
+		{"fields spliced in via related address", []webrtc.ICECandidate{injected("raddr")}, true, 1},
+		{"masked related address", []webrtc.ICECandidate{injected("masked")}, true, 1},
+		{"unreachable addresses dropped", []webrtc.ICECandidate{
+			ok("127.0.0.1", 22), ok("169.254.169.254", 80), ok("fe80::1", 5000), ok("0.0.0.0", 1), ok("0.1.2.3", 1),
+			ok("224.0.0.1", 1), ok("255.255.255.255", 1), ok("::ffff:255.255.255.255", 1), ok("f3a1.local", 5001), ok("198.51.100.1", 5000),
+		}, true, 1},
+	} {
+		before := append([]webrtc.ICECandidate(nil), tc.cands...)
+		kept, err := filterRemoteCandidates(tc.cands)
+		if !reflect.DeepEqual(tc.cands, before) {
+			t.Errorf("%s: filterRemoteCandidates modified its input", tc.name)
+		}
+		if (err == nil) != tc.valid {
+			t.Errorf("%s: filterRemoteCandidates error = %v, want valid %v", tc.name, err, tc.valid)
+		}
+		if len(kept) != tc.kept {
+			t.Errorf("%s: kept %d candidates, want %d", tc.name, len(kept), tc.kept)
+		}
+		// pion is handed exactly the line that was checked, and it never points at loopback.
+		for _, rc := range kept {
+			if p, err := ice.UnmarshalCandidate(rc.line.Candidate); err != nil || p.Address() != rc.cand.Address || p.Port() != int(rc.cand.Port) {
+				t.Errorf("%s: kept line %q does not parse to %v:%v", tc.name, rc.line.Candidate, rc.cand.Address, rc.cand.Port)
+			}
+			if net.ParseIP(rc.cand.Address).IsLoopback() {
+				t.Errorf("%s: kept a loopback candidate", tc.name)
+			}
+		}
+	}
+}
+
+// A consumer left with no reachable candidate is host-only if it sent only host candidates, and
+// bad ICE if the filter dropped a non-host one, whether or not a host candidate survived.
+func TestUnreachableConsumerOutcome(t *testing.T) {
+	host := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Protocol: webrtc.ICEProtocolUDP, Address: "192.168.1.5", Port: 5000}
+	loopSrflx := webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: "127.0.0.1", Port: 5000}
+	for _, tc := range []struct {
+		name string
+		sent []webrtc.ICECandidate
+		want string
+	}{
+		{"private host only", []webrtc.ICECandidate{host}, common.OutcomeConsumerHostOnly},
+		{"bogus srflx only", []webrtc.ICECandidate{loopSrflx}, common.OutcomeBadConsumerICE},
+		{"private host and bogus srflx", []webrtc.ICECandidate{host, loopSrflx}, common.OutcomeBadConsumerICE},
+	} {
+		kept, err := filterRemoteCandidates(tc.sent)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if remoteCandidatesReachable(candidatesOf(kept)) {
+			t.Fatalf("%s: kept %v is reachable", tc.name, kept)
+		}
+		if got := unreachableConsumerOutcome(tc.sent); got != tc.want {
+			t.Errorf("%s: outcome %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

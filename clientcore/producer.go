@@ -6,6 +6,7 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -321,6 +322,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
+			// A peer can reply with any recognized type; state 3 asserts an OfferMsg.
+			if _, ok := offer.(common.OfferMsg); !ok {
+				slog.Debug("Signal message is not an offer", "bytes", len(offerBytes))
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
+
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
 			return 3, []interface{}{peerConnection, replyTo, offer, connectionEstablished, connectionChange, connectionClosed}
 		}),
@@ -518,7 +525,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 
 			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
-			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
+			_, decoded, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
 				slog.Debug("Error decoding signal message", "error", err, "msg", string(iceBytes))
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
@@ -527,7 +534,23 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			if iceMsg.(common.ICEMsg).ConsumerSessionID == "" {
+			iceMsg, ok := decoded.(common.ICEMsg)
+			if !ok {
+				slog.Debug("Signal message is not an ICE message", "bytes", len(iceBytes))
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
+			sent := iceMsg.Candidates
+			remote, err := filterRemoteCandidates(sent)
+			if err != nil {
+				slog.Debug("Rejecting signaling partner's ICE candidates", "error", err)
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+			if iceMsg.ConsumerSessionID == "" {
 				slog.Debug("Missing session ID from signaling partner, aborting!")
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -536,12 +559,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			var remoteAddr net.IP
 
-			// TODO: here we assume valid candidates, but we need to handle the invalid case too
-			for _, c := range iceMsg.(common.ICEMsg).Candidates {
-
-				// XXX: webrtc.AddICECandidate accepts ICECandidateInit types, which are apparently
-				// just serialized ICECandidates?
-				err := peerConnection.AddICECandidate(c.ToJSON())
+			for _, rc := range remote {
+				// rc.line is the exact candidate filterRemoteCandidates checked.
+				err := peerConnection.AddICECandidate(rc.line)
 				if err != nil {
 					slog.Debug("Error adding ICE candidate", "error", err)
 					last.record(common.OutcomeBadConsumerICE, peerConnection)
@@ -553,17 +573,17 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// We extract an address from the remote ICE candidates just to send it to the UI for
 				// geolocation purposes. Under the assumption that any public address will suffice, we
 				// arbitrarily select the last public address found in the list of candidates
-				if isPublicIP(c.Address) {
-					remoteAddr = net.ParseIP(c.Address)
+				if isPublicIP(rc.cand.Address) {
+					remoteAddr = net.ParseIP(rc.cand.Address)
 				}
 			}
 
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
 			// us ICE candidates unless they contained at least one reachable candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
-			if !remoteCandidatesReachable(iceMsg.(common.ICEMsg).Candidates) {
-				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
-				last.record(common.OutcomeConsumerHostOnly, peerConnection)
+			if !remoteCandidatesReachable(candidatesOf(remote)) {
+				slog.Debug("Signaling partner sent no reachable ICE candidates, aborting!", "sent", len(sent), "kept", len(remote))
+				last.record(unreachableConsumerOutcome(sent), peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -576,7 +596,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				connectionClosed,
 				remoteAddr,
 				offer,
-				iceMsg.(common.ICEMsg).ConsumerSessionID,
+				iceMsg.ConsumerSessionID,
 			}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -810,6 +830,17 @@ func reachableCandidates(cands []webrtc.ICECandidate, pn iceNet) bool {
 	return false
 }
 
+// unreachableConsumerOutcome is the outcome of a consumer none of whose candidates, after
+// filterRemoteCandidates, is reachable. sent is the list as the consumer sent it: if it was all
+// host candidates the consumer is host-only, as before filtering; if it had a non-host candidate
+// the filter dropped, at an address no peer can be at, its ICE was bad.
+func unreachableConsumerOutcome(sent []webrtc.ICECandidate) string {
+	if hasNonHostCandidate(sent) {
+		return common.OutcomeBadConsumerICE
+	}
+	return common.OutcomeConsumerHostOnly
+}
+
 // remoteCandidatesReachable reports whether a producer could reach a consumer
 // at any of cands: a server-reflexive or relay candidate, or a host candidate
 // on a public address, which is how a consumer advertises a port mapped on its
@@ -821,6 +852,101 @@ func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
 		}
 	}
 	return false
+}
+
+// maxRemoteCandidates bounds how many ICE candidates a producer accepts from one consumer. An
+// honest consumer sends a few per interface and STUN server; the cap is well above that and only
+// stops a peer from making a volunteer process, and send connectivity checks to, a huge list.
+const maxRemoteCandidates = 64
+
+// remoteCandidate is a consumer's ICE candidate as the producer will add it: line is the exact
+// candidate AddICECandidate gets, and cand is what that line parses to. pion may still skip a
+// kept line, such as one whose spliced-in ufrag doesn't match the offer; that only costs the
+// consumer that crafted it its own attempt.
+type remoteCandidate struct {
+	line webrtc.ICECandidateInit
+	cand webrtc.ICECandidate
+}
+
+// filterRemoteCandidates returns the consumer's candidates pion should be asked to check. Each is
+// marshaled once into the line pion will parse, and every check runs on what that line parses
+// to, so a field pion writes verbatim (a Foundation holding spaces, say) can't make pion connect
+// somewhere other than what was checked; whatever else a spliced line carries can't change where
+// pion connects. It rejects a list that is too long, or has a candidate that doesn't parse, or
+// has a bad port or protocol or an address that isn't an IP.
+// It drops, without rejecting the list, a candidate no remote peer can be at: an mDNS name, which
+// pion would resolve on the volunteer's own link (our consumers gather raw IPs, never mDNS), or a
+// loopback, link-local, unspecified, "this network", multicast or broadcast address. Duplicates
+// are left to pion, which skips a remote candidate equal to one it already has.
+func filterRemoteCandidates(cands []webrtc.ICECandidate) ([]remoteCandidate, error) {
+	if len(cands) > maxRemoteCandidates {
+		return nil, fmt.Errorf("%d candidates exceeds the limit of %d", len(cands), maxRemoteCandidates)
+	}
+	kept := make([]remoteCandidate, 0, len(cands))
+	for _, c := range cands {
+		// A dropped candidate never reaches pion, so dropping on the field as sent is safe.
+		if strings.HasSuffix(c.Address, ".local") {
+			continue
+		}
+		rc, err := parseRemoteCandidate(c)
+		if err != nil {
+			return nil, err
+		}
+		if !remotePeerAddr(net.ParseIP(rc.cand.Address)) {
+			continue
+		}
+		kept = append(kept, rc)
+	}
+	return kept, nil
+}
+
+// parseRemoteCandidate marshals c into the line pion will parse and checks what that line parses to.
+func parseRemoteCandidate(c webrtc.ICECandidate) (remoteCandidate, error) {
+	line := c.ToJSON()
+	parsed, err := ice.UnmarshalCandidate(line.Candidate)
+	if err != nil {
+		return remoteCandidate{}, fmt.Errorf("candidate %v does not parse: %w", c.Address, err)
+	}
+	if parsed.Port() <= 0 || parsed.Port() > math.MaxUint16 {
+		return remoteCandidate{}, fmt.Errorf("candidate %v has bad port %d", parsed.Address(), parsed.Port())
+	}
+	if net.ParseIP(parsed.Address()) == nil {
+		return remoteCandidate{}, fmt.Errorf("candidate address %q is not an IP", parsed.Address())
+	}
+	protocol, err := webrtc.NewICEProtocol(parsed.NetworkType().NetworkShort())
+	if err != nil {
+		return remoteCandidate{}, fmt.Errorf("candidate %v has unsupported protocol: %w", parsed.Address(), err)
+	}
+	typ, err := webrtc.NewICECandidateType(parsed.Type().String())
+	if err != nil {
+		return remoteCandidate{}, fmt.Errorf("candidate %v has unsupported type: %w", parsed.Address(), err)
+	}
+	return remoteCandidate{
+		line: line,
+		cand: webrtc.ICECandidate{Typ: typ, Protocol: protocol, Address: parsed.Address(), Port: uint16(parsed.Port())},
+	}, nil
+}
+
+// candidatesOf returns the parsed candidates of rcs.
+func candidatesOf(rcs []remoteCandidate) []webrtc.ICECandidate {
+	cands := make([]webrtc.ICECandidate, len(rcs))
+	for i, rc := range rcs {
+		cands[i] = rc.cand
+	}
+	return cands
+}
+
+// remotePeerAddr reports whether ip is an address a remote peer could be reached at.
+func remotePeerAddr(ip net.IP) bool {
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return false
+	}
+	// 0.0.0.0/8 is "this network". The rest of 240.0.0.0/4 is left alone: some networks number
+	// hosts there, and a peer on the same one could reach them.
+	if ip4 := ip.To4(); ip4 != nil && (ip4[0] == 0 || ip4.Equal(net.IPv4bcast)) {
+		return false
+	}
+	return true
 }
 
 // isPublicIP reports whether addr is a public IP address.

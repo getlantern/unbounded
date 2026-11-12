@@ -3,6 +3,7 @@ package netstatecl
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -63,5 +64,8 @@ func Exec(netstated string, inst *Instruction) error {
 	}
 
 	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return fmt.Errorf("netstated refused the report: %v", res.Status)
+	}
 	return nil
 }
