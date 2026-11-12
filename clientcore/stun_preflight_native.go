@@ -9,6 +9,8 @@ import (
 
 	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v5"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // stunPreflight sends a STUN binding request to each of servers at once, and reports whether any
@@ -23,28 +25,41 @@ func stunPreflight(ctx context.Context, n transport.Net, servers []string, timeo
 	if n != nil {
 		p = netProber(n)
 	}
-	outcome := firstOK(len(servers), func(i int) string { return p.probeSTUN(ctx, servers[i]) })
-	return STUNPreflightResult{Outcome: outcome, Servers: len(servers), Elapsed: time.Since(start)}
+	res := firstOK(len(servers), func(i int) probeResult { return p.probeSTUN(ctx, servers[i]) })
+	return STUNPreflightResult{Outcome: res.outcome, Cause: res.cause, Servers: len(servers), Elapsed: time.Since(start)}
+}
+
+// probeResult is how one probe went: a STUNPreflight* outcome and, for STUNPreflightNoSocket, why.
+type probeResult struct {
+	outcome string
+	cause   string
 }
 
 // firstOK runs probe(0) to probe(n-1) at once and returns ok as soon as one returns it, or else the
-// furthest any got. Probes still running when it returns must end with their ctx.
-func firstOK(n int, probe func(i int) string) string {
-	results := make(chan string, n)
-	for i := range n {
-		go func() { results <- probe(i) }()
+// furthest any got, the lowest-numbered of those on a tie: probeSTUN numbers IPv4 first, and an
+// IPv4 failure says more than a missing IPv6 route. Probes still running when it returns must end
+// with their ctx.
+func firstOK(n int, probe func(i int) probeResult) probeResult {
+	type numbered struct {
+		i int
+		probeResult
 	}
-	outcome := STUNPreflightNoServers
+	results := make(chan numbered, n)
+	for i := range n {
+		go func() { results <- numbered{i, probe(i)} }()
+	}
+	best := numbered{i: n, probeResult: probeResult{outcome: STUNPreflightNoServers}}
 	for range n {
 		r := <-results
-		if r == STUNPreflightOK {
-			return r
+		if r.outcome == STUNPreflightOK {
+			return r.probeResult
 		}
-		if preflightRank[r] > preflightRank[outcome] {
-			outcome = r
+		rank, bestRank := preflightRank[r.outcome], preflightRank[best.outcome]
+		if rank > bestRank || rank == bestRank && r.i < best.i {
+			best = r
 		}
 	}
-	return outcome
+	return best.probeResult
 }
 
 // preflightRank orders failures by how far a probe got.
@@ -93,16 +108,16 @@ func netProber(n transport.Net) prober {
 // probeSTUN resolves server in each address family and probes what it finds, every family at
 // once, as ICE gathers from both. Each server and family resolves on its own, so a slow lookup
 // doesn't hold up the rest.
-func (p prober) probeSTUN(ctx context.Context, server string) string {
+func (p prober) probeSTUN(ctx context.Context, server string) probeResult {
 	uri, err := stun.ParseURI(server)
 	if err != nil || uri.Scheme != stun.SchemeTypeSTUN {
-		return STUNPreflightNoServers
+		return probeResult{outcome: STUNPreflightNoServers}
 	}
 	families := p.resolve(uri.Host, uri.Port)
-	return firstOK(len(families), func(i int) string {
+	return firstOK(len(families), func(i int) probeResult {
 		addr := families[i](ctx)
 		if addr == nil {
-			return STUNPreflightNoServers
+			return probeResult{outcome: STUNPreflightNoServers}
 		}
 		return probeAddr(ctx, p.listen, addr)
 	})
@@ -114,14 +129,14 @@ func (p prober) probeSTUN(ctx context.Context, server string) string {
 //
 // Like ICE's server-reflexive gathering, it listens on an unspecified address in addr's family
 // and writes to addr, rather than dialing it.
-func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) string {
+func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) probeResult {
 	network := "udp6"
 	if addr.IP.To4() != nil {
 		network = "udp4"
 	}
-	conn := openSocket(ctx, listen, network)
+	conn, cause := openSocket(ctx, listen, network)
 	if conn == nil {
-		return STUNPreflightNoSocket
+		return probeResult{outcome: STUNPreflightNoSocket, cause: cause}
 	}
 	defer conn.Close()
 	stop := context.AfterFunc(ctx, func() { conn.Close() })
@@ -129,10 +144,10 @@ func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) string
 
 	req, err := stun.Build(stun.TransactionID, stun.BindingRequest)
 	if err != nil {
-		return STUNPreflightNoSocket
+		return probeResult{outcome: STUNPreflightNoSocket, cause: common.PreflightCauseBuild}
 	}
 	if _, err := conn.WriteTo(req.Raw, addr); err != nil {
-		return STUNPreflightNoSocket
+		return probeResult{outcome: STUNPreflightNoSocket, cause: common.PreflightCause("send", socketErrorClass(err))}
 	}
 	resendAfter := stunPreflightTimeout / 2
 	if deadline, ok := ctx.Deadline(); ok {
@@ -146,7 +161,7 @@ func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) string
 		// A read fails when ctx ends and closes conn.
 		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
-			return STUNPreflightNoReply
+			return probeResult{outcome: STUNPreflightNoReply}
 		}
 		res := &stun.Message{Raw: append([]byte(nil), buf[:n]...)}
 		if res.Decode() != nil || res.TransactionID != req.TransactionID {
@@ -154,14 +169,15 @@ func probeAddr(ctx context.Context, listen listenFunc, addr *net.UDPAddr) string
 		}
 		var mapped stun.XORMappedAddress
 		if mapped.GetFrom(res) == nil {
-			return STUNPreflightOK
+			return probeResult{outcome: STUNPreflightOK}
 		}
 	}
 }
 
-// openSocket listens on network, or returns nil if it can't before ctx ends. A transport.Net's
-// ListenUDP takes no context, so it runs aside, and a socket it opens after ctx ends is closed.
-func openSocket(ctx context.Context, listen listenFunc, network string) udpConn {
+// openSocket listens on network, or returns nil and why if it can't before ctx ends. A
+// transport.Net's ListenUDP takes no context, so it runs aside, and a socket it opens after ctx
+// ends is closed.
+func openSocket(ctx context.Context, listen listenFunc, network string) (udpConn, string) {
 	type opened struct {
 		conn udpConn
 		err  error
@@ -174,16 +190,16 @@ func openSocket(ctx context.Context, listen listenFunc, network string) udpConn 
 	select {
 	case o := <-ch:
 		if o.err != nil {
-			return nil
+			return nil, common.PreflightCause("listen", socketErrorClass(o.err))
 		}
-		return o.conn
+		return o.conn, ""
 	case <-ctx.Done():
 		go func() {
 			if o := <-ch; o.err == nil {
 				o.conn.Close()
 			}
 		}()
-		return nil
+		return nil, common.PreflightCauseOpenTimeout
 	}
 }
 

@@ -21,6 +21,11 @@ const (
 	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
 	// Freddie label the outcome with the country it derived for that consumer.
 	PrevOfferIDField = "prev-offer-id"
+	// PrevVPNField is the embedding app's VPN state when the attempt began, one of the values
+	// NormalizeVPNState knows. With the VPN up, a volunteer's WebRTC sockets can follow the tunnel,
+	// so this tells whether outcomes, and the NAT Freddie sees, differ with it. Producers without a
+	// VPN state to report, such as the browser's, send nothing.
+	PrevVPNField = "prev-vpn"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
