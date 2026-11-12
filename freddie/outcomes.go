@@ -35,8 +35,8 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 	span.SetAttributes(attribute.String("producer.prev_outcome", outcome))
 }
 
-// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat and volunteer_nat
-// labels for an attempt that answered offerID.
+// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat, volunteer_nat and
+// delivery labels for an attempt that answered offerID.
 func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	reported := offerID != ""
 	var oc offerConsumer
@@ -48,6 +48,26 @@ func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
 		attribute.String("consumer_nat", outcomeNAT(reported, oc.consumerNAT)),
 		attribute.String("volunteer_nat", outcomeNAT(reported, oc.volunteerNAT)),
+		// Looked up now rather than when the offer arrived: an offer can overtake the genesis
+		// handler's add, but the producer reports only after answering that offer.
+		attribute.String("delivery", outcomeDelivery(reported, oc, f.roomGeneses.has(oc.genesisID))),
+	}
+}
+
+// outcomeDelivery labels how the attempt's genesis was delivered: room when a consumer in one of
+// the producer's rooms took it, pool for any other remembered offer, and unreported or unknown as
+// outcomeNAT has them. A remembered offer is never the zero offerConsumer: its NATs start out as
+// outcomeNATNone.
+func outcomeDelivery(offerIDReported bool, oc offerConsumer, room bool) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case oc == offerConsumer{}:
+		return "unknown"
+	case room:
+		return "room"
+	default:
+		return "pool"
 	}
 }
 

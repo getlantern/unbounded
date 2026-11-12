@@ -374,6 +374,7 @@ type Freddie struct {
 
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
+	roomGeneses    *roomGenesisSet
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -393,6 +394,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
 		tickets:        newTicketCache(maxCachedTickets, time.Now),
 		offerConsumers: newOfferConsumerCache(time.Now),
+		roomGeneses:    newRoomGenesisSet(time.Now),
 	}
 
 	var err error
@@ -484,7 +486,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	}
 
 	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
-		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go)"),
+		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go), and with how the attempt's genesis was delivered: to a consumer in one of the producer's rooms or to the pool (delivery)"),
 		metric.WithUnit("attempt"))
 	if err != nil {
 		return nil, err
@@ -860,6 +862,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		}
 		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
 		if matched {
+			f.roomGeneses.add(reqID)
 			offerICE = roomICE
 		}
 		if len(rooms) > 0 {
@@ -883,6 +886,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
 				volunteerNAT: outcomeNATNone,
 				consumerNAT:  outcomeNATNone,
+				genesisID:    sendTo,
 			}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
