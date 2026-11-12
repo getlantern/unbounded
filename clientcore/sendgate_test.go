@@ -116,3 +116,24 @@ func TestSendGate_LearnsTheRateFromABacklogAfterIdle(t *testing.T) {
 	drainAt(g, now, 100_000, 50_000, 50_000, 20)
 	assert.InDelta(t, 1e6, g.rate, 1e5)
 }
+
+// A burst that straddles a sample boundary leaves data buffered at both ends of the interval
+// though the buffer ran dry within it; that interval must not teach the gate a rate either.
+func TestSendGate_DoesNotLearnFromAnIntervalThatRanDry(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	start := time.Now()
+	g.allow(0, 0, start)
+	for i := range 50 {
+		base := start.Add(time.Duration(i) * gateSampleEvery)
+		// Twenty packets just before the boundary into an empty buffer, then one on it.
+		buffered := uint64(0)
+		for range 20 {
+			g.allow(1200, buffered, base.Add(gateSampleEvery-time.Millisecond))
+			buffered += 1200
+		}
+		g.allow(1200, buffered, base.Add(gateSampleEvery))
+	}
+	assert.Zero(t, g.rate)
+	assert.Zero(t, g.dropped)
+}
