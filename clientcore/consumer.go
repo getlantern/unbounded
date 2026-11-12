@@ -215,8 +215,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			}
 
 			// An attempt without STUN whose room tickets are gone has nothing it can answer, so it
-			// goes back to state 0 for STUN.
-			if roomsWithoutSTUN && len(options.CurrentRoomTickets()) == 0 {
+			// goes back to state 0 for STUN. So does one whose STUN list fetch is due to be tried
+			// again, rather than wait without it for as long as no room genesis comes.
+			if roomsWithoutSTUN && (len(options.CurrentRoomTickets()) == 0 || !preflightNow().Before(listPausedUntil)) {
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}

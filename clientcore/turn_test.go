@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -725,5 +726,90 @@ func TestConsumerWithoutSTUNOrTicketsGoesBack(t *testing.T) {
 	}
 	if pc.ConnectionState() != webrtc.PeerConnectionStateClosed {
 		t.Error("the peer connection was not closed")
+	}
+}
+
+// flakySTUN is a STUN list that can't be fetched the first time and is just server afterwards.
+func flakySTUN(server string) func(uint32) ([]string, error) {
+	var calls atomic.Int32
+	return func(uint32) ([]string, error) {
+		if calls.Add(1) == 1 {
+			return nil, errors.New("STUN list unavailable")
+		}
+		return []string{server}, nil
+	}
+}
+
+// fixedPreflightNow stops the preflight clock for the test and returns a way to move it.
+func fixedPreflightNow(t *testing.T) func(time.Duration) {
+	now := time.Now()
+	preflightNow = func() time.Time { return now }
+	t.Cleanup(func() { preflightNow = time.Now })
+	return func(d time.Duration) { now = now.Add(d) }
+}
+
+// A ticketed consumer that went without STUN goes back to state 0 for it once the list fetch's
+// backoff ends, rather than wait without it for a room genesis.
+func TestConsumerWithoutSTUNRetriesIt(t *testing.T) {
+	advance := fixedPreflightNow(t)
+	o := streamingFreddie(t)
+	o.RoomTickets = []string{"aa.bb"}
+	o.STUNBatch = flakySTUN("stun:127.0.0.1:3478")
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+
+	next, pc := consumerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if next, _ := consumerState1(t, fsm, pc); next != 1 {
+		t.Fatalf("before the backoff ends, state 1 went to state %d, want 1", next)
+	}
+	advance(stunPreflightMinBackoff)
+	if next, _ := consumerState1(t, fsm, pc); next != 0 {
+		t.Fatalf("after the backoff, state 1 went to state %d, want 0", next)
+	}
+	if pc.ConnectionState() != webrtc.PeerConnectionStateClosed {
+		t.Error("the peer connection was not closed")
+	}
+	next, pc = consumerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if servers := pc.GetConfiguration().ICEServers; len(servers) != 1 {
+		t.Errorf("%d ICE servers after the retry, want 1", len(servers))
+	}
+}
+
+// A room slot that went without STUN goes back to state 0 for it once the list fetch's backoff
+// ends, rather than keep offering itself without it.
+func TestRoomProducerWithoutSTUNRetriesIt(t *testing.T) {
+	advance := fixedPreflightNow(t)
+	o, posted := genesisFreddie(t)
+	o.STUNBatch = flakySTUN(stunServer(t, answer))
+	fsm := newProducerWebRTC(o, nil, true)
+
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if next := producerState2(fsm, pc); next != 1 {
+		t.Fatalf("before the backoff ends, state 2 went to state %d, want 1", next)
+	}
+	<-posted
+	advance(stunPreflightMinBackoff)
+	if next := producerState2(fsm, pc); next != 0 {
+		t.Fatalf("after the backoff, state 2 went to state %d, want 0", next)
+	}
+	select {
+	case form := <-posted:
+		t.Errorf("posted a genesis to %q", form.Get("send-to"))
+	default:
+	}
+	next, pc = producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if servers := pc.GetConfiguration().ICEServers; len(servers) != 1 {
+		t.Errorf("%d ICE servers after the retry, want 1", len(servers))
 	}
 }

@@ -48,8 +48,15 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
 	// roomsWithoutSTUN is set when the current attempt went without STUN only because it serves
-	// its rooms alone, so state 2 sends it back to state 0 if it no longer does.
+	// its rooms alone, so state 2 sends it back to state 0 if it no longer does, or once STUN is
+	// due to be tried again.
 	var roomsWithoutSTUN bool
+	// stunRetryDue reports whether state 0 would try STUN again, after the pause that followed a
+	// failed STUN check and the one that followed a failed STUN list fetch, if it needs the list.
+	stunRetryDue := func() bool {
+		now := preflightNow()
+		return !now.Before(stunPausedUntil) && (scache.size() > 0 || !now.Before(listPausedUntil))
+	}
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
@@ -255,8 +262,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 			// Likewise an attempt that went without STUN only because it served its rooms alone goes
-			// back to state 0 for STUN once it no longer does, rather than offer itself without it.
-			if roomsWithoutSTUN && !servesTicketedRoomsOnly(options, roomSlot) {
+			// back to state 0 for STUN once it no longer does, rather than offer itself without it,
+			// or once STUN is due to be tried again, rather than go without it for as long as its
+			// rooms keep it here.
+			if roomsWithoutSTUN && (!servesTicketedRoomsOnly(options, roomSlot) || stunRetryDue()) {
 				if peerConnection != nil {
 					peerConnection.Close()
 				}
