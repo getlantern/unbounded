@@ -318,6 +318,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		sessionBytes:    &sessionBytes,
 		keepaliveFailed: &keepaliveFailed,
 		ioSets:          proxyIOSetsFor(donorCC),
+		frameV1:         &atomic.Bool{},
 	}
 
 	defer wspconn.Close()

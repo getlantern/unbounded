@@ -38,6 +38,7 @@ require (
 	golang.org/x/crypto v0.54.0
 	golang.org/x/mod v0.37.0
 	golang.org/x/sys v0.47.0
+	google.golang.org/protobuf v1.36.11
 )
 
 require (
@@ -102,6 +103,5 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/genproto v0.0.0-20230306155012-7f2fa6fef1f4 // indirect
 	google.golang.org/grpc v1.79.1 // indirect
-	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
