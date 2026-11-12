@@ -24,8 +24,9 @@ type sendGate struct {
 	lastBuf    uint64
 	lastSample time.Time
 	rate       float64 // drained bytes per second, smoothed
-	// starved is whether the buffer ran down to the floor at any point of the current interval,
-	// which makes the interval say nothing about the channel's capacity.
+	// starved is whether the buffer ran empty at any point of the current interval, which makes
+	// the interval say nothing about the channel's capacity. A buffer that only runs low still
+	// has a backlog, so the channel was busy throughout.
 	starved bool
 	dropped uint64
 }
@@ -90,11 +91,11 @@ func (g *sendGate) admits(buffered uint64) bool {
 
 // sample updates the drain rate. The buffer drains by what was sent since the last sample less
 // what it grew by. That is the channel's capacity only while it had a backlog throughout: with
-// little or nothing buffered at any point, it drains whatever the application offered, and
+// nothing buffered at any point, it drains whatever the application offered, and
 // learning that as the rate would make the gate drop the next burst on an idle, fast path. Every
 // send reports the buffered amount, so an interval is judged on all of them, not its ends.
 func (g *sendGate) sample(buffered uint64, now time.Time) {
-	if buffered <= gateFloor {
+	if buffered == 0 {
 		g.starved = true
 	}
 	if g.lastSample.IsZero() {
@@ -115,5 +116,5 @@ func (g *sendGate) sample(buffered uint64, now time.Time) {
 		}
 	}
 	g.lastSample, g.lastBuf, g.lastSent = now, buffered, g.sent
-	g.starved = buffered <= gateFloor
+	g.starved = buffered == 0
 }

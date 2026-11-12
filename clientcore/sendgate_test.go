@@ -137,3 +137,26 @@ func TestSendGate_DoesNotLearnFromAnIntervalThatRanDry(t *testing.T) {
 	assert.Zero(t, g.rate)
 	assert.Zero(t, g.dropped)
 }
+
+// A busy channel whose backlog dips below the floor without ever emptying is still saturated: the
+// gate must learn its rate rather than hold it at the start cap.
+func TestSendGate_LearnsTheRateFromALowButNonemptyBacklog(t *testing.T) {
+	g := newSendGate(0)
+	now := time.Now()
+	// Starts below the floor, but not empty.
+	buffered := uint64(8_000)
+	// Drains 1KB/ms; fed 36KB every 40ms plus 100 bytes every millisecond, so it swings between
+	// about 8KB and 44KB and never empties.
+	for ms := range 2000 {
+		if ms%40 == 0 {
+			g.allow(36_000, buffered, now)
+			buffered += 36_000
+		}
+		g.allow(100, buffered, now)
+		buffered += 100
+		buffered -= min(buffered, 1000)
+		now = now.Add(time.Millisecond)
+	}
+	assert.Positive(t, buffered)
+	assert.InDelta(t, 1e6, g.rate, 2e5)
+}
