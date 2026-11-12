@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/webrtc/v4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -342,6 +343,13 @@ type Freddie struct {
 	// every ticket is verified by RoomTicket every time. helperticket.KnownKeyFunc is one. Set it
 	// with RoomTicket, after New and before serving.
 	KnownKeyID func(kid string) bool
+
+	// RoomICEServers, if non-nil, returns ICE servers (TURN relays) for room pairings. Freddie
+	// calls it once per genesis that carries a verified room ticket and stamps the result on the
+	// genesis each room's consumers receive and, when a room consumer took the genesis, on the
+	// offer it returns to the producer. It must not block: signaling waits on it. Nil, or an empty
+	// result, leaves every message unchanged.
+	RoomICEServers func(ctx context.Context) []webrtc.ICEServer
 
 	ctx context.Context
 	srv *http.Server
@@ -813,6 +821,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
+	var offerICE []webrtc.ICEServer
 	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
@@ -823,6 +832,10 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
+		var roomICE []webrtc.ICEServer
+		if len(rooms) > 0 && f.RoomICEServers != nil {
+			roomICE = f.RoomICEServers(ctx)
+		}
 		// Each room's message carries that room's pairing, so the consumer can tell its volunteer
 		// which pairing it came through. One marshal per room, not per consumer. Rooms are pairing
 		// IDs (see RoomTicket), and a consumer only ever receives the message of a room it is in.
@@ -830,11 +843,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		roomMsgs := make([]roomGenesis, 0, len(rooms))
 		for _, room := range rooms {
 			roomMsg, err := json.Marshal(common.SignalMsg{
-				ReplyTo: reqID,
-				Type:    common.SignalMsgType(msgType),
-				Payload: data,
-				Room:    true,
-				Pairing: room,
+				ReplyTo:    reqID,
+				Type:       common.SignalMsgType(msgType),
+				Payload:    data,
+				Room:       true,
+				Pairing:    room,
+				ICEServers: roomICE,
 			})
 			if err != nil {
 				span.SetStatus(codes.Error, "malformed request")
@@ -845,6 +859,9 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
 		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+		if matched {
+			offerICE = roomICE
+		}
 		if len(rooms) > 0 {
 			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
 		}
@@ -939,11 +956,30 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 
 	select {
 	case res := <-reqChan:
-		fmt.Fprintf(w, "%v\n", res)
+		fmt.Fprintf(w, "%v\n", withICEServers(res, offerICE))
 	case <-time.After(optimizedTTL):
 		span.AddEvent("timeout waiting for response")
 		w.Write(nil)
 	}
+}
+
+// withICEServers returns the signaling message raw with ICEServers set to servers, or raw unchanged
+// when servers is empty or raw isn't a SignalMsg. Only a room consumer can answer a genesis a room
+// consumer took (DeliverGenesis skips the pool then), so the offer it stamps is a room pairing's.
+func withICEServers(raw string, servers []webrtc.ICEServer) string {
+	if len(servers) == 0 {
+		return raw
+	}
+	var msg common.SignalMsg
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return raw
+	}
+	msg.ICEServers = servers
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // TODO: delete me and replace with a real CORS strategy!
