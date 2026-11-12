@@ -26,6 +26,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
 		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
 		attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
+		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevVPNField))),
 	}
 	attrs = append(attrs, volunteerKindAttrs(r)...)
 	attrs = append(attrs, f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))...)
@@ -75,15 +76,23 @@ func (f *Freddie) recordSTUNPreflights(ctx context.Context, r *http.Request) {
 	f.stunPreflights.Add(ctx, 1, metric.WithAttributes(append([]attribute.KeyValue{
 		attribute.String("result", common.PreflightOK),
 		attribute.String("vpn", common.NormalizeVPNState(passVPN[0])),
+		attribute.String("cause", "none"),
 		version,
 	}, kind...)...))
 	n, ok := common.ParsePreflightFailures(r.Form.Get(common.PrevPreflightFailuresField))
 	if !ok {
 		return
 	}
+	result := common.NormalizePreflightFailure(r.Form.Get(common.PrevPreflightOutcomeField))
+	// Only a failed socket has a cause.
+	cause := "none"
+	if result == common.PreflightNoSocket {
+		cause = common.NormalizePreflightCause(r.Form.Get(common.PrevPreflightCauseField))
+	}
 	f.stunPreflights.Add(ctx, int64(n), metric.WithAttributes(append([]attribute.KeyValue{
-		attribute.String("result", common.NormalizePreflightFailure(r.Form.Get(common.PrevPreflightOutcomeField))),
+		attribute.String("result", result),
 		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevPreflightVPNField))),
+		attribute.String("cause", cause),
 		version,
 	}, kind...)...))
 }
