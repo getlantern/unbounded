@@ -114,6 +114,26 @@ func TestAttemptConsumerAttrs_RoomRecordedAfterOffer(t *testing.T) {
 	}
 }
 
+// An offer arrives while its genesis request waits, up to defaultMsgTTL after the room match, and
+// is remembered for offerConsumerTTL from then. The room must be remembered at least as long, or
+// an attempt reported near the end of the offer's life is mislabeled pool.
+func TestAttemptConsumerAttrs_RoomOutlivesItsOffer(t *testing.T) {
+	now := time.Unix(0, 0)
+	clock := func() time.Time { return now }
+	f := &Freddie{offerConsumers: newOfferConsumerCache(clock), roomGeneses: newRoomGenesisSet(clock)}
+	f.roomGeneses.add("genesis")
+	now = now.Add(defaultMsgTTL * time.Second)
+	oc := newOffer()
+	oc.genesisID = "genesis"
+	f.offerConsumers.add("offer", oc)
+	now = now.Add(offerConsumerTTL - time.Nanosecond)
+	for _, kv := range f.attemptConsumerAttrs("offer") {
+		if kv.Key == "delivery" && kv.Value.AsString() != "room" {
+			t.Fatalf("an offer at the end of its TTL got delivery %q, want room", kv.Value.AsString())
+		}
+	}
+}
+
 // genesisAttempt posts a genesis message with form's fields, waits for consumer to receive it,
 // answers it with an offer as a consumer would, and returns the offer's ID as the producer sees it.
 func (s *testServer) genesisAttempt(form url.Values, consumer chan string) string {
