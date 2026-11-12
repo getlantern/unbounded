@@ -195,19 +195,50 @@ func TestSendGate_DropsOnceTheOldestByteIsTooOld(t *testing.T) {
 	assert.Equal(t, uint64(1), g.dropped)
 }
 
-// Where the round trip can't be measured, the gate assumes gateFallbackRTT rather than none, so a
-// distant browser peer's data in flight isn't taken for a queue.
-func TestSendGate_FallsBackToADefaultRoundTrip(t *testing.T) {
+// Until the round trip is measured, the gate can't tell a queue from data in flight, so it stays
+// open. In the browser it is never measured.
+func TestSendGate_StaysOpenUntilTheRoundTripIsKnown(t *testing.T) {
 	g := newSendGate(20 * time.Millisecond)
 	start := time.Now()
 	for range 20 {
 		g.allow(1200, 0, start)
 	}
 	stuck := uint64(20 * 1200)
-	assert.True(t, g.allow(1200, stuck, start.Add(110*time.Millisecond)))
-	assert.False(t, g.allow(1200, stuck+1200, start.Add(130*time.Millisecond)))
+	assert.True(t, g.allow(1200, stuck, start.Add(10*time.Second)))
 	g.setRTT(0)
-	assert.Zero(t, g.rtt, "an unmeasured round trip doesn't replace the fallback")
+	assert.Zero(t, g.rtt, "an unmeasured round trip doesn't open a closed gate's estimate")
+	g.setRTT(40 * time.Millisecond)
+	assert.False(t, g.allow(1200, stuck+1200, start.Add(10*time.Second)))
+}
+
+// Bursts between which the send queue empties, while a long round trip leaves bytes awaiting
+// acknowledgement across the gaps, must not teach the gate the bursts' average rate.
+func TestSendGate_DoesNotLearnTheRateAcrossBurstGaps(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(80 * time.Millisecond)
+	c := newSimChannel(1000, 80*time.Millisecond) // 1MB/s
+	for range 200 {
+		for range 10 {
+			c.offer(g, 1200)
+		}
+		c.run(43)
+	}
+	assert.Zero(t, g.dropped)
+}
+
+// A smoothed round trip that trails the path's must not turn the path's own delay into a queue.
+func TestSendGate_ToleratesAnUnderestimatedRoundTrip(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	c := newSimChannel(10_000, 50*time.Millisecond) // the path is 50ms
+	for range 200 {
+		c.offer(g, 1200)
+		c.run(1)
+	}
+	for range 20 {
+		assert.True(t, c.offer(g, 1200))
+	}
+	assert.Zero(t, g.dropped)
 }
 
 // The gate keeps a mark per buffered send, not per send ever made.

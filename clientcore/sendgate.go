@@ -24,10 +24,14 @@ import "time"
 //
 // Until a rate is measured, the oldest byte's age is the measure. It lags the queue, which grew
 // while that byte waited, but only for the first window of a queue.
+//
+// Both signals need the round trip, so the gate stays open until it is measured. A browser's
+// WebRTC stack doesn't report SCTP's, so in the widget the gate never closes: a guess would
+// misjudge a distant peer's data in flight for a queue.
 type sendGate struct {
 	// queueTarget is how much queuing delay, above the round trip, the gate allows.
 	queueTarget time.Duration
-	// rtt is the data channel's round trip, or zero while unknown.
+	// rtt is the data channel's round trip, or zero while unknown, which leaves the gate open.
 	rtt time.Duration
 
 	// sent is the bytes the gate has let through, and marks when each of them was sent: marks[i]
@@ -40,11 +44,13 @@ type sendGate struct {
 	dropped uint64
 
 	// rate is the channel's drain rate in bytes per second, measured while a queue stood and
-	// smoothed, as of rateAt. A window starting at winStart has released winReleased so far.
+	// smoothed, as of rateAt. A window starting at winStart has released winReleased so far, and
+	// lastSeen is when the gate last saw the buffer.
 	rate        float64
 	rateAt      time.Time
 	winStart    time.Time
 	winReleased uint64
+	lastSeen    time.Time
 }
 
 type sendMark struct {
@@ -56,9 +62,13 @@ const (
 	defaultQueueTarget = 20 * time.Millisecond
 	// gateFloor is buffered data the gate never drops below, so a slow trickle is never cut.
 	gateFloor = 16 << 10
-	// gateFallbackRTT stands in for the round trip where it can't be measured: a browser's
-	// WebRTC stack doesn't report SCTP's. Long enough not to cut a distant peer's throughput.
-	gateFallbackRTT = 100 * time.Millisecond
+	// gateRTTSlack scales the round trip before an older byte counts as queued: SCTP's smoothed
+	// round trip, refreshed every gateRTTEvery, can trail the path's.
+	gateRTTSlack = 1.25
+	// gateMaxGap is the longest the gate may go without seeing the buffer within a rate window. A
+	// saturated channel is offered packets far more often; a longer gap means the queue may have
+	// cleared unseen, so the window would measure what the application sent.
+	gateMaxGap = 20 * time.Millisecond
 	// gateRTTEvery is how often a data channel's send loop refreshes its gate's round trip.
 	gateRTTEvery = 250 * time.Millisecond
 	// gateRateWindow is how long the drain rate is measured over, and gateRateStale how long a
@@ -82,19 +92,13 @@ func (g *sendGate) setRTT(rtt time.Duration) {
 	}
 }
 
-func (g *sendGate) roundTrip() time.Duration {
-	if g.rtt > 0 {
-		return g.rtt
-	}
-	return gateFallbackRTT
-}
-
 // allow reports whether a packet of n bytes may be sent, given the data channel's buffered
 // amount now. It records the packet as sent when it allows it.
 func (g *sendGate) allow(n int, buffered uint64, now time.Time) bool {
 	released := g.release(buffered)
 	age, queuing := g.queue(buffered, now)
 	g.measure(released, queuing, now)
+	g.lastSeen = now
 	if !g.admits(buffered, age, queuing, now) {
 		g.dropped++
 		return false
@@ -105,22 +109,26 @@ func (g *sendGate) allow(n int, buffered uint64, now time.Time) bool {
 }
 
 // queue returns the oldest buffered byte's age, and whether a queue stands: whether that byte
-// has waited longer than a round trip would take with none, by more than a quarter of the target
-// so that a burst's own serialization doesn't count.
+// has waited longer than a round trip would take with none, allowing for the round trip trailing
+// the path's, and by more than a quarter of the target so that a burst's own serialization
+// doesn't count.
 func (g *sendGate) queue(buffered uint64, now time.Time) (time.Duration, bool) {
-	if buffered <= gateFloor || g.first == len(g.marks) {
+	if g.rtt <= 0 || buffered <= gateFloor || g.first == len(g.marks) {
 		return 0, false
 	}
 	age := now.Sub(g.marks[g.first].at)
-	return age, age > g.roundTrip()+g.queueTarget/4
+	slack := time.Duration(float64(g.rtt) * gateRTTSlack)
+	return age, age > slack+g.queueTarget/4
 }
 
 // measure updates the drain rate from the bytes released while a queue stands. A window in which
 // the queue cleared measures nothing, since the channel drained only what it was given.
 func (g *sendGate) measure(released uint64, queuing bool, now time.Time) {
-	if !queuing {
+	if !queuing || (!g.winStart.IsZero() && now.Sub(g.lastSeen) > gateMaxGap) {
 		g.winStart = time.Time{}
-		return
+		if !queuing {
+			return
+		}
 	}
 	if g.winStart.IsZero() {
 		g.winStart, g.winReleased = now, 0
@@ -147,7 +155,7 @@ func (g *sendGate) admits(buffered uint64, age time.Duration, queuing bool, now 
 	if !queuing {
 		return true
 	}
-	limit := g.roundTrip() + g.queueTarget
+	limit := g.rtt + g.queueTarget
 	if g.rate > 0 && now.Sub(g.rateAt) <= gateRateStale {
 		return time.Duration(float64(buffered)/g.rate*float64(time.Second)) <= limit
 	}
