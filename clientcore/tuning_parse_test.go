@@ -17,6 +17,7 @@ var everyKey = map[string]string{
 	"dtls_retransmit_ms":            "200",
 	"sctp_rto_max_ms":               "3000",
 	"sctp_max_receive_buffer_bytes": "4194304",
+	"datachannel_queue_target_ms":   "10",
 }
 
 func TestParseWebRTCTuning(t *testing.T) {
@@ -31,6 +32,7 @@ func TestParseWebRTCTuning(t *testing.T) {
 		DTLSRetransmitInterval: 200 * time.Millisecond,
 		SCTPRTOMax:             3 * time.Second,
 		SCTPMaxReceiveBuffer:   4 << 20,
+		DataChannelQueueTarget: 10 * time.Millisecond,
 	}
 	if got != want || len(ignored) != 0 {
 		t.Fatalf("got %+v ignored %v, want %+v", got, ignored, want)
