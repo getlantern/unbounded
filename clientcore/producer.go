@@ -314,15 +314,17 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 
 			// Looks like we got some kind of response. It ought to be an offer SDP wrapped in a SignalMsg
-			replyTo, offer, err := common.DecodeSignalMsg(offerBytes)
+			offerMsg, offer, err := common.DecodeSignal(offerBytes)
+			replyTo := offerMsg.ReplyTo
 			if err != nil {
-				// Not the raw message: an offer may carry its consumer's pairing.
+				// Not the raw message: an offer may carry its consumer's pairing, and Freddie's TURN
+				// servers.
 				slog.Debug("Error decoding signal message", "error", err, "bytes", len(offerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
-			return 3, []interface{}{peerConnection, replyTo, offer, connectionEstablished, connectionChange, connectionClosed}
+			return 3, []interface{}{peerConnection, replyTo, offer, connectionEstablished, connectionChange, connectionClosed, offerMsg.ICEServers}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 3
@@ -332,12 +334,14 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// input[3]: chan *webrtc.DataChannel
 			// input[4]: chan webrtc.PeerConnectionState
 			// input[5]: chan struct{}
+			// input[6]: []webrtc.ICEServer (TURN relays for a room pairing, or nil)
 			peerConnection := input[0].(*webrtc.PeerConnection)
 			replyTo := input[1].(string)
 			offer := input[2].(common.OfferMsg)
 			connectionEstablished := input[3].(chan *webrtc.DataChannel)
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
+			iceServers, _ := input[6].([]webrtc.ICEServer)
 			slog.Debug("Producer state 3...")
 			last.begin(replyTo)
 
@@ -358,6 +362,13 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 					localCandidates = append(localCandidates, *c)
 				}
 			})
+
+			// A room pairing's TURN servers must be in place before SetLocalDescription starts
+			// gathering. State 3 is entered once per peer connection (every way out of it goes to
+			// state 0 or forward), so they are never added twice.
+			if err := addICEServers(peerConnection, iceServers); err != nil {
+				slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
+			}
 
 			// Assign the offer to our connection
 			err := peerConnection.SetRemoteDescription(offer.SDP)
@@ -611,6 +622,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 			slog.Debug("A WebRTC connection has been established!")
 			last.record(common.OutcomeConnected, peerConnection)
+			last.path = selectedPath(peerConnection)
 			return 5, []interface{}{
 				peerConnection,
 				d,
@@ -870,6 +882,8 @@ type attemptOutcome struct {
 	iceState string
 	pcState  string
 	offerID  string
+	// path is common.PathRelay or common.PathDirect for a connected attempt, if known.
+	path string
 }
 
 // begin notes the ReplyTo of the offer an attempt is answering. record keeps it.
@@ -899,6 +913,9 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
 	if o.offerID != "" {
 		form.Set(common.PrevOfferIDField, o.offerID)
+	}
+	if o.path != "" {
+		form.Set(common.PrevPathField, o.path)
 	}
 	*o = attemptOutcome{}
 }

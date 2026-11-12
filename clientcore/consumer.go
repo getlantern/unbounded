@@ -69,6 +69,11 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// it at every pick; states 2 and 5 read it. A worker's states run on one
 	// goroutine, so it needs no lock. It is never logged.
 	var pairing string
+	// turnPC is the peer connection state 1 last added a room pairing's TURN servers to. Failures
+	// before SetLocalDescription bring the same peer connection back to state 1, which then trades it
+	// for a fresh one rather than add servers to it again or offer a pool genesis through a room's
+	// relays. Like pairing, it needs no lock.
+	var turnPC *webrtc.PeerConnection
 	if report == nil {
 		report = func(bool, string) {}
 	}
@@ -193,6 +198,12 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionClosed := input[3].(chan struct{})
 			slog.Debug("Consumer state 1...")
 
+			if peerConnection == turnPC {
+				turnPC = nil
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
 			// Listen for genesis messages
 			req, err := newSubscribeRequest(ctx, options)
 			if err != nil {
@@ -231,6 +242,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			roomCandidates := []string{}
 			// The pairing Freddie stamped on each room candidate, by ReplyTo.
 			roomPairings := map[string]string{}
+			// The TURN servers Freddie stamped on each room candidate, by ReplyTo. Never logged.
+			roomICE := map[string][]webrtc.ICEServer{}
 
 		listenLoop:
 			for {
@@ -286,6 +299,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 						if p := msg.RoomPairing(); p != "" {
 							roomPairings[msg.ReplyTo] = p
 						}
+						if len(msg.ICEServers) > 0 {
+							roomICE[msg.ReplyTo] = msg.ICEServers
+						}
 					}
 					if len(genesisCandidates) == 1 {
 						patienceExpired = time.After(options.Patience)
@@ -304,16 +320,25 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			// Endgame case 2: create an offer SDP, pick a random genesis candidate, and shoot our shot
-			sdp, err := peerConnection.CreateOffer(nil)
-			if err != nil {
-				// An error creating the offer is troubling, so let's start fresh by resetting the state
-				slog.Debug("Error creating offer SDP", "error", err)
-				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			}
-
+			// Endgame case 2: pick a random genesis candidate, create an offer SDP, and shoot our shot.
+			// The pick comes first so a room pairing's TURN servers are in place before the offer.
 			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
 			pairing = roomPairings[replyTo]
+			if servers := roomICE[replyTo]; len(servers) > 0 {
+				turnPC = peerConnection
+				if err := addICEServers(peerConnection, servers); err != nil {
+					slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
+				}
+			}
+			sdp, err := peerConnection.CreateOffer(nil)
+			if err != nil {
+				// An error creating the offer is troubling, so let's start fresh by resetting the state.
+				// The attempt never tested its genesis's producer, so it is abandoned (see
+				// roomPreference).
+				slog.Debug("Error creating offer SDP", "error", err)
+				rooms.abandoned()
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
 			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{

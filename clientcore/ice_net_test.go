@@ -454,6 +454,7 @@ func TestMappedProducerWithoutSTUNDropsOldPass(t *testing.T) {
 		make(chan *webrtc.DataChannel, 1),
 		make(chan webrtc.PeerConnectionState, 1),
 		make(chan struct{}, 1),
+		[]webrtc.ICEServer(nil),
 	}); next != 0 {
 		t.Fatalf("state 3 went to state %d after a 404, want 0", next)
 	}
@@ -565,6 +566,7 @@ func mappedProducerSTUNFailsWhileGathering(t *testing.T, status int) (int, *Work
 		make(chan *webrtc.DataChannel, 1),
 		make(chan webrtc.PeerConnectionState, 1),
 		make(chan struct{}, 1),
+		[]webrtc.ICEServer(nil),
 	})
 	return next, fsm, first, &fetches
 }
@@ -756,6 +758,7 @@ func TestMappedProducerWithoutSTUNKeepsUntriedCohorts(t *testing.T) {
 		make(chan *webrtc.DataChannel, 1),
 		make(chan webrtc.PeerConnectionState, 1),
 		make(chan struct{}, 1),
+		[]webrtc.ICEServer(nil),
 	}); next != 0 {
 		t.Fatalf("state 3 went to state %d after a 404, want 0", next)
 	}
