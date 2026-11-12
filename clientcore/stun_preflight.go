@@ -18,9 +18,9 @@ type STUNPreflightResult struct {
 	Servers int
 	// Elapsed is how long the preflight took.
 	Elapsed time.Duration
-	// Skipped is set when nothing was sent, as in the browser, so the pass measured nothing and
-	// isn't reported to Freddie.
-	Skipped bool
+	// Cause, for STUNPreflightNoSocket, is why the socket failed: one of common's
+	// PreflightCause* values.
+	Cause string
 }
 
 // STUN preflight outcomes; see common's Preflight* for what each means.
@@ -102,14 +102,15 @@ func (p *preflightState) invalidate() {
 // follows the next one to pass: a worker that fails doesn't send genesis, so failures wait for it.
 type preflightReport struct {
 	// passed is set when a preflight has passed since the last report.
-	passed      bool
-	passVPN     string
-	failures    int
-	lastFailure string
-	failureVPN  string
+	passed       bool
+	passVPN      string
+	failures     int
+	lastFailure  string
+	failureCause string
+	failureVPN   string
 }
 
-func (r *preflightReport) record(outcome, vpn string) {
+func (r *preflightReport) record(outcome, cause, vpn string) {
 	if outcome == STUNPreflightOK {
 		r.passed = true
 		r.passVPN = vpn
@@ -117,6 +118,7 @@ func (r *preflightReport) record(outcome, vpn string) {
 	}
 	r.failures = min(r.failures+1, common.MaxReportedPreflightFailures)
 	r.lastFailure = outcome
+	r.failureCause = cause
 	r.failureVPN = vpn
 }
 
@@ -131,6 +133,9 @@ func (r *preflightReport) addTo(form url.Values) {
 		form.Set(common.PrevPreflightFailuresField, strconv.Itoa(r.failures))
 		form.Set(common.PrevPreflightOutcomeField, r.lastFailure)
 		form.Set(common.PrevPreflightVPNField, r.failureVPN)
+		if r.failureCause != "" {
+			form.Set(common.PrevPreflightCauseField, r.failureCause)
+		}
 	}
 }
 

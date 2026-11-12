@@ -171,8 +171,8 @@ func TestProbeAddrResendsWithinRemainingTime(t *testing.T) {
 	// What's left of stunPreflightTimeout after a 2.4s lookup, less than half of it.
 	ctx, cancel := context.WithTimeout(context.Background(), 600*time.Millisecond)
 	defer cancel()
-	if got := probeAddr(ctx, hostProber().listen, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got != STUNPreflightOK {
-		t.Fatalf("got %s, want ok from the resent request", got)
+	if got := probeAddr(ctx, hostProber().listen, &net.UDPAddr{IP: net.ParseIP(uri.Host), Port: uri.Port}); got.outcome != STUNPreflightOK {
+		t.Fatalf("got %+v, want ok from the resent request", got)
 	}
 }
 
@@ -323,20 +323,21 @@ func TestProducerRechecksExpiredPassBeforeGenesis(t *testing.T) {
 
 func TestPreflightReportWaitsForAPass(t *testing.T) {
 	var r preflightReport
-	r.record(STUNPreflightNoReply, "connected")
-	r.record(STUNPreflightNoSocket, "connecting")
+	r.record(STUNPreflightNoReply, "", "connected")
+	r.record(STUNPreflightNoSocket, "send_unreachable", "connecting")
 	form := url.Values{}
 	r.addTo(form)
 	if len(form) != 0 {
 		t.Fatalf("failures alone must wait for a pass, got %v", form)
 	}
 
-	r.record(STUNPreflightOK, "disconnected")
+	r.record(STUNPreflightOK, "", "disconnected")
 	r.addTo(form)
 	want := url.Values{
 		common.PreflightVPNField:          {"disconnected"},
 		common.PrevPreflightFailuresField: {"2"},
 		common.PrevPreflightOutcomeField:  {STUNPreflightNoSocket},
+		common.PrevPreflightCauseField:    {"send_unreachable"},
 		common.PrevPreflightVPNField:      {"connecting"},
 	}
 	if !reflect.DeepEqual(form, want) {
@@ -358,16 +359,16 @@ func TestPreflightReportWaitsForAPass(t *testing.T) {
 
 	// The count stops where Freddie stops accepting it.
 	for range common.MaxReportedPreflightFailures + 5 {
-		r.record(STUNPreflightNoReply, "")
+		r.record(STUNPreflightNoReply, "", "")
 	}
-	r.record(STUNPreflightOK, "")
+	r.record(STUNPreflightOK, "", "")
 	form = url.Values{}
 	r.addTo(form)
 	if n, ok := common.ParsePreflightFailures(form.Get(common.PrevPreflightFailuresField)); !ok || n != common.MaxReportedPreflightFailures {
 		t.Fatalf("a long run of failures must report the cap, got %q", form.Get(common.PrevPreflightFailuresField))
 	}
 	r.delivered()
-	r.record(STUNPreflightOK, "")
+	r.record(STUNPreflightOK, "", "")
 	form = url.Values{}
 	r.addTo(form)
 	if !reflect.DeepEqual(form, url.Values{common.PreflightVPNField: {""}}) {
@@ -522,8 +523,8 @@ func TestSTUNPreflightBoundsABlockedListen(t *testing.T) {
 	n := &blockingNet{Net: std, release: make(chan struct{}), opened: make(chan transport.UDPConn, 1)}
 	start := time.Now()
 	res := stunPreflight(context.Background(), n, []string{stunServer(t, answer)}, 200*time.Millisecond)
-	if res.Outcome != STUNPreflightNoSocket {
-		t.Fatalf("got %+v, want %s", res, STUNPreflightNoSocket)
+	if res.Outcome != STUNPreflightNoSocket || res.Cause != common.PreflightCauseOpenTimeout {
+		t.Fatalf("got %+v, want %s from %s", res, STUNPreflightNoSocket, common.PreflightCauseOpenTimeout)
 	}
 	if took := time.Since(start); took > 2*time.Second {
 		t.Fatalf("the preflight waited %v on a blocked ListenUDP", took)
@@ -543,9 +544,9 @@ func TestSTUNPreflightBoundsABlockedListen(t *testing.T) {
 // pass to report.
 func TestPreflightReportKeepsFailuresUntilCarried(t *testing.T) {
 	var r preflightReport
-	r.record(STUNPreflightNoReply, "connected")
+	r.record(STUNPreflightNoReply, "", "connected")
 	r.delivered()
-	r.record(STUNPreflightOK, "connected")
+	r.record(STUNPreflightOK, "", "connected")
 	form := url.Values{}
 	r.addTo(form)
 	if got := form.Get(common.PrevPreflightFailuresField); got != "1" {
@@ -556,5 +557,29 @@ func TestPreflightReportKeepsFailuresUntilCarried(t *testing.T) {
 	}
 	if got := form.Get(common.PrevPreflightVPNField); got != "connected" {
 		t.Fatalf("%s = %q after a delivery that carried nothing, want connected", common.PrevPreflightVPNField, got)
+	}
+}
+
+// When both families fail the same way, IPv4's cause is the one reported: a missing IPv6 route
+// says little about the volunteer's network.
+func TestFirstOKPrefersTheEarlierProbeOnATie(t *testing.T) {
+	got := firstOK(2, func(i int) probeResult {
+		if i == 0 {
+			time.Sleep(20 * time.Millisecond) // IPv4 finishes last
+			return probeResult{STUNPreflightNoSocket, "send_permission"}
+		}
+		return probeResult{STUNPreflightNoSocket, "send_unreachable"}
+	})
+	if got.cause != "send_permission" {
+		t.Fatalf("got %+v, want the first probe's cause", got)
+	}
+	got = firstOK(2, func(i int) probeResult {
+		if i == 0 {
+			return probeResult{STUNPreflightNoSocket, "send_permission"}
+		}
+		return probeResult{outcome: STUNPreflightNoReply}
+	})
+	if got.outcome != STUNPreflightNoReply {
+		t.Fatalf("got %+v, a probe that got further must still win", got)
 	}
 }

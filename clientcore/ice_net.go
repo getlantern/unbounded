@@ -3,6 +3,7 @@
 package clientcore
 
 import (
+	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -12,16 +13,21 @@ func iceNetOf(options *WebRTCOptions) iceNet {
 
 // applyICENet gives a peer connection's SettingEngine the caller's
 // transport, UDP mux and the mux's external address, and reports whether it
-// set any. A zero iceNet keeps pion's defaults, which is what every release
-// before these options used.
+// set any, which it always does: the transport, the caller's or else the
+// host's network stack as pion would use by default, is wrapped so a TCP dial
+// to a TURN server gives up (see turnDialTimeout). A zero iceNet otherwise
+// keeps pion's defaults, which is what every release before these options used.
 func applyICENet(se *webrtc.SettingEngine, pn iceNet) (bool, error) {
-	set := false
-	if pn.net != nil {
-		se.SetNet(pn.net)
-		set = true
+	n := pn.net
+	if n == nil {
+		var err error
+		if n, err = stdnet.NewNet(); err != nil {
+			return false, err
+		}
 	}
+	se.SetNet(boundedDialNet{n})
 	if pn.mux == nil {
-		return set, nil
+		return true, nil
 	}
 	se.SetICEUDPMux(pn.mux)
 	if pn.externalIP != "" {

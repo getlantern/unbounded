@@ -63,12 +63,20 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
 	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
+	// roomsWithoutSTUN is set when the current attempt has room tickets but neither STUN servers
+	// nor a mapped address, so only a room genesis that carries TURN servers can connect it.
+	var roomsWithoutSTUN bool
 	rooms.setRoomsOnly(options.ConsumerRoomsOnly)
 	// pairing is the helper pairing of the room genesis the current attempt
 	// answers, as Freddie stamped it, or "" for a pool genesis. State 1 sets
 	// it at every pick; states 2 and 5 read it. A worker's states run on one
 	// goroutine, so it needs no lock. It is never logged.
 	var pairing string
+	// turnPC is the peer connection state 1 last added a room pairing's TURN servers to. Failures
+	// before SetLocalDescription bring the same peer connection back to state 1, which then trades it
+	// for a fresh one rather than add servers to it again or offer a pool genesis through a room's
+	// relays. Like pairing, it needs no lock.
+	var turnPC *webrtc.PeerConnection
 	if report == nil {
 		report = func(bool, string) {}
 	}
@@ -79,6 +87,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// (no input data)
 			slog.Debug("Consumer state 0, constructing RTCPeerConnection...")
 
+			// Whatever peer connection had TURN servers is gone, so stop keeping it reachable.
+			turnPC = nil
+
 			// We're resetting this slot, so send a nil path assertion IPC message
 			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
 				return 0, input
@@ -86,20 +97,29 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			// A consumer with a mapped address can be reached on it without STUN, so for it the
 			// STUN list is best-effort: if it can't be fetched, this attempt goes ahead on the mapped
-			// address alone.
+			// address alone. So it is for a consumer with room tickets, since its room's genesis may
+			// carry TURN servers: without STUN or a mapped address, it answers only such a genesis.
 			mapped := iceNetOf(options).mapped()
+			ticketed := len(options.CurrentRoomTickets()) > 0
+			stunOptional := mapped || ticketed
 
 			// Populate the STUN cache if necessary
-			if scache.size() == 0 && (!mapped || !preflightNow().Before(listPausedUntil)) {
+			if scache.size() == 0 && (!stunOptional || !preflightNow().Before(listPausedUntil)) {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 				if err != nil {
-					if !mapped {
+					if !stunOptional {
 						slog.Debug("Error creating STUN batch", "error", err)
 						return 0, []interface{}{}
 					}
 					wait := listBackoff.failed()
 					listPausedUntil = preflightNow().Add(wait)
-					slog.Debug("Error creating STUN batch, going on with the mapped address alone", "error", err, "retry_in", wait)
+					slog.Debug("Error creating STUN batch, going on without STUN", "error", err, "retry_in", wait, "mapped", mapped)
+				} else if len(allSTUNSrvs) == 0 && stunOptional && !mapped {
+					// A room attempt going without STUN would otherwise come straight back here for an
+					// empty list, so it waits as for a failed fetch.
+					wait := listBackoff.failed()
+					listPausedUntil = preflightNow().Add(wait)
+					slog.Debug("Empty STUN batch, going on without STUN", "retry_in", wait)
 				} else {
 					listBackoff.reset()
 					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
@@ -109,6 +129,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			config := webrtc.Configuration{}
 			cohortDropped = scache.size() == 0
+			roomsWithoutSTUN = ticketed && !mapped && scache.size() == 0
 			if scache.size() > 0 {
 				STUNSrvs := scache.cohort()
 				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "batch_size", options.STUNBatchSize, "servers", STUNSrvs)
@@ -193,6 +214,20 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionClosed := input[3].(chan struct{})
 			slog.Debug("Consumer state 1...")
 
+			if peerConnection == turnPC {
+				turnPC = nil
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
+			// An attempt without STUN whose room tickets are gone has nothing it can answer, so it
+			// goes back to state 0 for STUN. So does one whose STUN list fetch is due to be tried
+			// again, rather than wait without it for as long as no room genesis comes.
+			if roomsWithoutSTUN && (len(options.CurrentRoomTickets()) == 0 || !preflightNow().Before(listPausedUntil)) {
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
 			// Listen for genesis messages
 			req, err := newSubscribeRequest(ctx, options)
 			if err != nil {
@@ -231,6 +266,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			roomCandidates := []string{}
 			// The pairing Freddie stamped on each room candidate, by ReplyTo.
 			roomPairings := map[string]string{}
+			// The TURN servers Freddie stamped on each room candidate, by ReplyTo. Never logged.
+			roomICE := map[string][]webrtc.ICEServer{}
 
 		listenLoop:
 			for {
@@ -278,6 +315,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					if options.ConsumerRoomsOnly && !msg.IsRoomGenesis() {
 						continue
 					}
+					// Without STUN or a mapped address, only a room's TURN servers can connect us.
+					if roomsWithoutSTUN && (!msg.IsRoomGenesis() || len(msg.ICEServers) == 0) {
+						continue
+					}
 
 					// TODO: post-MVP, evaluate the genesis message for suitability!
 					genesisCandidates = append(genesisCandidates, msg.ReplyTo)
@@ -285,6 +326,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 						roomCandidates = append(roomCandidates, msg.ReplyTo)
 						if p := msg.RoomPairing(); p != "" {
 							roomPairings[msg.ReplyTo] = p
+						}
+						if len(msg.ICEServers) > 0 {
+							roomICE[msg.ReplyTo] = msg.ICEServers
 						}
 					}
 					if len(genesisCandidates) == 1 {
@@ -304,16 +348,25 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			// Endgame case 2: create an offer SDP, pick a random genesis candidate, and shoot our shot
-			sdp, err := peerConnection.CreateOffer(nil)
-			if err != nil {
-				// An error creating the offer is troubling, so let's start fresh by resetting the state
-				slog.Debug("Error creating offer SDP", "error", err)
-				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			}
-
+			// Endgame case 2: pick a random genesis candidate, create an offer SDP, and shoot our shot.
+			// The pick comes first so a room pairing's TURN servers are in place before the offer.
 			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
 			pairing = roomPairings[replyTo]
+			if servers := roomICE[replyTo]; len(servers) > 0 {
+				turnPC = peerConnection
+				if err := addICEServers(peerConnection, servers); err != nil {
+					slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
+				}
+			}
+			sdp, err := peerConnection.CreateOffer(nil)
+			if err != nil {
+				// An error creating the offer is troubling, so let's start fresh by resetting the state.
+				// The attempt never tested its genesis's producer, so it is abandoned (see
+				// roomPreference).
+				slog.Debug("Error creating offer SDP", "error", err)
+				rooms.abandoned()
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
 			slog.Debug("Sending offer for genesis message", "total", len(genesisCandidates), "patience", options.Patience)
 
 			return 2, []interface{}{
@@ -439,14 +492,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
 
-			candidates := []webrtc.ICECandidate{}
-			peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
-				// Interestingly, the null candidate is a nil pointer so we cause a nil ptr dereference
-				// if we try to append it to the list... so let's just not include it?
-				if c != nil {
-					candidates = append(candidates, *c)
-				}
-			})
+			var gathered candidateLog
+			peerConnection.OnICECandidate(gathered.add)
 
 			// This kicks off ICE candidate gathering
 			err = peerConnection.SetLocalDescription(sdp)
@@ -463,14 +510,26 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// timeout on an unreachable server. Until then the producer's NAT drops our checks, and
 			// pion's controlling agent gives up on a pair after maxBindingRequests unanswered checks
 			// (about 1.6s) and never rechecks it, even once the producer's checks arrive.
-			<-gatherComplete
-			slog.Debug("ICE gathering complete!")
+			// With a room pairing's TURN servers, gathering may be held by a blocked one, so it is
+			// bounded and we go on with what it has gathered (see turnGatherWait).
+			var gatherLimit time.Duration
+			if peerConnection == turnPC {
+				gatherLimit = turnGatherWait
+			}
+			if awaitGathering(gatherComplete, gatherLimit) {
+				slog.Debug("ICE gathering complete!")
+			} else {
+				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
+			}
+			candidates := gathered.snapshot()
 			slog.Debug("Local candidates", "candidates", candidates)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
 			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
-			// don't want to bother signaling those, so here's our escape hatch.
+			// don't want to bother signaling those, so here's our escape hatch. A relay candidate
+			// counts as non-host, so a room attempt whose TURN server answered keeps a dead STUN
+			// cohort until the next pool attempt finds it.
 			if !hasNonHostCandidate(candidates) {
 				if !cohortDropped {
 					scache.drop()
@@ -691,6 +750,12 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				defer close(dcStatsDone)
 			}
 
+			// One gate per data channel: its drain rate and round trip are this channel's.
+			gate := newSendGate(options.Tuning.DataChannelQueueTarget)
+			gate.setRTT(sctpRTT(peerConnection))
+			rttTicker := time.NewTicker(gateRTTEvery)
+			defer rttTicker.Stop()
+
 		proxyloop:
 			for {
 				select {
@@ -708,11 +773,16 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				case _ = <-connectionClosed:
 					slog.Debug("Connection closed, resetting!")
 					break proxyloop
-					// Handle messages from the router
+				case <-rttTicker.C:
+					gate.setRTT(sctpRTT(peerConnection))
+				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
 						payload := msg.Data.([]byte)
+						if !gate.allow(len(payload), d.BufferedAmount(), time.Now()) {
+							continue
+						}
 						if err := d.Send(payload); err != nil {
 							slog.Debug("Error sending to datachannel, resetting", "bytes", len(payload), "error", err)
 							break proxyloop

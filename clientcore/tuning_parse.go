@@ -53,6 +53,11 @@ var tuningKeys = map[string]tuningKey{
 		set: func(t *WebRTCTuning, v uint64) { t.SCTPRTOMax = ms(v) },
 		min: 1000, max: maxTuningMs,
 	},
+	// The top of the range effectively turns the send gate off.
+	"datachannel_queue_target_ms": {
+		set: func(t *WebRTCTuning, v uint64) { t.DataChannelQueueTarget = ms(v) },
+		min: 1, max: 10_000,
+	},
 	"sctp_max_receive_buffer_bytes": {
 		set: func(t *WebRTCTuning, v uint64) { t.SCTPMaxReceiveBuffer = uint32(v) },
 		min: 64 << 10, max: 64 << 20,

@@ -156,3 +156,11 @@ func TestOutcomeConsumerVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestOutcomePath(t *testing.T) {
+	for in, want := range map[string]string{"relay": "relay", "direct": "direct", "": "unreported", "bogus": "unreported"} {
+		if got := OutcomePath(in); got != want {
+			t.Errorf("OutcomePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
