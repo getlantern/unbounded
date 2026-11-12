@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -412,5 +413,290 @@ func TestAwaitGathering(t *testing.T) {
 	start = time.Now()
 	if !awaitGathering(later, 0) || time.Since(start) < 100*time.Millisecond {
 		t.Fatal("unbounded wait did not wait for gathering to complete")
+	}
+}
+
+// genesisFreddie answers every POST with an empty body, as Freddie does when nobody answered a
+// genesis, and passes on each one's form.
+func genesisFreddie(t *testing.T) (*WebRTCOptions, <-chan url.Values) {
+	t.Helper()
+	posted := make(chan url.Values, 16)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			posted <- r.PostForm
+		}
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.RoomTickets = []string{"aa.bb"}
+	return o, posted
+}
+
+// failingSTUN are the two ways STUN fails before an attempt: the STUN list can't be fetched, or
+// its servers don't answer the preflight (here at once, as a server that isn't one).
+var failingSTUN = []struct {
+	name  string
+	batch func(uint32) ([]string, error)
+}{
+	{"list", func(uint32) ([]string, error) { return nil, errors.New("STUN list unavailable") }},
+	{"preflight", func(uint32) ([]string, error) { return []string{"turn:127.0.0.1:3478"}, nil }},
+}
+
+// producerState2 runs a producer's state 2 on pc.
+func producerState2(fsm *WorkerFSM, pc *webrtc.PeerConnection) int {
+	next, _ := fsm.state[2](context.Background(), fsm.com, []interface{}{
+		pc,
+		common.PathAssertion{},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+	})
+	return next
+}
+
+// A room slot without a mapped address offers itself to its rooms even when STUN fails, since
+// Freddie may hand it TURN servers with its room's offer.
+func TestRoomProducerGoesOnWithoutSTUN(t *testing.T) {
+	for _, tc := range failingSTUN {
+		t.Run(tc.name, func(t *testing.T) {
+			o, posted := genesisFreddie(t)
+			o.STUNBatch = tc.batch
+			fsm := newProducerWebRTC(o, nil, true)
+
+			next, pc := producerState0(t, fsm)
+			if next != 1 || pc == nil {
+				t.Fatalf("state 0 went to state %d, want 1 and a peer connection", next)
+			}
+			if servers := pc.GetConfiguration().ICEServers; len(servers) != 0 {
+				t.Errorf("%d ICE servers, want none", len(servers))
+			}
+			if next := producerState2(fsm, pc); next != 1 {
+				t.Fatalf("state 2 went to state %d, want 1", next)
+			}
+			select {
+			case form := <-posted:
+				if got := form.Get("send-to"); got != common.SignalSendToGenesisRooms {
+					t.Errorf("genesis sent to %q, want %q", got, common.SignalSendToGenesisRooms)
+				}
+			default:
+				t.Fatal("no genesis posted")
+			}
+		})
+	}
+}
+
+// A producer that serves the pool still needs STUN without a mapped address: a stranger has no
+// TURN servers to offer it.
+func TestPoolProducerNeedsSTUN(t *testing.T) {
+	for _, tc := range failingSTUN {
+		t.Run(tc.name, func(t *testing.T) {
+			o, _ := genesisFreddie(t)
+			o.STUNBatch = tc.batch
+			fsm := newProducerWebRTC(o, nil, false)
+
+			// A failed preflight waits out its backoff, so cut that short.
+			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			defer cancel()
+			next, out := fsm.state[0](ctx, fsm.com, nil)
+			if next != 0 || len(out) != 0 {
+				t.Fatalf("state 0 went to state %d with %d values, want 0 with none", next, len(out))
+			}
+		})
+	}
+}
+
+// A room slot that went without STUN goes back to state 0 rather than offer itself to the pool
+// once its tickets are gone.
+func TestRoomProducerWithoutSTUNLeavesThePoolAlone(t *testing.T) {
+	o, posted := genesisFreddie(t)
+	o.STUNBatch = failingSTUN[0].batch
+	fsm := newProducerWebRTC(o, nil, true)
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1 and a peer connection", next)
+	}
+
+	roomsMu.Lock()
+	o.RoomTickets = nil
+	roomsMu.Unlock()
+	if next := producerState2(fsm, pc); next != 0 {
+		t.Fatalf("state 2 went to state %d, want 0", next)
+	}
+	if pc.ConnectionState() != webrtc.PeerConnectionStateClosed {
+		t.Error("the peer connection was not closed")
+	}
+	select {
+	case form := <-posted:
+		t.Errorf("posted a genesis to %q", form.Get("send-to"))
+	default:
+	}
+}
+
+// A room slot that went without STUN and gets no TURN servers with its offer, as from a Freddie
+// that predates them, gathers only host candidates and gives up before answering, as it did
+// when it never offered itself. It reports that with its next genesis.
+func TestRoomProducerWithoutSTUNOrTURNGivesUp(t *testing.T) {
+	o, posted := genesisFreddie(t)
+	o.STUNBatch = failingSTUN[0].batch
+	fsm := newProducerWebRTC(o, nil, true)
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1 and a peer connection", next)
+	}
+
+	consumer, _ := newTestPeerConnection(t)
+	offer, err := consumer.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := consumer.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	next, _ = fsm.state[3](context.Background(), fsm.com, []interface{}{
+		pc,
+		"reply-to",
+		common.OfferMsg{SDP: *consumer.LocalDescription()},
+		make(chan *webrtc.DataChannel, 1),
+		make(chan webrtc.PeerConnectionState, 1),
+		make(chan struct{}, 1),
+		[]webrtc.ICEServer(nil),
+	})
+	if next != 0 {
+		t.Fatalf("state 3 went to state %d, want 0", next)
+	}
+	select {
+	case <-posted:
+		t.Fatal("answered with host candidates only")
+	default:
+	}
+
+	_, pc = producerState0(t, fsm)
+	if next := producerState2(fsm, pc); next != 1 {
+		t.Fatalf("state 2 went to state %d, want 1", next)
+	}
+	if got := (<-posted).Get(common.PrevOutcomeField); got != common.OutcomeNoLocalSrflx {
+		t.Errorf("next genesis reported %q, want %q", got, common.OutcomeNoLocalSrflx)
+	}
+}
+
+// consumerState0 runs a consumer's state 0 once and returns the state it went to and its peer
+// connection, if it built one.
+func consumerState0(t *testing.T, fsm *WorkerFSM) (int, *webrtc.PeerConnection) {
+	t.Helper()
+	next, out := fsm.state[0](context.Background(), fsm.com, nil)
+	var pc *webrtc.PeerConnection
+	if len(out) > 0 {
+		pc, _ = out[0].(*webrtc.PeerConnection)
+	}
+	if pc != nil {
+		t.Cleanup(func() { pc.Close() })
+	}
+	return next, pc
+}
+
+// A consumer with room tickets goes on when the STUN list can't be fetched, since its room's
+// genesis may carry TURN servers. One without tickets still waits for the list.
+func TestTicketedConsumerGoesOnWithoutSTUNList(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.STUNBatch = failingSTUN[0].batch
+	if next, pc := consumerState0(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now))); next != 0 || pc != nil {
+		t.Fatalf("without tickets, state 0 went to state %d, want 0", next)
+	}
+
+	o.RoomTickets = []string{"aa.bb"}
+	next, pc := consumerState0(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)))
+	if next != 1 || pc == nil {
+		t.Fatalf("with tickets, state 0 went to state %d, want 1 and a peer connection", next)
+	}
+	if servers := pc.GetConfiguration().ICEServers; len(servers) != 0 {
+		t.Errorf("%d ICE servers, want none", len(servers))
+	}
+}
+
+// A ticketed consumer without STUN or a mapped address subscribes with its tickets and answers
+// only a room genesis that carries TURN servers: neither a pool genesis nor a room genesis
+// without them could connect it.
+func TestConsumerWithoutSTUNAnswersOnlyRoomTURN(t *testing.T) {
+	turnSrv := []webrtc.ICEServer{{URLs: []string{"turn:turn.example:3478"}, Username: "u", Credential: "p"}}
+	pool := common.SignalMsg{ReplyTo: "pool-genesis", Type: common.SignalMsgGenesis, Payload: `{}`}
+	bare := common.SignalMsg{ReplyTo: "bare-room-genesis", Type: common.SignalMsgGenesis, Payload: `{}`, Room: true}
+	relayed := common.SignalMsg{ReplyTo: "turn-room-genesis", Type: common.SignalMsgGenesis, Payload: `{}`, Room: true, ICEServers: turnSrv}
+
+	for _, tc := range []struct {
+		name     string
+		msgs     []common.SignalMsg
+		next     int
+		answered string
+	}{
+		{"none usable", []common.SignalMsg{pool, bare}, 1, ""},
+		{"room with TURN", []common.SignalMsg{pool, bare, relayed, pool}, 2, relayed.ReplyTo},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body []byte
+			for _, m := range tc.msgs {
+				b, err := json.Marshal(m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = append(append(body, b...), '\n')
+			}
+			subscribed := make(chan string, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case subscribed <- r.Header.Get(common.RoomTicketsHeader):
+				default:
+				}
+				w.Write(body)
+			}))
+			t.Cleanup(srv.Close)
+			o := NewDefaultWebRTCOptions()
+			o.DiscoverySrv = srv.URL
+			o.Patience = 50 * time.Millisecond
+			o.RoomTickets = []string{"aa.bb"}
+			o.STUNBatch = failingSTUN[0].batch
+			fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+			if next, pc := consumerState0(t, fsm); next != 1 || pc == nil {
+				t.Fatalf("state 0 went to state %d, want 1", next)
+			} else {
+				next, out := consumerState1(t, fsm, pc)
+				if next != tc.next {
+					t.Fatalf("state 1 went to state %d, want %d", next, tc.next)
+				}
+				if tc.answered != "" && out[1].(string) != tc.answered {
+					t.Errorf("answered %v, want %s", out[1], tc.answered)
+				}
+			}
+			select {
+			case got := <-subscribed:
+				if got != "aa.bb" {
+					t.Errorf("subscribed with tickets %q, want aa.bb", got)
+				}
+			default:
+				t.Fatal("never subscribed")
+			}
+		})
+	}
+}
+
+// A consumer that went without STUN goes back to state 0 for it once its tickets are gone.
+func TestConsumerWithoutSTUNOrTicketsGoesBack(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.RoomTickets = []string{"aa.bb"}
+	o.STUNBatch = failingSTUN[0].batch
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+	next, pc := consumerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	roomsMu.Lock()
+	o.RoomTickets = nil
+	roomsMu.Unlock()
+	if next, _ := consumerState1(t, fsm, pc); next != 0 {
+		t.Fatalf("state 1 went to state %d, want 0", next)
+	}
+	if pc.ConnectionState() != webrtc.PeerConnectionStateClosed {
+		t.Error("the peer connection was not closed")
 	}
 }

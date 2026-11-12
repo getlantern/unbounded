@@ -63,6 +63,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
 	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
 	var cohortDropped bool
+	// roomsWithoutSTUN is set when the current attempt has room tickets but neither STUN servers
+	// nor a mapped address, so only a room genesis that carries TURN servers can connect it.
+	var roomsWithoutSTUN bool
 	rooms.setRoomsOnly(options.ConsumerRoomsOnly)
 	// pairing is the helper pairing of the room genesis the current attempt
 	// answers, as Freddie stamped it, or "" for a pool genesis. State 1 sets
@@ -94,20 +97,23 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			// A consumer with a mapped address can be reached on it without STUN, so for it the
 			// STUN list is best-effort: if it can't be fetched, this attempt goes ahead on the mapped
-			// address alone.
+			// address alone. So it is for a consumer with room tickets, since its room's genesis may
+			// carry TURN servers: without STUN or a mapped address, it answers only such a genesis.
 			mapped := iceNetOf(options).mapped()
+			ticketed := len(options.CurrentRoomTickets()) > 0
+			stunOptional := mapped || ticketed
 
 			// Populate the STUN cache if necessary
-			if scache.size() == 0 && (!mapped || !preflightNow().Before(listPausedUntil)) {
+			if scache.size() == 0 && (!stunOptional || !preflightNow().Before(listPausedUntil)) {
 				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
 				if err != nil {
-					if !mapped {
+					if !stunOptional {
 						slog.Debug("Error creating STUN batch", "error", err)
 						return 0, []interface{}{}
 					}
 					wait := listBackoff.failed()
 					listPausedUntil = preflightNow().Add(wait)
-					slog.Debug("Error creating STUN batch, going on with the mapped address alone", "error", err, "retry_in", wait)
+					slog.Debug("Error creating STUN batch, going on without STUN", "error", err, "retry_in", wait, "mapped", mapped)
 				} else {
 					listBackoff.reset()
 					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
@@ -117,6 +123,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 			config := webrtc.Configuration{}
 			cohortDropped = scache.size() == 0
+			roomsWithoutSTUN = ticketed && !mapped && scache.size() == 0
 			if scache.size() > 0 {
 				STUNSrvs := scache.cohort()
 				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "batch_size", options.STUNBatchSize, "servers", STUNSrvs)
@@ -207,6 +214,13 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 
+			// An attempt without STUN whose room tickets are gone has nothing it can answer, so it
+			// goes back to state 0 for STUN.
+			if roomsWithoutSTUN && len(options.CurrentRoomTickets()) == 0 {
+				peerConnection.Close() // TODO: there's an err we should handle here
+				return 0, []interface{}{}
+			}
+
 			// Listen for genesis messages
 			req, err := newSubscribeRequest(ctx, options)
 			if err != nil {
@@ -292,6 +306,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					// ignores everything else, never collecting a pool candidate
 					// to fall back to.
 					if options.ConsumerRoomsOnly && !msg.IsRoomGenesis() {
+						continue
+					}
+					// Without STUN or a mapped address, only a room's TURN servers can connect us.
+					if roomsWithoutSTUN && (!msg.IsRoomGenesis() || len(msg.ICEServers) == 0) {
 						continue
 					}
 
