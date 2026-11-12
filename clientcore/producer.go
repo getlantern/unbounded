@@ -354,20 +354,18 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// we create this slice of candidates is to evaluate whether STUN worked, which happens below.
 			// Believe it or not, this post facto examination of ICE candidates is the idiomatic way to
 			// determine whether any of your STUN type ICE agents worked...
-			localCandidates := []webrtc.ICECandidate{}
-			peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
-				// Interestingly, the null candidate is a nil pointer so we cause a nil ptr dereference
-				// if we try to append it to the list... so let's just not include it?
-				if c != nil {
-					localCandidates = append(localCandidates, *c)
-				}
-			})
+			var gathered candidateLog
+			peerConnection.OnICECandidate(gathered.add)
 
 			// A room pairing's TURN servers must be in place before SetLocalDescription starts
 			// gathering. State 3 is entered once per peer connection (every way out of it goes to
-			// state 0 or forward), so they are never added twice.
+			// state 0 or forward), so they are never added twice. A blocked one could hold gathering
+			// past Freddie's window, so with them gathering is bounded (see turnGatherWait).
+			var gatherLimit time.Duration
 			if err := addICEServers(peerConnection, iceServers); err != nil {
 				slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
+			} else if len(iceServers) > 0 {
+				gatherLimit = turnGatherWait
 			}
 
 			// Assign the offer to our connection
@@ -397,14 +395,20 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			<-gatherComplete
-			slog.Debug("ICE gathering complete!")
+			if awaitGathering(gatherComplete, gatherLimit) {
+				slog.Debug("ICE gathering complete!")
+			} else {
+				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
+			}
+			localCandidates := gathered.snapshot()
 			slog.Debug("Local candidates", "candidates", localCandidates)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
 			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
-			// don't want to bother signaling those, so here's our escape hatch.
+			// don't want to bother signaling those, so here's our escape hatch. A relay candidate
+			// counts as non-host, so a room attempt whose TURN server answered keeps a dead STUN
+			// cohort until the next pool attempt finds it.
 			if !hasNonHostCandidate(localCandidates) {
 				if !cohortDropped {
 					scache.drop()
@@ -423,7 +427,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				slog.Debug("ICE gathered no non-host candidates, offering the mapped address alone")
 			}
 
-			// Our answer SDP with ICE candidates attached
+			// Our answer SDP with ICE candidates attached: those gathered so far, if the wait gave up
 			finalAnswer := peerConnection.LocalDescription()
 
 			a, err := json.Marshal(finalAnswer)

@@ -84,6 +84,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// (no input data)
 			slog.Debug("Consumer state 0, constructing RTCPeerConnection...")
 
+			// Whatever peer connection had TURN servers is gone, so stop keeping it reachable.
+			turnPC = nil
+
 			// We're resetting this slot, so send a nil path assertion IPC message
 			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
 				return 0, input
@@ -464,14 +467,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
 
-			candidates := []webrtc.ICECandidate{}
-			peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
-				// Interestingly, the null candidate is a nil pointer so we cause a nil ptr dereference
-				// if we try to append it to the list... so let's just not include it?
-				if c != nil {
-					candidates = append(candidates, *c)
-				}
-			})
+			var gathered candidateLog
+			peerConnection.OnICECandidate(gathered.add)
 
 			// This kicks off ICE candidate gathering
 			err = peerConnection.SetLocalDescription(sdp)
@@ -488,14 +485,26 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// timeout on an unreachable server. Until then the producer's NAT drops our checks, and
 			// pion's controlling agent gives up on a pair after maxBindingRequests unanswered checks
 			// (about 1.6s) and never rechecks it, even once the producer's checks arrive.
-			<-gatherComplete
-			slog.Debug("ICE gathering complete!")
+			// With a room pairing's TURN servers, gathering may be held by a blocked one, so it is
+			// bounded and we go on with what it has gathered (see turnGatherWait).
+			var gatherLimit time.Duration
+			if peerConnection == turnPC {
+				gatherLimit = turnGatherWait
+			}
+			if awaitGathering(gatherComplete, gatherLimit) {
+				slog.Debug("ICE gathering complete!")
+			} else {
+				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
+			}
+			candidates := gathered.snapshot()
 			slog.Debug("Local candidates", "candidates", candidates)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
 			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
-			// don't want to bother signaling those, so here's our escape hatch.
+			// don't want to bother signaling those, so here's our escape hatch. A relay candidate
+			// counts as non-host, so a room attempt whose TURN server answered keeps a dead STUN
+			// cohort until the next pool attempt finds it.
 			if !hasNonHostCandidate(candidates) {
 				if !cohortDropped {
 					scache.drop()

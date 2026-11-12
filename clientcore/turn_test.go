@@ -5,16 +5,21 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/pion/transport/v5"
+	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/covertdtls"
 )
 
 func startTURN(t *testing.T) []webrtc.ICEServer {
@@ -242,5 +247,93 @@ func TestProducerAddsOfferTURN(t *testing.T) {
 	}
 	if got := pc.GetConfiguration().ICEServers; len(got) != 1 || got[0].URLs[0] != turnSrv[0].URLs[0] {
 		t.Fatalf("state 3 did not add the offer's TURN servers: %d", len(got))
+	}
+}
+
+// blackholeNet is the host's network stack, except that a TCP dial hangs until unblocked, as it
+// does when a censor drops a TURN server's SYNs.
+type blackholeNet struct {
+	*stdnet.Net
+	unblock chan struct{}
+}
+
+func (n *blackholeNet) DialTCP(network string, laddr, raddr *net.TCPAddr) (transport.TCPConn, error) {
+	<-n.unblock
+	return nil, errors.New("blackholed")
+}
+
+// A blackholed TCP TURN server holds gathering, but the bounded wait gives up on it in time and
+// leaves the host candidates gathered so far, in the snapshot and in the local description.
+func TestAwaitGatheringBoundsBlackholedTURN(t *testing.T) {
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh := &blackholeNet{Net: std, unblock: make(chan struct{})}
+	pc, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, WebRTCTuning{}, iceNet{net: bh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	defer close(bh.unblock)
+	if err := addICEServers(pc, []webrtc.ICEServer{{URLs: []string{"turn:127.0.0.1:3478?transport=tcp"}, Username: "u", Credential: "p"}}); err != nil {
+		t.Fatal(err)
+	}
+	var gathered candidateLog
+	pc.OnICECandidate(gathered.add)
+	if _, err := pc.CreateDataChannel("data", nil); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+
+	const limit = 500 * time.Millisecond
+	start := time.Now()
+	if awaitGathering(gatherComplete, limit) {
+		t.Fatal("gathering completed with its TURN server blackholed")
+	}
+	if waited := time.Since(start); waited > limit+time.Second {
+		t.Fatalf("the bounded wait took %v, want about %v", waited, limit)
+	}
+	cands := gathered.snapshot()
+	if len(cands) == 0 {
+		t.Fatal("no candidates gathered before the deadline")
+	}
+	if got := strings.Count(pc.LocalDescription().SDP, "a=candidate:"); got < len(cands) {
+		t.Fatalf("the local description carries %d candidates, want at least the %d gathered", got, len(cands))
+	}
+}
+
+func TestAwaitGathering(t *testing.T) {
+	never := make(chan struct{})
+	start := time.Now()
+	if awaitGathering(never, 50*time.Millisecond) {
+		t.Fatal("reported complete for gathering that never completes")
+	}
+	if waited := time.Since(start); waited > time.Second {
+		t.Fatalf("the bounded wait took %v", waited)
+	}
+
+	done := make(chan struct{})
+	close(done)
+	if !awaitGathering(done, time.Hour) {
+		t.Fatal("bounded wait missed completed gathering")
+	}
+
+	// Unbounded, it waits as long as gathering takes.
+	later := make(chan struct{})
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		close(later)
+	}()
+	start = time.Now()
+	if !awaitGathering(later, 0) || time.Since(start) < 100*time.Millisecond {
+		t.Fatal("unbounded wait did not wait for gathering to complete")
 	}
 }
