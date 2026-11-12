@@ -88,11 +88,18 @@ func TestControlFrameRoundTrips(t *testing.T) {
 }
 
 // A control frame's first byte is a QUIC short header's with the fixed bit clear, which no QUIC
-// packet of a version without grease has, so an egress that predates control frames drops it.
+// packet without grease has, so an egress that predates control frames drops it. Its magic is
+// long enough that a greased packet with the same first byte almost never begins with it too.
 func TestControlFrameIsNotAQUICPacket(t *testing.T) {
 	b := AppendControlFrame(nil, Control{Capabilities: CapFrameV1})
 	assert.Zero(t, b[0]&0x80, "long header bit")
 	assert.Zero(t, b[0]&0x40, "fixed bit")
+	assert.GreaterOrEqual(t, len(controlMagic), 8)
+
+	// A greased short header packet whose connection ID shares the old 4-byte prefix.
+	greased := append([]byte{0x00, 'U', 'B', 'F'}, bytes.Repeat([]byte{0x5a}, 60)...)
+	_, isControl, _ := ParseControlFrame(greased)
+	assert.False(t, isControl)
 }
 
 func TestParseControlFrameLeavesPacketsAlone(t *testing.T) {

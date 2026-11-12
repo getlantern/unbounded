@@ -23,7 +23,9 @@ import (
 // controlMagic, a version byte, then a protobuf message of control fields. The egress keeps
 // sending JSON until it hears one, so consumers that predate frames keep working. An egress that
 // predates them hands the control frame to QUIC, which drops it: it begins like a short header
-// packet for a connection ID QUIC doesn't know.
+// packet with the fixed bit clear, which QUIC rejects. Were QUIC bit greasing (RFC 9287) ever
+// negotiated, a real packet could clear that bit too, so the magic is long enough that one
+// beginning with it is as unlikely as guessing seven random bytes.
 
 // FrameV1 begins a version 1 packet frame. A JSON frame begins with '{'.
 const FrameV1 byte = 0x01
@@ -35,7 +37,7 @@ const (
 )
 
 // controlMagic begins a control frame.
-var controlMagic = []byte{0x00, 'U', 'B', 'F'}
+var controlMagic = []byte{0x00, 'U', 'B', 'F', 'C', 'T', 'R', 'L'}
 
 // controlV1 is the control frame version that follows controlMagic.
 const controlV1 byte = 0x01
