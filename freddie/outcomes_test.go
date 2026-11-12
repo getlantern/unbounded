@@ -247,3 +247,60 @@ func TestRecordSTUNPreflights_LabelsVolunteerKind(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+// An outcome carries the VPN state its attempt began under; a producer that reports none, like
+// the browser or one that predates the field, is unknown.
+func TestRecordProducerOutcome_LabelsVPN(t *testing.T) {
+	for reported, want := range map[string]string{
+		"connected":    "connected",
+		"disconnected": "disconnected",
+		"":             "unknown",
+		"bogus":        "invalid",
+	} {
+		form := url.Values{common.PrevOutcomeField: {common.OutcomeNATTimeout}}
+		if reported != "" {
+			form.Set(common.PrevVPNField, reported)
+		}
+		got := outcomeLabels(t, form, common.Version, "outcome", "vpn")
+		if got["nat_timeout/"+want] != 1 || len(got) != 1 {
+			t.Errorf("%s=%q: got %v, want nat_timeout/%s", common.PrevVPNField, reported, got, want)
+		}
+	}
+}
+
+// A failed socket's cause is counted with it; passes and other failures have none, and a
+// producer that predates the field is unreported.
+func TestRecordSTUNPreflights_LabelsCause(t *testing.T) {
+	got := preflightLabels(t, url.Values{
+		common.PreflightVPNField:          {"connected"},
+		common.PrevPreflightFailuresField: {"4"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoSocket},
+		common.PrevPreflightCauseField:    {"send_unreachable"},
+		common.PrevPreflightVPNField:      {"disconnected"},
+	}, "result", "cause")
+	if got["ok/none"] != 1 || got["no_socket/send_unreachable"] != 4 || len(got) != 2 {
+		t.Fatalf("got %v", got)
+	}
+	for cause, want := range map[string]string{"": "unreported", "made_up": "invalid"} {
+		form := url.Values{
+			common.PreflightVPNField:          {"connected"},
+			common.PrevPreflightFailuresField: {"1"},
+			common.PrevPreflightOutcomeField:  {common.PreflightNoSocket},
+		}
+		if cause != "" {
+			form.Set(common.PrevPreflightCauseField, cause)
+		}
+		if got := preflightLabels(t, form, "result", "cause"); got["no_socket/"+want] != 1 {
+			t.Errorf("cause %q: got %v, want no_socket/%s", cause, got, want)
+		}
+	}
+	got = preflightLabels(t, url.Values{
+		common.PreflightVPNField:          {"connected"},
+		common.PrevPreflightFailuresField: {"2"},
+		common.PrevPreflightOutcomeField:  {common.PreflightNoReply},
+		common.PrevPreflightCauseField:    {"send_unreachable"},
+	}, "result", "cause")
+	if got["no_reply/none"] != 2 {
+		t.Fatalf("a failure that isn't no_socket has no cause, got %v", got)
+	}
+}

@@ -18,6 +18,9 @@ const (
 	PrevPreflightOutcomeField = "prev-preflight-outcome"
 	// PrevPreflightVPNField is the VPN state when the last of them failed.
 	PrevPreflightVPNField = "prev-preflight-vpn"
+	// PrevPreflightCauseField is why the last of them failed, when it got no further than its
+	// socket: one of the PreflightCause* values.
+	PrevPreflightCauseField = "prev-preflight-cause"
 )
 
 // STUN preflight outcomes.
@@ -45,6 +48,64 @@ func NormalizePreflightFailure(s string) string {
 		return "unreported"
 	}
 	return normalizeEnum(s, preflightFailures)
+}
+
+// Why a preflight failed with PreflightNoSocket: the step that failed, and the class of the
+// operating system's error. Only the class is sent, never the error itself.
+const (
+	// PreflightCauseOpenTimeout: the socket hadn't opened when the preflight's time ran out.
+	PreflightCauseOpenTimeout = "open_timeout"
+	// PreflightCauseBuild: the binding request couldn't be built.
+	PreflightCauseBuild = "build"
+)
+
+// Steps a socket can fail at, and error classes, which make up the other causes as
+// "<step>_<class>", such as "send_unreachable".
+var (
+	preflightCauseSteps   = []string{"listen", "send"}
+	preflightCauseClasses = []string{
+		// unreachable: no route to the network or host, as while a VPN tunnel's routes change.
+		"unreachable",
+		// addr_unavailable: the address to bind or send from no longer exists on the host.
+		"addr_unavailable",
+		// permission: a firewall or the OS refused the socket.
+		"permission",
+		// no_buffers: the OS ran out of socket buffers.
+		"no_buffers",
+		// family_unsupported: the address family, usually IPv6, is unavailable.
+		"family_unsupported",
+		// other: any other error.
+		"other",
+	}
+)
+
+var preflightCauses = func() map[string]bool {
+	m := map[string]bool{PreflightCauseOpenTimeout: true, PreflightCauseBuild: true}
+	for _, step := range preflightCauseSteps {
+		for _, class := range preflightCauseClasses {
+			m[step+"_"+class] = true
+		}
+	}
+	return m
+}()
+
+// PreflightCause joins a failed step and an error class into a cause.
+func PreflightCause(step, class string) string {
+	return step + "_" + class
+}
+
+// KnownPreflightCause reports whether s is a cause Freddie counts.
+func KnownPreflightCause(s string) bool {
+	return preflightCauses[s]
+}
+
+// NormalizePreflightCause maps a reported cause onto the known set, "unreported" when none was
+// reported, or "invalid".
+func NormalizePreflightCause(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	return normalizeEnum(s, preflightCauses)
 }
 
 // VPN states a producer can report: radiance's vpn.VPNStatus values. An app without a VPN, or a

@@ -120,7 +120,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 						if ctx.Err() != nil {
 							return 0, []interface{}{}
 						}
-						preflightRep.record(res.Outcome, vpnStatus(options))
+						preflightRep.record(res.Outcome, res.Cause, vpnStatus(options))
 						scache.drop()
 						wait := preflight.failed()
 						slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait, "mapped", mapped)
@@ -132,7 +132,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 						useSTUN = false
 					} else {
 						preflight.passed(preflightNow(), STUNSrvs)
-						preflightRep.record(res.Outcome, vpnStatus(options))
+						preflightRep.record(res.Outcome, res.Cause, vpnStatus(options))
 					}
 				}
 
@@ -374,7 +374,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			connectionClosed := input[5].(chan struct{})
 			iceServers, _ := input[6].([]webrtc.ICEServer)
 			slog.Debug("Producer state 3...")
-			last.begin(replyTo)
+			last.begin(replyTo, vpnStatus(options))
 
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
@@ -778,6 +778,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				defer close(pdcStatsDone)
 			}
 
+			// One gate per data channel: its drain rate and round trip are this channel's.
+			gate := newSendGate(options.Tuning.DataChannelQueueTarget)
+			gate.setRTT(sctpRTT(peerConnection))
+			rttTicker := time.NewTicker(gateRTTEvery)
+			defer rttTicker.Stop()
+
 		proxyloop:
 			for {
 				select {
@@ -795,11 +801,16 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				case _ = <-connectionClosed:
 					slog.Debug("Connection closed, resetting!")
 					break proxyloop
+				case <-rttTicker.C:
+					gate.setRTT(sctpRTT(peerConnection))
 				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
 						payload := msg.Data.([]byte)
+						if !gate.allow(len(payload), d.BufferedAmount(), time.Now()) {
+							continue
+						}
 						if err := d.Send(payload); err != nil {
 							slog.Debug("Error sending to datachannel, resetting", "bytes", len(payload), "error", err)
 							break proxyloop
@@ -917,19 +928,21 @@ type attemptOutcome struct {
 	iceState string
 	pcState  string
 	offerID  string
+	vpn      string
 	// path is common.PathRelay or common.PathDirect for a connected attempt, if known.
 	path string
 }
 
-// begin notes the ReplyTo of the offer an attempt is answering. record keeps it.
-func (o *attemptOutcome) begin(offerID string) {
-	*o = attemptOutcome{offerID: offerID}
+// begin notes the ReplyTo of the offer an attempt is answering, and the VPN state it began under.
+// record keeps both.
+func (o *attemptOutcome) begin(offerID, vpn string) {
+	*o = attemptOutcome{offerID: offerID, vpn: vpn}
 }
 
 // record notes the attempt's outcome and the peer connection's states at that moment. Call it
 // before the peer connection is closed.
 func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
-	*o = attemptOutcome{outcome: outcome, offerID: o.offerID}
+	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn}
 	if pc != nil {
 		o.iceState = pc.ICEConnectionState().String()
 		o.pcState = pc.ConnectionState().String()
@@ -948,6 +961,9 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
 	if o.offerID != "" {
 		form.Set(common.PrevOfferIDField, o.offerID)
+	}
+	if o.vpn != "" {
+		form.Set(common.PrevVPNField, o.vpn)
 	}
 	if o.path != "" {
 		form.Set(common.PrevPathField, o.path)

@@ -24,6 +24,11 @@ const (
 	// PrevPathField says whether a connected attempt's selected candidate pair went through a TURN
 	// relay: PathRelay or PathDirect. Only sent with OutcomeConnected.
 	PrevPathField = "prev-path"
+	// PrevVPNField is the embedding app's VPN state when the attempt began, one of the values
+	// NormalizeVPNState knows. With the VPN up, a volunteer's WebRTC sockets can follow the tunnel,
+	// so this tells whether outcomes, and the NAT Freddie sees, differ with it. Producers without a
+	// VPN state to report, such as the browser's, send nothing.
+	PrevVPNField = "prev-vpn"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
