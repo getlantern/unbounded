@@ -8,7 +8,6 @@ package clientcore
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net"
 	"os"
@@ -119,17 +118,12 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		select {
 		case msg := <-c.readChan:
 			// The read completed, let's return some bytes!
-			payload := msg.Data.([]byte)
-
-			var unboundedPacket common.UnboundedPacket
-
-			err := json.Unmarshal(payload, &unboundedPacket)
+			sourceAddr, payload, err := common.ParsePacketFrame(msg.Data.([]byte))
 			if err != nil {
-				// XXX: it's unclear what the desired behavior is here. Before the introduction of
-				// UnboundedPacket, there was no precedent for returning an error after successfully reading
-				// from the channel. Returning an error here may break things catastrophically, but if
-				// we couldn't unmarshal the packet, we do have a catastrophic situation on our hands...
-				return 0, nil, err
+				// An error returned here would end QUIC's reads on this connection, so a frame
+				// this build can't read is dropped like any lost packet.
+				slog.Debug("Dropping an unreadable packet frame", "error", err)
+				continue
 			}
 
 			// copy returns the actual number of bytes written to p,
@@ -137,12 +131,12 @@ func (c BroflakeConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 			// buffer is short. Return that value — returning
 			// len(Payload) would violate the net.PacketConn contract
 			// (n <= len(p)) and also over-count bfReadBytes.
-			n := copy(p, unboundedPacket.Payload)
+			n := copy(p, payload)
 			if bfStatsEnabled {
 				bfReadBytes.Add(uint64(n))
 				bfReadCalls.Add(1)
 			}
-			return n, common.DebugAddr(unboundedPacket.SourceAddr), nil
+			return n, common.DebugAddr(sourceAddr), nil
 		case <-ctx.Done():
 			// We're past our deadline, so let's return failure!
 			return 0, nil, ctx.Err()

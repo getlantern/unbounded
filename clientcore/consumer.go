@@ -756,6 +756,19 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			rttTicker := time.NewTicker(gateRTTEvery)
 			defer rttTicker.Stop()
 
+			// Tell the egress at the far end of this path which packet frames this consumer reads.
+			// The volunteer relays it unread, and dials the egress only once we connect, so the
+			// first can arrive before there is an egress to hear it; it is repeated.
+			hello := common.AppendControlFrame(nil, common.Control{Capabilities: common.CapFrameV1})
+			sendHello := func() {
+				if err := d.Send(hello); err != nil {
+					slog.Debug("Couldn't send a control frame", "error", err)
+				}
+			}
+			sendHello()
+			helloTicker := time.NewTicker(controlFrameEvery)
+			defer helloTicker.Stop()
+
 		proxyloop:
 			for {
 				select {
@@ -775,6 +788,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					break proxyloop
 				case <-rttTicker.C:
 					gate.setRTT(sctpRTT(peerConnection))
+				case <-helloTicker.C:
+					sendHello()
 				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
@@ -803,6 +818,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 		}),
 	})
 }
+
+// controlFrameEvery is how often a consumer repeats its control frame on a data channel.
+const controlFrameEvery = 10 * time.Second
 
 // newSubscribeRequest builds a consumer's GET of the genesis stream. It
 // carries the consumer's room tickets in RoomTicketsHeader when it has any,
