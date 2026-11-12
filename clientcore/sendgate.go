@@ -8,42 +8,63 @@ import "time"
 // including a page's small requests, then waits behind a bulk download's backlog. Measured
 // through a producer, one download put about 300ms of queue in front of every request.
 //
-// So the gate drops a packet once the buffered data would take more than queueTarget beyond the
-// path's round trip to drain. QUIC treats the drop as loss and slows down, which holds the queue
-// near queueTarget. Buffered data includes data in flight awaiting acknowledgement, which takes
-// a round trip to clear even with no queue, hence the round trip in the allowance. The drain rate
-// is measured from what the buffer releases.
+// So the gate drops a packet that would wait more than a round trip plus queueTarget before it is
+// acknowledged. QUIC treats the drop as loss and slows down, which holds the queue near
+// queueTarget.
+//
+// pion's buffered amount counts bytes until they are acknowledged, so it mixes a queue with data
+// in flight. Two signals separate them:
+//   - Whether a queue stands at all. pion releases buffered bytes in order, so the oldest is at
+//     offset sent-buffered of what the gate let through, and its age is a round trip with no
+//     queue. Paced or bursty traffic that never builds a queue never ages past that, whatever
+//     its rate, so it is never cut.
+//   - How long the queue takes to drain. While a queue stands, bytes are released at the
+//     channel's capacity, so only then is the rate measured. A packet sent now would be
+//     acknowledged once everything buffered ahead of it is, after buffered/rate.
+//
+// Until a rate is measured, the oldest byte's age is the measure. It lags the queue, which grew
+// while that byte waited, but only for the first window of a queue.
 type sendGate struct {
 	// queueTarget is how much queuing delay, above the round trip, the gate allows.
 	queueTarget time.Duration
 	// rtt is the data channel's round trip, or zero while unknown.
 	rtt time.Duration
 
-	sent       uint64
-	lastSent   uint64
-	lastBuf    uint64
-	lastSample time.Time
-	rate       float64 // drained bytes per second, smoothed
-	// starved is whether the buffer ran empty at any point of the current interval, which makes
-	// the interval say nothing about the channel's capacity. A buffer that only runs low still
-	// has a backlog, so the channel was busy throughout.
-	starved bool
+	// sent is the bytes the gate has let through, and marks when each of them was sent: marks[i]
+	// covers the bytes up to its end offset. marks[first:] are those not yet known to be released.
+	// head is the offset the channel has released up to.
+	sent    uint64
+	head    uint64
+	marks   []sendMark
+	first   int
 	dropped uint64
+
+	// rate is the channel's drain rate in bytes per second, measured while a queue stood and
+	// smoothed, as of rateAt. A window starting at winStart has released winReleased so far.
+	rate        float64
+	rateAt      time.Time
+	winStart    time.Time
+	winReleased uint64
+}
+
+type sendMark struct {
+	end uint64
+	at  time.Time
 }
 
 const (
 	defaultQueueTarget = 20 * time.Millisecond
 	// gateFloor is buffered data the gate never drops below, so a slow trickle is never cut.
 	gateFloor = 16 << 10
-	// gateStartCap bounds the buffer until a drain rate is measured.
-	gateStartCap = 256 << 10
 	// gateFallbackRTT stands in for the round trip where it can't be measured: a browser's
 	// WebRTC stack doesn't report SCTP's. Long enough not to cut a distant peer's throughput.
 	gateFallbackRTT = 100 * time.Millisecond
 	// gateRTTEvery is how often a data channel's send loop refreshes its gate's round trip.
 	gateRTTEvery = 250 * time.Millisecond
-	// gateSampleEvery is how often the drain rate is measured.
-	gateSampleEvery   = 50 * time.Millisecond
+	// gateRateWindow is how long the drain rate is measured over, and gateRateStale how long a
+	// measurement is trusted once queues stop: the channel's capacity can change while idle.
+	gateRateWindow    = 50 * time.Millisecond
+	gateRateStale     = time.Second
 	gateRateSmoothing = 0.25
 )
 
@@ -61,60 +82,93 @@ func (g *sendGate) setRTT(rtt time.Duration) {
 	}
 }
 
+func (g *sendGate) roundTrip() time.Duration {
+	if g.rtt > 0 {
+		return g.rtt
+	}
+	return gateFallbackRTT
+}
+
 // allow reports whether a packet of n bytes may be sent, given the data channel's buffered
 // amount now. It records the packet as sent when it allows it.
 func (g *sendGate) allow(n int, buffered uint64, now time.Time) bool {
-	g.sample(buffered, now)
-	ok := g.admits(buffered)
-	if ok {
-		g.sent += uint64(n)
-	} else {
+	released := g.release(buffered)
+	age, queuing := g.queue(buffered, now)
+	g.measure(released, queuing, now)
+	if !g.admits(buffered, age, queuing, now) {
 		g.dropped++
+		return false
 	}
-	return ok
+	g.sent += uint64(n)
+	g.marks = append(g.marks, sendMark{end: g.sent, at: now})
+	return true
 }
 
-func (g *sendGate) admits(buffered uint64) bool {
-	if buffered <= gateFloor {
-		return true
+// queue returns the oldest buffered byte's age, and whether a queue stands: whether that byte
+// has waited longer than a round trip would take with none, by more than a quarter of the target
+// so that a burst's own serialization doesn't count.
+func (g *sendGate) queue(buffered uint64, now time.Time) (time.Duration, bool) {
+	if buffered <= gateFloor || g.first == len(g.marks) {
+		return 0, false
 	}
-	if g.rate <= 0 {
-		return buffered <= gateStartCap
-	}
-	rtt := g.rtt
-	if rtt <= 0 {
-		rtt = gateFallbackRTT
-	}
-	drain := time.Duration(float64(buffered) / g.rate * float64(time.Second))
-	return drain <= rtt+g.queueTarget
+	age := now.Sub(g.marks[g.first].at)
+	return age, age > g.roundTrip()+g.queueTarget/4
 }
 
-// sample updates the drain rate. The buffer drains by what was sent since the last sample less
-// what it grew by. That is the channel's capacity only while it had a backlog throughout: with
-// nothing buffered at any point, it drains whatever the application offered, and
-// learning that as the rate would make the gate drop the next burst on an idle, fast path. Every
-// send reports the buffered amount, so an interval is judged on all of them, not its ends.
-func (g *sendGate) sample(buffered uint64, now time.Time) {
-	if buffered == 0 {
-		g.starved = true
-	}
-	if g.lastSample.IsZero() {
-		g.lastSample, g.lastBuf, g.lastSent = now, buffered, g.sent
+// measure updates the drain rate from the bytes released while a queue stands. A window in which
+// the queue cleared measures nothing, since the channel drained only what it was given.
+func (g *sendGate) measure(released uint64, queuing bool, now time.Time) {
+	if !queuing {
+		g.winStart = time.Time{}
 		return
 	}
-	elapsed := now.Sub(g.lastSample)
-	if elapsed < gateSampleEvery {
+	if g.winStart.IsZero() {
+		g.winStart, g.winReleased = now, 0
 		return
 	}
-	drained := int64(g.sent-g.lastSent) - (int64(buffered) - int64(g.lastBuf))
-	if drained > 0 && !g.starved {
-		r := float64(drained) / elapsed.Seconds()
-		if g.rate <= 0 {
+	g.winReleased += released
+	elapsed := now.Sub(g.winStart)
+	if elapsed < gateRateWindow {
+		return
+	}
+	if g.winReleased > 0 {
+		r := float64(g.winReleased) / elapsed.Seconds()
+		if g.rate <= 0 || now.Sub(g.rateAt) > gateRateStale {
 			g.rate = r
 		} else {
 			g.rate += gateRateSmoothing * (r - g.rate)
 		}
+		g.rateAt = now
 	}
-	g.lastSample, g.lastBuf, g.lastSent = now, buffered, g.sent
-	g.starved = buffered == 0
+	g.winStart, g.winReleased = now, 0
+}
+
+func (g *sendGate) admits(buffered uint64, age time.Duration, queuing bool, now time.Time) bool {
+	if !queuing {
+		return true
+	}
+	limit := g.roundTrip() + g.queueTarget
+	if g.rate > 0 && now.Sub(g.rateAt) <= gateRateStale {
+		return time.Duration(float64(buffered)/g.rate*float64(time.Second)) <= limit
+	}
+	return age <= limit
+}
+
+// release forgets the marks of bytes the channel no longer buffers, leaving marks[first] as the
+// send that holds the oldest buffered byte, and returns how many bytes were released since the
+// last call.
+func (g *sendGate) release(buffered uint64) uint64 {
+	head := g.sent - min(buffered, g.sent)
+	released := head - min(g.head, head)
+	g.head = max(g.head, head)
+	for g.first < len(g.marks) && g.marks[g.first].end <= head {
+		g.first++
+	}
+	// Reclaim the released marks' space once they are most of the slice.
+	if g.first > 64 && g.first*2 > len(g.marks) {
+		n := copy(g.marks, g.marks[g.first:])
+		g.marks = g.marks[:n]
+		g.first = 0
+	}
+	return released
 }

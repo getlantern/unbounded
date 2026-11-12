@@ -7,156 +7,216 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// drainAt feeds g a channel that sends perTick bytes and drains drainPerTick of them every
-// gateSampleEvery, for ticks samples, and returns the buffered amount and time it ends at.
-func drainAt(g *sendGate, start time.Time, buffered uint64, perTick, drainPerTick uint64, ticks int) (uint64, time.Time) {
-	now := start
-	for range ticks {
-		g.allow(int(perTick), buffered, now)
-		buffered = buffered + perTick - min(drainPerTick, buffered+perTick)
-		now = now.Add(gateSampleEvery)
+// simChannel models a data channel's send buffer a millisecond at a time: it transmits up to
+// perMs bytes of what is queued, and the far end acknowledges each byte rtt after it went out.
+// Its buffered amount, like pion's, is queued plus unacknowledged bytes.
+type simChannel struct {
+	perMs    uint64
+	rtt      time.Duration
+	queued   uint64
+	inFlight []simFlight
+	acked    uint64
+	now      time.Time
+}
+
+type simFlight struct {
+	bytes uint64
+	ackAt time.Time
+}
+
+func newSimChannel(perMs uint64, rtt time.Duration) *simChannel {
+	return &simChannel{perMs: perMs, rtt: rtt, now: time.Unix(1_000_000, 0)}
+}
+
+func (c *simChannel) buffered() uint64 {
+	b := c.queued
+	for _, f := range c.inFlight {
+		b += f.bytes
 	}
-	return buffered, now
+	return b
+}
+
+// offer passes a packet of n bytes through g, queuing it if g allows it.
+func (c *simChannel) offer(g *sendGate, n int) bool {
+	ok := g.allow(n, c.buffered(), c.now)
+	if ok {
+		c.queued += uint64(n)
+	}
+	return ok
+}
+
+// tick advances a millisecond: it transmits and takes acknowledgements.
+func (c *simChannel) tick() {
+	c.now = c.now.Add(time.Millisecond)
+	if tx := min(c.queued, c.perMs); tx > 0 {
+		c.queued -= tx
+		c.inFlight = append(c.inFlight, simFlight{tx, c.now.Add(c.rtt)})
+	}
+	for len(c.inFlight) > 0 && !c.inFlight[0].ackAt.After(c.now) {
+		c.acked += c.inFlight[0].bytes
+		c.inFlight = c.inFlight[1:]
+	}
+}
+
+func (c *simChannel) run(ms int) {
+	for range ms {
+		c.tick()
+	}
 }
 
 func TestSendGate_NeverDropsBelowTheFloor(t *testing.T) {
 	g := newSendGate(0)
-	now := time.Now()
-	for i := range 100 {
-		assert.True(t, g.allow(1200, gateFloor, now.Add(time.Duration(i)*time.Millisecond)))
+	c := newSimChannel(1, 50*time.Millisecond)
+	for range 13 {
+		assert.True(t, c.offer(g, 1200))
+		c.run(1000)
 	}
 	assert.Zero(t, g.dropped)
 }
 
-// Until a drain rate is measured, the buffer may grow to gateStartCap and no further.
-func TestSendGate_CapsTheBufferBeforeItKnowsTheRate(t *testing.T) {
-	g := newSendGate(0)
-	now := time.Now()
-	assert.True(t, g.allow(1200, gateStartCap, now))
-	assert.False(t, g.allow(1200, gateStartCap+1, now))
-}
-
-// With the drain rate known, the gate allows a round trip plus the target's worth of buffered
-// data and drops beyond it.
-func TestSendGate_DropsBeyondTheRoundTripPlusTarget(t *testing.T) {
+// On an idle, fast path with a long round trip, steadily paced traffic keeps a round trip's worth
+// of bytes awaiting acknowledgement. That isn't a queue: neither it nor a burst after it is cut.
+func TestSendGate_PacedTrafficAndABurstOnAnIdleLongPath(t *testing.T) {
 	g := newSendGate(20 * time.Millisecond)
 	g.setRTT(40 * time.Millisecond)
-	// A backlog draining at 1MB/s: 60KB buffered is 60ms, the most the gate allows.
-	_, now := drainAt(g, time.Now(), 100_000, 50_000, 50_000, 20)
-	assert.InDelta(t, 1e6, g.rate, 1e5)
+	c := newSimChannel(10_000, 40*time.Millisecond) // 10MB/s
+	for range 200 {
+		assert.True(t, c.offer(g, 1200))
+		c.run(10)
+	}
+	for range 20 {
+		assert.True(t, c.offer(g, 1200), "a burst on an uncongested path")
+	}
+	assert.Zero(t, g.dropped)
+}
 
-	assert.True(t, g.admits(55_000), "55ms of drain is within 40ms + 20ms")
-	assert.False(t, g.admits(70_000), "70ms of drain is past it")
-	before := g.dropped
-	assert.False(t, g.allow(1200, 70_000, now.Add(time.Millisecond)))
-	assert.Equal(t, before+1, g.dropped)
+// Bursts with idle gaps between them never queue for long, so none is cut, including bursts that
+// straddle any boundary.
+func TestSendGate_BurstsWithIdleGaps(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	c := newSimChannel(10_000, 40*time.Millisecond)
+	for i := range 100 {
+		for range 20 {
+			c.offer(g, 1200)
+		}
+		c.run(97 + i%7)
+	}
+	assert.Zero(t, g.dropped)
+}
+
+// aimdSender offers packets as a congestion-controlled sender such as QUIC does: it halves its
+// rate on a drop, at most once a round trip, and otherwise adds about a packet a round trip.
+type aimdSender struct {
+	perMs    float64
+	backoff  time.Time
+	credit   float64
+	maxPerMs float64
+}
+
+// send offers this millisecond's packets of 1200 bytes to c through g.
+func (s *aimdSender) send(c *simChannel, g *sendGate) {
+	s.credit += s.perMs
+	for ; s.credit >= 1200; s.credit -= 1200 {
+		if !c.offer(g, 1200) && !c.now.Before(s.backoff) {
+			s.perMs = max(s.perMs/2, 100)
+			s.backoff = c.now.Add(c.rtt)
+		}
+	}
+	s.perMs = min(s.perMs+1200/float64(c.rtt.Milliseconds()), s.maxPerMs)
+}
+
+// simulate runs a congestion-controlled sender into c through g for ms milliseconds, and returns
+// the longest a packet joining the queue would have waited to go out, after the first second.
+func simulate(c *simChannel, g *sendGate, s *aimdSender, ms int) time.Duration {
+	var worst time.Duration
+	for i := range ms {
+		s.send(c, g)
+		c.tick()
+		if i > 1000 {
+			worst = max(worst, time.Duration(c.queued/c.perMs)*time.Millisecond)
+		}
+	}
+	return worst
+}
+
+// A congestion-controlled sender that wants more than the channel carries is held to a queue near
+// the target, where without the gate the queue would grow without bound.
+func TestSendGate_HoldsTheQueueNearTheTarget(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(10 * time.Millisecond)
+	c := newSimChannel(1000, 10*time.Millisecond) // 1MB/s
+	worst := simulate(c, g, &aimdSender{perMs: 1000, maxPerMs: 4000}, 5000)
+	assert.Positive(t, g.dropped)
+	assert.LessOrEqual(t, worst, 40*time.Millisecond)
+	assert.GreaterOrEqual(t, float64(c.acked), 0.85*1000*(5000-10), "the channel stays busy")
+}
+
+// On a long round trip the gate keeps the channel busy: a round trip's worth in flight is not
+// taken for a queue, which a fixed threshold would cap.
+func TestSendGate_KeepsALongPathBusy(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(80 * time.Millisecond)
+	c := newSimChannel(5000, 80*time.Millisecond) // 5MB/s, 400KB in flight
+	simulate(c, g, &aimdSender{perMs: 5000, maxPerMs: 10_000}, 8000)
+	assert.GreaterOrEqual(t, float64(c.acked), 0.85*5000*(8000-80))
+}
+
+// Traffic that doesn't back off is still held near the limit, since the gate predicts each
+// packet's wait rather than waiting for it to show.
+func TestSendGate_BoundsTrafficThatDoesNotBackOff(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(10 * time.Millisecond)
+	c := newSimChannel(1000, 10*time.Millisecond)
+	var worst time.Duration
+	for i := range 3000 {
+		for range 4 {
+			c.offer(g, 1000)
+		}
+		c.tick()
+		if i > 1000 {
+			worst = max(worst, time.Duration(c.queued/c.perMs)*time.Millisecond)
+		}
+	}
+	assert.LessOrEqual(t, worst, 40*time.Millisecond)
+}
+
+// Once the oldest buffered byte has waited past the round trip plus the target, the gate drops.
+func TestSendGate_DropsOnceTheOldestByteIsTooOld(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	start := time.Now()
+	for range 20 {
+		g.allow(1200, 0, start)
+	}
+	stuck := uint64(20 * 1200) // nothing acknowledged
+	assert.True(t, g.allow(1200, stuck, start.Add(60*time.Millisecond)))
+	assert.False(t, g.allow(1200, stuck+1200, start.Add(61*time.Millisecond)))
+	assert.Equal(t, uint64(1), g.dropped)
 }
 
 // Where the round trip can't be measured, the gate assumes gateFallbackRTT rather than none, so a
 // distant browser peer's data in flight isn't taken for a queue.
 func TestSendGate_FallsBackToADefaultRoundTrip(t *testing.T) {
 	g := newSendGate(20 * time.Millisecond)
-	drainAt(g, time.Now(), 100_000, 50_000, 50_000, 20)
-	assert.True(t, g.admits(110_000), "110ms of drain is within 100ms + 20ms")
-	assert.False(t, g.admits(130_000))
+	start := time.Now()
+	for range 20 {
+		g.allow(1200, 0, start)
+	}
+	stuck := uint64(20 * 1200)
+	assert.True(t, g.allow(1200, stuck, start.Add(110*time.Millisecond)))
+	assert.False(t, g.allow(1200, stuck+1200, start.Add(130*time.Millisecond)))
 	g.setRTT(0)
 	assert.Zero(t, g.rtt, "an unmeasured round trip doesn't replace the fallback")
 }
 
-// A channel that drains slower than it is fed stops being fed once its queue passes the target,
-// and its buffer stays bounded instead of growing with every send.
-func TestSendGate_HoldsTheQueueNearTheTarget(t *testing.T) {
-	g := newSendGate(20 * time.Millisecond)
-	g.setRTT(10 * time.Millisecond)
-	now := time.Now()
-	buffered := uint64(0)
-	// Offered 4MB/s into a 1MB/s channel, in 1200-byte packets.
-	for range 2000 {
-		for range 10 {
-			if g.allow(1200, buffered, now) {
-				buffered += 1200
-			}
-		}
-		buffered -= min(buffered, 1000) // 1MB/s at one tick per millisecond
-		now = now.Add(time.Millisecond)
-	}
-	assert.Positive(t, g.dropped)
-	// 10ms + 20ms at 1MB/s is 30KB; allow the rate estimate some slack.
-	assert.Less(t, buffered, uint64(45_000))
-}
-
-// Traffic that comes in bursts with idle gaps between them never builds a backlog, so it says
-// nothing about the channel's capacity: the gate must not learn the offered rate as the drain rate
-// and then drop the next burst on a fast path.
-func TestSendGate_DoesNotLearnTheRateFromBursts(t *testing.T) {
-	g := newSendGate(20 * time.Millisecond)
-	g.setRTT(40 * time.Millisecond)
-	now := time.Now()
-	for range 100 {
-		// Twenty 1200-byte packets at once, into a channel that drains them within a millisecond.
-		buffered := uint64(0)
-		for range 20 {
-			assert.True(t, g.allow(1200, buffered, now))
-			buffered += 1200
-		}
-		now = now.Add(100 * time.Millisecond)
-		g.allow(0, 0, now)
-	}
-	assert.Zero(t, g.dropped)
-	assert.Zero(t, g.rate, "no interval had a backlog to measure")
-}
-
-// A backlog measured after an idle period still teaches the gate the channel's rate.
-func TestSendGate_LearnsTheRateFromABacklogAfterIdle(t *testing.T) {
+// The gate keeps a mark per buffered send, not per send ever made.
+func TestSendGate_ForgetsReleasedSends(t *testing.T) {
 	g := newSendGate(0)
-	now := time.Now()
-	g.allow(0, 0, now)
-	now = now.Add(time.Second)
-	// 100KB buffered, draining at 1MB/s while 50KB more is sent per 50ms sample.
-	drainAt(g, now, 100_000, 50_000, 50_000, 20)
-	assert.InDelta(t, 1e6, g.rate, 1e5)
-}
-
-// A burst that straddles a sample boundary leaves data buffered at both ends of the interval
-// though the buffer ran dry within it; that interval must not teach the gate a rate either.
-func TestSendGate_DoesNotLearnFromAnIntervalThatRanDry(t *testing.T) {
-	g := newSendGate(20 * time.Millisecond)
-	g.setRTT(40 * time.Millisecond)
-	start := time.Now()
-	g.allow(0, 0, start)
-	for i := range 50 {
-		base := start.Add(time.Duration(i) * gateSampleEvery)
-		// Twenty packets just before the boundary into an empty buffer, then one on it.
-		buffered := uint64(0)
-		for range 20 {
-			g.allow(1200, buffered, base.Add(gateSampleEvery-time.Millisecond))
-			buffered += 1200
-		}
-		g.allow(1200, buffered, base.Add(gateSampleEvery))
+	c := newSimChannel(10_000, 10*time.Millisecond)
+	for range 100_000 {
+		c.offer(g, 1200)
+		c.tick()
 	}
-	assert.Zero(t, g.rate)
-	assert.Zero(t, g.dropped)
-}
-
-// A busy channel whose backlog dips below the floor without ever emptying is still saturated: the
-// gate must learn its rate rather than hold it at the start cap.
-func TestSendGate_LearnsTheRateFromALowButNonemptyBacklog(t *testing.T) {
-	g := newSendGate(0)
-	now := time.Now()
-	// Starts below the floor, but not empty.
-	buffered := uint64(8_000)
-	// Drains 1KB/ms; fed 36KB every 40ms plus 100 bytes every millisecond, so it swings between
-	// about 8KB and 44KB and never empties.
-	for ms := range 2000 {
-		if ms%40 == 0 {
-			g.allow(36_000, buffered, now)
-			buffered += 36_000
-		}
-		g.allow(100, buffered, now)
-		buffered += 100
-		buffered -= min(buffered, 1000)
-		now = now.Add(time.Millisecond)
-	}
-	assert.Positive(t, buffered)
-	assert.InDelta(t, 1e6, g.rate, 2e5)
+	assert.Less(t, len(g.marks), 1000)
 }
