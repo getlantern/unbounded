@@ -57,6 +57,26 @@ func TestAttemptOutcome_CarriesOfferID(t *testing.T) {
 	}
 }
 
+func TestAttemptOutcome_ReportsPath(t *testing.T) {
+	var o attemptOutcome
+	o.begin("offer", "")
+	o.record(common.OutcomeConnected, nil)
+	o.path = common.PathRelay
+	form := url.Values{}
+	o.addTo(form, 5*time.Second)
+	if got := form.Get(common.PrevPathField); got != common.PathRelay {
+		t.Fatalf("prev-path = %q, want relay", got)
+	}
+
+	o.begin("offer2", "")
+	o.record(common.OutcomeNATTimeout, nil)
+	form = url.Values{}
+	o.addTo(form, 5*time.Second)
+	if _, ok := form[common.PrevPathField]; ok {
+		t.Fatal("an attempt with no path must not send prev-path")
+	}
+}
+
 // The VPN state an attempt began under rides with its outcome, once, and an attempt begun without
 // one reports none.
 func TestAttemptOutcome_CarriesVPNState(t *testing.T) {

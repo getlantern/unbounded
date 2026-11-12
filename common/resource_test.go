@@ -408,3 +408,27 @@ func TestConsumerInfoNil_IgnoresPairing(t *testing.T) {
 		t.Error("a ConsumerInfo with only a Pairing must be Nil()")
 	}
 }
+
+func TestSignalMsg_ICEServersRoundTrip(t *testing.T) {
+	plain, err := json.Marshal(SignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "ICEServers") {
+		t.Fatalf("a message without ICE servers must not carry the field: %s", plain)
+	}
+	in := SignalMsg{ReplyTo: "r", Type: SignalMsgGenesis, Payload: "{}", ICEServers: []webrtc.ICEServer{
+		{URLs: []string{"turns:turn.example:443?transport=tcp"}, Username: "u", Credential: "c"},
+	}}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := DecodeSignal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out.ICEServers, in.ICEServers) {
+		t.Fatalf("got %+v, want %+v", out.ICEServers, in.ICEServers)
+	}
+}

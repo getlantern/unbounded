@@ -26,6 +26,7 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("pc_state", common.NormalizePCState(r.Form.Get(common.PrevPCStateField))),
 		attribute.String("nat_timeout_s", common.NormalizeNATTimeout(r.Form.Get(common.PrevNATTimeoutField))),
 		attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
+		attribute.String("path", common.OutcomePath(r.Form.Get(common.PrevPathField))),
 		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevVPNField))),
 	}
 	attrs = append(attrs, volunteerKindAttrs(r)...)

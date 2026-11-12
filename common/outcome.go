@@ -21,6 +21,9 @@ const (
 	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
 	// Freddie label the outcome with the country it derived for that consumer.
 	PrevOfferIDField = "prev-offer-id"
+	// PrevPathField says whether a connected attempt's selected candidate pair went through a TURN
+	// relay: PathRelay or PathDirect. Only sent with OutcomeConnected.
+	PrevPathField = "prev-path"
 	// PrevVPNField is the embedding app's VPN state when the attempt began, one of the values
 	// NormalizeVPNState knows. With the VPN up, a volunteer's WebRTC sockets can follow the tunnel,
 	// so this tells whether outcomes, and the NAT Freddie sees, differ with it. Producers without a
@@ -47,6 +50,24 @@ const (
 	// OutcomeConnected: the data channel opened.
 	OutcomeConnected = "connected"
 )
+
+// Values of PrevPathField.
+const (
+	PathRelay  = "relay"
+	PathDirect = "direct"
+)
+
+// OutcomePath maps a reported path onto the path label: relay, direct, or unreported when the
+// producer sent nothing (an attempt that didn't connect, or a producer that predates the field)
+// or something unknown.
+func OutcomePath(s string) string {
+	switch s {
+	case PathRelay, PathDirect:
+		return s
+	default:
+		return "unreported"
+	}
+}
 
 var producerOutcomes = map[string]bool{
 	OutcomeNoLocalSrflx:     true,

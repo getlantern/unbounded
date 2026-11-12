@@ -3,6 +3,7 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -105,7 +106,7 @@ func TestSignalMsgRoom(t *testing.T) {
 			t.Errorf("DecodeSignal(%s) = %+v, %v; want IsRoomGenesis %v", raw, msg, err, want)
 		}
 	}
-	if msg, _, err := DecodeSignal([]byte("not json")); err == nil || msg != (SignalMsg{}) {
+	if msg, _, err := DecodeSignal([]byte("not json")); err == nil || !reflect.DeepEqual(msg, SignalMsg{}) {
 		t.Errorf("DecodeSignal(not json) = %+v, %v", msg, err)
 	}
 }
