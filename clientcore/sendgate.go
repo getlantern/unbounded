@@ -86,7 +86,9 @@ func (g *sendGate) admits(buffered uint64) bool {
 }
 
 // sample updates the drain rate. The buffer drains by what was sent since the last sample less
-// what it grew by.
+// what it grew by. That is the channel's capacity only while it had a backlog throughout: with
+// little or nothing buffered, it drains whatever the application offered, and learning that as
+// the rate would make the gate drop the next burst on an idle, fast path.
 func (g *sendGate) sample(buffered uint64, now time.Time) {
 	if g.lastSample.IsZero() {
 		g.lastSample, g.lastBuf, g.lastSent = now, buffered, g.sent
@@ -97,7 +99,8 @@ func (g *sendGate) sample(buffered uint64, now time.Time) {
 		return
 	}
 	drained := int64(g.sent-g.lastSent) - (int64(buffered) - int64(g.lastBuf))
-	if drained > 0 {
+	backlogged := g.lastBuf > gateFloor && buffered > 0
+	if drained > 0 && backlogged {
 		r := float64(drained) / elapsed.Seconds()
 		if g.rate <= 0 {
 			g.rate = r

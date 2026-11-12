@@ -41,21 +41,22 @@ func TestSendGate_CapsTheBufferBeforeItKnowsTheRate(t *testing.T) {
 func TestSendGate_DropsBeyondTheRoundTripPlusTarget(t *testing.T) {
 	g := newSendGate(20 * time.Millisecond)
 	g.setRTT(40 * time.Millisecond)
-	// 1MB/s: 60KB buffered is 60ms, the most the gate allows.
-	_, now := drainAt(g, time.Now(), 0, 50_000, 50_000, 20)
+	// A backlog draining at 1MB/s: 60KB buffered is 60ms, the most the gate allows.
+	_, now := drainAt(g, time.Now(), 100_000, 50_000, 50_000, 20)
 	assert.InDelta(t, 1e6, g.rate, 1e5)
 
 	assert.True(t, g.admits(55_000), "55ms of drain is within 40ms + 20ms")
 	assert.False(t, g.admits(70_000), "70ms of drain is past it")
+	before := g.dropped
 	assert.False(t, g.allow(1200, 70_000, now.Add(time.Millisecond)))
-	assert.Equal(t, uint64(1), g.dropped)
+	assert.Equal(t, before+1, g.dropped)
 }
 
 // Where the round trip can't be measured, the gate assumes gateFallbackRTT rather than none, so a
 // distant browser peer's data in flight isn't taken for a queue.
 func TestSendGate_FallsBackToADefaultRoundTrip(t *testing.T) {
 	g := newSendGate(20 * time.Millisecond)
-	drainAt(g, time.Now(), 0, 50_000, 50_000, 20)
+	drainAt(g, time.Now(), 100_000, 50_000, 50_000, 20)
 	assert.True(t, g.admits(110_000), "110ms of drain is within 100ms + 20ms")
 	assert.False(t, g.admits(130_000))
 	g.setRTT(0)
@@ -82,4 +83,36 @@ func TestSendGate_HoldsTheQueueNearTheTarget(t *testing.T) {
 	assert.Positive(t, g.dropped)
 	// 10ms + 20ms at 1MB/s is 30KB; allow the rate estimate some slack.
 	assert.Less(t, buffered, uint64(45_000))
+}
+
+// Traffic that comes in bursts with idle gaps between them never builds a backlog, so it says
+// nothing about the channel's capacity: the gate must not learn the offered rate as the drain rate
+// and then drop the next burst on a fast path.
+func TestSendGate_DoesNotLearnTheRateFromBursts(t *testing.T) {
+	g := newSendGate(20 * time.Millisecond)
+	g.setRTT(40 * time.Millisecond)
+	now := time.Now()
+	for range 100 {
+		// Twenty 1200-byte packets at once, into a channel that drains them within a millisecond.
+		buffered := uint64(0)
+		for range 20 {
+			assert.True(t, g.allow(1200, buffered, now))
+			buffered += 1200
+		}
+		now = now.Add(100 * time.Millisecond)
+		g.allow(0, 0, now)
+	}
+	assert.Zero(t, g.dropped)
+	assert.Zero(t, g.rate, "no interval had a backlog to measure")
+}
+
+// A backlog measured after an idle period still teaches the gate the channel's rate.
+func TestSendGate_LearnsTheRateFromABacklogAfterIdle(t *testing.T) {
+	g := newSendGate(0)
+	now := time.Now()
+	g.allow(0, 0, now)
+	now = now.Add(time.Second)
+	// 100KB buffered, draining at 1MB/s while 50KB more is sent per 50ms sample.
+	drainAt(g, now, 100_000, 50_000, 50_000, 20)
+	assert.InDelta(t, 1e6, g.rate, 1e5)
 }
