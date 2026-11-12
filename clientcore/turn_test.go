@@ -813,3 +813,57 @@ func TestRoomProducerWithoutSTUNRetriesIt(t *testing.T) {
 		t.Errorf("%d ICE servers after the retry, want 1", len(servers))
 	}
 }
+
+// emptySTUN is a STUN list fetched without error but empty, as from an empty response body.
+func emptySTUN(uint32) ([]string, error) { return []string{}, nil }
+
+// A ticketed consumer whose STUN list comes back empty subscribes without STUN, and goes back
+// for the list only once its backoff ends, as after a failed fetch.
+func TestConsumerWithEmptySTUNListSubscribes(t *testing.T) {
+	advance := fixedPreflightNow(t)
+	o := streamingFreddie(t)
+	o.RoomTickets = []string{"aa.bb"}
+	o.STUNBatch = emptySTUN
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+
+	next, pc := consumerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if next, _ := consumerState1(t, fsm, pc); next != 1 {
+		t.Fatalf("before the backoff ends, state 1 went to state %d, want 1", next)
+	}
+	advance(stunPreflightMinBackoff)
+	if next, _ := consumerState1(t, fsm, pc); next != 0 {
+		t.Fatalf("after the backoff, state 1 went to state %d, want 0", next)
+	}
+}
+
+// A room slot whose STUN list comes back empty posts its genesis without STUN, and goes back for
+// the list only once its backoff ends, as after a failed fetch.
+func TestRoomProducerWithEmptySTUNListPosts(t *testing.T) {
+	advance := fixedPreflightNow(t)
+	o, posted := genesisFreddie(t)
+	o.STUNBatch = emptySTUN
+	fsm := newProducerWebRTC(o, nil, true)
+
+	next, pc := producerState0(t, fsm)
+	if next != 1 || pc == nil {
+		t.Fatalf("state 0 went to state %d, want 1", next)
+	}
+	if next := producerState2(fsm, pc); next != 1 {
+		t.Fatalf("before the backoff ends, state 2 went to state %d, want 1", next)
+	}
+	select {
+	case form := <-posted:
+		if got := form.Get("send-to"); got != common.SignalSendToGenesisRooms {
+			t.Errorf("genesis sent to %q, want %q", got, common.SignalSendToGenesisRooms)
+		}
+	default:
+		t.Fatal("no genesis posted")
+	}
+	advance(stunPreflightMinBackoff)
+	if next := producerState2(fsm, pc); next != 0 {
+		t.Fatalf("after the backoff, state 2 went to state %d, want 0", next)
+	}
+}

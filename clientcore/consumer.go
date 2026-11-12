@@ -114,6 +114,12 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					wait := listBackoff.failed()
 					listPausedUntil = preflightNow().Add(wait)
 					slog.Debug("Error creating STUN batch, going on without STUN", "error", err, "retry_in", wait, "mapped", mapped)
+				} else if len(allSTUNSrvs) == 0 && stunOptional && !mapped {
+					// A room attempt going without STUN would otherwise come straight back here for an
+					// empty list, so it waits as for a failed fetch.
+					wait := listBackoff.failed()
+					listPausedUntil = preflightNow().Add(wait)
+					slog.Debug("Empty STUN batch, going on without STUN", "retry_in", wait)
 				} else {
 					listBackoff.reset()
 					scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
