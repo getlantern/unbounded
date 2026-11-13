@@ -54,7 +54,9 @@ with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as z:
             z.write(path, os.path.relpath(path, stage))
 PY
 
-cp "$here/index.html" "$here/blueprint.json" "$here/_headers" "$out/"
+cp "$here/index.html" "$here/blueprint.json" "$here/_headers" \
+   "$here/404.html" "$here/robots.txt" "$here/sitemap.xml" \
+   "$here/favicon.svg" "$here/og.png" "$out/"
 
 version=$(sed -n 's/^ \* Version: *//p' "$plugin_dir/unbounded.php" | head -1)
 stable=$(sed -n 's/^Stable tag: *//p' "$plugin_dir/readme.txt" | head -1)
