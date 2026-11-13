@@ -137,14 +137,11 @@ const maxReportedAttempt = 3 * time.Minute
 // or out of range one.
 func ParseAttemptDuration(s string) (time.Duration, bool) {
 	ms, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || ms < 0 || strconv.FormatInt(ms, 10) != s {
+	// Bounded before converting: a large value would overflow time.Duration and wrap into range.
+	if err != nil || ms < 0 || ms > maxReportedAttempt.Milliseconds() || strconv.FormatInt(ms, 10) != s {
 		return 0, false
 	}
-	d := time.Duration(ms) * time.Millisecond
-	if d > maxReportedAttempt {
-		return 0, false
-	}
-	return d, true
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 // outcomeCountries are the consumer countries freddie.producer.outcomes labels individually; any

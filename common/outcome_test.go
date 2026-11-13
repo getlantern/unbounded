@@ -66,7 +66,8 @@ func TestParseAttemptDuration(t *testing.T) {
 			t.Errorf("ParseAttemptDuration(%q) = %v, %v, want %v, true", in, got, ok, want)
 		}
 	}
-	for _, in := range []string{"", "-1", "180001", "0100", "1.5", "abc", "+5"} {
+	// The last two overflow time.Duration if multiplied first, wrapping to 448384ns and below zero.
+	for _, in := range []string{"", "-1", "180001", "0100", "1.5", "abc", "+5", "18446744073710", "9223372036855"} {
 		if got, ok := ParseAttemptDuration(in); ok {
 			t.Errorf("ParseAttemptDuration(%q) = %v, true, want false", in, got)
 		}

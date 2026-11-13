@@ -2,6 +2,7 @@ package freddie
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -48,6 +49,62 @@ func TestOfferConsumerCache_TimesRelayedPhases(t *testing.T) {
 	}
 	if _, _, ok := c.consumerICE("unknown", ""); ok {
 		t.Fatal("ICE for an unknown answer is not timed")
+	}
+}
+
+// phaseCounts collects reader's handshake histogram, counting samples by phase.
+func phaseCounts(t *testing.T, reader sdkmetric.Reader) map[string]uint64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]uint64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			for _, dp := range m.Data.(metricdata.Histogram[float64]).DataPoints {
+				v, _ := dp.Attributes.Value("phase")
+				counts[v.AsString()] += dp.Count
+			}
+		}
+	}
+	return counts
+}
+
+// An answer is timed only once it reaches the consumer: one that arrives after the consumer's
+// offer request has ended still finds the offer cached, but completes no handshake.
+func TestHandshakePhase_RecordedOnlyWhenDelivered(t *testing.T) {
+	s := startTestServer(t, nil)
+	reader := sdkmetric.NewManualReader()
+	var err error
+	s.f.handshakeTimes, err = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Float64Histogram("freddie.handshake.duration")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s.f.offerConsumers.add("gone-offer", offerConsumer{genesisID: "g1"})
+	if status, _ := s.post("gone-offer", common.SignalMsgAnswer, "{}", nil); status != http.StatusNotFound {
+		t.Fatalf("an answer to an ended offer request: status %d, want 404", status)
+	}
+	if got := phaseCounts(t, reader); len(got) != 0 {
+		t.Fatalf("an undelivered answer must not be timed, got %v", got)
+	}
+
+	s.f.offerConsumers.add("live-offer", offerConsumer{genesisID: "g2"})
+	consumer := signalTable.Add("live-offer")
+	defer signalTable.Delete("live-offer")
+	go s.post("live-offer", common.SignalMsgAnswer, "{}", nil)
+	select {
+	case <-consumer:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the answer never reached the consumer")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for phaseCounts(t, reader)[handshakePhaseAnswer] != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("a delivered answer must be timed once, got %v", phaseCounts(t, reader))
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

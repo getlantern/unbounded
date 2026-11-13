@@ -911,19 +911,26 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		if hasCandidates {
 			nat = peer.class.outcomeLabel()
 		}
+		// The phase it ends is timed here too, but recorded only once the message is delivered: a
+		// late one can still find its offer cached after the recipient has gone.
+		var phase, phaseGenesis string
+		var phaseTook time.Duration
 		switch common.SignalMsgType(msgType) {
 		case common.SignalMsgAnswer:
 			if took, genesisID, ok := f.offerConsumers.answered(sendTo, reqID, nat); ok {
-				f.recordHandshakePhase(ctx, handshakePhaseAnswer, took, f.deliveryOf(genesisID))
+				phase, phaseTook, phaseGenesis = handshakePhaseAnswer, took, genesisID
 			}
 		case common.SignalMsgICE:
 			if took, genesisID, ok := f.offerConsumers.consumerICE(sendTo, nat); ok {
-				f.recordHandshakePhase(ctx, handshakePhaseConsumerICE, took, f.deliveryOf(genesisID))
+				phase, phaseTook, phaseGenesis = handshakePhaseConsumerICE, took, genesisID
 			}
 		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
 		if isOffer && !ok {
 			f.offerConsumers.take(reqID)
+		}
+		if ok && phase != "" {
+			f.recordHandshakePhase(ctx, phase, phaseTook, f.deliveryOf(phaseGenesis))
 		}
 		delivered := attribute.Bool("reply.delivered", ok)
 		span.SetAttributes(delivered)
