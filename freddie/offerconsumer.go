@@ -36,6 +36,9 @@ type offerConsumerEntry struct {
 	answerID string
 	offerConsumer
 	expires time.Time
+	// offered, answered and iced are when Freddie relayed the offer, the volunteer's answer and
+	// the consumer's first ICE message, for the handshake's phase durations.
+	offered, answered, iced time.Time
 }
 
 // offerConsumerCache maps the request ID of a delivered offer, which the producer sees as its
@@ -70,7 +73,7 @@ func (c *offerConsumerCache) add(offerID string, oc offerConsumer) {
 	if old, ok := c.m[offerID]; ok {
 		c.remove(old)
 	}
-	c.m[offerID] = c.order.PushBack(offerConsumerEntry{offerID: offerID, offerConsumer: oc, expires: now.Add(offerConsumerTTL)})
+	c.m[offerID] = c.order.PushBack(offerConsumerEntry{offerID: offerID, offerConsumer: oc, expires: now.Add(offerConsumerTTL), offered: now})
 }
 
 // take returns the offerConsumer for offerID and forgets it, so each attempt is labeled once. An
@@ -92,41 +95,53 @@ func (c *offerConsumerCache) take(offerID string) offerConsumer {
 
 // answered records the volunteer's answer to offerID: the answer's request ID, and the
 // volunteer's NAT label, which "" leaves unset. The first answer wins: an offer's request takes
-// only its first reply, so a later answer is one the consumer never received.
-func (c *offerConsumerCache) answered(offerID, answerID, nat string) {
+// only its first reply, so a later answer is one the consumer never received. For the first
+// answer it returns how long after the offer it came, and the offer's genesis ID.
+func (c *offerConsumerCache) answered(offerID, answerID, nat string) (took time.Duration, genesisID string, ok bool) {
 	c.Lock()
 	defer c.Unlock()
-	e, ok := c.m[offerID]
-	if !ok {
-		return
+	e, found := c.m[offerID]
+	if !found {
+		return 0, "", false
 	}
 	entry := e.Value.(offerConsumerEntry)
 	if entry.answerID != "" {
-		return
+		return 0, "", false
 	}
 	entry.answerID = answerID
 	c.answers[answerID] = offerID
 	if nat != "" {
 		entry.volunteerNAT = nat
 	}
+	entry.answered = c.now()
 	e.Value = entry
+	return entry.answered.Sub(entry.offered), entry.genesisID, true
 }
 
-// consumerICE records the consumer's NAT label for the offer answered by answerID.
-func (c *offerConsumerCache) consumerICE(answerID, nat string) {
-	if nat == "" {
-		return
-	}
+// consumerICE records the consumer's NAT label, which "" leaves unset, for the offer answered by
+// answerID. For the consumer's first ICE message it returns how long after the answer it came,
+// and the offer's genesis ID.
+func (c *offerConsumerCache) consumerICE(answerID, nat string) (took time.Duration, genesisID string, ok bool) {
 	c.Lock()
 	defer c.Unlock()
-	offerID, ok := c.answers[answerID]
-	if !ok {
-		return
+	offerID, found := c.answers[answerID]
+	if !found {
+		return 0, "", false
 	}
 	e := c.m[offerID]
 	entry := e.Value.(offerConsumerEntry)
-	entry.consumerNAT = nat
+	if nat != "" {
+		entry.consumerNAT = nat
+	}
+	first := entry.iced.IsZero()
+	if first {
+		entry.iced = c.now()
+	}
 	e.Value = entry
+	if !first {
+		return 0, "", false
+	}
+	return entry.iced.Sub(entry.answered), entry.genesisID, true
 }
 
 func (c *offerConsumerCache) remove(e *list.Element) {

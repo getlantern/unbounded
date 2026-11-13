@@ -3,12 +3,13 @@ package common
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // A producer reports how its previous connection attempt ended on its next genesis message, so
 // Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
-// fields carry only these enumerations and the Freddie-minted ID of the offer the attempt
-// answered: no addresses, consumer session IDs, or timings. A producer that
+// fields carry only these enumerations, the Freddie-minted ID of the offer the attempt answered,
+// and how long the attempt took: no addresses or consumer session IDs. A producer that
 // predates them sends nothing, and a Freddie that predates them ignores them.
 const (
 	PrevOutcomeField  = "prev-outcome"
@@ -29,6 +30,10 @@ const (
 	// so this tells whether outcomes, and the NAT Freddie sees, differ with it. Producers without a
 	// VPN state to report, such as the browser's, send nothing.
 	PrevVPNField = "prev-vpn"
+	// PrevAttemptMsField is how long the attempt ran, in whole milliseconds, from the producer
+	// taking the offer to its outcome. Freddie sees only the signaling, so this is its one measure
+	// of the ICE, DTLS and SCTP time after it.
+	PrevAttemptMsField = "prev-attempt-ms"
 )
 
 // Producer attempt outcomes, in the order a handshake can fail.
@@ -121,6 +126,25 @@ func NormalizeNATTimeout(s string) string {
 		return "invalid"
 	}
 	return s
+}
+
+// maxReportedAttempt bounds a reported attempt duration, so a malformed report can't skew the
+// histogram. An attempt is its signaling, which Freddie holds to remoteICEGatheringTTL (15s) a
+// step, then up to NATFailTimeout plus ConnectGrace. clientcore doesn't bound those two, but the
+// apps that set NATFailTimeout cap it (radiance at 30s) and leave ConnectGrace at 10s, so real
+// attempts stay near a minute. An embedder that sets them far higher has its longer attempts
+// dropped rather than recorded.
+const maxReportedAttempt = 3 * time.Minute
+
+// ParseAttemptDuration reads a PrevAttemptMsField value, reporting false for a missing, malformed
+// or out of range one.
+func ParseAttemptDuration(s string) (time.Duration, bool) {
+	ms, err := strconv.ParseInt(s, 10, 64)
+	// Bounded before converting: a large value would overflow time.Duration and wrap into range.
+	if err != nil || ms < 0 || ms > maxReportedAttempt.Milliseconds() || strconv.FormatInt(ms, 10) != s {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
 }
 
 // outcomeCountries are the consumer countries freddie.producer.outcomes labels individually; any

@@ -931,18 +931,24 @@ type attemptOutcome struct {
 	vpn      string
 	// path is common.PathRelay or common.PathDirect for a connected attempt, if known.
 	path string
+	// began is when the attempt took its offer, and took how long it ran until its outcome.
+	began time.Time
+	took  time.Duration
 }
 
-// begin notes the ReplyTo of the offer an attempt is answering, and the VPN state it began under.
-// record keeps both.
+// begin notes the ReplyTo of the offer an attempt is answering, the VPN state it began under, and
+// when. record keeps all three.
 func (o *attemptOutcome) begin(offerID, vpn string) {
-	*o = attemptOutcome{offerID: offerID, vpn: vpn}
+	*o = attemptOutcome{offerID: offerID, vpn: vpn, began: time.Now()}
 }
 
-// record notes the attempt's outcome and the peer connection's states at that moment. Call it
-// before the peer connection is closed.
+// record notes the attempt's outcome, how long it took, and the peer connection's states at that
+// moment. Call it before the peer connection is closed.
 func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
-	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn}
+	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn, began: o.began}
+	if !o.began.IsZero() {
+		o.took = time.Since(o.began)
+	}
 	if pc != nil {
 		o.iceState = pc.ICEConnectionState().String()
 		o.pcState = pc.ConnectionState().String()
@@ -967,6 +973,9 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	}
 	if o.path != "" {
 		form.Set(common.PrevPathField, o.path)
+	}
+	if !o.began.IsZero() {
+		form.Set(common.PrevAttemptMsField, strconv.FormatInt(o.took.Milliseconds(), 10))
 	}
 	*o = attemptOutcome{}
 }
