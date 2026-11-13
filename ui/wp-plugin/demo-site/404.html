@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Page not found · Lantern Action Mode for WordPress</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#04100f">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,900&family=Urbanist:wght@400;600&family=IBM+Plex+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#04100f; --ink2:#071a19; --line:rgba(0,188,212,.18);
+    --fg:#dff2f0; --fg-dim:#7fa5a4; --brand:#00BCD4; --brand2:#00A83E; --glow:rgba(0,188,212,.35);
+  }
+  *{box-sizing:border-box}
+  html{
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(0,188,212,.14), transparent 60%),
+      radial-gradient(700px 500px at 100% 0%, rgba(0,168,62,.10), transparent 55%),
+      linear-gradient(180deg,var(--ink) 0%, var(--ink2) 100%);
+    background-color:var(--ink2);
+    background-attachment:fixed;
+  }
+  body{
+    margin:0; min-height:100vh; color:var(--fg); background:transparent;
+    font-family:Urbanist,system-ui,sans-serif; font-size:16px; line-height:1.6;
+  }
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.5;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:64px 64px; mask-image:radial-gradient(ellipse at 50% 0%,#000 30%,transparent 75%);
+  }
+  main{position:relative; max-width:760px; margin:0 auto; padding:14vh 24px 12vh}
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); display:flex; align-items:center; gap:10px; margin-bottom:22px;
+  }
+  .eyebrow::after{content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),transparent)}
+  h1{
+    font-family:Fraunces,Georgia,serif; font-weight:900; font-size:clamp(2.4rem,6vw,4rem);
+    line-height:1.02; letter-spacing:-.02em; margin:0 0 18px;
+  }
+  h1 em{font-style:italic; font-weight:400; color:var(--brand)}
+  p{color:var(--fg-dim); max-width:56ch; margin:0 0 30px; font-size:1.08rem}
+  .cta{
+    display:inline-flex; align-items:center; gap:12px; text-decoration:none;
+    background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#02120f; font-weight:600;
+    padding:15px 26px; border-radius:999px; font-size:1.03rem; box-shadow:0 8px 30px var(--glow);
+  }
+  a.link{color:var(--brand); text-decoration:none; border-bottom:1px solid var(--line)}
+  a.link:hover{border-bottom-color:var(--brand)}
+  .alt{margin-top:22px; font-size:14px}
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow">404 · no route</div>
+  <h1>This page <em>isn't on the network.</em></h1>
+  <p>There's nothing at this address. The live demo of Lantern Action Mode for WordPress is on the front page.</p>
+  <a class="cta" href="/">Back to the demo →</a>
+  <p class="alt">Or visit <a class="link" href="https://lantern.io">Lantern</a>, or <a class="link" href="https://lantern.io/download">get Lantern</a>.</p>
+</main>
+</body>
+</html>

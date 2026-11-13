@@ -13,8 +13,22 @@ WordPress compiled to WebAssembly inside the visitor's browser, installs
 | `blueprint.json` | Playground setup steps. `PLUGIN_ZIP_URL` is substituted by `index.html`. |
 | `_headers` | Permissive CORS. Belt-and-braces: Playground fetches plugin zips through its own proxy, so this is not currently load-bearing. |
 | `build.sh` | Assembles `dist/`, generating `unbounded-by-lantern.zip` from the plugin source. |
+| `404.html` | Not-found page. Without it Cloudflare Pages answers every unknown path, including `/robots.txt`, with `index.html` and a 200. |
+| `robots.txt`, `sitemap.xml` | Point crawlers at the one page. Bump `lastmod` when the page changes. |
+| `favicon.svg`, `og.png` | Icon and the 1200×630 link-preview image, a screenshot of `tools/og.html`. |
+| `tools/faq.py` | Writes the FAQ section and the JSON-LD block in `index.html` from one list. |
 
 `dist/` is generated and gitignored.
+
+## The FAQ and structured data
+
+The FAQ lives in `tools/faq.py`, which writes both the visible FAQ section and the
+schema.org `FAQPage` markup into `index.html`, so the two always say the same thing.
+To change a question or answer, edit the list there and run `python3 tools/faq.py`.
+The same script writes the rest of the JSON-LD graph (`Organization`, `WebSite`,
+`WebPage`, and a `SoftwareApplication` for the plugin's WordPress Plugin Directory
+listing). Every answer must be backed by `../readme.txt`, `../unbounded.php`, these
+READMEs or the repository README.
 
 ## Cloudflare Pages settings
 
