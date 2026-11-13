@@ -128,9 +128,12 @@ func NormalizeNATTimeout(s string) string {
 	return s
 }
 
-// maxReportedAttempt bounds a reported attempt duration. An attempt ends at NATFailTimeout, at
-// most a minute (see maxReportedNATTimeoutSeconds), after a signaling exchange Freddie bounds to
-// well under another, so anything longer is not a real attempt.
+// maxReportedAttempt bounds a reported attempt duration, so a malformed report can't skew the
+// histogram. An attempt is its signaling, which Freddie holds to remoteICEGatheringTTL (15s) a
+// step, then up to NATFailTimeout plus ConnectGrace. clientcore doesn't bound those two, but the
+// apps that set NATFailTimeout cap it (radiance at 30s) and leave ConnectGrace at 10s, so real
+// attempts stay near a minute. An embedder that sets them far higher has its longer attempts
+// dropped rather than recorded.
 const maxReportedAttempt = 3 * time.Minute
 
 // ParseAttemptDuration reads a PrevAttemptMsField value, reporting false for a missing, malformed
