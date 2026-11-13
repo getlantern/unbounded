@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -51,6 +52,23 @@ func TestNormalizeNATTimeout(t *testing.T) {
 	} {
 		if got := NormalizeNATTimeout(in); got != want {
 			t.Errorf("NormalizeNATTimeout(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseAttemptDuration(t *testing.T) {
+	for in, want := range map[string]time.Duration{
+		"0":      0,
+		"15250":  15250 * time.Millisecond,
+		"180000": 3 * time.Minute,
+	} {
+		if got, ok := ParseAttemptDuration(in); !ok || got != want {
+			t.Errorf("ParseAttemptDuration(%q) = %v, %v, want %v, true", in, got, ok, want)
+		}
+	}
+	for _, in := range []string{"", "-1", "180001", "0100", "1.5", "abc", "+5"} {
+		if got, ok := ParseAttemptDuration(in); ok {
+			t.Errorf("ParseAttemptDuration(%q) = %v, true, want false", in, got)
 		}
 	}
 }

@@ -371,6 +371,7 @@ type Freddie struct {
 	iceNAT            metric.Int64Counter
 	producerOutcomes  metric.Int64Counter
 	stunPreflights    metric.Int64Counter
+	handshakeTimes    metric.Float64Histogram
 
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
@@ -495,6 +496,14 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	f.stunPreflights, err = f.meter.Int64Counter("freddie.producer.stun_preflights",
 		metric.WithDescription("producers' STUN preflights, as reported on the genesis after one passes: passes as result=ok and earlier failures by how the last failed, each with the producer's VPN state (see common/preflight.go)"),
 		metric.WithUnit("preflight"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.handshakeTimes, err = f.meter.Float64Histogram("freddie.handshake.duration",
+		metric.WithDescription("how long each phase of a connection attempt took, by phase (see handshakePhase*) and by how the attempt's genesis was delivered (delivery), with the outcome for the volunteer-reported whole attempt"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(handshakeBuckets...))
 	if err != nil {
 		return nil, err
 	}
@@ -904,9 +913,13 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		}
 		switch common.SignalMsgType(msgType) {
 		case common.SignalMsgAnswer:
-			f.offerConsumers.answered(sendTo, reqID, nat)
+			if took, genesisID, ok := f.offerConsumers.answered(sendTo, reqID, nat); ok {
+				f.recordHandshakePhase(ctx, handshakePhaseAnswer, took, f.deliveryOf(genesisID))
+			}
 		case common.SignalMsgICE:
-			f.offerConsumers.consumerICE(sendTo, nat)
+			if took, genesisID, ok := f.offerConsumers.consumerICE(sendTo, nat); ok {
+				f.recordHandshakePhase(ctx, handshakePhaseConsumerICE, took, f.deliveryOf(genesisID))
+			}
 		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
 		if isOffer && !ok {

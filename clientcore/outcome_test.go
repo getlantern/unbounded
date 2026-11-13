@@ -37,6 +37,25 @@ func TestAttemptOutcome_NothingRecordedAddsNothing(t *testing.T) {
 	}
 }
 
+func TestAttemptOutcome_ReportsDurationOfBegunAttempt(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.record(common.OutcomeNATTimeout, nil)
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	if _, ok := common.ParseAttemptDuration(form.Get(common.PrevAttemptMsField)); !ok {
+		t.Fatalf("a begun attempt should report its duration, got %q", form.Get(common.PrevAttemptMsField))
+	}
+
+	// An attempt that never took an offer has nothing to time.
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	if _, ok := next[common.PrevAttemptMsField]; ok {
+		t.Fatalf("an attempt with no offer must not carry a duration, got %v", next)
+	}
+}
+
 func TestAttemptOutcome_CarriesOfferID(t *testing.T) {
 	var last attemptOutcome
 	last.begin("offer-1", "")
