@@ -26,12 +26,13 @@ type socketFreddie struct {
 	reply    func(form url.Values) common.VolunteerReply
 	posts    atomic.Int32
 	dials    atomic.Int32
+	canceled chan uint64
 	mu       sync.Mutex
 	sockets  []*websocket.Conn
 }
 
 func newSocketFreddie(t *testing.T, noSocket bool, reply func(form url.Values) common.VolunteerReply) *socketFreddie {
-	f := &socketFreddie{noSocket: noSocket, reply: reply}
+	f := &socketFreddie{noSocket: noSocket, reply: reply, canceled: make(chan uint64, 16)}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/signal", func(w http.ResponseWriter, r *http.Request) {
 		f.posts.Add(1)
@@ -64,6 +65,10 @@ func newSocketFreddie(t *testing.T, noSocket bool, reply func(form url.Values) c
 			}
 			var req common.VolunteerRequest
 			require.NoError(t, json.Unmarshal(b, &req))
+			if req.Cancel {
+				f.canceled <- req.ID
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -220,4 +225,35 @@ func TestVolunteerSignaler_ClosesWhenIdle(t *testing.T) {
 	s.mu.Unlock()
 	require.NotNil(t, vc)
 	require.Eventually(t, vc.isClosed, 2*time.Second, 10*time.Millisecond)
+}
+
+// A request whose ctx ends while it waits tells Freddie, so it stops holding it.
+func TestVolunteerSignaler_CancelsOnContextEnd(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f := newSocketFreddie(t, false, func(form url.Values) common.VolunteerReply {
+		if form.Get("data") == "hold" {
+			<-release
+		}
+		return echoData(form)
+	})
+	s := newVolunteerSignaler(f.options(true))
+	_, _, err := s.signal(context.Background(), url.Values{"data": {"x"}})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := s.signal(ctx, url.Values{"data": {"hold"}})
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	require.ErrorIs(t, <-done, context.Canceled)
+	select {
+	case id := <-f.canceled:
+		assert.Equal(t, uint64(2), id)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Freddie never heard the request was canceled")
+	}
 }

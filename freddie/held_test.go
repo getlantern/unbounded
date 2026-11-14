@@ -1,12 +1,14 @@
 package freddie
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -184,4 +186,46 @@ func TestHeldGenesis_ReleasedWhenSocketCloses(t *testing.T) {
 	s.waitHeld(1)
 	vol.c.CloseNow()
 	s.waitHeld(0)
+}
+
+// A volunteer that gives up on a held genesis cancels it, and Freddie stops holding it at once.
+func TestHeldGenesis_ReleasedOnCancel(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	vol.send(1, heldGenesisForm(k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)))
+	s.waitHeld(1)
+	b, err := json.Marshal(common.VolunteerRequest{ID: 1, Cancel: true})
+	require.NoError(t, err)
+	require.NoError(t, vol.c.Write(context.Background(), websocket.MessageText, b))
+	s.waitHeld(0)
+}
+
+// A subscribing consumer takes the newest held genesis, the likeliest to have a volunteer behind
+// it.
+func TestHeldGenesis_NewestFirst(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	ticket := k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)
+	vol.send(1, heldGenesisForm(ticket))
+	s.waitHeld(1)
+	vol.send(2, heldGenesisForm(ticket))
+	s.waitHeld(2)
+
+	genesis, ok := recvGenesis(t, s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK)), time.Second)
+	require.True(t, ok)
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		s.post(genesis.ReplyTo, common.SignalMsgOffer, "offer-sdp", nil)
+	}()
+	r := vol.reply()
+	assert.Equal(t, uint64(2), r.ID)
+	var offer common.SignalMsg
+	require.NoError(t, json.Unmarshal([]byte(r.Body), &offer))
+	vol.send(3, signalForm(offer.ReplyTo, common.SignalMsgAnswer, "answer-sdp"))
+	<-answered
 }
