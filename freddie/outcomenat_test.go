@@ -56,9 +56,9 @@ func TestOfferConsumerCache_LinksBothNATsToTheOffer(t *testing.T) {
 	c.add("offer", newOffer())
 
 	// The consumer's ICE message can only be linked once Freddie has seen the answer it replies to.
-	c.consumerICE("answer", "port_changed")
-	c.answered("offer", "answer", "hidden_symmetric")
-	c.consumerICE("answer", "port_changed")
+	c.consumerICE("answer", "port_changed", "")
+	c.answered("offer", "answer", "hidden_symmetric", "")
+	c.consumerICE("answer", "port_changed", "")
 
 	got := c.take("offer")
 	if got.volunteerNAT != "hidden_symmetric" || got.consumerNAT != "port_changed" || got.version != common.Version {
@@ -74,7 +74,7 @@ func TestOfferConsumerCache_UnseenPeerStaysNone(t *testing.T) {
 	c.add("offer", newOffer())
 	// An answer without candidates still links the consumer's ICE message, but says nothing about
 	// the volunteer's NAT.
-	c.answered("offer", "answer", "")
+	c.answered("offer", "answer", "", "")
 	if got := c.take("offer"); got.volunteerNAT != outcomeNATNone || got.consumerNAT != outcomeNATNone {
 		t.Fatalf("got %+v, want none for both peers", got)
 	}
@@ -82,8 +82,8 @@ func TestOfferConsumerCache_UnseenPeerStaysNone(t *testing.T) {
 
 func TestOfferConsumerCache_IgnoresUnknownOffersAndAnswers(t *testing.T) {
 	c := newOfferConsumerCache(time.Now)
-	c.answered("missing", "answer", "port_changed")
-	c.consumerICE("answer", "port_changed")
+	c.answered("missing", "answer", "port_changed", "")
+	c.consumerICE("answer", "port_changed", "")
 	if len(c.m) != 0 || len(c.answers) != 0 {
 		t.Fatalf("an answer to an unknown offer must not be remembered, have %d offers, %d answers", len(c.m), len(c.answers))
 	}
@@ -92,11 +92,11 @@ func TestOfferConsumerCache_IgnoresUnknownOffersAndAnswers(t *testing.T) {
 func TestOfferConsumerCache_FirstAnswerWins(t *testing.T) {
 	c := newOfferConsumerCache(time.Now)
 	c.add("offer", newOffer())
-	c.answered("offer", "first", "port_changed")
+	c.answered("offer", "first", "port_changed", "")
 	// A second answer to the same offer gets a 404, and must not unlink the delivered one.
-	c.answered("offer", "second", "port_preserved")
-	c.consumerICE("second", "no_srflx")
-	c.consumerICE("first", "port_preserved")
+	c.answered("offer", "second", "port_preserved", "")
+	c.consumerICE("second", "no_srflx", "")
+	c.consumerICE("first", "port_preserved", "")
 	if len(c.answers) != 1 {
 		t.Fatalf("a rejected answer must not be remembered, answers %v", c.answers)
 	}
@@ -109,7 +109,7 @@ func TestOfferConsumerCache_EvictionForgetsAnswer(t *testing.T) {
 	now := time.Unix(0, 0)
 	c := newOfferConsumerCache(func() time.Time { return now })
 	c.add("old", newOffer())
-	c.answered("old", "answer", "port_changed")
+	c.answered("old", "answer", "port_changed", "")
 	now = now.Add(offerConsumerTTL)
 	c.add("new", newOffer())
 	if len(c.answers) != 0 {

@@ -60,6 +60,25 @@ func (g *candidateLog) snapshot() []webrtc.ICECandidate {
 	return append([]webrtc.ICECandidate(nil), g.cands...)
 }
 
+// selectedPairTypes is pc's selected candidate pair as common.PairTypes, its local end first, or ""
+// when no pair is selected or the browser doesn't say.
+func selectedPairTypes(pc *webrtc.PeerConnection) (pair string) {
+	defer func() {
+		if recover() != nil {
+			pair = ""
+		}
+	}()
+	sctp := pc.SCTP()
+	if sctp == nil || sctp.Transport() == nil || sctp.Transport().ICETransport() == nil {
+		return ""
+	}
+	p, err := sctp.Transport().ICETransport().GetSelectedCandidatePair()
+	if err != nil || p == nil || p.Local == nil || p.Remote == nil {
+		return ""
+	}
+	return common.PairTypes(p.Local.Typ.String(), p.Remote.Typ.String())
+}
+
 // selectedPath reports whether pc's selected candidate pair goes through a TURN relay:
 // common.PathRelay, common.PathDirect, or "" when no pair is selected or the browser doesn't say.
 func selectedPath(pc *webrtc.PeerConnection) (path string) {

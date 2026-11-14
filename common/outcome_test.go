@@ -183,3 +183,32 @@ func TestOutcomePath(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeTURNGatherAndPair(t *testing.T) {
+	for in, want := range map[string]string{"": "unreported", TURNOK: TURNOK, TURNMissing: TURNMissing, TURNNone: TURNNone, "bogus": "invalid"} {
+		if got := NormalizeTURN(in); got != want {
+			t.Errorf("NormalizeTURN(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, tc := range []struct{ cut, turn, want string }{
+		{GatherCut, TURNMissing, "cut"},
+		{"", TURNOK, "complete"},
+		{"", "", "unreported"},
+	} {
+		if got := NormalizeGatherCut(tc.cut, tc.turn); got != tc.want {
+			t.Errorf("NormalizeGatherCut(%q, %q) = %q, want %q", tc.cut, tc.turn, got, tc.want)
+		}
+	}
+	for in, want := range map[string]string{
+		"":                         "unreported",
+		"srflx-relay":              "srflx-relay",
+		PairTypes("host", "prflx"): "host-prflx",
+		"srflx":                    "invalid",
+		"srflx-bogus":              "invalid",
+		"relay-relay-x":            "invalid",
+	} {
+		if got := NormalizePair(in); got != want {
+			t.Errorf("NormalizePair(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

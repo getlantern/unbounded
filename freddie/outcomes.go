@@ -29,6 +29,9 @@ func (f *Freddie) recordProducerOutcome(ctx context.Context, span trace.Span, r 
 		attribute.String("volunteer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
 		attribute.String("path", common.OutcomePath(r.Form.Get(common.PrevPathField))),
 		attribute.String("vpn", common.NormalizeVPNState(r.Form.Get(common.PrevVPNField))),
+		attribute.String("turn", common.NormalizeTURN(r.Form.Get(common.PrevTURNField))),
+		attribute.String("gather_cut", common.NormalizeGatherCut(r.Form.Get(common.PrevGatherCutField), r.Form.Get(common.PrevTURNField))),
+		attribute.String("pair", common.NormalizePair(r.Form.Get(common.PrevPairField))),
 	}
 	attrs = append(attrs, volunteerKindAttrs(r)...)
 	consumer := f.attemptConsumerAttrs(r.Form.Get(common.PrevOfferIDField))
@@ -89,8 +92,8 @@ func attrValue(attrs []attribute.KeyValue, key attribute.Key) string {
 	return ""
 }
 
-// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat, volunteer_nat and
-// delivery labels for an attempt that answered offerID.
+// attemptConsumerAttrs are the consumer_country, consumer_version, consumer_nat, volunteer_nat,
+// consumer_relay, volunteer_relay and delivery labels for an attempt that answered offerID.
 func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 	reported := offerID != ""
 	var oc offerConsumer
@@ -102,6 +105,10 @@ func (f *Freddie) attemptConsumerAttrs(offerID string) []attribute.KeyValue {
 		attribute.String("consumer_version", common.OutcomeConsumerVersion(reported, oc.version)),
 		attribute.String("consumer_nat", outcomeNAT(reported, oc.consumerNAT)),
 		attribute.String("volunteer_nat", outcomeNAT(reported, oc.volunteerNAT)),
+		// Whether each peer offered a relay candidate, with consumer_nat's unreported, unknown and
+		// none: a hole that can't be punched leaves the relay as the only path.
+		attribute.String("consumer_relay", outcomeNAT(reported, oc.consumerRelay)),
+		attribute.String("volunteer_relay", outcomeNAT(reported, oc.volunteerRelay)),
 		// Looked up now rather than when the offer arrived: an offer can overtake the genesis
 		// handler's add, but the producer reports only after answering that offer.
 		attribute.String("delivery", outcomeDelivery(reported, oc, f.roomGeneses.has(oc.genesisID))),

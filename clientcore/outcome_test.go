@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pion/webrtc/v4"
+	"github.com/stretchr/testify/assert"
+
 	"github.com/getlantern/broflake/common"
 )
 
@@ -116,4 +119,39 @@ func TestAttemptOutcome_CarriesVPNState(t *testing.T) {
 	if _, ok := next[common.PrevVPNField]; ok {
 		t.Fatalf("an attempt begun with no VPN state must not report one, got %v", next)
 	}
+}
+
+// How gathering ended is kept through the outcome and reported once with it.
+func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
+	relay := []webrtc.ICECandidate{{Typ: webrtc.ICECandidateTypeSrflx}, {Typ: webrtc.ICECandidateTypeRelay}}
+	srflx := []webrtc.ICECandidate{{Typ: webrtc.ICECandidateTypeSrflx}}
+	assert.Equal(t, common.TURNNone, turnResult(false, relay))
+	assert.Equal(t, common.TURNOK, turnResult(true, relay))
+	assert.Equal(t, common.TURNMissing, turnResult(true, srflx))
+
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.gathered(true, srflx, false)
+	last.record(common.OutcomeConnected, nil)
+	last.pair = common.PairTypes("srflx", "relay")
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	assert.Equal(t, common.TURNMissing, form.Get(common.PrevTURNField))
+	assert.Equal(t, common.GatherCut, form.Get(common.PrevGatherCutField))
+	assert.Equal(t, "srflx-relay", form.Get(common.PrevPairField))
+
+	last.begin("offer-2", "")
+	last.gathered(false, srflx, true)
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	assert.Equal(t, common.TURNNone, next.Get(common.PrevTURNField))
+	assert.NotContains(t, next, common.PrevGatherCutField)
+	assert.NotContains(t, next, common.PrevPairField)
+}
+
+func TestSDPHasRelay(t *testing.T) {
+	assert.True(t, sdpHasRelay("v=0\r\na=candidate:2 1 udp 41885439 198.51.100.9 61000 typ relay raddr 203.0.113.7 rport 40001\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=candidate:1 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 50000\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=x-note: typ relay\r\n"), "only candidate lines count")
 }

@@ -932,10 +932,12 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
 		if isOffer {
 			oc := offerConsumer{
-				version:      common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
-				volunteerNAT: outcomeNATNone,
-				consumerNAT:  outcomeNATNone,
-				genesisID:    sendTo,
+				version:        common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
+				volunteerNAT:   outcomeNATNone,
+				consumerNAT:    outcomeNATNone,
+				genesisID:      sendTo,
+				volunteerRelay: outcomeNATNone,
+				consumerRelay:  outcomeNATNone,
 			}
 			if f.ConsumerCountry != nil {
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
@@ -947,9 +949,9 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		// outcome report, could otherwise overtake the link. A volunteer's answer is sent to the
 		// offer's ID, and the consumer's ICE message to the answer's.
 		peer, hasCandidates := classifyMessage(common.SignalMsgType(msgType), data)
-		var nat string
+		var nat, relay string
 		if hasCandidates {
-			nat = peer.class.outcomeLabel()
+			nat, relay = peer.class.outcomeLabel(), peer.relayLabel()
 		}
 		// The phase it ends is timed here too, but recorded only once the message is delivered: a
 		// late one can still find its offer cached after the recipient has gone.
@@ -957,11 +959,11 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		var phaseTook time.Duration
 		switch common.SignalMsgType(msgType) {
 		case common.SignalMsgAnswer:
-			if took, genesisID, ok := f.offerConsumers.answered(sendTo, reqID, nat); ok {
+			if took, genesisID, ok := f.offerConsumers.answered(sendTo, reqID, nat, relay); ok {
 				phase, phaseTook, phaseGenesis = handshakePhaseAnswer, took, genesisID
 			}
 		case common.SignalMsgICE:
-			if took, genesisID, ok := f.offerConsumers.consumerICE(sendTo, nat); ok {
+			if took, genesisID, ok := f.offerConsumers.consumerICE(sendTo, nat, relay); ok {
 				phase, phaseTook, phaseGenesis = handshakePhaseConsumerICE, took, genesisID
 			}
 		}
