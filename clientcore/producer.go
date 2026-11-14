@@ -6,14 +6,12 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,15 +26,16 @@ import (
 )
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
-	return newProducerWebRTC(options, wg, false)
+	return newProducerWebRTC(options, wg, false, newVolunteerSignaler(options))
 }
 
 // newProducerWebRTC builds a producer worker. A room slot offers itself only to its rooms
 // whenever it has room tickets, even while the producer serves the pool. Freddie offers a genesis
 // to a room only if one of its consumers is waiting at that moment, and otherwise to the pool,
 // so a producer whose every slot serves the pool can be busy with strangers whenever its own
-// inviter looks for it. The room slot stays free for the inviter instead.
-func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool) *WorkerFSM {
+// inviter looks for it. The room slot stays free for the inviter instead. A producer's workers
+// share signaler, and with it their socket to Freddie.
+func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool, signaler *volunteerSignaler) *WorkerFSM {
 	var scache STUNCache
 	var preflight preflightState
 	var preflightRep preflightReport
@@ -290,30 +289,19 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			last.addTo(form, options.NATFailTimeout)
 			preflightRep.addTo(form)
 
-			req, err := http.NewRequestWithContext(
-				ctx,
-				"POST",
-				options.DiscoverySrv+options.Endpoint,
-				strings.NewReader(form.Encode()),
-			)
+			statusCode, offerBytes, err := signaler.signal(ctx, form)
 			if err != nil {
-				slog.Debug("Error constructing request", "error", err)
-				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			}
-
-			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Add(common.VersionHeader, common.Version)
-
-			res, err := options.HTTPClient.Do(req)
-			if err != nil {
+				// Freddie took the genesis and counted the report, but its reply was lost.
+				if statusCode == http.StatusOK {
+					preflightRep.delivered()
+				}
 				slog.Debug("Couldn't signal genesis message", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-			defer res.Body.Close()
 
 			// Handle bad protocol version
-			if res.StatusCode == http.StatusTeapot {
+			if statusCode == http.StatusTeapot {
 				slog.Debug("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -321,21 +309,14 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// A Freddie that predates rooms answers a rooms-only genesis (see
 			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and
 			// try again, as for any other refusal, rather than decode the error body as an offer.
-			if res.StatusCode != http.StatusOK {
-				slog.Debug("Genesis message refused", "status_code", res.StatusCode)
+			if statusCode != http.StatusOK {
+				slog.Debug("Genesis message refused", "status_code", statusCode)
 				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 			// Only Freddie taking the genesis says it counted the report. Any refusal, which may
 			// come from a proxy in front of it, leaves the report for the next genesis.
 			preflightRep.delivered()
-
-			// The HTTP request is complete
-			offerBytes, err := io.ReadAll(res.Body)
-			if err != nil {
-				slog.Debug("Error reading body", "error", err)
-				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			}
 
 			// TODO: Freddie sends back a 0-length body when nobody replied to our message. Is that the
 			// smartest way to handle this case systemwide?
@@ -476,23 +457,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				"type":    {strconv.Itoa(int(common.SignalMsgAnswer))},
 			}
 
-			req, err := http.NewRequestWithContext(
-				ctx,
-				"POST",
-				options.DiscoverySrv+options.Endpoint,
-				strings.NewReader(form.Encode()),
-			)
-			if err != nil {
-				slog.Debug("Error constructing request", "error", err)
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
-			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Add(common.VersionHeader, common.Version)
-
-			res, err := options.HTTPClient.Do(req)
+			statusCode, iceBytes, err := signaler.signal(ctx, form)
 			if err != nil {
 				slog.Debug("Couldn't signal answer SDP", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
@@ -500,9 +465,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
-			defer res.Body.Close()
 
-			switch res.StatusCode {
+			switch statusCode {
 			case http.StatusTeapot:
 				slog.Debug("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
@@ -534,17 +498,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			case http.StatusOK:
 				// Our signaling message was delivered, proceed
 			default:
-				slog.Debug("Unexpected http status code", "status_code", res.StatusCode)
+				slog.Debug("Unexpected http status code", "status_code", statusCode)
 				<-time.After(options.ErrorBackoff)
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
-			// The HTTP request is complete
-			iceBytes, err := io.ReadAll(res.Body)
-			if err != nil {
-				slog.Debug("Error reading body", "error", err)
-				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}

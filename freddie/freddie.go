@@ -372,6 +372,7 @@ type Freddie struct {
 	producerOutcomes  metric.Int64Counter
 	stunPreflights    metric.Int64Counter
 	handshakeTimes    metric.Float64Histogram
+	volunteerSockets  metric.Int64UpDownCounter
 
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
@@ -508,6 +509,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		return nil, err
 	}
 
+	f.volunteerSockets, err = f.meter.Int64UpDownCounter("freddie.volunteer.sockets",
+		metric.WithDescription("volunteer sockets open (see common.VolunteerSocketEndpoint)"),
+		metric.WithUnit("{socket}"))
+	if err != nil {
+		return nil, err
+	}
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "freddie (%v)\n", common.Version)
@@ -515,6 +523,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		fmt.Fprintf(w, "current POST requests: %d\n", f.currentPosts.Load())
 	})
 	mux.HandleFunc("/v1/signal", f.handleSignal)
+	mux.HandleFunc("GET "+common.VolunteerSocketEndpoint, f.handleVolunteerSocket)
 
 	return &f, nil
 }
@@ -784,27 +793,62 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	f.currentPosts.Add(1)
 	defer f.currentPosts.Add(-1)
 
-	reqID := uuid.NewString()
-	span.SetAttributes(attribute.String("request.id", reqID))
-
-	reqChan := signalTable.Add(reqID)
-	defer signalTable.Delete(reqID)
-
 	if err := r.ParseForm(); err != nil {
 		span.SetStatus(codes.Error, "failed to parse form")
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
 	}
+	reply := f.postSignal(ctx, span, r)
+	w.WriteHeader(reply.status)
+	if reply.await == nil {
+		w.Write([]byte(reply.body))
+		return
+	}
+	if res := reply.await(nil); res != "" {
+		fmt.Fprintf(w, "%v\n", res)
+		return
+	}
+	w.Write(nil)
+}
+
+// signalReply is how Freddie answers a signaling message, whichever transport carried it: a status,
+// and then either a body at once or, for a message whose partner will reply, await.
+type signalReply struct {
+	status int
+	body   string
+	// await blocks until the partner replies, the message's TTL ends or done closes, and returns
+	// the reply, or "" for none. It must be called exactly once when set.
+	await func(done <-chan struct{}) string
+}
+
+// refused is the signalReply for a message Freddie won't take.
+func refused(status int) signalReply {
+	return signalReply{status: status, body: fmt.Sprintf("%d\n", status)}
+}
+
+// postSignal handles one signaling message, whose fields r.Form holds, as POST /v1/signal
+// describes. r also gives the sender's headers, for its version and country.
+func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request) signalReply {
+	reqID := uuid.NewString()
+	span.SetAttributes(attribute.String("request.id", reqID))
+
+	reqChan := signalTable.Add(reqID)
+	// Kept until await has run, for a message that waits on a reply.
+	waiting := false
+	defer func() {
+		if !waiting {
+			signalTable.Delete(reqID)
+		}
+	}()
+
 	sendTo := r.Form.Get("send-to")
 	data := r.Form.Get("data")
 	msgType, err := strconv.ParseInt(r.Form.Get("type"), 10, 32)
 	if err != nil {
 		span.SetStatus(codes.Error, "invalid message type")
 		span.RecordError(fmt.Errorf("invalid message type: %w", err))
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400\n"))
-		return
+		return refused(http.StatusBadRequest)
 	}
 
 	isGenesis := sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms
@@ -827,9 +871,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// Malformed request
 		span.SetStatus(codes.Error, "malformed request")
 		span.RecordError(fmt.Errorf("malformed request: %w", err))
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400\n"))
-		return
+		return refused(http.StatusBadRequest)
 	}
 
 	var offerICE []webrtc.ICEServer
@@ -863,9 +905,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 			})
 			if err != nil {
 				span.SetStatus(codes.Error, "malformed request")
-				w.WriteHeader(http.StatusBadRequest)
-				w.Write([]byte("400\n"))
-				return
+				return refused(http.StatusBadRequest)
 			}
 			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
@@ -944,15 +984,12 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		if !ok {
 			// Only the first reply to a request is delivered, and none after its TTL,
 			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("404\n"))
-			return
+			return refused(http.StatusNotFound)
 		}
 	}
 
-	// Send 200 OK to indicate that signaling partner accepts the message, stream back their
-	// response or a nil body if they failed to respond
-	w.WriteHeader(http.StatusOK)
+	// 200 OK says the signaling partner accepts the message; their response, or nothing if they
+	// failed to respond, follows.
 	span.SetStatus(codes.Ok, "")
 
 	// XXX: below, Freddie becomes interested in the content of the signaling message so as to
@@ -972,19 +1009,24 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// We previously implemented this short circuit behavior on the client side, but it required a
 		// Flush() here to push the status header to the client. The Flush() confuses the browser and
 		// breaks Golang context contracts in Wasm build targets, so we live with this for now.
-		w.Write(nil)
-		return
+		return signalReply{status: http.StatusOK}
 	default:
 		optimizedTTL = defaultMsgTTL * time.Second
 	}
 
-	select {
-	case res := <-reqChan:
-		fmt.Fprintf(w, "%v\n", withICEServers(res, offerICE))
-	case <-time.After(optimizedTTL):
-		span.AddEvent("timeout waiting for response")
-		w.Write(nil)
-	}
+	waiting = true
+	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
+		defer signalTable.Delete(reqID)
+		select {
+		case res := <-reqChan:
+			return withICEServers(res, offerICE)
+		case <-time.After(optimizedTTL):
+			span.AddEvent("timeout waiting for response")
+			return ""
+		case <-done:
+			return ""
+		}
+	}}
 }
 
 // withICEServers returns the signaling message raw with ICEServers set to servers, or raw unchanged

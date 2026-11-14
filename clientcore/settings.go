@@ -133,6 +133,11 @@ type WebRTCOptions struct {
 	// VolunteerMapped, on a producer, says its WebRTC traffic runs through a port mapped on its
 	// router and verified from outside. It is reported with VolunteerKind.
 	VolunteerMapped bool
+	// VolunteerSocket, on a producer, sends its genesis and answer messages to Freddie over one
+	// WebSocket that all its workers share, rather than as a POST each (see
+	// common.VolunteerSocketEndpoint), and POSTs whenever the socket can't be had. The zero value
+	// POSTs, as every release before it did.
+	VolunteerSocket bool
 }
 
 func NewDefaultWebRTCOptions() *WebRTCOptions {
