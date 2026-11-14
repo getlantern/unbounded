@@ -3,7 +3,10 @@ package freddie
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"runtime/debug"
 	"strconv"
 	"sync"
 	"time"
@@ -47,6 +50,8 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 		w.Write([]byte("418\n"))
 		return
 	}
+	// Outcomes and preflights label the volunteer's version from the header, as for its POSTs.
+	r.Header.Set(common.VersionHeader, version)
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// This skips the Origin check, not any TLS verification: the browser widget connects from
 		// whatever page embeds it, as it POSTs to /v1/signal from any origin (enableCors), and the
@@ -125,6 +130,13 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 		go func() {
 			defer wg.Done()
 			defer func() { <-inFlight }()
+			// net/http recovers a handler's panics, but not this goroutine's.
+			defer func() {
+				if p := recover(); p != nil {
+					slog.Error("Panic handling a volunteer socket request", "panic", p, "stack", string(debug.Stack()))
+					write(common.VolunteerReply{ID: req.ID, Status: http.StatusInternalServerError})
+				}
+			}()
 			write(f.volunteerSignal(ctx, r, req))
 		}()
 	}
@@ -140,8 +152,16 @@ func (f *Freddie) volunteerSignal(ctx context.Context, upgrade *http.Request, re
 		f.roomsDisabled.Add(ctx, 1)
 	}
 
+	// A parsed form never holds a field with no values, and the code that reads one counts on
+	// that, but JSON can say [] or null.
+	form := url.Values{}
+	for k, v := range req.Form {
+		if len(v) > 0 {
+			form[k] = v
+		}
+	}
 	r := upgrade.Clone(ctx)
-	r.Form, r.PostForm = req.Form, req.Form
+	r.Form, r.PostForm = form, form
 	reply := f.postSignal(ctx, span, r)
 	body := reply.body
 	if reply.await != nil {

@@ -90,12 +90,15 @@ func (s *volunteerSignaler) socket(ctx context.Context) *volunteerConn {
 		return nil
 	}
 	defer s.dialing.Unlock()
-	// Another worker may have dialed while this one checked.
+	// Another worker may have dialed, or failed to, while this one checked.
 	s.mu.Lock()
-	vc = s.conn
+	vc, retryAt = s.conn, s.retryAt
 	s.mu.Unlock()
 	if vc != nil && !vc.isClosed() {
 		return vc
+	}
+	if time.Now().Before(retryAt) {
+		return nil
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, volunteerSocketDialTimeout)

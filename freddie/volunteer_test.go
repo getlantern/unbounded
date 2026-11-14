@@ -203,3 +203,17 @@ func TestVolunteerSocket_BadFrameFreesRequests(t *testing.T) {
 		return status == http.StatusNotFound
 	}, 2*time.Second, 50*time.Millisecond, "the offer still found the closed socket's genesis waiting")
 }
+
+// A field with no values, which JSON can send but a parsed form never holds, is dropped rather
+// than indexed: an empty preflight report doesn't bring Freddie down.
+func TestVolunteerSocket_EmptyFieldValues(t *testing.T) {
+	s := startTestServer(t, nil)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	b := []byte(`{"id":5,"form":{"send-to":["genesis"],"type":["` + strconv.Itoa(int(common.SignalMsgGenesis)) +
+		`"],"data":["{}"],"` + common.PreflightVPNField + `":[],"` + common.PrevPreflightVPNField + `":null}}`)
+	require.NoError(t, vol.c.Write(context.Background(), websocket.MessageText, b))
+	r := vol.reply()
+	assert.Equal(t, uint64(5), r.ID)
+	assert.Equal(t, http.StatusOK, r.Status)
+}
