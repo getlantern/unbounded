@@ -86,3 +86,19 @@ func TestRecordProducerOutcome_LabelsTURNGatherAndPair(t *testing.T) {
 	}, common.Version, "turn", "gather_cut")
 	assert.Equal(t, map[string]int64{"none/complete": 1}, got)
 }
+
+// A relay the consumer offered in one ICE message stays counted when a later one has none.
+func TestOfferConsumerCache_ConsumerRelayStaysSeen(t *testing.T) {
+	c := newOfferConsumerCache(time.Now)
+	c.add("offer", offerConsumer{consumerRelay: outcomeNATNone})
+	c.answered("offer", "answer", "", "")
+	c.consumerICE("answer", "", "yes")
+	c.consumerICE("answer", "", "no")
+	assert.Equal(t, "yes", c.take("offer").consumerRelay)
+
+	c.add("offer2", offerConsumer{consumerRelay: outcomeNATNone})
+	c.answered("offer2", "answer2", "", "")
+	c.consumerICE("answer2", "", "no")
+	c.consumerICE("answer2", "", "yes")
+	assert.Equal(t, "yes", c.take("offer2").consumerRelay)
+}

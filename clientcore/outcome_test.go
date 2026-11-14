@@ -149,3 +149,9 @@ func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
 	assert.NotContains(t, next, common.PrevGatherCutField)
 	assert.NotContains(t, next, common.PrevPairField)
 }
+
+func TestSDPHasRelay(t *testing.T) {
+	assert.True(t, sdpHasRelay("v=0\r\na=candidate:2 1 udp 41885439 198.51.100.9 61000 typ relay raddr 203.0.113.7 rport 40001\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=candidate:1 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 50000\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=x-note: typ relay\r\n"), "only candidate lines count")
+}

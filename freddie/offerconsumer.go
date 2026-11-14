@@ -140,7 +140,9 @@ func (c *offerConsumerCache) consumerICE(answerID, nat, relay string) (took time
 	if nat != "" {
 		entry.consumerNAT = nat
 	}
-	if relay != "" {
+	// A relay seen in any of the consumer's ICE messages stays seen: a later message without one
+	// doesn't take back a candidate the volunteer already received.
+	if relay != "" && entry.consumerRelay != "yes" {
 		entry.consumerRelay = relay
 	}
 	first := entry.iced.IsZero()

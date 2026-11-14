@@ -434,7 +434,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 			localCandidates := gathered.snapshot()
 			slog.Debug("Local candidates", "candidates", localCandidates)
-			last.gathered(gatherLimit > 0, localCandidates, completed)
+			last.gathered(len(iceServers) > 0, localCandidates, completed)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
@@ -462,6 +462,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// Our answer SDP with ICE candidates attached: those gathered so far, if the wait gave up
 			finalAnswer := peerConnection.LocalDescription()
+			// After a bounded wait, a relay can arrive between the snapshot above and this answer;
+			// the TURN result describes what the consumer actually gets.
+			if finalAnswer != nil && sdpHasRelay(finalAnswer.SDP) {
+				last.turn = common.TURNOK
+			}
 
 			a, err := json.Marshal(finalAnswer)
 			if err != nil {
@@ -1000,11 +1005,22 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	*o = attemptOutcome{}
 }
 
-// gathered notes how the attempt's ICE gathering ended: whether it had TURN servers and got a
-// relay candidate from them (turnResult), and whether the wait for it was cut short.
+// gathered notes how the attempt's ICE gathering ended: whether Freddie gave it TURN servers and
+// it got a relay candidate from them (turnResult), and whether the wait for it was cut short.
+// Servers that couldn't even be configured count as had, so their failure shows as missing.
 func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, completed bool) {
 	o.turn = turnResult(hadTURN, cands)
 	o.gatherCut = !completed
+}
+
+// sdpHasRelay reports whether an SDP carries a relay candidate.
+func sdpHasRelay(sdp string) bool {
+	for _, line := range strings.Split(sdp, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "a=candidate:") && strings.Contains(line, " typ relay") {
+			return true
+		}
+	}
+	return false
 }
 
 // turnResult is the common.TURN* value for an attempt that gathered cands.
