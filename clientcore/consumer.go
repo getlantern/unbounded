@@ -228,6 +228,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 
+			if !awaitRoomTickets(ctx, options) {
+				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
+			}
+
 			// Listen for genesis messages
 			req, err := newSubscribeRequest(ctx, options)
 			if err != nil {
@@ -831,10 +835,39 @@ func newSubscribeRequest(ctx context.Context, options *WebRTCOptions) (*http.Req
 		return nil, err
 	}
 	req.Header.Add(common.VersionHeader, common.Version)
-	if tickets := options.CurrentRoomTickets(); len(tickets) > 0 {
+	tickets := options.CurrentRoomTickets()
+	if len(tickets) > 0 {
 		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
 	}
+	slog.Debug("Subscribing to the genesis stream", "room_tickets", len(tickets))
 	return req, nil
+}
+
+// roomTicketPoll is how often a rooms-only consumer without room tickets looks for them again.
+var roomTicketPoll = time.Second
+
+// awaitRoomTickets holds a rooms-only consumer that has no room tickets until it has some, and
+// reports false if ctx ends first. Subscribing without them wouldn't put it in its rooms, and it
+// ignores every other genesis, so it would sit out a whole long-poll answering nothing: on a
+// fresh start, where a ticket source fetches on its first read, that cost the consumer a long-poll
+// before its first offer. Each read also lets such a source start its fetch.
+func awaitRoomTickets(ctx context.Context, options *WebRTCOptions) bool {
+	if !options.ConsumerRoomsOnly || len(options.CurrentRoomTickets()) > 0 {
+		return true
+	}
+	slog.Debug("Rooms-only consumer has no room tickets yet, waiting for them")
+	poll := time.NewTicker(roomTicketPoll)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-poll.C:
+			if len(options.CurrentRoomTickets()) > 0 {
+				return true
+			}
+		}
+	}
 }
 
 // pickGenesis picks the genesis message to answer: a random one of those
