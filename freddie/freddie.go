@@ -784,12 +784,20 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 
 	// A room consumer gets a genesis its volunteer left held for it at once, rather than waiting
 	// for the volunteer's next. It's written here, not sent on consumerChan, which is unbuffered
-	// and read only below.
-	if len(rooms) > 0 {
+	// and read only below. A genesis delivered while the consumer wasn't receiving, before the
+	// loop or during a write, is held instead, so it looks again every heldRecheck.
+	var recheck <-chan time.Time
+	takeHeld := func() {
 		if _, msg, ok := f.heldGeneses.take(rooms); ok {
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
 		}
+	}
+	if len(rooms) > 0 {
+		takeHeld()
+		ticker := time.NewTicker(heldRecheck)
+		defer ticker.Stop()
+		recheck = ticker.C
 	}
 
 	for {
@@ -797,6 +805,8 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 		case msg := <-consumerChan:
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
+		case <-recheck:
+			takeHeld()
 		case <-timeoutChan:
 			return
 		case <-ctx.Done():
@@ -1073,16 +1083,30 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			defer func() {
 				f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched), attribute.Bool("held", true)))
 			}()
+			// Like a delivered room genesis's, a taken one's offer carries the room's ICE servers and
+			// its attempt is a room attempt. Nothing goes on the span, which would single out a
+			// paired volunteer.
+			markTaken := func() {
+				taken, matched = nil, true
+				f.roomGeneses.add(reqID)
+				offerICE = heldICE
+			}
 			for {
 				select {
 				case <-taken:
-					// A consumer took it: its offer has the time a delivered genesis's has.
-					taken, matched = nil, true
-					f.roomGeneses.add(reqID)
-					offerICE = heldICE
-					span.AddEvent("held genesis taken")
+					// Its offer has the time a delivered genesis's has.
+					markTaken()
 					timeout.Reset(optimizedTTL)
 				case res := <-reqChan:
+					// An offer can only answer a genesis that was taken, which take closed taken
+					// for first, but the offer may win the select.
+					if taken != nil {
+						select {
+						case <-taken:
+							markTaken()
+						default:
+						}
+					}
 					return withICEServers(res, offerICE)
 				case <-timeout.C:
 					span.AddEvent("timeout waiting for response")

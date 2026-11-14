@@ -11,11 +11,17 @@ import (
 // defaultMsgTTL just to be there when its inviter subscribes.
 var heldGenesisTTL = 30 * time.Second
 
+// heldRecheck is how often a subscribed room consumer looks for a genesis held for it, which it
+// misses when one is held while it isn't receiving.
+var heldRecheck = 500 * time.Millisecond
+
 // heldGenesis is a rooms-only genesis Freddie holds for the next consumer to subscribe to one of
 // its rooms.
 type heldGenesis struct {
 	id    string
 	rooms []roomGenesis
+	// seq orders held geneses across rooms, newest highest.
+	seq uint64
 	// taken is closed when a consumer takes the genesis, which then waits defaultMsgTTL for its
 	// offer as a delivered genesis does.
 	taken chan struct{}
@@ -29,6 +35,7 @@ type heldGenesis struct {
 type heldGeneses struct {
 	sync.Mutex
 	byRoom map[string][]*heldGenesis
+	seq    uint64
 }
 
 func newHeldGeneses() *heldGeneses {
@@ -44,6 +51,8 @@ func (h *heldGeneses) deliverOrHold(g *heldGenesis, deliver func() bool) (delive
 	if deliver() {
 		return true
 	}
+	h.seq++
+	g.seq = h.seq
 	for _, rg := range g.rooms {
 		h.byRoom[rg.room] = append(h.byRoom[rg.room], g)
 	}
@@ -57,21 +66,27 @@ func (h *heldGeneses) deliverOrHold(g *heldGenesis, deliver func() bool) (delive
 func (h *heldGeneses) take(rooms []string) (g *heldGenesis, msg string, ok bool) {
 	h.Lock()
 	defer h.Unlock()
+	var takenRoom string
 	for _, room := range rooms {
 		held := h.byRoom[room]
 		if len(held) == 0 {
 			continue
 		}
-		g = held[len(held)-1]
-		h.removeLocked(g)
-		close(g.taken)
-		for _, rg := range g.rooms {
-			if rg.room == room {
-				return g, rg.msg, true
-			}
+		if newest := held[len(held)-1]; g == nil || newest.seq > g.seq {
+			g, takenRoom = newest, room
 		}
 	}
-	return nil, "", false
+	if g == nil {
+		return nil, "", false
+	}
+	h.removeLocked(g)
+	close(g.taken)
+	for _, rg := range g.rooms {
+		if rg.room == takenRoom {
+			msg = rg.msg
+		}
+	}
+	return g, msg, true
 }
 
 // release stops holding g, if it is still held.

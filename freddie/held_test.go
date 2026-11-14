@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,6 +48,8 @@ func recvGenesis(t *testing.T, ch chan string, within time.Duration) (common.Sig
 func TestHeldGenesis_TakenOnSubscribe(t *testing.T) {
 	k := newRoomKeys(t)
 	s := startRoomServer(t, k)
+	turn := []webrtc.ICEServer{{URLs: []string{"turn:turn.example:3478"}}}
+	s.f.RoomICEServers = func(context.Context) []webrtc.ICEServer { return turn }
 	vol, _, err := s.dialVolunteer(common.Version)
 	require.NoError(t, err)
 
@@ -70,6 +73,7 @@ func TestHeldGenesis_TakenOnSubscribe(t *testing.T) {
 	var offer common.SignalMsg
 	require.NoError(t, json.Unmarshal([]byte(r.Body), &offer))
 	assert.Equal(t, "offer-sdp", offer.Payload)
+	assert.Equal(t, turn, offer.ICEServers, "a taken genesis's offer carries its room's TURN servers")
 
 	vol.send(2, signalForm(offer.ReplyTo, common.SignalMsgAnswer, "answer-sdp"))
 	select {
@@ -217,6 +221,54 @@ func TestHeldGenesis_NewestFirst(t *testing.T) {
 
 	genesis, ok := recvGenesis(t, s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK)), time.Second)
 	require.True(t, ok)
+	answered := make(chan struct{})
+	go func() {
+		defer close(answered)
+		s.post(genesis.ReplyTo, common.SignalMsgOffer, "offer-sdp", nil)
+	}()
+	r := vol.reply()
+	assert.Equal(t, uint64(2), r.ID)
+	var offer common.SignalMsg
+	require.NoError(t, json.Unmarshal([]byte(r.Body), &offer))
+	vol.send(3, signalForm(offer.ReplyTo, common.SignalMsgAnswer, "answer-sdp"))
+	<-answered
+}
+
+// A genesis held while a room consumer was subscribed but not receiving, which delivery to its
+// unbuffered channel misses, still reaches it within heldRecheck.
+func TestHeldGenesis_SubscribedConsumerRechecks(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	consumer := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+	s.waitForConsumers(1)
+
+	msg, err := json.Marshal(common.SignalMsg{ReplyTo: "held-1", Type: common.SignalMsgGenesis, Room: true, Pairing: pairingP})
+	require.NoError(t, err)
+	g := &heldGenesis{id: "held-1", rooms: []roomGenesis{{room: pairingP, msg: string(msg)}}, taken: make(chan struct{})}
+	require.False(t, s.f.heldGeneses.deliverOrHold(g, func() bool { return false }))
+
+	genesis, ok := recvGenesis(t, consumer, 2*heldRecheck)
+	require.True(t, ok, "the subscribed consumer never picked up the held genesis")
+	assert.Equal(t, "held-1", genesis.ReplyTo)
+	s.waitHeld(0)
+}
+
+// A consumer in several rooms takes the newest genesis held for any of them.
+func TestHeldGenesis_NewestAcrossRooms(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	vol.send(1, heldGenesisForm(k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)))
+	s.waitHeld(1)
+	vol.send(2, heldGenesisForm(k.ticket(pairingQ, helperticket.RoleVolunteer, ticketOK)))
+	s.waitHeld(2)
+
+	genesis, ok := recvGenesis(t, s.subscribe("", "",
+		k.ticket(pairingP, helperticket.RoleInviter, ticketOK),
+		k.ticket(pairingQ, helperticket.RoleInviter, ticketOK)), time.Second)
+	require.True(t, ok)
+	assert.Equal(t, pairingQ, genesis.Pairing, "took the older genesis of the first room")
 	answered := make(chan struct{})
 	go func() {
 		defer close(answered)
