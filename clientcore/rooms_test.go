@@ -842,6 +842,7 @@ func TestRoomsOnlyConsumerIgnoresPoolGenesis(t *testing.T) {
 	o.DiscoverySrv = f.url
 	o.Patience = 200 * time.Millisecond
 	o.ConsumerRoomsOnly = true
+	o.RoomTickets = []string{"aa.bb"}
 	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
 
 	for i := 0; i < 5; i++ {
@@ -879,6 +880,7 @@ func TestRoomsOnlyConsumerNeverFallsBackDuringCooldown(t *testing.T) {
 	o.DiscoverySrv = f.url
 	o.Patience = 200 * time.Millisecond
 	o.ConsumerRoomsOnly = true
+	o.RoomTickets = []string{"aa.bb"}
 	fsm := newConsumerWebRTC(o, nil, rooms)
 
 	// Each attempt is left pending, as one Freddie accepted that then came to

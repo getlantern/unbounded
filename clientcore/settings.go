@@ -84,6 +84,8 @@ type WebRTCOptions struct {
 	// ConsumerRoomsOnly, on a consumer, makes it answer only genesis messages
 	// Freddie delivered through one of its rooms (see RoomTickets), so it
 	// connects only through its own helpers and never through a stranger.
+	// Without room tickets it doesn't subscribe, since nothing it would answer
+	// can reach it, but waits for them.
 	// Pool genesis messages are ignored, and repeated failures with room
 	// helpers never fall back to the pool. Without a room helper online the
 	// consumer has no connection at all. The zero value answers everyone, as
