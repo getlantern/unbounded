@@ -227,7 +227,7 @@ func TestProducerAddsOfferTURN(t *testing.T) {
 	t.Cleanup(srv.Close)
 	o := NewDefaultWebRTCOptions()
 	o.DiscoverySrv = srv.URL
-	fsm := newProducerWebRTC(o, nil, false)
+	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 	pc, _ := newTestPeerConnection(t)
 
 	next, out := fsm.state[2](context.Background(), fsm.com, []interface{}{
@@ -464,7 +464,7 @@ func TestRoomProducerGoesOnWithoutSTUN(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o, posted := genesisFreddie(t)
 			o.STUNBatch = tc.batch
-			fsm := newProducerWebRTC(o, nil, true)
+			fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 
 			next, pc := producerState0(t, fsm)
 			if next != 1 || pc == nil {
@@ -495,7 +495,7 @@ func TestPoolProducerNeedsSTUN(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			o, _ := genesisFreddie(t)
 			o.STUNBatch = tc.batch
-			fsm := newProducerWebRTC(o, nil, false)
+			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 
 			// A failed preflight waits out its backoff, so cut that short.
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -517,7 +517,7 @@ func TestTicketlessRoomsOnlyProducerNeedsSTUN(t *testing.T) {
 			o.RoomTickets = nil
 			o.SetServePool(false)
 			o.STUNBatch = tc.batch
-			fsm := newProducerWebRTC(o, nil, false)
+			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 
 			// A failed preflight waits out its backoff, so cut that short.
 			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -540,7 +540,7 @@ func TestTicketlessRoomsOnlyProducerNeedsSTUN(t *testing.T) {
 func TestRoomProducerWithoutSTUNLeavesThePoolAlone(t *testing.T) {
 	o, posted := genesisFreddie(t)
 	o.STUNBatch = failingSTUN[0].batch
-	fsm := newProducerWebRTC(o, nil, true)
+	fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 	next, pc := producerState0(t, fsm)
 	if next != 1 || pc == nil {
 		t.Fatalf("state 0 went to state %d, want 1 and a peer connection", next)
@@ -568,7 +568,7 @@ func TestRoomProducerWithoutSTUNLeavesThePoolAlone(t *testing.T) {
 func TestRoomProducerWithoutSTUNOrTURNGivesUp(t *testing.T) {
 	o, posted := genesisFreddie(t)
 	o.STUNBatch = failingSTUN[0].batch
-	fsm := newProducerWebRTC(o, nil, true)
+	fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 	next, pc := producerState0(t, fsm)
 	if next != 1 || pc == nil {
 		t.Fatalf("state 0 went to state %d, want 1 and a peer connection", next)
@@ -786,7 +786,7 @@ func TestRoomProducerWithoutSTUNRetriesIt(t *testing.T) {
 	advance := fixedPreflightNow(t)
 	o, posted := genesisFreddie(t)
 	o.STUNBatch = flakySTUN(stunServer(t, answer))
-	fsm := newProducerWebRTC(o, nil, true)
+	fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 
 	next, pc := producerState0(t, fsm)
 	if next != 1 || pc == nil {
@@ -845,7 +845,7 @@ func TestRoomProducerWithEmptySTUNListPosts(t *testing.T) {
 	advance := fixedPreflightNow(t)
 	o, posted := genesisFreddie(t)
 	o.STUNBatch = emptySTUN
-	fsm := newProducerWebRTC(o, nil, true)
+	fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 
 	next, pc := producerState0(t, fsm)
 	if next != 1 || pc == nil {

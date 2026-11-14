@@ -284,8 +284,9 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	case "widget":
 		// Widget peers share connectivity over WebRTC
 		var cfsms []WorkerFSM
+		signaler := newVolunteerSignaler(rtcOpt)
 		for i := 0; i < bfOpt.CTableSize; i++ {
-			cfsms = append(cfsms, *newProducerWebRTC(rtcOpt, &wgReady, isRoomSlot(i, bfOpt.CTableSize)))
+			cfsms = append(cfsms, *newProducerWebRTC(rtcOpt, &wgReady, isRoomSlot(i, bfOpt.CTableSize), signaler))
 		}
 		cTable = NewWorkerTable(cfsms)
 

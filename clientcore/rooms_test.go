@@ -189,7 +189,7 @@ func TestRoomSlotWorkerPostsRoomsOnlyGenesis(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.DiscoverySrv = srv.URL
 	o.SetRoomTickets([]string{"a.b"})
-	fsm := newProducerWebRTC(o, nil, true)
+	fsm := newProducerWebRTC(o, nil, true, newVolunteerSignaler(o))
 	next, _ := fsm.state[2](context.Background(), fsm.com, []interface{}{
 		(*webrtc.PeerConnection)(nil),
 		common.PathAssertion{},
