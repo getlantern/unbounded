@@ -62,7 +62,8 @@ func newVolunteerSignaler(options *WebRTCOptions) *volunteerSignaler {
 }
 
 // signal sends form to Freddie, as a POST to the signaling endpoint would, and returns the status
-// and body of Freddie's reply. err means no reply came.
+// and body of Freddie's reply. err means no reply came, or none could be read: status is then
+// Freddie's if it got that far, and 0 otherwise.
 func (s *volunteerSignaler) signal(ctx context.Context, form url.Values) (status int, body []byte, err error) {
 	if s.options.VolunteerSocket {
 		if vc := s.socket(ctx); vc != nil {
@@ -192,12 +193,17 @@ func (vc *volunteerConn) done(id uint64) {
 	}
 }
 
+// closeIfIdle closes the socket if no request is waiting on it. It marks the socket closed under
+// mu, so a request that comes in meanwhile sees it closed and goes as a POST.
 func (vc *volunteerConn) closeIfIdle() {
 	vc.mu.Lock()
 	idle := len(vc.pending) == 0
+	if idle {
+		vc.closeOnce.Do(func() { close(vc.closed) })
+	}
 	vc.mu.Unlock()
 	if idle {
-		vc.close()
+		vc.c.CloseNow()
 	}
 }
 
@@ -239,8 +245,8 @@ func (vc *volunteerConn) isClosed() bool {
 	}
 }
 
-// postSignal POSTs form to Freddie's signaling endpoint. A body that can't be read comes back
-// empty, as when the partner didn't reply.
+// postSignal POSTs form to Freddie's signaling endpoint. A body that can't be read comes back as
+// an error along with the status.
 func postSignal(ctx context.Context, options *WebRTCOptions, form url.Values) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
@@ -261,8 +267,7 @@ func postSignal(ctx context.Context, options *WebRTCOptions, form url.Values) (i
 	defer res.Body.Close()
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
-		slog.Debug("Error reading body", "error", err)
-		return res.StatusCode, nil, nil
+		return res.StatusCode, nil, err
 	}
 	return res.StatusCode, body, nil
 }

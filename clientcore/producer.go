@@ -291,6 +291,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			statusCode, offerBytes, err := signaler.signal(ctx, form)
 			if err != nil {
+				// Freddie took the genesis and counted the report, but its reply was lost.
+				if statusCode == http.StatusOK {
+					preflightRep.delivered()
+				}
 				slog.Debug("Couldn't signal genesis message", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
