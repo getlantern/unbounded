@@ -152,6 +152,23 @@ func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	}
 }
 
+// A rooms-only genesis asks Freddie to hold it, but only from a producer with the volunteer
+// socket, the one transport that can wait that long. A pool genesis never does.
+func TestGenesisFormHold(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.SetRoomTickets([]string{"a.b"})
+	if _, ok := genesisForm(o, []byte(`{}`), true)[common.HoldField]; ok {
+		t.Error("a producer without the socket asked for a hold")
+	}
+	o.VolunteerSocket = true
+	if got := genesisForm(o, []byte(`{}`), true).Get(common.HoldField); got != "1" {
+		t.Errorf("a room slot with the socket sends hold=%q, want 1", got)
+	}
+	if _, ok := genesisForm(o, []byte(`{}`), false)[common.HoldField]; ok {
+		t.Error("a pool genesis asked for a hold")
+	}
+}
+
 // A room slot holding room tickets offers itself only to its rooms even while the producer serves
 // the pool, so the producer's other slots filling up with pool consumers can't leave its inviter
 // without one. Its other slots still serve the pool.

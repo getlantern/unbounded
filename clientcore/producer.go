@@ -1026,6 +1026,12 @@ func genesisForm(options *WebRTCOptions, g []byte, roomSlot bool) url.Values {
 		"send-to": {sendTo},
 		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
 	}
+	// A rooms-only genesis waits on Freddie for its rooms' next consumer rather than expire every
+	// few seconds (see common.HoldField). Only the volunteer socket can carry one that long, so a
+	// producer without it sends what it always has.
+	if sendTo == common.SignalSendToGenesisRooms && options.VolunteerSocket {
+		form.Set(common.HoldField, "1")
+	}
 	for _, c := range options.targetCountries() {
 		form.Add(common.TargetCountryField, c)
 	}

@@ -162,7 +162,7 @@ func (f *Freddie) volunteerSignal(ctx context.Context, upgrade *http.Request, re
 	}
 	r := upgrade.Clone(ctx)
 	r.Form, r.PostForm = form, form
-	reply := f.postSignal(ctx, span, r)
+	reply := f.postSignal(ctx, span, r, true)
 	body := reply.body
 	if reply.await != nil {
 		body = reply.await(ctx.Done())
