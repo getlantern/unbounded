@@ -281,3 +281,26 @@ func TestHeldGenesis_NewestAcrossRooms(t *testing.T) {
 	vol.send(3, signalForm(offer.ReplyTo, common.SignalMsgAnswer, "answer-sdp"))
 	<-answered
 }
+
+// A consumer that has a genesis stops looking for held ones: it answers one per subscribe, and
+// another it took would be stranded when another of its inviter's workers could answer it.
+func TestHeldGenesis_ConsumerTakesOne(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	vol.send(1, heldGenesisForm(k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)))
+	s.waitHeld(1)
+	consumer := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+	_, ok := recvGenesis(t, consumer, time.Second)
+	require.True(t, ok)
+
+	// One held while the consumer wasn't receiving, as the recheck exists to catch.
+	msg, err := json.Marshal(common.SignalMsg{ReplyTo: "held-2", Type: common.SignalMsgGenesis, Room: true, Pairing: pairingP})
+	require.NoError(t, err)
+	g := &heldGenesis{id: "held-2", rooms: []roomGenesis{{room: pairingP, msg: string(msg)}}, taken: make(chan struct{})}
+	require.False(t, s.f.heldGeneses.deliverOrHold(g, func() bool { return false }))
+	_, ok = recvGenesis(t, consumer, 3*heldRecheck)
+	assert.False(t, ok, "the consumer took a second held genesis")
+	assert.Equal(t, 1, s.f.heldGeneses.size())
+}

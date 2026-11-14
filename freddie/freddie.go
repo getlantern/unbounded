@@ -785,19 +785,22 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	// A room consumer gets a genesis its volunteer left held for it at once, rather than waiting
 	// for the volunteer's next. It's written here, not sent on consumerChan, which is unbuffered
 	// and read only below. A genesis delivered while the consumer wasn't receiving, before the
-	// loop or during a write, is held instead, so it looks again every heldRecheck.
+	// loop or during a write, is held instead, so it looks again every heldRecheck until it has
+	// one: a consumer answers one genesis per subscribe, and a second it took would be stranded
+	// for defaultMsgTTL when another of its inviter's workers could have answered it.
 	var recheck <-chan time.Time
 	takeHeld := func() {
 		if _, msg, ok := f.heldGeneses.take(rooms); ok {
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
+			recheck = nil
 		}
 	}
 	if len(rooms) > 0 {
-		takeHeld()
 		ticker := time.NewTicker(heldRecheck)
 		defer ticker.Stop()
 		recheck = ticker.C
+		takeHeld()
 	}
 
 	for {
@@ -805,6 +808,7 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 		case msg := <-consumerChan:
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
+			recheck = nil
 		case <-recheck:
 			takeHeld()
 		case <-timeoutChan:
@@ -853,6 +857,9 @@ type signalReply struct {
 	// await blocks until the partner replies, the message's TTL ends or done closes, and returns
 	// the reply, or "" for none. It must be called exactly once when set.
 	await func(done <-chan struct{}) string
+	// held says await may wait on a held genesis, longer than any other message waits. The
+	// caller ends its span first, so the span's length doesn't single out a paired volunteer.
+	held bool
 }
 
 // refused is the signalReply for a message Freddie won't take.
@@ -1073,7 +1080,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 
 	waiting = true
 	if held != nil {
-		return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
+		return signalReply{status: http.StatusOK, held: true, await: func(done <-chan struct{}) string {
 			defer signalTable.Delete(reqID)
 			defer f.heldGeneses.release(held)
 			taken := held.taken
