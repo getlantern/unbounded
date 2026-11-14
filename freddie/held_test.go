@@ -12,6 +12,9 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/helperticket"
@@ -303,4 +306,40 @@ func TestHeldGenesis_ConsumerTakesOne(t *testing.T) {
 	_, ok = recvGenesis(t, consumer, 3*heldRecheck)
 	assert.False(t, ok, "the consumer took a second held genesis")
 	assert.Equal(t, 1, s.f.heldGeneses.size())
+}
+
+// A held genesis's span ends as an unanswered genesis's does, at defaultMsgTTL with the timeout
+// event, however long the hold lasts, so neither its length nor its events single out a paired
+// volunteer.
+func TestHeldGenesis_SpanLooksUnanswered(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	prevTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
+	t.Cleanup(func() { otel.SetTracerProvider(prevTP) })
+
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+	vol.send(1, heldGenesisForm(k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)))
+	s.waitHeld(1)
+
+	var held sdktrace.ReadOnlySpan
+	require.Eventually(t, func() bool {
+		for _, sp := range spans.Ended() {
+			if sp.Name() == "handleVolunteerSignal" {
+				held = sp
+				return true
+			}
+		}
+		return false
+	}, 2*defaultMsgTTL*time.Second, 50*time.Millisecond, "the held genesis's span never ended")
+	took := held.EndTime().Sub(held.StartTime())
+	assert.InDelta(t, float64(defaultMsgTTL*time.Second), float64(took), float64(500*time.Millisecond))
+	var events []string
+	for _, e := range held.Events() {
+		events = append(events, e.Name)
+	}
+	assert.Equal(t, []string{"timeout waiting for response"}, events)
+	assert.Equal(t, 1, s.f.heldGeneses.size(), "ending the span doesn't end the hold")
 }

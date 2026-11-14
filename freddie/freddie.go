@@ -858,7 +858,8 @@ type signalReply struct {
 	// the reply, or "" for none. It must be called exactly once when set.
 	await func(done <-chan struct{}) string
 	// held says await may wait on a held genesis, longer than any other message waits. The
-	// caller ends its span first, so the span's length doesn't single out a paired volunteer.
+	// caller ends its span by defaultMsgTTL, so the span's length doesn't single out a paired
+	// volunteer.
 	held bool
 }
 

@@ -186,7 +186,14 @@ func (f *Freddie) volunteerSignal(ctx context.Context, upgrade *http.Request, re
 	reply := f.postSignal(ctx, span, r, true)
 	body := reply.body
 	if reply.held {
-		span.End()
+		// A held genesis can wait far longer than any other message, so its span ends as an
+		// unanswered genesis's does, at defaultMsgTTL, unless the hold ends first: its length
+		// mustn't single out a paired volunteer.
+		ttl := time.AfterFunc(defaultMsgTTL*time.Second, func() {
+			span.AddEvent("timeout waiting for response")
+			span.End()
+		})
+		defer ttl.Stop()
 	}
 	if reply.await != nil {
 		body = reply.await(ctx.Done())
