@@ -426,13 +426,15 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			if awaitGathering(gatherComplete, gatherLimit) {
+			completed := awaitGathering(gatherComplete, gatherLimit)
+			if completed {
 				slog.Debug("ICE gathering complete!")
 			} else {
 				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
 			}
 			localCandidates := gathered.snapshot()
 			slog.Debug("Local candidates", "candidates", localCandidates)
+			last.gathered(gatherLimit > 0, localCandidates, completed)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
@@ -658,6 +660,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			slog.Debug("A WebRTC connection has been established!")
 			last.record(common.OutcomeConnected, peerConnection)
 			last.path = selectedPath(peerConnection)
+			last.pair = selectedPairTypes(peerConnection)
 			return 5, []interface{}{
 				peerConnection,
 				d,
@@ -934,10 +937,17 @@ type attemptOutcome struct {
 	// began is when the attempt took its offer, and took how long it ran until its outcome.
 	began time.Time
 	took  time.Duration
+	// turn is one of the common.TURN* values, and gatherCut whether the attempt stopped waiting on
+	// ICE gathering at its limit. Both are set once gathering ends, or stay "" and false for an
+	// attempt that didn't get that far.
+	turn      string
+	gatherCut bool
+	// pair is the selected candidate pair's types (see common.PairTypes) for a connected attempt.
+	pair string
 }
 
 // begin notes the ReplyTo of the offer an attempt is answering, the VPN state it began under, and
-// when. record keeps all three.
+// when. record keeps all three, and what gathered noted.
 func (o *attemptOutcome) begin(offerID, vpn string) {
 	*o = attemptOutcome{offerID: offerID, vpn: vpn, began: time.Now()}
 }
@@ -945,7 +955,8 @@ func (o *attemptOutcome) begin(offerID, vpn string) {
 // record notes the attempt's outcome, how long it took, and the peer connection's states at that
 // moment. Call it before the peer connection is closed.
 func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
-	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn, began: o.began}
+	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn, began: o.began,
+		turn: o.turn, gatherCut: o.gatherCut}
 	if !o.began.IsZero() {
 		o.took = time.Since(o.began)
 	}
@@ -977,7 +988,36 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	if !o.began.IsZero() {
 		form.Set(common.PrevAttemptMsField, strconv.FormatInt(o.took.Milliseconds(), 10))
 	}
+	if o.turn != "" {
+		form.Set(common.PrevTURNField, o.turn)
+	}
+	if o.gatherCut {
+		form.Set(common.PrevGatherCutField, common.GatherCut)
+	}
+	if o.pair != "" {
+		form.Set(common.PrevPairField, o.pair)
+	}
 	*o = attemptOutcome{}
+}
+
+// gathered notes how the attempt's ICE gathering ended: whether it had TURN servers and got a
+// relay candidate from them (turnResult), and whether the wait for it was cut short.
+func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, completed bool) {
+	o.turn = turnResult(hadTURN, cands)
+	o.gatherCut = !completed
+}
+
+// turnResult is the common.TURN* value for an attempt that gathered cands.
+func turnResult(hadTURN bool, cands []webrtc.ICECandidate) string {
+	if !hadTURN {
+		return common.TURNNone
+	}
+	for _, c := range cands {
+		if c.Typ == webrtc.ICECandidateTypeRelay {
+			return common.TURNOK
+		}
+	}
+	return common.TURNMissing
 }
 
 // sendsToRoomsOnly reports whether a genesis message from a worker with the given tickets goes to

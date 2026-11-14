@@ -124,6 +124,18 @@ type peerNAT struct {
 	role       string
 	class      natClass
 	candidates int
+	// relay is whether the set carries a relay candidate: whether a TURN server gave the peer an
+	// address, the one path left when neither NAT lets a hole through.
+	relay bool
+}
+
+// relayLabel is the consumer_relay or volunteer_relay label for a peer whose candidates Freddie
+// relayed.
+func (n peerNAT) relayLabel() string {
+	if n.relay {
+		return "yes"
+	}
+	return "no"
 }
 
 // classifyMessage classifies the ICE candidates a signaling message carries: a volunteer's answer
@@ -147,6 +159,11 @@ func classifyMessage(msgType common.SignalMsgType, data string) (n peerNAT, ok b
 	}
 	n.class = classifyNAT(cands)
 	n.candidates = len(cands)
+	for _, c := range cands {
+		if c.typ == "relay" {
+			n.relay = true
+		}
+	}
 	return n, true
 }
 
@@ -159,6 +176,7 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, n peerNAT, 
 		attribute.String("nat", n.class.nat),
 		attribute.Bool("base_hidden", n.class.baseHidden),
 		attribute.Bool("port_preserved", n.class.portPreserved),
+		attribute.Bool("relay", n.relay),
 		delivered,
 	}
 	f.iceNAT.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -166,6 +184,7 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, n peerNAT, 
 		attribute.String("ice.role", n.role),
 		attribute.String("ice.nat", n.class.nat),
 		attribute.Int("ice.candidates", n.candidates),
+		attribute.Bool("ice.relay", n.relay),
 	)
 }
 

@@ -34,7 +34,76 @@ const (
 	// taking the offer to its outcome. Freddie sees only the signaling, so this is its one measure
 	// of the ICE, DTLS and SCTP time after it.
 	PrevAttemptMsField = "prev-attempt-ms"
+	// PrevTURNField says whether the attempt's TURN servers gave the producer a relay candidate:
+	// one of the TURN* values. Only a room attempt gets TURN servers.
+	PrevTURNField = "prev-turn"
+	// PrevGatherCutField is GatherCut when the producer stopped waiting on ICE gathering at its
+	// limit and answered with the candidates it had, which happens when a TURN server is slow or
+	// blocked.
+	PrevGatherCutField = "prev-gather-cut"
+	// PrevPairField is the selected candidate pair of a connected attempt, as the producer's
+	// candidate type and the consumer's, joined by "-": "srflx-relay", say. Only sent with
+	// OutcomeConnected.
+	PrevPairField = "prev-pair"
 )
+
+// Values of PrevTURNField.
+const (
+	// TURNNone: the producer had no TURN servers for the attempt.
+	TURNNone = "none"
+	// TURNOK: its TURN servers gave it a relay candidate.
+	TURNOK = "ok"
+	// TURNMissing: it had TURN servers, but none gave it a relay candidate before it answered.
+	TURNMissing = "missing"
+)
+
+// GatherCut is PrevGatherCutField's value when gathering was cut short.
+const GatherCut = "1"
+
+var turnResults = map[string]bool{TURNNone: true, TURNOK: true, TURNMissing: true}
+
+// NormalizeTURN maps a reported TURN result onto the TURN* values, "unreported" when the producer
+// predates the field, or "invalid".
+func NormalizeTURN(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	return normalizeEnum(s, turnResults)
+}
+
+// NormalizeGatherCut maps a reported PrevGatherCutField onto "cut", "complete" for a producer that
+// reported the attempt's TURN result without one, or "unreported".
+func NormalizeGatherCut(cut, turn string) string {
+	switch {
+	case cut == GatherCut:
+		return "cut"
+	case turn == "":
+		return "unreported"
+	default:
+		return "complete"
+	}
+}
+
+// candidateTypes are the ICE candidate types a selected pair's ends can have.
+var candidateTypes = map[string]bool{"host": true, "srflx": true, "prflx": true, "relay": true}
+
+// PairTypes joins a selected pair's producer and consumer candidate types for PrevPairField.
+func PairTypes(producer, consumer string) string {
+	return producer + "-" + consumer
+}
+
+// NormalizePair maps a reported PrevPairField onto one of the 16 type pairs, "unreported", or
+// "invalid".
+func NormalizePair(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	producer, consumer, ok := strings.Cut(s, "-")
+	if !ok || !candidateTypes[producer] || !candidateTypes[consumer] {
+		return "invalid"
+	}
+	return s
+}
 
 // Producer attempt outcomes, in the order a handshake can fail.
 const (

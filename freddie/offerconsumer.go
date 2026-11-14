@@ -27,6 +27,10 @@ type offerConsumer struct {
 	volunteerNAT string
 	consumerNAT  string
 	genesisID    string
+	// volunteerRelay and consumerRelay are each peer's peerNAT.relayLabel, outcomeNATNone until
+	// Freddie relays that peer's candidates.
+	volunteerRelay string
+	consumerRelay  string
 }
 
 type offerConsumerEntry struct {
@@ -94,10 +98,10 @@ func (c *offerConsumerCache) take(offerID string) offerConsumer {
 }
 
 // answered records the volunteer's answer to offerID: the answer's request ID, and the
-// volunteer's NAT label, which "" leaves unset. The first answer wins: an offer's request takes
+// volunteer's NAT and relay labels, which "" leaves unset. The first answer wins: an offer's request takes
 // only its first reply, so a later answer is one the consumer never received. For the first
 // answer it returns how long after the offer it came, and the offer's genesis ID.
-func (c *offerConsumerCache) answered(offerID, answerID, nat string) (took time.Duration, genesisID string, ok bool) {
+func (c *offerConsumerCache) answered(offerID, answerID, nat, relay string) (took time.Duration, genesisID string, ok bool) {
 	c.Lock()
 	defer c.Unlock()
 	e, found := c.m[offerID]
@@ -113,15 +117,18 @@ func (c *offerConsumerCache) answered(offerID, answerID, nat string) (took time.
 	if nat != "" {
 		entry.volunteerNAT = nat
 	}
+	if relay != "" {
+		entry.volunteerRelay = relay
+	}
 	entry.answered = c.now()
 	e.Value = entry
 	return entry.answered.Sub(entry.offered), entry.genesisID, true
 }
 
-// consumerICE records the consumer's NAT label, which "" leaves unset, for the offer answered by
+// consumerICE records the consumer's NAT and relay labels, which "" leaves unset, for the offer answered by
 // answerID. For the consumer's first ICE message it returns how long after the answer it came,
 // and the offer's genesis ID.
-func (c *offerConsumerCache) consumerICE(answerID, nat string) (took time.Duration, genesisID string, ok bool) {
+func (c *offerConsumerCache) consumerICE(answerID, nat, relay string) (took time.Duration, genesisID string, ok bool) {
 	c.Lock()
 	defer c.Unlock()
 	offerID, found := c.answers[answerID]
@@ -132,6 +139,9 @@ func (c *offerConsumerCache) consumerICE(answerID, nat string) (took time.Durati
 	entry := e.Value.(offerConsumerEntry)
 	if nat != "" {
 		entry.consumerNAT = nat
+	}
+	if relay != "" {
+		entry.consumerRelay = relay
 	}
 	first := entry.iced.IsZero()
 	if first {

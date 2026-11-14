@@ -23,31 +23,31 @@ func TestOfferConsumerCache_TimesRelayedPhases(t *testing.T) {
 	c.add("offer", offerConsumer{genesisID: "genesis"})
 
 	now = now.Add(2 * time.Second)
-	took, genesisID, ok := c.answered("offer", "answer", "")
+	took, genesisID, ok := c.answered("offer", "answer", "", "")
 	if !ok || took != 2*time.Second || genesisID != "genesis" {
 		t.Fatalf("answer: got %v, %q, %v, want 2s, genesis, true", took, genesisID, ok)
 	}
-	if _, _, ok := c.answered("offer", "answer2", ""); ok {
+	if _, _, ok := c.answered("offer", "answer2", "", ""); ok {
 		t.Fatal("only the first answer, the one the consumer received, is timed")
 	}
 
 	// The consumer's ICE message is timed whether or not its candidates gave a NAT label.
 	now = now.Add(3 * time.Second)
-	took, genesisID, ok = c.consumerICE("answer", "")
+	took, genesisID, ok = c.consumerICE("answer", "", "")
 	if !ok || took != 3*time.Second || genesisID != "genesis" {
 		t.Fatalf("consumer ICE: got %v, %q, %v, want 3s, genesis, true", took, genesisID, ok)
 	}
-	if _, _, ok := c.consumerICE("answer", "port_preserved"); ok {
+	if _, _, ok := c.consumerICE("answer", "port_preserved", ""); ok {
 		t.Fatal("only the consumer's first ICE message is timed")
 	}
 	if got := c.take("offer").consumerNAT; got != "port_preserved" {
 		t.Fatalf("a later ICE message's NAT label is still recorded, got %q", got)
 	}
 
-	if _, _, ok := c.answered("unknown", "a", ""); ok {
+	if _, _, ok := c.answered("unknown", "a", "", ""); ok {
 		t.Fatal("an answer to an unknown offer is not timed")
 	}
-	if _, _, ok := c.consumerICE("unknown", ""); ok {
+	if _, _, ok := c.consumerICE("unknown", "", ""); ok {
 		t.Fatal("ICE for an unknown answer is not timed")
 	}
 }
