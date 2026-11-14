@@ -343,3 +343,24 @@ func TestHeldGenesis_SpanLooksUnanswered(t *testing.T) {
 	assert.Equal(t, []string{"timeout waiting for response"}, events)
 	assert.Equal(t, 1, s.f.heldGeneses.size(), "ending the span doesn't end the hold")
 }
+
+// A pool genesis doesn't stop a room consumer looking for a held one: a rooms-only consumer, or
+// one that needs its room's TURN servers, ignores it.
+func TestHeldGenesis_PoolGenesisKeepsRechecking(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	consumer := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+	s.waitForConsumers(1)
+	go s.genesis(nil)
+	pool, ok := recvGenesis(t, consumer, time.Second)
+	require.True(t, ok)
+	require.False(t, pool.IsRoomGenesis())
+
+	msg, err := json.Marshal(common.SignalMsg{ReplyTo: "held-1", Type: common.SignalMsgGenesis, Room: true, Pairing: pairingP})
+	require.NoError(t, err)
+	g := &heldGenesis{id: "held-1", rooms: []roomGenesis{{room: pairingP, msg: string(msg)}}, taken: make(chan struct{})}
+	require.False(t, s.f.heldGeneses.deliverOrHold(g, func() bool { return false }))
+	genesis, ok := recvGenesis(t, consumer, 3*heldRecheck)
+	require.True(t, ok, "a pool genesis stopped the consumer looking for a held room genesis")
+	assert.Equal(t, "held-1", genesis.ReplyTo)
+}

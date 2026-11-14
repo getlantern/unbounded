@@ -785,9 +785,11 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	// A room consumer gets a genesis its volunteer left held for it at once, rather than waiting
 	// for the volunteer's next. It's written here, not sent on consumerChan, which is unbuffered
 	// and read only below. A genesis delivered while the consumer wasn't receiving, before the
-	// loop or during a write, is held instead, so it looks again every heldRecheck until it has
-	// one: a consumer answers one genesis per subscribe, and a second it took would be stranded
-	// for defaultMsgTTL when another of its inviter's workers could have answered it.
+	// loop or during a write, is held instead, so it looks again every heldRecheck until it has a
+	// room genesis: a consumer answers one per subscribe, and a second it took would be stranded
+	// for defaultMsgTTL when another of its inviter's workers could have answered it. A pool
+	// genesis doesn't stop it, since a rooms-only consumer, or one that needs its room's TURN
+	// servers, ignores those.
 	var recheck <-chan time.Time
 	takeHeld := func() {
 		if _, msg, ok := f.heldGeneses.take(rooms); ok {
@@ -808,7 +810,9 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 		case msg := <-consumerChan:
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
-			recheck = nil
+			if recheck != nil && common.IsRoomGenesis([]byte(msg)) {
+				recheck = nil
+			}
 		case <-recheck:
 			takeHeld()
 		case <-timeoutChan:
