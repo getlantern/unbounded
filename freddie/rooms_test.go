@@ -381,8 +381,8 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 				}
 				if m.Name == "freddie.genesis.room_match" {
 					roomMatches += int(dp.Value)
-					if attrs := dp.Attributes.ToSlice(); len(attrs) != 1 || attrs[0].Key != "matched" {
-						t.Errorf("room_match carries %v, want only matched", attrs)
+					if attrs := dp.Attributes.ToSlice(); len(attrs) != 2 || attrs[0].Key != "held" || attrs[1].Key != "matched" {
+						t.Errorf("room_match carries %v, want only held and matched", attrs)
 					}
 				}
 			}

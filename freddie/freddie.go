@@ -377,6 +377,7 @@ type Freddie struct {
 	tickets        *ticketCache
 	offerConsumers *offerConsumerCache
 	roomGeneses    *roomGenesisSet
+	heldGeneses    *heldGeneses
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -397,6 +398,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		tickets:        newTicketCache(maxCachedTickets, time.Now),
 		offerConsumers: newOfferConsumerCache(time.Now),
 		roomGeneses:    newRoomGenesisSet(time.Now),
+		heldGeneses:    newHeldGeneses(),
 	}
 
 	var err error
@@ -435,6 +437,17 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		metric.WithUnit("user"),
 		metric.WithInt64Callback(func(ctx context.Context, m metric.Int64Observer) error {
 			m.Observe(int64(consumerTable.Size()))
+			return nil
+		}))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = f.meter.Int64ObservableUpDownCounter("freddie.genesis.held",
+		metric.WithDescription("rooms-only geneses held for their rooms' next consumer"),
+		metric.WithUnit("{genesis}"),
+		metric.WithInt64Callback(func(ctx context.Context, m metric.Int64Observer) error {
+			m.Observe(int64(f.heldGeneses.size()))
 			return nil
 		}))
 	if err != nil {
@@ -769,11 +782,39 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	w.WriteHeader(http.StatusOK)
 	timeoutChan := time.After(consumerTTL * time.Second)
 
+	// A room consumer gets a genesis its volunteer left held for it at once, rather than waiting
+	// for the volunteer's next. It's written here, not sent on consumerChan, which is unbuffered
+	// and read only below. A genesis delivered while the consumer wasn't receiving, before the
+	// loop or during a write, is held instead, so it looks again every heldRecheck until it has a
+	// room genesis: a consumer answers one per subscribe, and a second it took would be stranded
+	// for defaultMsgTTL when another of its inviter's workers could have answered it. A pool
+	// genesis doesn't stop it, since a rooms-only consumer, or one that needs its room's TURN
+	// servers, ignores those.
+	var recheck <-chan time.Time
+	takeHeld := func() {
+		if _, msg, ok := f.heldGeneses.take(rooms); ok {
+			fmt.Fprintf(w, "%v\n", msg)
+			w.(http.Flusher).Flush()
+			recheck = nil
+		}
+	}
+	if len(rooms) > 0 {
+		ticker := time.NewTicker(heldRecheck)
+		defer ticker.Stop()
+		recheck = ticker.C
+		takeHeld()
+	}
+
 	for {
 		select {
 		case msg := <-consumerChan:
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
+			if recheck != nil && common.IsRoomGenesis([]byte(msg)) {
+				recheck = nil
+			}
+		case <-recheck:
+			takeHeld()
 		case <-timeoutChan:
 			return
 		case <-ctx.Done():
@@ -799,7 +840,7 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		w.Write([]byte("400\n"))
 		return
 	}
-	reply := f.postSignal(ctx, span, r)
+	reply := f.postSignal(ctx, span, r, false)
 	w.WriteHeader(reply.status)
 	if reply.await == nil {
 		w.Write([]byte(reply.body))
@@ -820,6 +861,10 @@ type signalReply struct {
 	// await blocks until the partner replies, the message's TTL ends or done closes, and returns
 	// the reply, or "" for none. It must be called exactly once when set.
 	await func(done <-chan struct{}) string
+	// held says await may wait on a held genesis, longer than any other message waits. The
+	// caller ends its span by defaultMsgTTL, so the span's length doesn't single out a paired
+	// volunteer.
+	held bool
 }
 
 // refused is the signalReply for a message Freddie won't take.
@@ -828,8 +873,9 @@ func refused(status int) signalReply {
 }
 
 // postSignal handles one signaling message, whose fields r.Form holds, as POST /v1/signal
-// describes. r also gives the sender's headers, for its version and country.
-func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request) signalReply {
+// describes. r also gives the sender's headers, for its version and country. viaSocket says it
+// came over a volunteer socket, the one transport that may hold a genesis (see common.HoldField).
+func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request, viaSocket bool) signalReply {
 	reqID := uuid.NewString()
 	span.SetAttributes(attribute.String("request.id", reqID))
 
@@ -875,6 +921,9 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 
 	var offerICE []webrtc.ICEServer
+	// held is the genesis Freddie holds for its rooms' next consumer, if it does.
+	var held *heldGenesis
+	var heldICE []webrtc.ICEServer
 	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
@@ -909,13 +958,31 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			}
 			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
-		matched, outcome := consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+		var matched bool
+		var outcome string
+		// Over a socket, a rooms-only genesis no room consumer is waiting for is held for the next
+		// to subscribe rather than dropped after defaultMsgTTL. A POST can't wait that long behind
+		// the server's and CDNs' timeouts. The pool never sees a held genesis, so only rooms-only
+		// ones are held.
+		if viaSocket && !servePool && len(roomMsgs) > 0 && r.Form.Get(common.HoldField) == "1" {
+			g := &heldGenesis{id: reqID, rooms: roomMsgs, taken: make(chan struct{})}
+			matched = f.heldGeneses.deliverOrHold(g, func() bool {
+				m, _ := consumerTable.DeliverGenesis(string(msg), roomMsgs, false, nil)
+				return m
+			})
+			if !matched {
+				held, heldICE = g, roomICE
+			}
+		} else {
+			matched, outcome = consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+		}
 		if matched {
 			f.roomGeneses.add(reqID)
 			offerICE = roomICE
 		}
-		if len(rooms) > 0 {
-			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched)))
+		// A held genesis is counted once its hold ends, taken or not.
+		if len(rooms) > 0 && held == nil {
+			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched), attribute.Bool("held", false)))
 		}
 		if outcome != "" {
 			f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
@@ -1017,6 +1084,51 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 
 	waiting = true
+	if held != nil {
+		return signalReply{status: http.StatusOK, held: true, await: func(done <-chan struct{}) string {
+			defer signalTable.Delete(reqID)
+			defer f.heldGeneses.release(held)
+			taken := held.taken
+			timeout := time.NewTimer(heldGenesisTTL)
+			defer timeout.Stop()
+			matched := false
+			defer func() {
+				f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched), attribute.Bool("held", true)))
+			}()
+			// Like a delivered room genesis's, a taken one's offer carries the room's ICE servers and
+			// its attempt is a room attempt. Nothing goes on the span, which would single out a
+			// paired volunteer.
+			markTaken := func() {
+				taken, matched = nil, true
+				f.roomGeneses.add(reqID)
+				offerICE = heldICE
+			}
+			for {
+				select {
+				case <-taken:
+					// Its offer has the time a delivered genesis's has.
+					markTaken()
+					timeout.Reset(optimizedTTL)
+				case res := <-reqChan:
+					// An offer can only answer a genesis that was taken, which take closed taken
+					// for first, but the offer may win the select.
+					if taken != nil {
+						select {
+						case <-taken:
+							markTaken()
+						default:
+						}
+					}
+					return withICEServers(res, offerICE)
+				case <-timeout.C:
+					span.AddEvent("timeout waiting for response")
+					return ""
+				case <-done:
+					return ""
+				}
+			}
+		}}
+	}
 	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
 		defer signalTable.Delete(reqID)
 		select {

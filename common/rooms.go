@@ -43,6 +43,15 @@ const (
 	// ignores this field and would broadcast the genesis to everyone.
 	PoolField = "pool"
 
+	// HoldField on a SignalSendToGenesisRooms genesis sent over the
+	// volunteer socket (see VolunteerSocketEndpoint) is "1" when the
+	// producer will wait for an offer: if no consumer in its rooms is
+	// waiting, Freddie holds the genesis for up to 30s and hands it to the
+	// first of them to subscribe, instead of answering empty after 5s.
+	// Freddie ignores it on a POST, and a Freddie that predates it ignores
+	// it everywhere, so the producer gets today's reply either way.
+	HoldField = "hold"
+
 	// MaxRoomTickets bounds how many tickets Freddie verifies per request.
 	// It matches lantern-cloud's limit of 20 pairings per side.
 	MaxRoomTickets = 20

@@ -182,7 +182,22 @@ func (vc *volunteerConn) signal(ctx context.Context, id uint64, form url.Values)
 	case <-vc.closed:
 		return 0, nil, errVolunteerSocketClosed
 	case <-ctx.Done():
+		vc.cancel(id)
 		return 0, nil, ctx.Err()
+	}
+}
+
+// cancel tells Freddie the request with ID id is no longer waited for, so it stops holding it.
+// It's best-effort: a socket that can't take it is closing anyway.
+func (vc *volunteerConn) cancel(id uint64) {
+	b, err := json.Marshal(common.VolunteerRequest{ID: id, Cancel: true})
+	if err != nil {
+		return
+	}
+	writeCtx, cancel := context.WithTimeout(context.Background(), volunteerSocketWriteTimeout)
+	defer cancel()
+	if err := vc.c.Write(writeCtx, websocket.MessageText, b); err != nil {
+		vc.close()
 	}
 }
 

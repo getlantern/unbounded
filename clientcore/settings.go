@@ -135,8 +135,9 @@ type WebRTCOptions struct {
 	VolunteerMapped bool
 	// VolunteerSocket, on a producer, sends its genesis and answer messages to Freddie over one
 	// WebSocket that all its workers share, rather than as a POST each (see
-	// common.VolunteerSocketEndpoint), and POSTs whenever the socket can't be had. The zero value
-	// POSTs, as every release before it did.
+	// common.VolunteerSocketEndpoint), and POSTs whenever the socket can't be had. Its rooms-only
+	// geneses also ask Freddie to hold them for their rooms' next consumer (see common.HoldField).
+	// The zero value POSTs, as every release before it did.
 	VolunteerSocket bool
 }
 

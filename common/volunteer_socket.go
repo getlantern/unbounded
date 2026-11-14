@@ -19,9 +19,14 @@ const VolunteerSocketVersionParam = "version"
 
 // VolunteerRequest is one signaling message over the volunteer socket: the form fields its POST
 // would carry. ID is the volunteer's own, echoed in the reply, so requests can overlap.
+//
+// With Cancel set it carries no message: it ends the request with ID that is still waiting, as
+// hanging up a POST would, so Freddie stops holding a genesis for a worker that has stopped. It
+// gets no reply. A Freddie that predates it refuses it with a 400.
 type VolunteerRequest struct {
-	ID   uint64     `json:"id"`
-	Form url.Values `json:"form"`
+	ID     uint64     `json:"id"`
+	Form   url.Values `json:"form,omitempty"`
+	Cancel bool       `json:"cancel,omitempty"`
 }
 
 // VolunteerReply is Freddie's reply to the VolunteerRequest with the same ID: the status its POST

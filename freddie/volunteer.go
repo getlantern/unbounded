@@ -106,6 +106,9 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 	}()
 
 	inFlight := make(chan struct{}, volunteerMaxInFlight)
+	// cancels ends each request in flight by its ID, for a volunteer that gives up on one.
+	var cancelsMu sync.Mutex
+	cancels := make(map[uint64]context.CancelFunc)
 	for {
 		typ, b, err := c.Read(ctx)
 		if err != nil {
@@ -115,6 +118,14 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 		if typ != websocket.MessageText || json.Unmarshal(b, &req) != nil {
 			c.Close(websocket.StatusUnsupportedData, "expected a JSON volunteer request")
 			return
+		}
+		if req.Cancel {
+			cancelsMu.Lock()
+			if cancelReq, ok := cancels[req.ID]; ok {
+				cancelReq()
+			}
+			cancelsMu.Unlock()
+			continue
 		}
 		if !volunteerMessageTypes[req.Form.Get("type")] {
 			write(common.VolunteerReply{ID: req.ID, Status: http.StatusBadRequest})
@@ -126,10 +137,20 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 			write(common.VolunteerReply{ID: req.ID, Status: http.StatusTooManyRequests})
 			continue
 		}
+		reqCtx, cancelReq := context.WithCancel(ctx)
+		cancelsMu.Lock()
+		cancels[req.ID] = cancelReq
+		cancelsMu.Unlock()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			defer func() { <-inFlight }()
+			defer func() {
+				cancelsMu.Lock()
+				delete(cancels, req.ID)
+				cancelsMu.Unlock()
+				cancelReq()
+			}()
 			// net/http recovers a handler's panics, but not this goroutine's.
 			defer func() {
 				if p := recover(); p != nil {
@@ -137,7 +158,7 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 					write(common.VolunteerReply{ID: req.ID, Status: http.StatusInternalServerError})
 				}
 			}()
-			write(f.volunteerSignal(ctx, r, req))
+			write(f.volunteerSignal(reqCtx, r, req))
 		}()
 	}
 }
@@ -162,8 +183,18 @@ func (f *Freddie) volunteerSignal(ctx context.Context, upgrade *http.Request, re
 	}
 	r := upgrade.Clone(ctx)
 	r.Form, r.PostForm = form, form
-	reply := f.postSignal(ctx, span, r)
+	reply := f.postSignal(ctx, span, r, true)
 	body := reply.body
+	if reply.held {
+		// A held genesis can wait far longer than any other message, so its span ends as an
+		// unanswered genesis's does, at defaultMsgTTL, unless the hold ends first: its length
+		// mustn't single out a paired volunteer.
+		ttl := time.AfterFunc(defaultMsgTTL*time.Second, func() {
+			span.AddEvent("timeout waiting for response")
+			span.End()
+		})
+		defer ttl.Stop()
+	}
 	if reply.await != nil {
 		body = reply.await(ctx.Done())
 	}
