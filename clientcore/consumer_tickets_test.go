@@ -71,3 +71,39 @@ func TestPoolConsumerSubscribesWithoutTickets(t *testing.T) {
 		t.Fatal("a pool consumer without tickets never got through state 1")
 	}
 }
+
+// A rooms-only consumer subscribes with the tickets it waited for, even if its source has none by
+// the time it builds the request.
+func TestRoomsOnlyConsumerSubscribesWithTheTicketsItSaw(t *testing.T) {
+	poll := roomTicketPoll
+	roomTicketPoll = 10 * time.Millisecond
+	t.Cleanup(func() { roomTicketPoll = poll })
+
+	subscribed := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		subscribed <- r.Header.Get(common.RoomTicketsHeader)
+	}))
+	t.Cleanup(srv.Close)
+	// Tickets on the third read only, as if they lapsed right after.
+	var reads atomic.Int32
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.ConsumerRoomsOnly = true
+	o.RoomTicketSource = func() []string {
+		if reads.Add(1) == 3 {
+			return []string{"aa.bb"}
+		}
+		return nil
+	}
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+	pc, _ := newTestPeerConnection(t)
+	go consumerState1(t, fsm, pc)
+	select {
+	case got := <-subscribed:
+		if got != "aa.bb" {
+			t.Errorf("subscribed with tickets %q, want aa.bb", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("never subscribed")
+	}
+}

@@ -228,12 +228,14 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 
-			if !awaitRoomTickets(ctx, options) {
+			tickets, ok := awaitRoomTickets(ctx, options)
+			if !ok {
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
-			// Listen for genesis messages
-			req, err := newSubscribeRequest(ctx, options)
+			// Listen for genesis messages, with the tickets awaitRoomTickets saw: a rooms-only
+			// consumer's might lapse if read again.
+			req, err := subscribeRequest(ctx, options, tickets)
 			if err != nil {
 				slog.Debug("Error constructing request", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -830,12 +832,16 @@ const controlFrameEvery = 10 * time.Second
 // carries the consumer's room tickets in RoomTicketsHeader when it has any,
 // and is otherwise unchanged from releases before rooms.
 func newSubscribeRequest(ctx context.Context, options *WebRTCOptions) (*http.Request, error) {
+	return subscribeRequest(ctx, options, options.CurrentRoomTickets())
+}
+
+// subscribeRequest is newSubscribeRequest carrying tickets.
+func subscribeRequest(ctx context.Context, options *WebRTCOptions, tickets []string) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", options.DiscoverySrv+options.Endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Add(common.VersionHeader, common.Version)
-	tickets := options.CurrentRoomTickets()
 	if len(tickets) > 0 {
 		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
 	}
@@ -846,14 +852,15 @@ func newSubscribeRequest(ctx context.Context, options *WebRTCOptions) (*http.Req
 // roomTicketPoll is how often a rooms-only consumer without room tickets looks for them again.
 var roomTicketPoll = time.Second
 
-// awaitRoomTickets holds a rooms-only consumer that has no room tickets until it has some, and
-// reports false if ctx ends first. Subscribing without them wouldn't put it in its rooms, and it
+// awaitRoomTickets returns the consumer's room tickets, holding a rooms-only consumer that has none
+// until it has some, and reports false if ctx ends first. Subscribing without them wouldn't put it in its rooms, and it
 // ignores every other genesis, so it would sit out a whole long-poll answering nothing: on a
 // fresh start, where a ticket source fetches on its first read, that cost the consumer a long-poll
 // before its first offer. Each read also lets such a source start its fetch.
-func awaitRoomTickets(ctx context.Context, options *WebRTCOptions) bool {
-	if !options.ConsumerRoomsOnly || len(options.CurrentRoomTickets()) > 0 {
-		return true
+func awaitRoomTickets(ctx context.Context, options *WebRTCOptions) ([]string, bool) {
+	tickets := options.CurrentRoomTickets()
+	if !options.ConsumerRoomsOnly || len(tickets) > 0 {
+		return tickets, true
 	}
 	slog.Debug("Rooms-only consumer has no room tickets yet, waiting for them")
 	poll := time.NewTicker(roomTicketPoll)
@@ -861,10 +868,10 @@ func awaitRoomTickets(ctx context.Context, options *WebRTCOptions) bool {
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return nil, false
 		case <-poll.C:
-			if len(options.CurrentRoomTickets()) > 0 {
-				return true
+			if tickets := options.CurrentRoomTickets(); len(tickets) > 0 {
+				return tickets, true
 			}
 		}
 	}
