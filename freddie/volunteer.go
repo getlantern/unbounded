@@ -38,7 +38,11 @@ var volunteerMessageTypes = map[string]bool{
 // Each request runs through postSignal, as its POST would, on its own goroutine, so a genesis
 // waiting for an offer doesn't hold up the others.
 func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) {
-	if !common.IsValidProtocolVersion(&r.Header) {
+	version := r.Header.Get(common.VersionHeader)
+	if version == "" {
+		version = r.URL.Query().Get(common.VolunteerSocketVersionParam)
+	}
+	if !common.IsValidVersion(version) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
 		return
@@ -55,6 +59,10 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 	defer c.CloseNow()
 	c.SetReadLimit(volunteerReadLimit)
 
+	// Deferred before cancel, so cancel runs first on every return and frees the requests still
+	// waiting: a hijacked connection's r.Context() isn't cancelled when the volunteer goes away.
+	var wg sync.WaitGroup
+	defer wg.Wait()
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	f.volunteerSockets.Add(ctx, 1)
@@ -93,12 +101,9 @@ func (f *Freddie) handleVolunteerSocket(w http.ResponseWriter, r *http.Request) 
 	}()
 
 	inFlight := make(chan struct{}, volunteerMaxInFlight)
-	var wg sync.WaitGroup
-	defer wg.Wait()
 	for {
 		typ, b, err := c.Read(ctx)
 		if err != nil {
-			cancel()
 			return
 		}
 		var req common.VolunteerRequest

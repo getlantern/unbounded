@@ -26,7 +26,12 @@ type volunteerSocket struct {
 func (s *testServer) dialVolunteer(version string) (*volunteerSocket, *http.Response, error) {
 	h := http.Header{}
 	h.Set(common.VersionHeader, version)
-	c, res, err := websocket.Dial(s.ctx, "ws"+strings.TrimPrefix(s.url, "http")+common.VolunteerSocketEndpoint,
+	return s.dialVolunteerURL("", h)
+}
+
+// dialVolunteerURL dials the volunteer socket with query appended to its URL and headers h.
+func (s *testServer) dialVolunteerURL(query string, h http.Header) (*volunteerSocket, *http.Response, error) {
+	c, res, err := websocket.Dial(s.ctx, "ws"+strings.TrimPrefix(s.url, "http")+common.VolunteerSocketEndpoint+query,
 		&websocket.DialOptions{HTTPHeader: h})
 	if err != nil {
 		return nil, res, err
@@ -154,4 +159,47 @@ func TestVolunteerSocket_RequestsOverlap(t *testing.T) {
 	assert.Equal(t, uint64(1), r.ID)
 	assert.Equal(t, http.StatusOK, r.Status)
 	assert.Empty(t, r.Body, "no consumer took the genesis")
+}
+
+// A browser, which can't set headers on a WebSocket, sends its version as a query parameter.
+func TestVolunteerSocket_VersionParam(t *testing.T) {
+	s := startTestServer(t, nil)
+	vol, _, err := s.dialVolunteerURL("?"+url.Values{common.VolunteerSocketVersionParam: {common.Version}}.Encode(), nil)
+	require.NoError(t, err)
+	vol.send(4, signalForm("gone", common.SignalMsgAnswer, "answer-sdp"))
+	assert.Equal(t, http.StatusNotFound, vol.reply().Status)
+
+	_, res, err := s.dialVolunteerURL("?"+url.Values{common.VolunteerSocketVersionParam: {"v1.0.0"}}.Encode(), nil)
+	require.Error(t, err)
+	require.NotNil(t, res)
+	assert.Equal(t, http.StatusTeapot, res.StatusCode)
+}
+
+// A socket closed for a malformed frame frees the genesis it had waiting, so the consumer's offer
+// is refused at once rather than delivered to a volunteer that's gone.
+func TestVolunteerSocket_BadFrameFreesRequests(t *testing.T) {
+	s := startTestServer(t, nil)
+	consumer := s.subscribe("", "")
+	s.waitForConsumers(1)
+	vol, _, err := s.dialVolunteer(common.Version)
+	require.NoError(t, err)
+
+	vol.send(1, signalForm(common.SignalSendToGenesis, common.SignalMsgGenesis, "{}"))
+	var genesis common.SignalMsg
+	select {
+	case raw := <-consumer:
+		require.NoError(t, json.Unmarshal([]byte(raw), &genesis))
+	case <-time.After(5 * time.Second):
+		t.Fatal("the genesis never reached the consumer")
+	}
+	require.NoError(t, vol.c.Write(context.Background(), websocket.MessageBinary, []byte("junk")))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, err = vol.c.Read(ctx)
+	require.Equal(t, websocket.StatusUnsupportedData, websocket.CloseStatus(err))
+
+	require.Eventually(t, func() bool {
+		status, _ := s.post(genesis.ReplyTo, common.SignalMsgOffer, "offer-sdp", nil)
+		return status == http.StatusNotFound
+	}, 2*time.Second, 50*time.Millisecond, "the offer still found the closed socket's genesis waiting")
 }

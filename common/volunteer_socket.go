@@ -13,6 +13,10 @@ import "net/url"
 // VolunteerSocketEndpoint is the path of Freddie's volunteer WebSocket.
 const VolunteerSocketEndpoint = "/v1/volunteer"
 
+// VolunteerSocketVersionParam is the query parameter that carries the volunteer's protocol
+// version, as VersionHeader does, for a browser, which can't set headers on a WebSocket.
+const VolunteerSocketVersionParam = "version"
+
 // VolunteerRequest is one signaling message over the volunteer socket: the form fields its POST
 // would carry. ID is the volunteer's own, echoed in the reply, so requests can overlap.
 type VolunteerRequest struct {
