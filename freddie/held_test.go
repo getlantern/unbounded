@@ -165,6 +165,10 @@ func TestHeldGenesis_OnlyRoomsOnlyOverSocket(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	assert.Zero(t, s.f.heldGeneses.size())
 	<-posted
+	// Wait out both geneses' replies, so their handlers are done with the consumer table before
+	// the next test replaces it: closing the server doesn't wait for a socket's handlers.
+	vol.reply()
+	vol.reply()
 }
 
 // A held genesis no one takes is answered empty once heldGenesisTTL ends, and stops being held.

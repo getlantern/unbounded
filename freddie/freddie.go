@@ -1030,6 +1030,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		}
 		var matched bool
 		var outcome string
+		// Read once, so a re-offer goes through the table the genesis was first offered through.
+		table := consumerTable
 		// Over a socket, a rooms-only genesis no room consumer is waiting for is held for the next
 		// to subscribe rather than dropped after defaultMsgTTL. A POST can't wait that long behind
 		// the server's and CDNs' timeouts. The pool never sees a held genesis, so only rooms-only
@@ -1037,22 +1039,22 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		if viaSocket && !servePool && len(roomMsgs) > 0 && r.Form.Get(common.HoldField) == "1" {
 			g := &heldGenesis{id: reqID, rooms: roomMsgs, taken: make(chan struct{})}
 			matched = f.heldGeneses.deliverOrHold(g, func() bool {
-				m, _ := consumerTable.DeliverGenesis(string(msg), roomMsgs, false, nil)
+				m, _ := table.DeliverGenesis(string(msg), roomMsgs, false, nil)
 				return m
 			})
 			if !matched {
 				held, heldICE = g, roomICE
 			}
 		} else {
-			matched, outcome = consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+			matched, outcome = table.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
 			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
 			// one keeps it to itself, as outcome is then "".
 			// It's offered with the limit it was first offered with, so turning the cap off doesn't
 			// turn the re-offers of geneses already waiting into broadcasts to everyone. A consumer
 			// in the genesis's rooms that subscribes later gets the pool message, as any other.
-			if limit := int(consumerTable.fanout.Load()); outcome != "" && limit > 0 {
+			if limit := int(table.fanout.Load()); outcome != "" && limit > 0 {
 				genesis := string(msg)
-				reoffer = func() { consumerTable.broadcastGenesis(genesis, targets, limit) }
+				reoffer = func() { table.broadcastGenesis(genesis, targets, limit) }
 			}
 		}
 		if matched {
@@ -1210,14 +1212,15 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
 		defer signalTable.Delete(reqID)
+		// No re-offer in the TTL's last interval: its consumers' offers would come too late. Taken
+		// before the ticker starts, so the tick that ends that interval is always past it.
+		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
 		var again <-chan time.Time
 		if reoffer != nil {
 			ticker := time.NewTicker(genesisReofferInterval)
 			defer ticker.Stop()
 			again = ticker.C
 		}
-		// No re-offer in the TTL's last interval: its consumers' offers would come too late.
-		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
 		timeout := time.NewTimer(optimizedTTL)
 		defer timeout.Stop()
 		for {
