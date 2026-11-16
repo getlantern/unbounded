@@ -116,8 +116,7 @@ func TestConsumerIndex_GenesisFanout(t *testing.T) {
 	}
 
 	// A capped genesis targeting two countries reaches the second as well as the first.
-	var ru []chan string
-	ru = all[len(ir):]
+	ru := all[len(ir):]
 	ruReached := false
 	for range 20 {
 		idx.BroadcastGenesis("m", []string{"IR", "RU"})
@@ -609,7 +608,25 @@ func TestGenesisReofferedUntilAnswered(t *testing.T) {
 		consumers = append(consumers, s.subscribe("", ""))
 	}
 	s.waitForConsumers(12)
-	s.genesis(nil)
+	// The producer waits for an offer, as a real one does: one that hangs up isn't re-offered.
+	ctx, cancel := context.WithTimeout(s.ctx, 3*genesisReofferInterval)
+	defer cancel()
+	form := url.Values{
+		"data":    {"{}"},
+		"send-to": {common.SignalSendToGenesis},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/v1/signal", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(common.VersionHeader, common.Version)
+	go func() {
+		if res, err := http.DefaultClient.Do(req); err == nil {
+			res.Body.Close()
+		}
+	}()
 	reached := func() int {
 		n := 0
 		for _, c := range consumers {

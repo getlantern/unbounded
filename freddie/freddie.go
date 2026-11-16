@@ -289,7 +289,11 @@ func (t *consumerIndex) broadcastUpTo(msg string, limit int) {
 // consumer answers one genesis and the first answer wins, so the rest only cost Freddie a write
 // each and the consumers a refused offer, which uncapped is hundreds per answered genesis.
 func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
-	limit := int(t.fanout.Load())
+	return t.broadcastGenesis(msg, targets, int(t.fanout.Load()))
+}
+
+// broadcastGenesis is BroadcastGenesis with the fanout limit given.
+func (t *consumerIndex) broadcastGenesis(msg string, targets []string, limit int) string {
 	if len(targets) == 0 {
 		t.broadcastUpTo(msg, limit)
 		return genesisUntargeted
@@ -909,7 +913,8 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		w.Write([]byte(reply.body))
 		return
 	}
-	if res := reply.await(nil); res != "" {
+	// A producer that hangs up stops waiting, so a genesis it left isn't offered again.
+	if res := reply.await(ctx.Done()); res != "" {
 		fmt.Fprintf(w, "%v\n", res)
 		return
 	}
@@ -1042,9 +1047,12 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			matched, outcome = consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
 			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
 			// one keeps it to itself, as outcome is then "".
-			if outcome != "" && consumerTable.fanout.Load() > 0 {
+			// It's offered with the limit it was first offered with, so turning the cap off doesn't
+			// turn the re-offers of geneses already waiting into broadcasts to everyone. A consumer
+			// in the genesis's rooms that subscribes later gets the pool message, as any other.
+			if limit := int(consumerTable.fanout.Load()); outcome != "" && limit > 0 {
 				genesis := string(msg)
-				reoffer = func() { consumerTable.BroadcastGenesis(genesis, targets) }
+				reoffer = func() { consumerTable.broadcastGenesis(genesis, targets, limit) }
 			}
 		}
 		if matched {
@@ -1208,14 +1216,18 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			defer ticker.Stop()
 			again = ticker.C
 		}
+		// No re-offer in the TTL's last interval: its consumers' offers would come too late.
+		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
 		timeout := time.NewTimer(optimizedTTL)
 		defer timeout.Stop()
 		for {
 			select {
 			case res := <-reqChan:
 				return withICEServers(res, offerICE)
-			case <-again:
-				reoffer()
+			case now := <-again:
+				if now.Before(lastReoffer) {
+					reoffer()
+				}
 			case <-timeout.C:
 				span.AddEvent("timeout waiting for response")
 				return ""
