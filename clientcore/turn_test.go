@@ -867,3 +867,24 @@ func TestRoomProducerWithEmptySTUNListPosts(t *testing.T) {
 		t.Fatalf("after the backoff, state 2 went to state %d, want 0", next)
 	}
 }
+
+func TestCandidateCounts(t *testing.T) {
+	cands := []webrtc.ICECandidate{
+		{Typ: webrtc.ICECandidateTypeHost, Address: "192.0.2.1", Port: 1},
+		{Typ: webrtc.ICECandidateTypeHost, Address: "192.0.2.2", Port: 2},
+		{Typ: webrtc.ICECandidateTypeSrflx, Address: "198.51.100.1", Port: 3},
+		{Typ: webrtc.ICECandidateTypeRelay, Address: "203.0.113.1", Port: 4},
+	}
+	got := candidateCounts(cands)
+	if got != "host=2 srflx=1 prflx=0 relay=1" {
+		t.Fatalf("candidateCounts = %q", got)
+	}
+	for _, c := range cands {
+		if strings.Contains(got, c.Address) {
+			t.Fatalf("counts %q name an address", got)
+		}
+	}
+	if got := candidateCounts(nil); got != "host=0 srflx=0 prflx=0 relay=0" {
+		t.Fatalf("candidateCounts(nil) = %q", got)
+	}
+}

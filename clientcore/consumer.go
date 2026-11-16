@@ -528,7 +528,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
 			}
 			candidates := gathered.snapshot()
-			slog.Debug("Local candidates", "candidates", candidates)
+			slog.Debug("Local candidates", "counts", candidateCounts(candidates))
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.

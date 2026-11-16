@@ -1,6 +1,7 @@
 package clientcore
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -58,6 +59,25 @@ func (g *candidateLog) snapshot() []webrtc.ICECandidate {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]webrtc.ICECandidate(nil), g.cands...)
+}
+
+// candidateCounts is cands as counts by type, in a fixed order and with no addresses, for logs. Every
+// type is listed even at zero, so a log always shows whether a TURN server gave a relay candidate.
+func candidateCounts(cands []webrtc.ICECandidate) string {
+	var host, srflx, prflx, relay int
+	for _, c := range cands {
+		switch c.Typ {
+		case webrtc.ICECandidateTypeHost:
+			host++
+		case webrtc.ICECandidateTypeSrflx:
+			srflx++
+		case webrtc.ICECandidateTypePrflx:
+			prflx++
+		case webrtc.ICECandidateTypeRelay:
+			relay++
+		}
+	}
+	return fmt.Sprintf("host=%d srflx=%d prflx=%d relay=%d", host, srflx, prflx, relay)
 }
 
 // selectedPairTypes is pc's selected candidate pair as common.PairTypes, its local end first, or ""

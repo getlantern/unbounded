@@ -415,7 +415,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
 			}
 			localCandidates := gathered.snapshot()
-			slog.Debug("Local candidates", "candidates", localCandidates)
+			slog.Debug("Local candidates", "counts", candidateCounts(localCandidates))
 			last.gathered(len(iceServers) > 0, localCandidates, completed)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
