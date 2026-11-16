@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -45,6 +46,12 @@ const (
 	defaultMsgTTL         = 5
 	remoteICEGatheringTTL = 15
 )
+
+// genesisReofferInterval is how long a capped pool genesis waits for an offer before Freddie offers
+// it to another sample of waiting consumers (see Freddie.SetGenesisFanout). A consumer offers about
+// half a second after it takes a genesis, so a sample that would answer usually has by then, and a
+// volunteer's genesis reaches a fresh sample each interval until one does or defaultMsgTTL ends.
+const genesisReofferInterval = time.Second
 
 var (
 	consumerTable = newConsumerIndex(0)
@@ -223,18 +230,23 @@ func (t *consumerIndex) Delete(userID string) {
 }
 
 // broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to the users
-// indexed under one of countries, stopping once max have taken it if max is positive. It returns
-// the number of users the message was delivered to.
-func (t *consumerIndex) broadcastToCountries(msg string, countries []string, max int) int {
+// indexed under one of countries, stopping once limit have taken it if limit is positive. It
+// returns the number of users the message was delivered to. A capped message starts at a random
+// one of countries, so a producer's later targets aren't starved by its first.
+func (t *consumerIndex) broadcastToCountries(msg string, countries []string, limit int) int {
 	t.RLock()
 	defer t.RUnlock()
 	delivered := 0
-	for _, country := range countries {
-		for userID := range t.byCountry[country] {
+	start := 0
+	if limit > 0 && len(countries) > 1 {
+		start = rand.IntN(len(countries))
+	}
+	for i := range countries {
+		for userID := range t.byCountry[countries[(start+i)%len(countries)]] {
 			select {
 			case t.Data[userID] <- msg:
 				delivered++
-				if delivered == max {
+				if delivered == limit {
 					return delivered
 				}
 			default:
@@ -244,11 +256,11 @@ func (t *consumerIndex) broadcastToCountries(msg string, countries []string, max
 	return delivered
 }
 
-// broadcastUpTo is Broadcast, stopping once max users have taken msg if max is positive. Map
-// order varies from one range to the next, so a capped message goes to a different sample of the
-// waiting users each time.
-func (t *consumerIndex) broadcastUpTo(msg string, max int) {
-	if max <= 0 {
+// broadcastUpTo is Broadcast, stopping once limit users have taken msg if limit is positive.
+// Each range over a map starts at a random point, so a capped message goes to the waiting users
+// after a different one each time.
+func (t *consumerIndex) broadcastUpTo(msg string, limit int) {
+	if limit <= 0 {
 		t.Broadcast(msg)
 		return
 	}
@@ -259,7 +271,7 @@ func (t *consumerIndex) broadcastUpTo(msg string, max int) {
 		select {
 		case userChan <- msg:
 			delivered++
-			if delivered == max {
+			if delivered == limit {
 				return
 			}
 		default:
@@ -269,23 +281,23 @@ func (t *consumerIndex) broadcastUpTo(msg string, max int) {
 
 // BroadcastGenesis broadcasts a genesis message, preferring consumers from targets. If any waiting
 // consumer from a target country takes the message, nobody else gets it; otherwise it falls back to
-// a plain Broadcast to everyone. Targeting is a preference, not a filter: a producer who targets a
+// everyone. Targeting is a preference, not a filter: a producer who targets a
 // country with no waiting consumers must keep receiving offers rather than sit idle. Returns which
 // of the genesis* outcomes occurred.
 //
 // With a fanout set, each step stops once that many waiting consumers have taken the message. A
 // consumer answers one genesis and the first answer wins, so the rest only cost Freddie a write
-// each and the consumers a refused offer: about 330 refused offers per answered genesis, uncapped.
+// each and the consumers a refused offer, which uncapped is hundreds per answered genesis.
 func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
-	max := int(t.fanout.Load())
+	limit := int(t.fanout.Load())
 	if len(targets) == 0 {
-		t.broadcastUpTo(msg, max)
+		t.broadcastUpTo(msg, limit)
 		return genesisUntargeted
 	}
-	if t.broadcastToCountries(msg, targets, max) > 0 {
+	if t.broadcastToCountries(msg, targets, limit) > 0 {
 		return genesisMatched
 	}
-	t.broadcastUpTo(msg, max)
+	t.broadcastUpTo(msg, limit)
 	return genesisFallback
 }
 
@@ -975,6 +987,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	// held is the genesis Freddie holds for its rooms' next consumer, if it does.
 	var held *heldGenesis
 	var heldICE []webrtc.ICEServer
+	// reoffer, if set, offers a capped pool genesis to another sample of waiting consumers.
+	var reoffer func()
 	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
@@ -1026,6 +1040,12 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			}
 		} else {
 			matched, outcome = consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
+			// one keeps it to itself, as outcome is then "".
+			if outcome != "" && consumerTable.fanout.Load() > 0 {
+				genesis := string(msg)
+				reoffer = func() { consumerTable.BroadcastGenesis(genesis, targets) }
+			}
 		}
 		if matched {
 			f.roomGeneses.add(reqID)
@@ -1182,14 +1202,26 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
 		defer signalTable.Delete(reqID)
-		select {
-		case res := <-reqChan:
-			return withICEServers(res, offerICE)
-		case <-time.After(optimizedTTL):
-			span.AddEvent("timeout waiting for response")
-			return ""
-		case <-done:
-			return ""
+		var again <-chan time.Time
+		if reoffer != nil {
+			ticker := time.NewTicker(genesisReofferInterval)
+			defer ticker.Stop()
+			again = ticker.C
+		}
+		timeout := time.NewTimer(optimizedTTL)
+		defer timeout.Stop()
+		for {
+			select {
+			case res := <-reqChan:
+				return withICEServers(res, offerICE)
+			case <-again:
+				reoffer()
+			case <-timeout.C:
+				span.AddEvent("timeout waiting for response")
+				return ""
+			case <-done:
+				return ""
+			}
 		}
 	}}
 }

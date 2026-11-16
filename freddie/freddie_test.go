@@ -115,6 +115,21 @@ func TestConsumerIndex_GenesisFanout(t *testing.T) {
 		t.Errorf("20 capped geneses all went to the same %d consumers", len(reached))
 	}
 
+	// A capped genesis targeting two countries reaches the second as well as the first.
+	var ru []chan string
+	ru = all[len(ir):]
+	ruReached := false
+	for range 20 {
+		idx.BroadcastGenesis("m", []string{"IR", "RU"})
+		if took(ru) > 0 {
+			ruReached = true
+		}
+		took(ir)
+	}
+	if !ruReached {
+		t.Error("20 capped geneses targeting IR,RU never reached an RU consumer")
+	}
+
 	idx.fanout.Store(0)
 	idx.BroadcastGenesis("m", []string{"IR"})
 	if n := took(ir); n != len(ir) {
@@ -580,5 +595,38 @@ func TestConsumerIndex_DeleteCleansRooms(t *testing.T) {
 	if idx.Size() != 0 || len(idx.rooms) != 0 || len(idx.byRoom) != 0 || len(idx.byCountry) != 0 {
 		t.Errorf("index not empty after deleting everyone: size=%d rooms=%d byRoom=%d byCountry=%d",
 			idx.Size(), len(idx.rooms), len(idx.byRoom), len(idx.byCountry))
+	}
+}
+
+// TestGenesisReofferedUntilAnswered: a capped pool genesis no consumer answers is offered to
+// another sample each genesisReofferInterval, so a volunteer's genesis keeps reaching consumers
+// rather than waiting out its TTL with the first few.
+func TestGenesisReofferedUntilAnswered(t *testing.T) {
+	s := startTestServer(t, func(*http.Request) string { return "" })
+	s.f.SetGenesisFanout(2)
+	var consumers []chan string
+	for range 12 {
+		consumers = append(consumers, s.subscribe("", ""))
+	}
+	s.waitForConsumers(12)
+	s.genesis(nil)
+	reached := func() int {
+		n := 0
+		for _, c := range consumers {
+			select {
+			case <-c:
+				n++
+			default:
+			}
+		}
+		return n
+	}
+	time.Sleep(genesisReofferInterval / 2)
+	if n := reached(); n != 2 {
+		t.Fatalf("the first offer reached %d consumers, want the fanout of 2", n)
+	}
+	time.Sleep(genesisReofferInterval * 2)
+	if n := reached(); n < 2 {
+		t.Fatalf("no consumer was offered the unanswered genesis again (%d reached)", n)
 	}
 }
