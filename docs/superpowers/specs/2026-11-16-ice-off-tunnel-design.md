@@ -84,7 +84,9 @@ address, port or hostname is logged.
 
 - A failed lookup returns the error to pion, which drops that ICE server, as it does today.
 - An interface listing that fails returns the error, as `stdnet` does.
-- Nothing logs an IP, a hostname from an ICE server URL, a key or a credential.
+- Nothing this change adds logs an IP, a hostname from an ICE server URL, a key or a credential.
+  sing-box's DNS router logs each lookup it serves, including these, as it does every app's;
+  radiance's log handler redacts domains and addresses in sing-box's lines.
 
 ## Testing
 

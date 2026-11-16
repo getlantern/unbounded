@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Nothing logs or returns in an error an IP, a port, a hostname from an ICE server URL, a key or a credential.
+- Nothing this change adds logs or returns in an error an IP, a port, a hostname from an ICE server URL, a key or a credential. sing-box's DNS router logs each lookup it serves, as it does every app's; radiance's log handler redacts domains and addresses in sing-box's lines.
 - With no VPN running (no sing-box context, or one without the service), every change behaves exactly as today.
 - Each repo's change is its own PR, created with `/create-pr`; the order is broflake, lantern-box, radiance.
 - After any `go get`, run `go mod tidy` and commit `go.mod` and `go.sum` together in the same commit as the bump.
