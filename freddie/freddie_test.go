@@ -3,6 +3,7 @@ package freddie
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +62,63 @@ func TestConsumerIndex_BroadcastGenesis(t *testing.T) {
 	}
 	if !received(ru) || received(ir) || received(anon) {
 		t.Error("multi-country targeting should reach only the RU consumer")
+	}
+}
+
+// TestConsumerIndex_GenesisFanout: with a fanout set, a pool genesis goes to at most that many
+// waiting consumers, among its target countries and in the fallback, and to a varying sample of
+// them; with none set it goes to all.
+func TestConsumerIndex_GenesisFanout(t *testing.T) {
+	idx := newConsumerIndex(1)
+	var ir, all []chan string
+	for i := range 20 {
+		c := idx.AddWithCountry(fmt.Sprintf("ir%d", i), "IR")
+		ir = append(ir, c)
+		all = append(all, c)
+	}
+	for i := range 20 {
+		all = append(all, idx.AddWithCountry(fmt.Sprintf("ru%d", i), "RU"))
+	}
+	took := func(cs []chan string) int {
+		n := 0
+		for _, c := range cs {
+			if received(c) {
+				n++
+			}
+		}
+		return n
+	}
+
+	idx.fanout.Store(3)
+	if got := idx.BroadcastGenesis("m", []string{"IR"}); got != genesisMatched {
+		t.Fatalf("targeted IR: got %q, want %q", got, genesisMatched)
+	}
+	if n := took(all); n != 3 {
+		t.Errorf("a targeted genesis reached %d consumers, want 3", n)
+	}
+	if got := idx.BroadcastGenesis("m", []string{"CN"}); got != genesisFallback {
+		t.Fatalf("targeted CN: got %q, want %q", got, genesisFallback)
+	}
+	if n := took(all); n != 3 {
+		t.Errorf("a fallback genesis reached %d consumers, want 3", n)
+	}
+	reached := make(map[chan string]bool)
+	for range 20 {
+		idx.BroadcastGenesis("m", nil)
+		for _, c := range all {
+			if received(c) {
+				reached[c] = true
+			}
+		}
+	}
+	if len(reached) <= 3 {
+		t.Errorf("20 capped geneses all went to the same %d consumers", len(reached))
+	}
+
+	idx.fanout.Store(0)
+	idx.BroadcastGenesis("m", []string{"IR"})
+	if n := took(ir); n != len(ir) {
+		t.Errorf("uncapped, a targeted genesis reached %d of %d IR consumers", n, len(ir))
 	}
 }
 

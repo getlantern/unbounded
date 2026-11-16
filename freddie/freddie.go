@@ -151,6 +151,9 @@ type consumerIndex struct {
 	byCountry map[string]map[string]struct{} // country -> set of userIDs
 	rooms     map[string][]string            // userID -> rooms, only for users in at least one
 	byRoom    map[string]map[string]struct{} // room -> set of userIDs
+	// fanout, when positive, is how many waiting consumers a pool genesis goes to, at most (see
+	// BroadcastGenesis). Zero sends it to all of them.
+	fanout atomic.Int64
 }
 
 func newConsumerIndex(bufferSz int) *consumerIndex {
@@ -219,9 +222,10 @@ func (t *consumerIndex) Delete(userID string) {
 	delete(t.rooms, userID)
 }
 
-// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to every user
-// indexed under one of countries. It returns the number of users the message was delivered to.
-func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int {
+// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to the users
+// indexed under one of countries, stopping once max have taken it if max is positive. It returns
+// the number of users the message was delivered to.
+func (t *consumerIndex) broadcastToCountries(msg string, countries []string, max int) int {
 	t.RLock()
 	defer t.RUnlock()
 	delivered := 0
@@ -230,6 +234,9 @@ func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int
 			select {
 			case t.Data[userID] <- msg:
 				delivered++
+				if delivered == max {
+					return delivered
+				}
 			default:
 			}
 		}
@@ -237,20 +244,48 @@ func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int
 	return delivered
 }
 
+// broadcastUpTo is Broadcast, stopping once max users have taken msg if max is positive. Map
+// order varies from one range to the next, so a capped message goes to a different sample of the
+// waiting users each time.
+func (t *consumerIndex) broadcastUpTo(msg string, max int) {
+	if max <= 0 {
+		t.Broadcast(msg)
+		return
+	}
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	for _, userChan := range t.Data {
+		select {
+		case userChan <- msg:
+			delivered++
+			if delivered == max {
+				return
+			}
+		default:
+		}
+	}
+}
+
 // BroadcastGenesis broadcasts a genesis message, preferring consumers from targets. If any waiting
 // consumer from a target country takes the message, nobody else gets it; otherwise it falls back to
 // a plain Broadcast to everyone. Targeting is a preference, not a filter: a producer who targets a
 // country with no waiting consumers must keep receiving offers rather than sit idle. Returns which
 // of the genesis* outcomes occurred.
+//
+// With a fanout set, each step stops once that many waiting consumers have taken the message. A
+// consumer answers one genesis and the first answer wins, so the rest only cost Freddie a write
+// each and the consumers a refused offer: about 330 refused offers per answered genesis, uncapped.
 func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
+	max := int(t.fanout.Load())
 	if len(targets) == 0 {
-		t.Broadcast(msg)
+		t.broadcastUpTo(msg, max)
 		return genesisUntargeted
 	}
-	if t.broadcastToCountries(msg, targets) > 0 {
+	if t.broadcastToCountries(msg, targets, max) > 0 {
 		return genesisMatched
 	}
-	t.Broadcast(msg)
+	t.broadcastUpTo(msg, max)
 	return genesisFallback
 }
 
@@ -473,7 +508,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	}
 
 	f.consumerSubs, err = f.meter.Int64Counter("freddie.consumer.subscribes",
-		metric.WithDescription("consumers subscribed to the genesis stream, by whether their country is known"),
+		metric.WithDescription("consumers subscribed to the genesis stream, by country (\"unknown\" when it isn't known) and consumer version"),
 		metric.WithUnit("subscription"))
 	if err != nil {
 		return nil, err
@@ -539,6 +574,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	mux.HandleFunc("GET "+common.VolunteerSocketEndpoint, f.handleVolunteerSocket)
 
 	return &f, nil
+}
+
+// SetGenesisFanout caps how many waiting consumers each pool genesis goes to, both among its
+// target countries and in the fallback to everyone. Zero, the default, sends it to all of them. A
+// room genesis isn't capped: it goes only to its room's consumers. Safe to call while serving.
+func (f *Freddie) SetGenesisFanout(n int) {
+	consumerTable.fanout.Store(int64(max(n, 0)))
 }
 
 func (f *Freddie) ListenAndServe() error {
@@ -765,7 +807,16 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	if f.ConsumerCountry != nil {
 		country = common.NormalizeCountry(f.ConsumerCountry(r))
 	}
-	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(attribute.Bool("country_known", country != "")))
+	// Both are normalized onto fixed sets, so a request can't mint label values.
+	countryLabel := country
+	if countryLabel == "" {
+		countryLabel = "unknown"
+	}
+	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(
+		attribute.Bool("country_known", country != ""),
+		attribute.String("country", countryLabel),
+		attribute.String("consumer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
+	))
 	span.SetAttributes(
 		attribute.String("consumer.id", consumerID),
 		attribute.String("consumer.country", country),
