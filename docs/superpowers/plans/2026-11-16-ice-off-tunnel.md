@@ -46,7 +46,7 @@
 **Interfaces:**
 - Produces: `func candidateCounts(cands []webrtc.ICECandidate) string` (package-private).
 
-- [ ] **Step 1: Write the failing test** (append to `clientcore/turn_test.go`)
+- [x] **Step 1: Write the failing test** (append to `clientcore/turn_test.go`)
 
 ```go
 func TestCandidateCounts(t *testing.T) {
@@ -73,12 +73,12 @@ func TestCandidateCounts(t *testing.T) {
 
 Add `"strings"` to the test file's imports if it isn't there.
 
-- [ ] **Step 2: Run it to see it fail**
+- [x] **Step 2: Run it to see it fail**
 
 Run: `go test ./clientcore/ -run TestCandidateCounts`
 Expected: FAIL, `undefined: candidateCounts`.
 
-- [ ] **Step 3: Implement** (in `clientcore/turn.go`, after `snapshot`; add `"fmt"` to imports)
+- [x] **Step 3: Implement** (in `clientcore/turn.go`, after `snapshot`; add `"fmt"` to imports)
 
 ```go
 // candidateCounts is cands as counts by type, in a fixed order and with no addresses, for logs. Every
@@ -112,12 +112,12 @@ Then replace the two log lines:
 			slog.Debug("Local candidates", "counts", candidateCounts(localCandidates))
 ```
 
-- [ ] **Step 4: Run the tests**
+- [x] **Step 4: Run the tests**
 
 Run: `go test -race ./clientcore/ && go vet ./clientcore/ && GOOS=js GOARCH=wasm go vet ./clientcore/`
 Expected: PASS, vet clean on both targets.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add clientcore/turn.go clientcore/turn_test.go clientcore/consumer.go clientcore/producer.go

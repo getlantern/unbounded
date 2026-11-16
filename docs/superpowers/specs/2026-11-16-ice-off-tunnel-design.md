@@ -52,8 +52,13 @@ runs.
   sing-box's `adapter.DNSRouter.Lookup` with `DNSQueryOptions.Transport` set to the
   `DNSTransportManager`'s default transport. A set transport skips the DNS rules, and so the
   fake-IP rule; radiance's default (`dns_local`) is DoH, which sing-box dials around the tunnel. If
-  the default is the fake-IP transport, or no router is on ctx, or the address is already a literal,
-  it falls back to `stdnet` as today. Lookups are bounded by the caller's timeout or 5s.
+  no router is on ctx (no VPN), or the address is already a literal, it falls back to `stdnet` as
+  today. sing-box refuses a fake-IP default server at startup, so the fake-IP check on the default is
+  only defensive. Lookups are bounded by the caller's timeout or 5s.
+  - **Known limitation:** this keeps a lookup off the tunnel only if the box's default server is
+    dialed around it. A remote server (DoH, DoT, UDP or TCP to an address) is dialed by sing-box's
+    protected dialer. A box whose default is the `local` (system) resolver is not covered. radiance
+    doesn't configure one.
 
 The protected Net is exported from lantern-box as `unbounded.NewProtectedNet(ctx context.Context)
 (transport.Net, error)`, which `NewOutbound` uses in place of its own construction for the consumer.
@@ -62,16 +67,17 @@ outbound. The volunteer service (`volunteer.go`) runs on servers with no tunnel 
 
 ### radiance: the widget uses it
 
-`unbounded/unbounded.go`'s widget sets `rtcOpt.Net` to `unbounded.NewProtectedNet(boxCtx)` when the
-VPN is running, where `boxCtx` is the running tunnel's sing-box context. When the VPN isn't running
-it leaves `rtcOpt.Net` nil, as today. A widget started before the VPN keeps its Net until its next
-restart. The widget already restarts on config and ticket changes; if it doesn't restart when the
-VPN connects or disconnects, it starts doing so, so it never keeps a Net built on a stopped box.
+`unbounded/unbounded.go`'s widget sets `rtcOpt.Net` to a `tunnelNet`, which looks up the running
+tunnel's sing-box context on every call. While a tunnel runs, each call goes to
+`unbounded.NewProtectedNet(boxCtx)`, built once per tunnel. With no tunnel, each call goes to a
+fresh host-stack Net, as pion uses today. The widget doesn't restart when the VPN connects or
+disconnects: new sockets follow the tunnel, and an attempt already under way keeps the sockets it
+opened until it ends.
 
 ### broflake: candidate counts
 
 The consumer's and producer's `Local candidates` debug lines, now `REDACTED`, become counts by
-candidate type and network, for example `host_udp=2 srflx_udp=1 relay_udp=1 relay_tcp=0`. No
+candidate type, for example `host=2 srflx=1 prflx=0 relay=1`. Every type is listed even at zero. No
 address, port or hostname is logged.
 
 ## Error handling
@@ -85,8 +91,9 @@ address, port or hostname is logged.
 - **lantern-box:** unit tests with a fake NetworkManager and interface monitor: the registered
   tunnel interface is omitted, others kept, nothing omitted without a monitor. Lookups go through a
   fake DNSRouter with the default transport, fall back without one, and pass literals through.
-- **radiance:** a unit test that the widget gets a protected Net with the VPN on and nil with it off,
-  through the existing `newWidget` seam.
+- **radiance:** unit tests that `tunnelNet` uses the protected Net while a tunnel runs, a new one per
+  tunnel, and the host stack with none, and that the widget gets a `tunnelNet` through the existing
+  `newWidget` seam.
 - **broflake:** a unit test for the count formatting from a fixed candidate list.
 - **End to end:** two macOS machines on nightlies with these changes, both VPNs on, the consumer
   in manual mode on the personal proxy. The room pairing connects, and the logs show a relay
