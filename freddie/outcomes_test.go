@@ -11,8 +11,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace/noop"
 
 	"github.com/getlantern/broflake/common"
@@ -319,41 +317,20 @@ func testCounter(t *testing.T, name string) (metric.Int64Counter, sdkmetric.Read
 	return c, reader
 }
 
-func TestRecordGenesisReoffer_CountsByTargetingAndMarksSpan(t *testing.T) {
+func TestRecordGenesisReoffer_CountsByTargeting(t *testing.T) {
 	f, err := New(context.Background(), "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var reader sdkmetric.Reader
 	f.genesisReoffers, reader = testCounter(t, "freddie.genesis.reoffers")
-	spans := tracetest.NewSpanRecorder()
-	_, span := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)).Tracer("test").Start(context.Background(), "genesis")
-	f.recordGenesisReoffer(context.Background(), span, 1, genesisMatched)
-	f.recordGenesisReoffer(context.Background(), span, 2, genesisFallback)
-	f.recordGenesisReoffer(context.Background(), span, 3, genesisFallback)
-	span.End()
+	f.recordGenesisReoffer(context.Background(), genesisMatched)
+	f.recordGenesisReoffer(context.Background(), genesisFallback)
+	f.recordGenesisReoffer(context.Background(), genesisFallback)
 
 	got := sumByLabels(t, reader, "targeting")
 	if got[genesisMatched] != 1 || got[genesisFallback] != 2 || len(got) != 2 {
 		t.Errorf("re-offers by targeting = %v, want matched=1 fallback=2", got)
-	}
-	ended := spans.Ended()
-	if len(ended) != 1 {
-		t.Fatalf("%d spans ended, want 1", len(ended))
-	}
-	var attempts []int64
-	for _, ev := range ended[0].Events() {
-		if ev.Name != "genesis re-offered" {
-			continue
-		}
-		for _, kv := range ev.Attributes {
-			if kv.Key == "attempt" {
-				attempts = append(attempts, kv.Value.AsInt64())
-			}
-		}
-	}
-	if len(attempts) != 3 || attempts[0] != 1 || attempts[2] != 3 {
-		t.Errorf("re-offer events' attempts = %v, want [1 2 3]", attempts)
 	}
 }
 

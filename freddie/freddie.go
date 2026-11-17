@@ -1256,7 +1256,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			case now := <-again:
 				if now.Before(lastReoffer) {
 					reoffers++
-					f.recordGenesisReoffer(ctx, span, reoffers, reoffer())
+					f.recordGenesisReoffer(ctx, reoffer())
 				}
 			case <-timeout.C:
 				span.AddEvent("timeout waiting for response")
@@ -1268,14 +1268,11 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}}
 }
 
-// recordGenesisReoffer counts a capped pool genesis's attempt-th re-offer, by its targeting
-// outcome, and marks it on the genesis's span.
-func (f *Freddie) recordGenesisReoffer(ctx context.Context, span trace.Span, attempt int, outcome string) {
+// recordGenesisReoffer counts a capped pool genesis's re-offer, by its targeting outcome. Only the
+// counter records it: a room genesis is never re-offered, so a span without re-offers would single
+// out a paired volunteer.
+func (f *Freddie) recordGenesisReoffer(ctx context.Context, outcome string) {
 	f.genesisReoffers.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
-	span.AddEvent("genesis re-offered", trace.WithAttributes(
-		attribute.Int("attempt", attempt),
-		attribute.String("targeting", outcome),
-	))
 }
 
 // recordGenesisAnswered counts a capped pool genesis answered after it was re-offered reoffers
