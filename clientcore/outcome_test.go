@@ -131,7 +131,7 @@ func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
 
 	var last attemptOutcome
 	last.begin("offer-1", "")
-	last.gathered(true, srflx, false)
+	last.gathered(true, srflx, gatherCapped)
 	last.record(common.OutcomeConnected, nil)
 	last.pair = common.PairTypes("srflx", "relay")
 	form := url.Values{}
@@ -141,13 +141,46 @@ func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
 	assert.Equal(t, "srflx-relay", form.Get(common.PrevPairField))
 
 	last.begin("offer-2", "")
-	last.gathered(false, srflx, true)
+	last.gathered(false, srflx, gatherCompleted)
 	last.record(common.OutcomeNATTimeout, nil)
 	next := url.Values{}
 	last.addTo(next, 15*time.Second)
 	assert.Equal(t, common.TURNNone, next.Get(common.PrevTURNField))
 	assert.NotContains(t, next, common.PrevGatherCutField)
 	assert.NotContains(t, next, common.PrevPairField)
+
+	// Going on after the first relay is reported apart from a cut at the limit.
+	last.begin("offer-3", "")
+	last.gathered(true, relay, gatherAfterRelay)
+	last.record(common.OutcomeConnected, nil)
+	third := url.Values{}
+	last.addTo(third, 15*time.Second)
+	assert.Equal(t, common.TURNOK, third.Get(common.PrevTURNField))
+	assert.Equal(t, common.GatherAfterRelay, third.Get(common.PrevGatherCutField))
+}
+
+// An attempt reports the NAT fail window it ran with: a room attempt's longer one, and the
+// worker's NATFailTimeout for an attempt that noted none, such as one that never took an offer.
+func TestAttemptOutcome_ReportsItsNATFailWindow(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.natFail = natFailWindow(5*time.Second, true)
+	last.record(common.OutcomeNATTimeout, nil)
+	form := url.Values{}
+	last.addTo(form, 5*time.Second)
+	assert.Equal(t, "10", form.Get(common.PrevNATTimeoutField))
+
+	last.begin("offer-2", "")
+	last.natFail = natFailWindow(5*time.Second, false)
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 5*time.Second)
+	assert.Equal(t, "5", next.Get(common.PrevNATTimeoutField))
+
+	last.record(common.OutcomeNATTimeout, nil)
+	none := url.Values{}
+	last.addTo(none, 7*time.Second)
+	assert.Equal(t, "7", none.Get(common.PrevNATTimeoutField))
 }
 
 func TestSDPHasRelay(t *testing.T) {
