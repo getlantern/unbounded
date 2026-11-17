@@ -114,6 +114,13 @@ func (c *QUICLayer) guardPaths() {
 			evaluate()
 		case <-fail:
 			fail = nil
+			// A timer armed for a state that has since changed (a slot that
+			// connected, or dropped again, before we heard) is stale: act on
+			// the current state instead.
+			if connected, since := g.slots.connected(); connected != lastConnected || !since.Equal(lastSince) {
+				evaluate()
+				continue
+			}
 			c.failPath()
 		}
 	}
@@ -172,6 +179,12 @@ func (c *QUICLayer) untrackStream(s *quic.Stream) {
 	c.smx.Lock()
 	delete(c.streams, s)
 	c.smx.Unlock()
+}
+
+// isNoPathReset reports whether err is a no-path guard's local reset of a stream (see failPath).
+func isNoPathReset(err error) bool {
+	var se *quic.StreamError
+	return errors.As(err, &se) && !se.Remote && se.ErrorCode == noPathQUICCode
 }
 
 // isClosed reports whether ch is closed. A nil ch never is.

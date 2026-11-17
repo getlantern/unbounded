@@ -221,8 +221,24 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	stream, err := qconn.OpenStreamSync(ctx)
+	// With the peer's stream credit spent, OpenStreamSync waits for the peer, which a dead path
+	// never brings, so a failed path ends that wait too.
+	openCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if pathDown != nil {
+		go func() {
+			select {
+			case <-pathDown:
+				cancel()
+			case <-openCtx.Done():
+			}
+		}()
+	}
+	stream, err := qconn.OpenStreamSync(openCtx)
 	if err != nil {
+		if ctx.Err() == nil && isClosed(pathDown) {
+			return nil, ErrNoConnectedPath
+		}
 		return nil, err
 	}
 

@@ -180,6 +180,90 @@ func TestNoPathGuardResetsStreamsKeepsConn(t *testing.T) {
 	}
 }
 
+func TestNoPathGuardFailsDialWaitingForStreamCredit(t *testing.T) {
+	const grace = 100 * time.Millisecond
+	q, report := newGuardedLayer(t, grace)
+	report(true, "")
+
+	// The peer grants one stream, so a second dial waits in OpenStreamSync
+	// for credit the peer never sends.
+	conn := loopbackQUICConnWith(t, &quic.Config{MaxIncomingStreams: 1})
+	q.mx.Lock()
+	q.eventualConn.set(conn)
+	q.mx.Unlock()
+	first, err := q.DialContext(context.Background())
+	if err != nil {
+		t.Fatalf("first DialContext: %v", err)
+	}
+	defer first.Close()
+
+	dialErr := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c, err := q.DialContext(ctx)
+		if c != nil {
+			c.Close()
+		}
+		dialErr <- err
+	}()
+	select {
+	case err := <-dialErr:
+		t.Fatalf("second dial returned %v with the path still up, want it to wait for stream credit", err)
+	case <-time.After(2 * grace):
+	}
+
+	report(false, "")
+	select {
+	case err := <-dialErr:
+		if !errors.Is(err, ErrNoConnectedPath) {
+			t.Fatalf("dial waiting for stream credit on a failed path: got %v, want ErrNoConnectedPath", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a dial waiting for stream credit outlived the path")
+	}
+}
+
+func TestNoPathGuardFailsSOCKS5Handshake(t *testing.T) {
+	const grace = 100 * time.Millisecond
+	q, report := newGuardedLayer(t, grace)
+	report(true, "")
+
+	// The peer never answers, so the handshake waits on its greeting reply
+	// when the path fails.
+	conn := loopbackQUICConn(t)
+	q.mx.Lock()
+	q.eventualConn.set(conn)
+	q.mx.Unlock()
+
+	dial := CreateSOCKS5Dialer(q)
+	dialErr := make(chan error, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		c, err := dial(ctx, "tcp", "example.com:443")
+		if c != nil {
+			c.Close()
+		}
+		dialErr <- err
+	}()
+	select {
+	case err := <-dialErr:
+		t.Fatalf("SOCKS5 dial returned %v with the path still up, want it to wait for the egress", err)
+	case <-time.After(2 * grace):
+	}
+
+	report(false, "")
+	select {
+	case err := <-dialErr:
+		if !errors.Is(err, ErrNoConnectedPath) {
+			t.Fatalf("SOCKS5 handshake on a failed path: got %v, want ErrNoConnectedPath", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("a SOCKS5 handshake outlived the path")
+	}
+}
+
 func TestNoPathGuardSlotReturningKeepsConn(t *testing.T) {
 	const grace = 50 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
@@ -365,8 +449,14 @@ func testTLSConfigs(t *testing.T) (server, client *tls.Config) {
 // end accepts it and nothing more.
 func loopbackQUICConn(t *testing.T) *quic.Conn {
 	t.Helper()
+	return loopbackQUICConnWith(t, &quic.Config{})
+}
+
+// loopbackQUICConnWith is loopbackQUICConn with the server end configured by serverCfg.
+func loopbackQUICConnWith(t *testing.T, serverCfg *quic.Config) *quic.Conn {
+	t.Helper()
 	serverTLS, clientTLS := testTLSConfigs(t)
-	ln, err := quic.ListenAddr("127.0.0.1:0", serverTLS, &quic.Config{})
+	ln, err := quic.ListenAddr("127.0.0.1:0", serverTLS, serverCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
