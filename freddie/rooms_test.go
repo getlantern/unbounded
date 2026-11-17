@@ -433,16 +433,23 @@ func TestGenesisReoffers_LeaveNoTraceOnSpans(t *testing.T) {
 	}
 	rooms := roomGenesisForm([]string{k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)}, nil)
 	rooms.Set("send-to", common.SignalSendToGenesisRooms)
+	// The room genesis is delivered before the pool one is posted: the pool broadcast can pick
+	// the paired consumer too, and its message arriving first, or arriving while that handler
+	// is still writing, would make the room delivery check depend on timing. Both producers
+	// still wait past the re-offer interval together.
 	var wg sync.WaitGroup
-	for _, form := range []url.Values{rooms, {}} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			post(form)
-		}()
-	}
-	wg.Wait()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		post(rooms)
+	}()
 	s.expectFrom("paired", paired, true)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		post(url.Values{})
+	}()
+	wg.Wait()
 	s.hangUp()
 
 	var events [][]string
