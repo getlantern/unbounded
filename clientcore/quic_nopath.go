@@ -101,7 +101,14 @@ func (c *QUICLayer) guardPaths() {
 		if since.IsZero() {
 			since = started
 		}
-		failTimer = time.NewTimer(g.failAfter - time.Since(since))
+		remaining := g.failAfter - time.Since(since)
+		if remaining > 0 {
+			// A new outage with grace left: if the path failed before it, a slot has
+			// connected and dropped again since, perhaps between two signals, so dials
+			// wait again until this outage's grace runs out.
+			c.restorePath()
+		}
+		failTimer = time.NewTimer(remaining)
 		fail = failTimer.C
 	}
 	// Force the first evaluation: a consumer starts with no slot connected,

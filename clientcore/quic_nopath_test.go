@@ -115,6 +115,40 @@ func TestNoPathGuardBriefDropDoesNotFail(t *testing.T) {
 	}
 }
 
+// A slot that connects and drops again after the path failed, both before the guard hears of
+// either, starts a new outage: dials wait again for its grace instead of failing at once.
+func TestNoPathGuardCoalescedReconnectRestoresGrace(t *testing.T) {
+	const grace = 200 * time.Millisecond
+	q, _ := newGuardedLayer(t, grace)
+	if err := dialWithin(q, 5*time.Second); !errors.Is(err, ErrNoConnectedPath) {
+		t.Fatalf("dial after the startup grace: got %v, want ErrNoConnectedPath", err)
+	}
+
+	// The net effect of a connect and a drop whose signals coalesce: still disconnected,
+	// with a new since, and one signal.
+	slots := q.noPath.slots
+	slots.mu.Lock()
+	slots.since = time.Now()
+	for w := range slots.watchers {
+		select {
+		case w <- struct{}{}:
+		default:
+		}
+	}
+	slots.mu.Unlock()
+	droppedAt := time.Now()
+
+	eventually(t, "dials to wait again", func() bool {
+		return errors.Is(dialWithin(q, 10*time.Millisecond), context.DeadlineExceeded)
+	})
+	if err := dialWithin(q, 5*time.Second); !errors.Is(err, ErrNoConnectedPath) {
+		t.Fatalf("dial after the new outage's grace: got %v, want ErrNoConnectedPath", err)
+	}
+	if elapsed := time.Since(droppedAt); elapsed < grace-10*time.Millisecond {
+		t.Fatalf("dials failed %v into the new outage, before the %v grace", elapsed, grace)
+	}
+}
+
 func TestUnguardedLayerDialsWait(t *testing.T) {
 	q, err := NewQUICLayer(&BroflakeConn{}, &tls.Config{})
 	if err != nil {
