@@ -35,6 +35,12 @@ func NewQUICLayer(bfconn *BroflakeConn, tlsConfig *tls.Config) (*QUICLayer, erro
 		ctx:          ctx,
 		cancel:       cancel,
 	}
+	if bfconn != nil && bfconn.noPath != nil {
+		q.noPath = bfconn.noPath
+		q.pathDown = make(chan struct{})
+		q.streams = make(map[*quic.Stream]struct{})
+		go q.guardPaths()
+	}
 
 	return q, nil
 }
@@ -47,6 +53,17 @@ type QUICLayer struct {
 	mx           sync.RWMutex
 	ctx          context.Context
 	cancel       context.CancelFunc
+
+	// noPath is the rooms-only consumer's no-path guard, nil for any other
+	// layer, which then has neither pathDown nor streams.
+	noPath *noPathGuard
+	// pathDown is closed while the guard has failed the path (see
+	// noPathGuard). Guarded by mx.
+	pathDown chan struct{}
+	// streams are those DialContext opened and not yet closed, for the guard
+	// to reset. Guarded by smx, which is taken before mx where both are.
+	smx     sync.Mutex
+	streams map[*quic.Stream]struct{}
 }
 
 func (c *QUICLayer) ListenAndMaintainQUICConnection() {
@@ -79,65 +96,106 @@ func (c *QUICLayer) ListenAndMaintainQUICConnection() {
 			continue
 		}
 
-		for {
-			conn, err := listener.Accept(c.ctx)
-			if err != nil {
-				slog.Debug("QUIC listener error, closing",
-					"err", err,
-					"err_class", classifyQUICError(err),
-				)
-				listener.Close()
-				break
-			}
-
-			c.mx.Lock()
-			c.eventualConn.set(conn)
-			c.mx.Unlock()
-			connStart := time.Now()
-			slog.Debug("QUIC connection established, ready to proxy!")
-
-			// Connection established, block until we detect a half open or a ctx cancel
-			_, err = conn.AcceptStream(c.ctx)
-			if err != nil {
-				// Classify so we can tell the difference between
-				//
-				//   - the consumer's own QUIC stack idle-timing-out the
-				//     connection during a producer re-pair gap (err_class
-				//     = "idle_timeout"); this is the suspect cause of the
-				//     "path probe error" failures the egress sees
-				//   - the egress closing the connection from its side
-				//     (err_class = "application_close_remote"); part of
-				//     normal teardown when migrationWindow expires
-				//   - QUICLayer.Close() being called locally
-				//     (err_class = "context_canceled")
-				//   - a local app-error close (err_class =
-				//     "application_close_local"), which shouldn't happen
-				//     during steady-state operation but if it does we want
-				//     it visible separately, not lumped in with "remote"
-				//   - other transport-level failures
-				//
-				// Connection lifetime is the other key signal — a
-				// stillborn connection (lifetime < a few seconds) means
-				// the handshake itself was unstable; a connection that
-				// lives ~MaxIdleTimeout-ish before erroring is the
-				// classic re-pair-gap idle timeout signature.
-				slog.Debug("QUIC connection ended",
-					"err", err,
-					"err_class", classifyQUICError(err),
-					"lifetime_s", time.Since(connStart).Seconds(),
-				)
-				conn.CloseWithError(42069, "")
-			}
-
-			// If we've hit this path, either our QUIC connection has broken or the caller wants to
-			// destroy this QUICLayer, so we iterate the loop to proceed. If there's a process that's
-			// using this QUICLayer for communication, they'll block on their next call to DialContext
-			// until a new QUIC connection is acquired (or their context deadline expires).
-			c.mx.Lock()
-			c.eventualConn = newEventualConn()
-			c.mx.Unlock()
-		}
+		err = c.acceptConns(listener)
+		slog.Debug("QUIC listener error, closing",
+			"err", err,
+			"err_class", classifyQUICError(err),
+		)
+		listener.Close()
 	}
+}
+
+// acceptConns accepts connections from listener until it fails, returning its error. Each
+// connection it accepts becomes the one DialContext opens streams on, and the one it replaces,
+// if any, is closed.
+//
+// It keeps accepting while a connection is live because the egress dials a new connection for
+// this consumer only once it has dropped its record of the old one: at the end of its migration
+// window, or when the old one failed on its side. So a new connection is proof the old one is
+// dead, though ours may not learn so for up to MaxIdleTimeout, the egress's CONNECTION_CLOSE
+// having gone out on a path that was already gone. Waiting for the old one to idle out before
+// accepting again, as this loop once did, left the new connection queued in the listener and
+// every dial meanwhile hanging on the dead one. A consumer has a single WebRTC slot and so a
+// single path, so this holds even when the new connection comes from another egress instance:
+// the old connection's packets now go to an egress that doesn't know it.
+func (c *QUICLayer) acceptConns(listener *quic.Listener) error {
+	for {
+		conn, err := listener.Accept(c.ctx)
+		if err != nil {
+			return err
+		}
+
+		c.mx.Lock()
+		old := c.eventualConn.current()
+		if old != nil {
+			// The current waiter is already ready with the old connection, so
+			// a new one takes its place. Nobody waits on a ready waiter.
+			c.eventualConn = newEventualConn()
+		}
+		c.eventualConn.set(conn)
+		c.mx.Unlock()
+		if old != nil {
+			slog.Debug("New QUIC connection accepted, closing the one it replaces")
+			old.CloseWithError(supersededQUICCode, "superseded")
+		}
+		slog.Debug("QUIC connection established, ready to proxy!")
+		go c.serveConn(conn)
+	}
+}
+
+// supersededQUICCode is the QUIC application error code acceptConns closes a replaced connection
+// with.
+const supersededQUICCode = 42071
+
+// serveConn waits until conn ends, then, if it is still the current connection, has DialContext
+// wait for the next.
+func (c *QUICLayer) serveConn(conn *quic.Conn) {
+	connStart := time.Now()
+
+	// Connection established, block until we detect a half open or a ctx cancel
+	_, err := conn.AcceptStream(c.ctx)
+	if err != nil {
+		// Classify so we can tell the difference between
+		//
+		//   - the consumer's own QUIC stack idle-timing-out the
+		//     connection during a producer re-pair gap (err_class
+		//     = "idle_timeout"); this is the suspect cause of the
+		//     "path probe error" failures the egress sees
+		//   - the egress closing the connection from its side
+		//     (err_class = "application_close_remote"); part of
+		//     normal teardown when migrationWindow expires
+		//   - QUICLayer.Close() being called locally
+		//     (err_class = "context_canceled")
+		//   - a local app-error close (err_class =
+		//     "application_close_local"): acceptConns closing a
+		//     connection a new one replaced (it logs that just
+		//     before), and otherwise something that shouldn't happen
+		//     during steady-state operation but if it does we want
+		//     it visible separately, not lumped in with "remote"
+		//   - other transport-level failures
+		//
+		// Connection lifetime is the other key signal — a
+		// stillborn connection (lifetime < a few seconds) means
+		// the handshake itself was unstable; a connection that
+		// lives ~MaxIdleTimeout-ish before erroring is the
+		// classic re-pair-gap idle timeout signature.
+		slog.Debug("QUIC connection ended",
+			"err", err,
+			"err_class", classifyQUICError(err),
+			"lifetime_s", time.Since(connStart).Seconds(),
+		)
+		conn.CloseWithError(42069, "")
+	}
+
+	// Either our QUIC connection has broken or the caller wants to destroy this QUICLayer. If
+	// it is still the current connection, a process using this QUICLayer for communication will
+	// block on its next call to DialContext until a new QUIC connection is accepted (or its
+	// context deadline expires). If a new connection has already replaced it, that one stays.
+	c.mx.Lock()
+	if c.eventualConn.current() == conn {
+		c.eventualConn = newEventualConn()
+	}
+	c.mx.Unlock()
 }
 
 // Close a QUICLayer which was previously opened via a call to DialAndMaintainQUICConnection.
@@ -150,9 +208,16 @@ func (c *QUICLayer) Close() {
 func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	c.mx.RLock()
 	waiter := c.eventualConn
+	pathDown := c.pathDown
 	c.mx.RUnlock()
 
-	qconn, err := waiter.get(ctx)
+	// A layer whose no-path guard has failed the path fails its dials at once,
+	// rather than open a stream on a connection with no path under it, or wait
+	// for a connection no path will bring.
+	if isClosed(pathDown) {
+		return nil, ErrNoConnectedPath
+	}
+	qconn, err := waiter.get(ctx, pathDown)
 	if err != nil {
 		return nil, err
 	}
@@ -164,11 +229,20 @@ func (c *QUICLayer) DialContext(ctx context.Context) (net.Conn, error) {
 	// XXX: we set AddrLocal and AddrRemote here only for compatibility with go-socks5:
 	// https://github.com/armon/go-socks5/issues/50
 	// These IP/port values are nonsense and have no relevance.
-	return &common.QUICStreamNetConn{
+	conn := &common.QUICStreamNetConn{
 		Stream:     stream,
 		AddrLocal:  &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
 		AddrRemote: &net.TCPAddr{IP: net.ParseIP("0.0.0.0"), Port: 31337},
-	}, nil
+	}
+	if c.noPath != nil {
+		if !c.trackStream(stream) {
+			stream.CancelRead(noPathQUICCode)
+			stream.CancelWrite(noPathQUICCode)
+			return nil, ErrNoConnectedPath
+		}
+		conn.OnClose = func() { c.untrackStream(stream) }
+	}
+	return conn, nil
 }
 
 // QUICLayer is a ReliableStreamLayer
@@ -185,12 +259,26 @@ type eventualConn struct {
 	ready chan struct{}
 }
 
-func (w *eventualConn) get(ctx context.Context) (*quic.Conn, error) {
+// get waits for the connection, failing with ErrNoConnectedPath if pathDown
+// closes first. A nil pathDown never does.
+func (w *eventualConn) get(ctx context.Context, pathDown chan struct{}) (*quic.Conn, error) {
 	select {
 	case <-w.ready:
 		return w.conn, nil
+	case <-pathDown:
+		return nil, ErrNoConnectedPath
 	case <-ctx.Done():
 		return nil, ctx.Err()
+	}
+}
+
+// current returns the connection if it is set, or nil.
+func (w *eventualConn) current() *quic.Conn {
+	select {
+	case <-w.ready:
+		return w.conn
+	default:
+		return nil
 	}
 }
 
@@ -216,9 +304,11 @@ func (w *eventualConn) set(conn *quic.Conn) {
 //     CloseWithError. Normal teardown when migrationWindow expires
 //     and the egress flushes the connection record.
 //   - application_close_local: WE called CloseWithError on the
-//     connection. In the consumer's QUICLayer this should not happen
+//     connection. In the consumer's QUICLayer that is acceptConns
+//     closing a connection the egress's next one replaced (see
+//     acceptConns). Otherwise it should not happen
 //     during steady-state operation — a non-zero count here would
-//     indicate either a future code path closing locally or a quic-go
+//     indicate either another code path closing locally or a quic-go
 //     internal that surfaces as a local app-error. Worth flagging
 //     separately so triage doesn't conflate it with normal teardown.
 //   - transport_error: a quic-go-internal transport failure

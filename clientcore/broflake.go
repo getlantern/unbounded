@@ -47,16 +47,28 @@ type ConsumerSlot struct {
 	Pairing string
 }
 
-// consumerSlots tracks a consumer's WebRTC slots for ConsumerSlots and
-// ConsumerSlotChangeFunc.
+// consumerSlots tracks a consumer's WebRTC slots for ConsumerSlots,
+// ConsumerConnected, ConsumerSlotChangeFunc and the QUIC layer's no-path
+// guard.
 type consumerSlots struct {
 	mu       sync.Mutex
 	slots    []ConsumerSlot
 	onChange ConsumerSlotChangeFunc
+	// anyConnected is whether any slot is connected, and since is when it
+	// last became so or stopped being so, or zero until a slot first
+	// connects.
+	anyConnected bool
+	since        time.Time
+	// watchers are signalled, without blocking, after every report.
+	watchers map[chan struct{}]struct{}
 }
 
 func newConsumerSlots(n int, onChange ConsumerSlotChangeFunc) *consumerSlots {
-	s := &consumerSlots{slots: make([]ConsumerSlot, n), onChange: onChange}
+	s := &consumerSlots{
+		slots:    make([]ConsumerSlot, n),
+		onChange: onChange,
+		watchers: make(map[chan struct{}]struct{}),
+	}
 	for i := range s.slots {
 		s.slots[i].WorkerIdx = i
 	}
@@ -71,6 +83,17 @@ func (s *consumerSlots) reporter(idx int) func(connected bool, pairing string) {
 		}
 		s.mu.Lock()
 		s.slots[idx] = ConsumerSlot{WorkerIdx: idx, Connected: connected, Pairing: pairing}
+		anyConnected := slices.ContainsFunc(s.slots, func(slot ConsumerSlot) bool { return slot.Connected })
+		if anyConnected != s.anyConnected {
+			s.anyConnected = anyConnected
+			s.since = time.Now()
+		}
+		for w := range s.watchers {
+			select {
+			case w <- struct{}{}:
+			default:
+			}
+		}
 		s.mu.Unlock()
 		if s.onChange != nil {
 			state := -1
@@ -88,6 +111,28 @@ func (s *consumerSlots) snapshot() []ConsumerSlot {
 	return slices.Clone(s.slots)
 }
 
+// connected reports whether any slot is connected, and since when that has
+// been so (see consumerSlots.since).
+func (s *consumerSlots) connected() (bool, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.anyConnected, s.since
+}
+
+// watch returns a channel signalled after every slot report, coalescing the
+// reports its reader hasn't caught up with, and a function that stops it.
+func (s *consumerSlots) watch() (<-chan struct{}, func()) {
+	w := make(chan struct{}, 1)
+	s.mu.Lock()
+	s.watchers[w] = struct{}{}
+	s.mu.Unlock()
+	return w, func() {
+		s.mu.Lock()
+		delete(s.watchers, w)
+		s.mu.Unlock()
+	}
+}
+
 // ConsumerSlots returns a consumer's (ClientType "desktop") WebRTC slots: for
 // each, whether it is connected and, if so, the helper pairing it came
 // through. nil for a widget.
@@ -96,6 +141,28 @@ func (b *BroflakeEngine) ConsumerSlots() []ConsumerSlot {
 		return nil
 	}
 	return b.consumerSlots.snapshot()
+}
+
+// ConsumerConnected reports whether any of a consumer's (ClientType
+// "desktop") WebRTC slots is connected, and since when that has been so: the
+// time the first slot connected or the last one disconnected. Until a slot
+// has first connected, since is zero, so a caller can tell a consumer still
+// making its first connection from one that has lost its helper. A widget
+// reports false and the zero time.
+//
+// Connected means a slot's WebRTC data channel to a volunteer is open, not
+// that the QUIC connection over it, or the egress behind the volunteer, is
+// reachable.
+//
+// A rooms-only consumer's QUICLayer fails its streams and dials once this has
+// been false for WebRTCOptions.ConsumerNoPathGrace (see ErrNoConnectedPath),
+// so a caller reporting its helper's health can treat the helper as
+// unavailable from then, if not sooner.
+func (b *BroflakeEngine) ConsumerConnected() (connected bool, since time.Time) {
+	if b == nil || b.consumerSlots == nil {
+		return false, time.Time{}
+	}
+	return b.consumerSlots.connected()
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -281,6 +348,9 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 			pfsms = append(pfsms, *newConsumerWebRTCSlot(rtcOpt, &wgReady, newRoomPreference(time.Now), slots.reporter(i)))
 		}
 		pTable = NewWorkerTable(pfsms)
+		if rtcOpt.ConsumerRoomsOnly {
+			bfconn.noPath = newNoPathGuard(slots, rtcOpt.ConsumerNoPathGrace)
+		}
 	case "widget":
 		// Widget peers share connectivity over WebRTC
 		var cfsms []WorkerFSM

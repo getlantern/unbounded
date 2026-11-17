@@ -95,6 +95,9 @@ type BroflakeConn struct {
 	addr               common.DebugAddr
 	readDeadline       time.Time
 	updateReadDeadline chan time.Time
+	// noPath, if non-nil, is the no-path guard a QUICLayer built on this conn
+	// runs (see noPathGuard). NewBroflake sets it for a rooms-only consumer.
+	noPath *noPathGuard
 }
 
 func (c BroflakeConn) LocalAddr() net.Addr {
