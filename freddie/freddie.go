@@ -421,6 +421,8 @@ type Freddie struct {
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
 	genesisBroadcasts metric.Int64Counter
+	genesisReoffers   metric.Int64Counter
+	genesisAnswered   metric.Int64Counter
 	consumerSubs      metric.Int64Counter
 	roomMatches       metric.Int64Counter
 	roomsDisabled     metric.Int64Counter
@@ -523,6 +525,20 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 
 	f.genesisBroadcasts, err = f.meter.Int64Counter("freddie.genesis.broadcasts",
 		metric.WithDescription("genesis messages broadcast, by country targeting outcome"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisReoffers, err = f.meter.Int64Counter("freddie.genesis.reoffers",
+		metric.WithDescription("capped pool genesis messages offered again to another sample of waiting consumers (see genesisReofferInterval), by the re-offer's country targeting outcome"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisAnswered, err = f.meter.Int64Counter("freddie.genesis.answered",
+		metric.WithDescription("capped pool genesis messages answered with an offer, by how many times each was re-offered first (0, 1, 2 or 3+)"),
 		metric.WithUnit("message"))
 	if err != nil {
 		return nil, err
@@ -998,7 +1014,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	var held *heldGenesis
 	var heldICE []webrtc.ICEServer
 	// reoffer, if set, offers a capped pool genesis to another sample of waiting consumers.
-	var reoffer func()
+	var reoffer func() string
 	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
@@ -1060,7 +1076,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			// in the genesis's rooms that subscribes later gets the pool message, as any other.
 			if outcome != "" && limit > 0 {
 				genesis := string(msg)
-				reoffer = func() { table.broadcastGenesis(genesis, targets, limit) }
+				reoffer = func() string { return table.broadcastGenesis(genesis, targets, limit) }
 			}
 		}
 		if matched {
@@ -1222,6 +1238,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		// before the ticker starts, so the tick that ends that interval is always past it.
 		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
 		var again <-chan time.Time
+		reoffers := 0
 		if reoffer != nil {
 			ticker := time.NewTicker(genesisReofferInterval)
 			defer ticker.Stop()
@@ -1232,10 +1249,14 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		for {
 			select {
 			case res := <-reqChan:
+				if reoffer != nil {
+					f.recordGenesisAnswered(ctx, reoffers)
+				}
 				return withICEServers(res, offerICE)
 			case now := <-again:
 				if now.Before(lastReoffer) {
-					reoffer()
+					reoffers++
+					f.recordGenesisReoffer(ctx, span, reoffers, reoffer())
 				}
 			case <-timeout.C:
 				span.AddEvent("timeout waiting for response")
@@ -1245,6 +1266,30 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			}
 		}
 	}}
+}
+
+// recordGenesisReoffer counts a capped pool genesis's attempt-th re-offer, by its targeting
+// outcome, and marks it on the genesis's span.
+func (f *Freddie) recordGenesisReoffer(ctx context.Context, span trace.Span, attempt int, outcome string) {
+	f.genesisReoffers.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
+	span.AddEvent("genesis re-offered", trace.WithAttributes(
+		attribute.Int("attempt", attempt),
+		attribute.String("targeting", outcome),
+	))
+}
+
+// recordGenesisAnswered counts a capped pool genesis answered after it was re-offered reoffers
+// times.
+func (f *Freddie) recordGenesisAnswered(ctx context.Context, reoffers int) {
+	f.genesisAnswered.Add(ctx, 1, metric.WithAttributes(attribute.String("reoffers", reofferBucket(reoffers))))
+}
+
+// reofferBucket bounds freddie.genesis.answered's reoffers label.
+func reofferBucket(n int) string {
+	if n >= 3 {
+		return "3+"
+	}
+	return strconv.Itoa(n)
 }
 
 // withICEServers returns the signaling message raw with ICEServers set to servers, or raw unchanged

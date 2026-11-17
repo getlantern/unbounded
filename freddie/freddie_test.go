@@ -603,6 +603,8 @@ func TestConsumerIndex_DeleteCleansRooms(t *testing.T) {
 func TestGenesisReofferedUntilAnswered(t *testing.T) {
 	s := startTestServer(t, func(*http.Request) string { return "" })
 	s.f.SetGenesisFanout(2)
+	reoffers, reader := testCounter(t, "freddie.genesis.reoffers")
+	s.f.genesisReoffers = reoffers
 	var consumers []chan string
 	for range 12 {
 		consumers = append(consumers, s.subscribe("", ""))
@@ -645,5 +647,8 @@ func TestGenesisReofferedUntilAnswered(t *testing.T) {
 	time.Sleep(genesisReofferInterval * 2)
 	if n := reached(); n < 2 {
 		t.Fatalf("no consumer was offered the unanswered genesis again (%d reached)", n)
+	}
+	if got := sumByLabels(t, reader, "targeting"); got[genesisUntargeted] < 1 || len(got) != 1 {
+		t.Errorf("re-offers by targeting = %v, want at least one untargeted", got)
 	}
 }
