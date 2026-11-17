@@ -62,6 +62,9 @@ func CreateSOCKS5Dialer(c ReliableStreamLayer) SOCKS5Dialer {
 		}
 		if err := socks5Handshake(ctx, conn, connectReq); err != nil {
 			conn.Close()
+			if isNoPathReset(err) {
+				return nil, ErrNoConnectedPath
+			}
 			return nil, err
 		}
 		return conn, nil

@@ -92,6 +92,16 @@ type WebRTCOptions struct {
 	// every release before it did. It changes nothing on the wire. Set it
 	// before NewBroflake.
 	ConsumerRoomsOnly bool
+	// ConsumerNoPathGrace is how long a rooms-only consumer (see
+	// ConsumerRoomsOnly) may go without a connected WebRTC slot before its
+	// QUICLayer fails fast: the streams open on its QUIC connection are
+	// reset, and its dials fail at once with ErrNoConnectedPath, until a slot
+	// connects again. Without it a stream sent into a dead path waits on the
+	// QUIC connection, which outlives the path by up to MaxIdleTimeout. Zero
+	// means defaultConsumerNoPathGrace, and a negative value turns the guard
+	// off. A pool consumer has no guard: the pool soon offers it another
+	// volunteer. Set it before NewBroflake.
+	ConsumerNoPathGrace time.Duration
 	// Net is the transport pion opens its UDP sockets on, for both the
 	// consumer and the producer. nil uses the host's network stack. Browser
 	// (wasm) builds ignore it: the WebRTC stack there is the browser's.
