@@ -13,10 +13,13 @@ import (
 // WebRTC slot: with no path to the egress, a dial would only wait for one.
 var ErrNoConnectedPath = errors.New("unbounded: no connected WebRTC path")
 
-// defaultConsumerNoPathGrace is WebRTCOptions.ConsumerNoPathGrace's default. It is long enough
-// for a slot that drops to reconnect at once, as a pion data channel sometimes does, and short
-// enough that a user isn't left watching a stalled page.
-const defaultConsumerNoPathGrace = 10 * time.Second
+// defaultConsumerNoPathGrace is WebRTCOptions.ConsumerNoPathGrace's default. It covers one room
+// attempt's worst case, so that a slot that drops and reconnects over the room's TURN servers
+// isn't given up on while that attempt is still on track: relay-early ICE gathering, which
+// usually takes about 1 to 1.5s but is capped at 8s, plus the 10s a room attempt waits for its
+// data channel (roomNATFailTimeout). It is still short enough that a user isn't left watching a
+// stalled page for long.
+const defaultConsumerNoPathGrace = 20 * time.Second
 
 // noPathQUICCode is the QUIC application error code with which a no-path guard resets streams,
 // so the egress, should it ever hear of them, can tell them apart.
