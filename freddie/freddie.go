@@ -350,13 +350,18 @@ func (t *consumerIndex) broadcastToRooms(rooms []roomGenesis) int {
 // message from either. Holding the read lock across both would mean nesting read locks, which
 // deadlocks once a writer is waiting between them.
 func (t *consumerIndex) DeliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	return t.deliverGenesis(msg, rooms, servePool, targets, int(t.fanout.Load()))
+}
+
+// deliverGenesis is DeliverGenesis with the pool step's fanout limit given.
+func (t *consumerIndex) deliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string, limit int) (roomMatched bool, outcome string) {
 	if len(rooms) > 0 && t.broadcastToRooms(rooms) > 0 {
 		return true, ""
 	}
 	if !servePool {
 		return false, ""
 	}
-	return false, t.BroadcastGenesis(msg, targets)
+	return false, t.broadcastGenesis(msg, targets, limit)
 }
 
 type Freddie struct {
@@ -1046,13 +1051,14 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 				held, heldICE = g, roomICE
 			}
 		} else {
-			matched, outcome = table.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+			limit := int(table.fanout.Load())
+			matched, outcome = table.deliverGenesis(string(msg), roomMsgs, servePool, targets, limit)
 			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
 			// one keeps it to itself, as outcome is then "".
 			// It's offered with the limit it was first offered with, so turning the cap off doesn't
 			// turn the re-offers of geneses already waiting into broadcasts to everyone. A consumer
 			// in the genesis's rooms that subscribes later gets the pool message, as any other.
-			if limit := int(table.fanout.Load()); outcome != "" && limit > 0 {
+			if outcome != "" && limit > 0 {
 				genesis := string(msg)
 				reoffer = func() { table.broadcastGenesis(genesis, targets, limit) }
 			}
