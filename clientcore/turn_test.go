@@ -3,9 +3,11 @@
 package clientcore
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +22,7 @@ import (
 	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
+	"github.com/stretchr/testify/assert"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/covertdtls"
@@ -129,6 +132,28 @@ func TestAddICEServers_ConnectsThroughRelay(t *testing.T) {
 	}
 	if got := selectedPath(answerer); got != common.PathRelay {
 		t.Fatalf("selectedPath = %q, want relay", got)
+	}
+
+	// logPath names the pair by type and protocol, with its round trip and traffic, but no address,
+	// and only at debug level.
+	var buf bytes.Buffer
+	prev := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	logPath(answerer, "Selected candidate pair stats")
+	if buf.Len() != 0 {
+		t.Fatalf("logged above debug level: %s", buf.String())
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	logPath(answerer, "Selected candidate pair stats")
+	out := buf.String()
+	for _, want := range []string{`pair="relay/udp - relay/udp"`, "path=relay", "rtt=", "bytes_sent=", "bytes_received="} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the log lacks %s: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "127.0.0.1") {
+		t.Errorf("the log carries an address: %s", out)
 	}
 }
 
@@ -310,8 +335,8 @@ func TestAwaitGatheringBoundsBlackholedTURN(t *testing.T) {
 	}
 
 	start := time.Now()
-	if awaitGathering(gatherComplete, limit) {
-		t.Fatal("gathering completed with its TURN server blackholed")
+	if end := awaitGathering(gatherComplete, gathered.firstRelay(), time.Millisecond, limit); end != gatherCapped {
+		t.Fatalf("the wait ended %v with its only TURN server blackholed, want gatherCapped", end)
 	}
 	if waited := time.Since(start); waited > limit+time.Second {
 		t.Fatalf("the bounded wait took %v, want about %v", waited, limit)
@@ -390,31 +415,180 @@ func TestBoundedDialNet(t *testing.T) {
 }
 
 func TestAwaitGathering(t *testing.T) {
-	never := make(chan struct{})
+	const grace = 100 * time.Millisecond
+	closed := func() <-chan struct{} {
+		c := make(chan struct{})
+		close(c)
+		return c
+	}
+	after := func(d time.Duration) <-chan struct{} {
+		c := make(chan struct{})
+		time.AfterFunc(d, func() { close(c) })
+		return c
+	}
+	for _, tc := range []struct {
+		name string
+		// complete and relay are when gathering completes and the first relay arrives, or never
+		// when negative.
+		complete, relay, limit time.Duration
+		want                   gatherEnd
+		// The wait should take about this long.
+		took time.Duration
+	}{
+		{"completes before the limit", 50 * time.Millisecond, -1, time.Hour, gatherCompleted, 50 * time.Millisecond},
+		{"never completes, no relay", -1, -1, 200 * time.Millisecond, gatherCapped, 200 * time.Millisecond},
+		{"relay, then grace runs out", -1, 50 * time.Millisecond, time.Second, gatherAfterRelay, 50*time.Millisecond + grace},
+		{"relay, then completes within grace", 100 * time.Millisecond, 50 * time.Millisecond, time.Hour, gatherCompleted, 100 * time.Millisecond},
+		{"relay too late for its grace", -1, 150 * time.Millisecond, 200 * time.Millisecond, gatherCapped, 200 * time.Millisecond},
+		{"unbounded, completes", 100 * time.Millisecond, -1, 0, gatherCompleted, 100 * time.Millisecond},
+		{"unbounded, relay", time.Second, 50 * time.Millisecond, 0, gatherAfterRelay, 50*time.Millisecond + grace},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var complete, relay <-chan struct{}
+			if tc.complete >= 0 {
+				complete = after(tc.complete)
+			}
+			if tc.relay >= 0 {
+				relay = after(tc.relay)
+			}
+			start := time.Now()
+			if got := awaitGathering(complete, relay, grace, tc.limit); got != tc.want {
+				t.Fatalf("ended %v, want %v", got, tc.want)
+			}
+			// Generous above, for loaded CI machines, but tight enough below to show it waited.
+			if took := time.Since(start); took < tc.took-10*time.Millisecond || took > tc.took+time.Second {
+				t.Fatalf("took %v, want about %v", took, tc.took)
+			}
+		})
+	}
+
+	// Gathering that has completed is reported as complete, whatever else is ready.
+	for i := 0; i < 100; i++ {
+		if got := awaitGathering(closed(), closed(), 0, time.Nanosecond); got != gatherCompleted {
+			t.Fatalf("completed gathering was reported %v", got)
+		}
+	}
+}
+
+// The candidate log signals its first relay candidate, once, and nothing before it.
+func TestCandidateLogFirstRelay(t *testing.T) {
+	var g candidateLog
+	relay := g.firstRelay()
+	g.add(nil)
+	g.add(&webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost})
+	g.add(&webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx})
+	select {
+	case <-relay:
+		t.Fatal("signaled a relay without one")
+	default:
+	}
+	g.add(&webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeRelay})
+	g.add(&webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeRelay})
+	select {
+	case <-relay:
+	default:
+		t.Fatal("no signal after a relay")
+	}
+	// Asked for after the relay, it is already closed.
+	select {
+	case <-g.firstRelay():
+	default:
+		t.Fatal("a late firstRelay missed the relay")
+	}
+	if got := candidateCounts(g.snapshot()); got != "host=1 srflx=1 prflx=0 relay=2" {
+		t.Fatalf("logged %s", got)
+	}
+}
+
+// With one TURN server that allocates and one whose TCP dial is blackholed, gathering can't
+// complete, but the wait goes on shortly after the relay arrives rather than at its limit.
+func TestAwaitGatheringGoesOnAfterRelay(t *testing.T) {
+	const limit = 3 * time.Second
+	shortTURNDial(t, 2*limit)
+	std, err := stdnet.NewNet()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bh := &blackholeNet{Net: std, unblock: make(chan struct{})}
+	pc, err := newProducerPeerConnection(webrtc.Configuration{}, covertdtls.Config{}, WebRTCTuning{}, iceNet{net: bh})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Unblocked before Close, so Close needn't wait out the dial.
+	defer pc.Close()
+	defer close(bh.unblock)
+	servers := append(startTURN(t), webrtc.ICEServer{URLs: []string{"turn:127.0.0.1:3478?transport=tcp"}, Username: "u", Credential: "p"})
+	if err := addICEServers(pc, servers); err != nil {
+		t.Fatal(err)
+	}
+	var gathered candidateLog
+	pc.OnICECandidate(gathered.add)
+	if _, err := pc.CreateDataChannel("data", nil); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := pc.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatherComplete := webrtc.GatheringCompletePromise(pc)
+	if err := pc.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+
 	start := time.Now()
-	if awaitGathering(never, 50*time.Millisecond) {
-		t.Fatal("reported complete for gathering that never completes")
+	if end := awaitGathering(gatherComplete, gathered.firstRelay(), turnRelayGrace, limit); end != gatherAfterRelay {
+		t.Fatalf("the wait ended %v, want gatherAfterRelay", end)
 	}
-	if waited := time.Since(start); waited > time.Second {
-		t.Fatalf("the bounded wait took %v", waited)
+	if waited := time.Since(start); waited >= limit {
+		t.Fatalf("the wait took %v, its whole limit", waited)
 	}
+	if got := turnResult(true, gathered.snapshot()); got != common.TURNOK {
+		t.Fatalf("TURN result %s after going on early, want ok", got)
+	}
+	if !sdpHasRelay(pc.LocalDescription().SDP) {
+		t.Fatal("the local description lacks the relay candidate")
+	}
+}
 
-	done := make(chan struct{})
-	close(done)
-	if !awaitGathering(done, time.Hour) {
-		t.Fatal("bounded wait missed completed gathering")
+// A room attempt waits at least roomNATFailTimeout for its data channel, and any other attempt
+// NATFailTimeout.
+func TestNATFailWindow(t *testing.T) {
+	for _, tc := range []struct {
+		natFail time.Duration
+		room    bool
+		want    time.Duration
+	}{
+		{5 * time.Second, false, 5 * time.Second},
+		{5 * time.Second, true, roomNATFailTimeout},
+		{30 * time.Second, true, 30 * time.Second},
+		{0, false, 0},
+		{0, true, roomNATFailTimeout},
+	} {
+		if got := natFailWindow(tc.natFail, tc.room); got != tc.want {
+			t.Errorf("natFailWindow(%v, %v) = %v, want %v", tc.natFail, tc.room, got, tc.want)
+		}
 	}
+	// The ICE checks a room attempt is sized for last its longer window.
+	if got := (WebRTCTuning{}).checkingFor(natFailWindow(5*time.Second, true)).ICEMaxBindingRequests; got != 100 {
+		t.Errorf("a room window sizes %d checks, want 100", got)
+	}
+}
 
-	// Unbounded, it waits as long as gathering takes.
-	later := make(chan struct{})
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		close(later)
-	}()
-	start = time.Now()
-	if !awaitGathering(later, 0) || time.Since(start) < 100*time.Millisecond {
-		t.Fatal("unbounded wait did not wait for gathering to complete")
+func TestPairDescription(t *testing.T) {
+	relay := &webrtc.ICECandidatePair{
+		Local:  &webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeRelay, Protocol: webrtc.ICEProtocolUDP, Address: "198.51.100.9"},
+		Remote: &webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: "203.0.113.7"},
 	}
+	direct := &webrtc.ICECandidatePair{
+		Local:  &webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP},
+		Remote: &webrtc.ICECandidate{Typ: webrtc.ICECandidateTypeHost, Protocol: webrtc.ICEProtocolTCP},
+	}
+	assert.Equal(t, "relay/udp - srflx/udp", pairDescription(relay))
+	assert.Equal(t, common.PathRelay, pairPath(relay))
+	assert.Equal(t, "srflx/udp - host/tcp", pairDescription(direct))
+	assert.Equal(t, common.PathDirect, pairPath(direct))
+	assert.Empty(t, pairDescription(nil))
+	assert.Empty(t, pairPath(nil))
 }
 
 // genesisFreddie answers every POST with an empty body, as Freddie does when nobody answered a

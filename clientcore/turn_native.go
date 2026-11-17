@@ -24,6 +24,29 @@ func addICEServers(pc *webrtc.PeerConnection, servers []webrtc.ICEServer) error 
 	return pc.SetConfiguration(config)
 }
 
+// selectedPairStats is what pion has measured on pc's selected candidate pair, reporting false
+// when no pair is selected.
+func selectedPairStats(pc *webrtc.PeerConnection) (s pairStats, ok bool) {
+	defer func() {
+		if recover() != nil {
+			s, ok = pairStats{}, false
+		}
+	}()
+	sctp := pc.SCTP()
+	if sctp == nil || sctp.Transport() == nil || sctp.Transport().ICETransport() == nil {
+		return pairStats{}, false
+	}
+	st, ok := sctp.Transport().ICETransport().GetSelectedCandidatePairStats()
+	if !ok {
+		return pairStats{}, false
+	}
+	return pairStats{
+		rtt:      time.Duration(st.CurrentRoundTripTime * float64(time.Second)),
+		sent:     st.BytesSent,
+		received: st.BytesReceived,
+	}, true
+}
+
 // turnDialTimeout bounds pion's TCP dial to a TURN server (turn:?transport=tcp and turns:), which
 // it makes with no timeout or context. Closing a peer connection waits for gathering to finish,
 // so without it a censor that drops the server's SYNs holds Close, and the worker's next attempt,

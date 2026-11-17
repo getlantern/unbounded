@@ -9,6 +9,10 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
+// selectedPairStats reports false in the browser, whose stats pion's JS bindings don't expose, so
+// logPath logs the pair alone there.
+func selectedPairStats(*webrtc.PeerConnection) (pairStats, bool) { return pairStats{}, false }
+
 // addICEServers is the browser's (see turn_native.go for the contract). pion's JS bindings
 // reject every turn: and turns: URL in SetConfiguration, but the browser's RTCPeerConnection
 // supports TURN, so the servers go into its configuration directly. Its existing servers are the

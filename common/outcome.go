@@ -15,8 +15,10 @@ const (
 	PrevOutcomeField  = "prev-outcome"
 	PrevICEStateField = "prev-ice-state"
 	PrevPCStateField  = "prev-pc-state"
-	// PrevNATTimeoutField is the NATFailTimeout, in whole seconds, the producer ran the attempt
-	// with, so outcomes can be compared across timeout settings while clients roll over.
+	// PrevNATTimeoutField is the NAT fail window, in whole seconds, the producer ran the attempt
+	// with: its NATFailTimeout, or the longer window a room attempt with TURN servers gets, so
+	// outcomes can be compared across timeout settings while clients roll over. Compare room
+	// and pool attempts separately, since a room attempt's window isn't the worker's setting.
 	PrevNATTimeoutField = "prev-nat-timeout"
 	// PrevOfferIDField is the ReplyTo of the offer the attempt answered: the ID Freddie gave the
 	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
@@ -37,9 +39,11 @@ const (
 	// PrevTURNField says whether the attempt's TURN servers gave the producer a relay candidate:
 	// one of the TURN* values. Only a room attempt gets TURN servers.
 	PrevTURNField = "prev-turn"
-	// PrevGatherCutField is GatherCut when the producer stopped waiting on ICE gathering at its
-	// limit and answered with the candidates it had, which happens when a TURN server is slow or
-	// blocked.
+	// PrevGatherCutField says the producer answered before its ICE gathering completed, with the
+	// candidates it had: GatherCut when it stopped waiting at its limit, which happens when a TURN
+	// server is slow or blocked and none gave it a relay candidate in time, or GatherAfterRelay
+	// when it went on shortly after its first relay candidate while another TURN server had yet to
+	// answer. Absent when gathering completed.
 	PrevGatherCutField = "prev-gather-cut"
 	// PrevPairField is the selected candidate pair of a connected attempt, as the producer's
 	// candidate type and the consumer's, joined by "-": "srflx-relay", say. Only sent with
@@ -57,8 +61,16 @@ const (
 	TURNMissing = "missing"
 )
 
-// GatherCut is PrevGatherCutField's value when gathering was cut short.
-const GatherCut = "1"
+// Values of PrevGatherCutField. Both are cuts, in that gathering hadn't completed, but they are
+// kept apart: going on after a relay is the usual, healthy end of a room attempt's gathering,
+// while a cut at the limit means its TURN servers held it for the whole wait, and counting them
+// together would hide those.
+const (
+	// GatherCut: the producer stopped waiting at its limit.
+	GatherCut = "1"
+	// GatherAfterRelay: the producer went on shortly after its first relay candidate.
+	GatherAfterRelay = "relay"
+)
 
 var turnResults = map[string]bool{TURNNone: true, TURNOK: true, TURNMissing: true}
 
@@ -71,12 +83,17 @@ func NormalizeTURN(s string) string {
 	return normalizeEnum(s, turnResults)
 }
 
-// NormalizeGatherCut maps a reported PrevGatherCutField onto "cut", "complete" for a producer that
-// reported the attempt's TURN result without one, or "unreported".
+// NormalizeGatherCut maps a reported PrevGatherCutField onto "cut" (GatherCut), "after_relay"
+// (GatherAfterRelay), "invalid" for any other value, "complete" for a producer that reported the
+// attempt's TURN result without one, or "unreported".
 func NormalizeGatherCut(cut, turn string) string {
 	switch {
 	case cut == GatherCut:
 		return "cut"
+	case cut == GatherAfterRelay:
+		return "after_relay"
+	case cut != "":
+		return "invalid"
 	case turn == "":
 		return "unreported"
 	default:

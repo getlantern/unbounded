@@ -192,6 +192,8 @@ func TestNormalizeTURNGatherAndPair(t *testing.T) {
 	}
 	for _, tc := range []struct{ cut, turn, want string }{
 		{GatherCut, TURNMissing, "cut"},
+		{GatherAfterRelay, TURNOK, "after_relay"},
+		{"bogus", TURNOK, "invalid"},
 		{"", TURNOK, "complete"},
 		{"", "", "unreported"},
 	} {

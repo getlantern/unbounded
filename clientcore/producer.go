@@ -60,6 +60,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 	// last is how this worker's previous attempt ended, reported on its next genesis message.
 	// A worker's states run on one goroutine, so it needs no lock.
 	var last attemptOutcome
+	// turnPC is the peer connection state 3 last added an offer's TURN servers to, so state 4
+	// waits natFailWindow's longer window for it.
+	var turnPC *webrtc.PeerConnection
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -153,7 +156,16 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, options.Tuning.checkingFor(options.NATFailTimeout), iceNetOf(options))
+			//
+			// pion sizes its checks when it creates the ICE agent, from the setting engine given
+			// here, before state 2 knows whether the offer comes with a room pairing's TURN servers
+			// and state 4 waits natFailWindow's longer window. Only a producer with room tickets can
+			// be given them, so one that has some checks for the longer window on every attempt. On
+			// a pool attempt the extra checks cost nothing (see checkingFor).
+			turnPC = nil
+			mayGetRoomTURN := len(options.CurrentRoomTickets()) > 0
+			tuning := options.Tuning.checkingFor(natFailWindow(options.NATFailTimeout, mayGetRoomTURN))
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, tuning, iceNetOf(options))
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -373,13 +385,19 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// A room pairing's TURN servers must be in place before SetLocalDescription starts
 			// gathering. State 3 is entered once per peer connection (every way out of it goes to
 			// state 0 or forward), so they are never added twice. A blocked one could hold gathering
-			// past Freddie's window, so with them gathering is bounded (see turnGatherWait).
+			// past Freddie's window, so with them gathering is bounded, and goes on shortly after the
+			// first relay candidate (see turnGatherWait and turnRelayGrace). They also give the
+			// attempt natFailWindow's longer window in state 4, which the outcome reports.
 			var gatherLimit time.Duration
+			var firstRelay <-chan struct{}
 			if err := addICEServers(peerConnection, iceServers); err != nil {
 				slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
 			} else if len(iceServers) > 0 {
 				gatherLimit = turnGatherWait
+				firstRelay = gathered.firstRelay()
+				turnPC = peerConnection
 			}
+			last.natFail = natFailWindow(options.NATFailTimeout, peerConnection == turnPC)
 
 			// Assign the offer to our connection
 			err := peerConnection.SetRemoteDescription(offer.SDP)
@@ -408,15 +426,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			completed := awaitGathering(gatherComplete, gatherLimit)
-			if completed {
-				slog.Debug("ICE gathering complete!")
-			} else {
-				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
-			}
+			gatherStart := time.Now()
+			end := awaitGathering(gatherComplete, firstRelay, turnRelayGrace, gatherLimit)
+			logGatherEnd(end, time.Since(gatherStart))
 			localCandidates := gathered.snapshot()
 			slog.Debug("Local candidates", "counts", candidateCounts(localCandidates))
-			last.gathered(len(iceServers) > 0, localCandidates, completed)
+			last.gathered(len(iceServers) > 0, localCandidates, end)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
@@ -606,19 +621,21 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			consumerSessionID := input[6].(string)
 			slog.Debug("Producer state 4, signaling complete!")
 
-			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, options.NATFailTimeout, options.ConnectGrace)
+			natFail := natFailWindow(options.NATFailTimeout, peerConnection == turnPC)
+			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, natFail, options.ConnectGrace)
 			if !ok {
 				if ctx.Err() != nil {
 					peerConnection.Close()
 					return 0, []interface{}{}
 				}
-				slog.Debug("NAT traversal timeout, aborting!")
+				slog.Debug("NAT traversal timeout, aborting!", "nat_fail_window", natFail)
 				last.record(common.OutcomeNATTimeout, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
 			slog.Debug("A WebRTC connection has been established!")
+			logPath(peerConnection, "Connected, selected candidate pair")
 			last.record(common.OutcomeConnected, peerConnection)
 			last.path = selectedPath(peerConnection)
 			last.pair = selectedPairTypes(peerConnection)
@@ -747,6 +764,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			gate.setRTT(sctpRTT(peerConnection))
 			rttTicker := time.NewTicker(gateRTTEvery)
 			defer rttTicker.Stop()
+			pathTicker := time.NewTicker(pathLogEvery)
+			defer pathTicker.Stop()
 
 		proxyloop:
 			for {
@@ -767,6 +786,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 					break proxyloop
 				case <-rttTicker.C:
 					gate.setRTT(sctpRTT(peerConnection))
+				case <-pathTicker.C:
+					logPath(peerConnection, "Selected candidate pair stats")
 				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
@@ -898,11 +919,16 @@ type attemptOutcome struct {
 	// began is when the attempt took its offer, and took how long it ran until its outcome.
 	began time.Time
 	took  time.Duration
-	// turn is one of the common.TURN* values, and gatherCut whether the attempt stopped waiting on
-	// ICE gathering at its limit. Both are set once gathering ends, or stay "" and false for an
-	// attempt that didn't get that far.
+	// turn is one of the common.TURN* values, and gatherCut how the attempt stopped waiting on ICE
+	// gathering before it completed: common.GatherCut at its limit, common.GatherAfterRelay after
+	// its first relay candidate, or "" when it completed. Both are set once gathering ends, or stay
+	// "" for an attempt that didn't get that far.
 	turn      string
-	gatherCut bool
+	gatherCut string
+	// natFail is how long the attempt waits for its data channel (see natFailWindow), set when it
+	// takes its offer. Zero for an attempt that didn't get that far, which addTo reports with the
+	// worker's NATFailTimeout.
+	natFail time.Duration
 	// pair is the selected candidate pair's types (see common.PairTypes) for a connected attempt.
 	pair string
 }
@@ -917,7 +943,7 @@ func (o *attemptOutcome) begin(offerID, vpn string) {
 // moment. Call it before the peer connection is closed.
 func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
 	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn, began: o.began,
-		turn: o.turn, gatherCut: o.gatherCut}
+		turn: o.turn, gatherCut: o.gatherCut, natFail: o.natFail}
 	if !o.began.IsZero() {
 		o.took = time.Since(o.began)
 	}
@@ -928,7 +954,8 @@ func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
 }
 
 // addTo puts the recorded outcome on a genesis form, once: each outcome is reported with the
-// genesis message that follows it and then cleared.
+// genesis message that follows it and then cleared. natFailTimeout is the worker's, reported for
+// an attempt that didn't note its own window.
 func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	if o.outcome == "" {
 		return
@@ -936,6 +963,9 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	form.Set(common.PrevOutcomeField, o.outcome)
 	form.Set(common.PrevICEStateField, o.iceState)
 	form.Set(common.PrevPCStateField, o.pcState)
+	if o.natFail > 0 {
+		natFailTimeout = o.natFail
+	}
 	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
 	if o.offerID != "" {
 		form.Set(common.PrevOfferIDField, o.offerID)
@@ -952,8 +982,8 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 	if o.turn != "" {
 		form.Set(common.PrevTURNField, o.turn)
 	}
-	if o.gatherCut {
-		form.Set(common.PrevGatherCutField, common.GatherCut)
+	if o.gatherCut != "" {
+		form.Set(common.PrevGatherCutField, o.gatherCut)
 	}
 	if o.pair != "" {
 		form.Set(common.PrevPairField, o.pair)
@@ -962,11 +992,25 @@ func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
 }
 
 // gathered notes how the attempt's ICE gathering ended: whether Freddie gave it TURN servers and
-// it got a relay candidate from them (turnResult), and whether the wait for it was cut short.
+// it got a relay candidate from them (turnResult), and how the wait for it ended (gatherCutValue).
 // Servers that couldn't even be configured count as had, so their failure shows as missing.
-func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, completed bool) {
+func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, end gatherEnd) {
 	o.turn = turnResult(hadTURN, cands)
-	o.gatherCut = !completed
+	o.gatherCut = gatherCutValue(end)
+}
+
+// gatherCutValue is the common.PrevGatherCutField value for a wait that ended with end. A wait
+// that went on after the first relay is a cut too, since gathering hadn't completed, but it is
+// reported apart from one that ran to its limit (see common.GatherAfterRelay).
+func gatherCutValue(end gatherEnd) string {
+	switch end {
+	case gatherAfterRelay:
+		return common.GatherAfterRelay
+	case gatherCapped:
+		return common.GatherCut
+	default:
+		return ""
+	}
 }
 
 // sdpHasRelay reports whether an SDP carries a relay candidate.

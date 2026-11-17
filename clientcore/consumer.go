@@ -137,7 +137,13 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
 			}
 
-			api, err := newWebRTCAPI(iceNetOf(options), options.Tuning.checkingFor(options.NATFailTimeout))
+			// pion sizes its checks when it creates the ICE agent, from the API built here, before
+			// state 1 knows whether this attempt will answer a room genesis with TURN servers and wait
+			// natFailWindow's longer window. So a consumer that may answer one, because it has room
+			// tickets or will wait for them, checks for the longer window on every attempt. On a pool
+			// attempt the extra checks cost nothing (see checkingFor).
+			mayGetRoomTURN := ticketed || options.ConsumerRoomsOnly
+			api, err := newWebRTCAPI(iceNetOf(options), options.Tuning.checkingFor(natFailWindow(options.NATFailTimeout, mayGetRoomTURN)))
 			if err != nil {
 				slog.Debug("Error creating WebRTC API", "error", err)
 				return 0, []any{}
@@ -516,17 +522,17 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// timeout on an unreachable server. Until then the producer's NAT drops our checks, and
 			// pion's controlling agent gives up on a pair after maxBindingRequests unanswered checks
 			// (about 1.6s) and never rechecks it, even once the producer's checks arrive.
-			// With a room pairing's TURN servers, gathering may be held by a blocked one, so it is
-			// bounded and we go on with what it has gathered (see turnGatherWait).
+			// With a room pairing's TURN servers, gathering may be held by a blocked or stalled one,
+			// so it is bounded, and we go on with what it has gathered shortly after the first relay
+			// candidate or at the limit (see turnGatherWait and turnRelayGrace).
 			var gatherLimit time.Duration
+			var firstRelay <-chan struct{}
 			if peerConnection == turnPC {
 				gatherLimit = turnGatherWait
+				firstRelay = gathered.firstRelay()
 			}
-			if awaitGathering(gatherComplete, gatherLimit) {
-				slog.Debug("ICE gathering complete!")
-			} else {
-				slog.Debug("ICE gathering still running, going on with the candidates gathered so far", "waited", gatherLimit)
-			}
+			gatherStart := time.Now()
+			logGatherEnd(awaitGathering(gatherComplete, firstRelay, turnRelayGrace, gatherLimit), time.Since(gatherStart))
 			candidates := gathered.snapshot()
 			slog.Debug("Local candidates", "counts", candidateCounts(candidates))
 
@@ -673,14 +679,16 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionClosed := input[3].(chan struct{})
 			slog.Debug("Consumer state 4, signaling complete!")
 
-			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, options.NATFailTimeout, options.ConnectGrace)
+			natFail := natFailWindow(options.NATFailTimeout, peerConnection == turnPC)
+			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, natFail, options.ConnectGrace)
 			if !ok {
-				slog.Debug("NAT failure, aborting!")
+				slog.Debug("NAT failure, aborting!", "nat_fail_window", natFail)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
 			slog.Debug("A WebRTC connection has been established!")
+			logPath(peerConnection, "Connected, selected candidate pair")
 			return 5, []interface{}{peerConnection, d, connectionChange, connectionClosed}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -774,6 +782,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			sendHello()
 			helloTicker := time.NewTicker(controlFrameEvery)
 			defer helloTicker.Stop()
+			pathTicker := time.NewTicker(pathLogEvery)
+			defer pathTicker.Stop()
 
 		proxyloop:
 			for {
@@ -796,6 +806,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					gate.setRTT(sctpRTT(peerConnection))
 				case <-helloTicker.C:
 					sendHello()
+				case <-pathTicker.C:
+					logPath(peerConnection, "Selected candidate pair stats")
 				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
