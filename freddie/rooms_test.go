@@ -10,7 +10,9 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -390,6 +392,83 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 	}
 	if roomMatches != 3 {
 		t.Errorf("room_match counted %d genesis messages, want 3 (two matched, one not)", roomMatches)
+	}
+}
+
+// TestGenesisReoffers_LeaveNoTraceOnSpans: with the cap on, an unanswered pool genesis is
+// re-offered and a room genesis never is, so its span mustn't show the re-offers, or a span
+// without them would single out a paired volunteer.
+func TestGenesisReoffers_LeaveNoTraceOnSpans(t *testing.T) {
+	spans := tracetest.NewSpanRecorder()
+	prevTP := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
+	t.Cleanup(func() { otel.SetTracerProvider(prevTP) })
+
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k) // after the provider, so New picks it up
+	s.f.SetGenesisFanout(1)
+	paired := s.subscribe("", "", k.ticket(pairingP, helperticket.RoleInviter, ticketOK))
+	s.subscribe("", "")
+	s.waitForConsumers(2)
+
+	// Each producer waits past the first re-offer for an offer nobody sends.
+	post := func(form url.Values) {
+		form.Set("data", "{}")
+		form.Set("type", strconv.Itoa(int(common.SignalMsgGenesis)))
+		if form.Get("send-to") == "" {
+			form.Set("send-to", common.SignalSendToGenesis)
+		}
+		ctx, cancel := context.WithTimeout(s.ctx, genesisReofferInterval*3/2)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/v1/signal", strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set(common.VersionHeader, common.Version)
+		if res, err := http.DefaultClient.Do(req); err == nil {
+			res.Body.Close()
+		}
+	}
+	rooms := roomGenesisForm([]string{k.ticket(pairingP, helperticket.RoleVolunteer, ticketOK)}, nil)
+	rooms.Set("send-to", common.SignalSendToGenesisRooms)
+	// The room genesis is delivered before the pool one is posted: the pool broadcast can pick
+	// the paired consumer too, and its message arriving first, or arriving while that handler
+	// is still writing, would make the room delivery check depend on timing. Both producers
+	// still wait past the re-offer interval together.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		post(rooms)
+	}()
+	s.expectFrom("paired", paired, true)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		post(url.Values{})
+	}()
+	wg.Wait()
+	s.hangUp()
+
+	var events [][]string
+	for _, sp := range spans.Ended() {
+		if sp.Name() != "handleSignalPost" {
+			continue
+		}
+		names := []string{}
+		for _, ev := range sp.Events() {
+			names = append(names, ev.Name)
+		}
+		slices.Sort(names)
+		events = append(events, names)
+	}
+	if len(events) != 2 {
+		t.Fatalf("recorded %d genesis spans, want 2", len(events))
+	}
+	if !slices.Equal(events[0], events[1]) {
+		t.Errorf("a room genesis's span and a pool genesis's differ in events: %v and %v", events[0], events[1])
 	}
 }
 

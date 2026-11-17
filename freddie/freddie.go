@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -45,6 +46,12 @@ const (
 	defaultMsgTTL         = 5
 	remoteICEGatheringTTL = 15
 )
+
+// genesisReofferInterval is how long a capped pool genesis waits for an offer before Freddie offers
+// it to another sample of waiting consumers (see Freddie.SetGenesisFanout). A consumer offers about
+// half a second after it takes a genesis, so a sample that would answer usually has by then, and a
+// volunteer's genesis reaches a fresh sample each interval until one does or defaultMsgTTL ends.
+const genesisReofferInterval = time.Second
 
 var (
 	consumerTable = newConsumerIndex(0)
@@ -151,6 +158,9 @@ type consumerIndex struct {
 	byCountry map[string]map[string]struct{} // country -> set of userIDs
 	rooms     map[string][]string            // userID -> rooms, only for users in at least one
 	byRoom    map[string]map[string]struct{} // room -> set of userIDs
+	// fanout, when positive, is how many waiting consumers a pool genesis goes to, at most (see
+	// BroadcastGenesis). Zero sends it to all of them.
+	fanout atomic.Int64
 }
 
 func newConsumerIndex(bufferSz int) *consumerIndex {
@@ -219,17 +229,26 @@ func (t *consumerIndex) Delete(userID string) {
 	delete(t.rooms, userID)
 }
 
-// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to every user
-// indexed under one of countries. It returns the number of users the message was delivered to.
-func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int {
+// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to the users
+// indexed under one of countries, stopping once limit have taken it if limit is positive. It
+// returns the number of users the message was delivered to. A capped message starts at a random
+// one of countries, so a producer's later targets aren't starved by its first.
+func (t *consumerIndex) broadcastToCountries(msg string, countries []string, limit int) int {
 	t.RLock()
 	defer t.RUnlock()
 	delivered := 0
-	for _, country := range countries {
-		for userID := range t.byCountry[country] {
+	start := 0
+	if limit > 0 && len(countries) > 1 {
+		start = rand.IntN(len(countries))
+	}
+	for i := range countries {
+		for userID := range t.byCountry[countries[(start+i)%len(countries)]] {
 			select {
 			case t.Data[userID] <- msg:
 				delivered++
+				if delivered == limit {
+					return delivered
+				}
 			default:
 			}
 		}
@@ -237,20 +256,52 @@ func (t *consumerIndex) broadcastToCountries(msg string, countries []string) int
 	return delivered
 }
 
+// broadcastUpTo is Broadcast, stopping once limit users have taken msg if limit is positive.
+// Each range over a map starts at a random point, so a capped message goes to the waiting users
+// after a different one each time.
+func (t *consumerIndex) broadcastUpTo(msg string, limit int) {
+	if limit <= 0 {
+		t.Broadcast(msg)
+		return
+	}
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	for _, userChan := range t.Data {
+		select {
+		case userChan <- msg:
+			delivered++
+			if delivered == limit {
+				return
+			}
+		default:
+		}
+	}
+}
+
 // BroadcastGenesis broadcasts a genesis message, preferring consumers from targets. If any waiting
 // consumer from a target country takes the message, nobody else gets it; otherwise it falls back to
-// a plain Broadcast to everyone. Targeting is a preference, not a filter: a producer who targets a
+// everyone. Targeting is a preference, not a filter: a producer who targets a
 // country with no waiting consumers must keep receiving offers rather than sit idle. Returns which
 // of the genesis* outcomes occurred.
+//
+// With a fanout set, each step stops once that many waiting consumers have taken the message. A
+// consumer answers one genesis and the first answer wins, so the rest only cost Freddie a write
+// each and the consumers a refused offer, which uncapped is hundreds per answered genesis.
 func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
+	return t.broadcastGenesis(msg, targets, int(t.fanout.Load()))
+}
+
+// broadcastGenesis is BroadcastGenesis with the fanout limit given.
+func (t *consumerIndex) broadcastGenesis(msg string, targets []string, limit int) string {
 	if len(targets) == 0 {
-		t.Broadcast(msg)
+		t.broadcastUpTo(msg, limit)
 		return genesisUntargeted
 	}
-	if t.broadcastToCountries(msg, targets) > 0 {
+	if t.broadcastToCountries(msg, targets, limit) > 0 {
 		return genesisMatched
 	}
-	t.Broadcast(msg)
+	t.broadcastUpTo(msg, limit)
 	return genesisFallback
 }
 
@@ -299,13 +350,18 @@ func (t *consumerIndex) broadcastToRooms(rooms []roomGenesis) int {
 // message from either. Holding the read lock across both would mean nesting read locks, which
 // deadlocks once a writer is waiting between them.
 func (t *consumerIndex) DeliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	return t.deliverGenesis(msg, rooms, servePool, targets, int(t.fanout.Load()))
+}
+
+// deliverGenesis is DeliverGenesis with the pool step's fanout limit given.
+func (t *consumerIndex) deliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string, limit int) (roomMatched bool, outcome string) {
 	if len(rooms) > 0 && t.broadcastToRooms(rooms) > 0 {
 		return true, ""
 	}
 	if !servePool {
 		return false, ""
 	}
-	return false, t.BroadcastGenesis(msg, targets)
+	return false, t.broadcastGenesis(msg, targets, limit)
 }
 
 type Freddie struct {
@@ -365,6 +421,8 @@ type Freddie struct {
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
 	genesisBroadcasts metric.Int64Counter
+	genesisReoffers   metric.Int64Counter
+	genesisAnswered   metric.Int64Counter
 	consumerSubs      metric.Int64Counter
 	roomMatches       metric.Int64Counter
 	roomsDisabled     metric.Int64Counter
@@ -472,8 +530,22 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		return nil, err
 	}
 
+	f.genesisReoffers, err = f.meter.Int64Counter("freddie.genesis.reoffers",
+		metric.WithDescription("capped pool genesis messages offered again to another sample of waiting consumers (see genesisReofferInterval), by the re-offer's country targeting outcome"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisAnswered, err = f.meter.Int64Counter("freddie.genesis.answered",
+		metric.WithDescription("capped pool genesis messages answered with an offer, by how many times each was re-offered first (0, 1, 2 or 3+)"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
 	f.consumerSubs, err = f.meter.Int64Counter("freddie.consumer.subscribes",
-		metric.WithDescription("consumers subscribed to the genesis stream, by whether their country is known"),
+		metric.WithDescription("consumers subscribed to the genesis stream, by country (\"unknown\" when it isn't known) and consumer version"),
 		metric.WithUnit("subscription"))
 	if err != nil {
 		return nil, err
@@ -539,6 +611,13 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 	mux.HandleFunc("GET "+common.VolunteerSocketEndpoint, f.handleVolunteerSocket)
 
 	return &f, nil
+}
+
+// SetGenesisFanout caps how many waiting consumers each pool genesis goes to, both among its
+// target countries and in the fallback to everyone. Zero, the default, sends it to all of them. A
+// room genesis isn't capped: it goes only to its room's consumers. Safe to call while serving.
+func (f *Freddie) SetGenesisFanout(n int) {
+	consumerTable.fanout.Store(int64(max(n, 0)))
 }
 
 func (f *Freddie) ListenAndServe() error {
@@ -765,7 +844,16 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	if f.ConsumerCountry != nil {
 		country = common.NormalizeCountry(f.ConsumerCountry(r))
 	}
-	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(attribute.Bool("country_known", country != "")))
+	// Both are normalized onto fixed sets, so a request can't mint label values.
+	countryLabel := country
+	if countryLabel == "" {
+		countryLabel = "unknown"
+	}
+	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(
+		attribute.Bool("country_known", country != ""),
+		attribute.String("country", countryLabel),
+		attribute.String("consumer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
+	))
 	span.SetAttributes(
 		attribute.String("consumer.id", consumerID),
 		attribute.String("consumer.country", country),
@@ -846,7 +934,8 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		w.Write([]byte(reply.body))
 		return
 	}
-	if res := reply.await(nil); res != "" {
+	// A producer that hangs up stops waiting, so a genesis it left isn't offered again.
+	if res := reply.await(ctx.Done()); res != "" {
 		fmt.Fprintf(w, "%v\n", res)
 		return
 	}
@@ -924,6 +1013,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	// held is the genesis Freddie holds for its rooms' next consumer, if it does.
 	var held *heldGenesis
 	var heldICE []webrtc.ICEServer
+	// reoffer, if set, offers a capped pool genesis to another sample of waiting consumers.
+	var reoffer func() string
 	if isGenesis {
 		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
 		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
@@ -960,6 +1051,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		}
 		var matched bool
 		var outcome string
+		// Read once, so a re-offer goes through the table the genesis was first offered through.
+		table := consumerTable
 		// Over a socket, a rooms-only genesis no room consumer is waiting for is held for the next
 		// to subscribe rather than dropped after defaultMsgTTL. A POST can't wait that long behind
 		// the server's and CDNs' timeouts. The pool never sees a held genesis, so only rooms-only
@@ -967,14 +1060,24 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		if viaSocket && !servePool && len(roomMsgs) > 0 && r.Form.Get(common.HoldField) == "1" {
 			g := &heldGenesis{id: reqID, rooms: roomMsgs, taken: make(chan struct{})}
 			matched = f.heldGeneses.deliverOrHold(g, func() bool {
-				m, _ := consumerTable.DeliverGenesis(string(msg), roomMsgs, false, nil)
+				m, _ := table.DeliverGenesis(string(msg), roomMsgs, false, nil)
 				return m
 			})
 			if !matched {
 				held, heldICE = g, roomICE
 			}
 		} else {
-			matched, outcome = consumerTable.DeliverGenesis(string(msg), roomMsgs, servePool, targets)
+			limit := int(table.fanout.Load())
+			matched, outcome = table.deliverGenesis(string(msg), roomMsgs, servePool, targets, limit)
+			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
+			// one keeps it to itself, as outcome is then "".
+			// It's offered with the limit it was first offered with, so turning the cap off doesn't
+			// turn the re-offers of geneses already waiting into broadcasts to everyone. A consumer
+			// in the genesis's rooms that subscribes later gets the pool message, as any other.
+			if outcome != "" && limit > 0 {
+				genesis := string(msg)
+				reoffer = func() string { return table.broadcastGenesis(genesis, targets, limit) }
+			}
 		}
 		if matched {
 			f.roomGeneses.add(reqID)
@@ -1131,16 +1234,59 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
 		defer signalTable.Delete(reqID)
-		select {
-		case res := <-reqChan:
-			return withICEServers(res, offerICE)
-		case <-time.After(optimizedTTL):
-			span.AddEvent("timeout waiting for response")
-			return ""
-		case <-done:
-			return ""
+		// No re-offer in the TTL's last interval: its consumers' offers would come too late. Taken
+		// before the ticker starts, so the tick that ends that interval is always past it.
+		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
+		var again <-chan time.Time
+		reoffers := 0
+		if reoffer != nil {
+			ticker := time.NewTicker(genesisReofferInterval)
+			defer ticker.Stop()
+			again = ticker.C
+		}
+		timeout := time.NewTimer(optimizedTTL)
+		defer timeout.Stop()
+		for {
+			select {
+			case res := <-reqChan:
+				if reoffer != nil {
+					f.recordGenesisAnswered(ctx, reoffers)
+				}
+				return withICEServers(res, offerICE)
+			case now := <-again:
+				if now.Before(lastReoffer) {
+					reoffers++
+					f.recordGenesisReoffer(ctx, reoffer())
+				}
+			case <-timeout.C:
+				span.AddEvent("timeout waiting for response")
+				return ""
+			case <-done:
+				return ""
+			}
 		}
 	}}
+}
+
+// recordGenesisReoffer counts a capped pool genesis's re-offer, by its targeting outcome. Only the
+// counter records it: a room genesis is never re-offered, so a span without re-offers would single
+// out a paired volunteer.
+func (f *Freddie) recordGenesisReoffer(ctx context.Context, outcome string) {
+	f.genesisReoffers.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
+}
+
+// recordGenesisAnswered counts a capped pool genesis answered after it was re-offered reoffers
+// times.
+func (f *Freddie) recordGenesisAnswered(ctx context.Context, reoffers int) {
+	f.genesisAnswered.Add(ctx, 1, metric.WithAttributes(attribute.String("reoffers", reofferBucket(reoffers))))
+}
+
+// reofferBucket bounds freddie.genesis.answered's reoffers label.
+func reofferBucket(n int) string {
+	if n >= 3 {
+		return "3+"
+	}
+	return strconv.Itoa(n)
 }
 
 // withICEServers returns the signaling message raw with ICEServers set to servers, or raw unchanged

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -302,5 +303,55 @@ func TestRecordSTUNPreflights_LabelsCause(t *testing.T) {
 	}, "result", "cause")
 	if got["no_reply/none"] != 2 {
 		t.Fatalf("a failure that isn't no_socket has no cause, got %v", got)
+	}
+}
+
+// testCounter returns a counter named name and the reader that collects it.
+func testCounter(t *testing.T, name string) (metric.Int64Counter, sdkmetric.Reader) {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	c, err := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test").Int64Counter(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, reader
+}
+
+func TestRecordGenesisReoffer_CountsByTargeting(t *testing.T) {
+	f, err := New(context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reader sdkmetric.Reader
+	f.genesisReoffers, reader = testCounter(t, "freddie.genesis.reoffers")
+	f.recordGenesisReoffer(context.Background(), genesisMatched)
+	f.recordGenesisReoffer(context.Background(), genesisFallback)
+	f.recordGenesisReoffer(context.Background(), genesisFallback)
+
+	got := sumByLabels(t, reader, "targeting")
+	if got[genesisMatched] != 1 || got[genesisFallback] != 2 || len(got) != 2 {
+		t.Errorf("re-offers by targeting = %v, want matched=1 fallback=2", got)
+	}
+}
+
+func TestRecordGenesisAnswered_BucketsReoffers(t *testing.T) {
+	f, err := New(context.Background(), "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reader sdkmetric.Reader
+	f.genesisAnswered, reader = testCounter(t, "freddie.genesis.answered")
+	for _, n := range []int{0, 0, 1, 2, 3, 4, 9} {
+		f.recordGenesisAnswered(context.Background(), n)
+	}
+	got := sumByLabels(t, reader, "reoffers")
+	want := map[string]int64{"0": 2, "1": 1, "2": 1, "3+": 3}
+	if len(got) != len(want) {
+		t.Fatalf("answered by reoffers = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("answered after %s re-offers = %d, want %d", k, got[k], v)
+		}
 	}
 }

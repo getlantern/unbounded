@@ -3,6 +3,7 @@ package freddie
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +62,77 @@ func TestConsumerIndex_BroadcastGenesis(t *testing.T) {
 	}
 	if !received(ru) || received(ir) || received(anon) {
 		t.Error("multi-country targeting should reach only the RU consumer")
+	}
+}
+
+// TestConsumerIndex_GenesisFanout: with a fanout set, a pool genesis goes to at most that many
+// waiting consumers, among its target countries and in the fallback, and to a varying sample of
+// them; with none set it goes to all.
+func TestConsumerIndex_GenesisFanout(t *testing.T) {
+	idx := newConsumerIndex(1)
+	var ir, all []chan string
+	for i := range 20 {
+		c := idx.AddWithCountry(fmt.Sprintf("ir%d", i), "IR")
+		ir = append(ir, c)
+		all = append(all, c)
+	}
+	for i := range 20 {
+		all = append(all, idx.AddWithCountry(fmt.Sprintf("ru%d", i), "RU"))
+	}
+	took := func(cs []chan string) int {
+		n := 0
+		for _, c := range cs {
+			if received(c) {
+				n++
+			}
+		}
+		return n
+	}
+
+	idx.fanout.Store(3)
+	if got := idx.BroadcastGenesis("m", []string{"IR"}); got != genesisMatched {
+		t.Fatalf("targeted IR: got %q, want %q", got, genesisMatched)
+	}
+	if n := took(all); n != 3 {
+		t.Errorf("a targeted genesis reached %d consumers, want 3", n)
+	}
+	if got := idx.BroadcastGenesis("m", []string{"CN"}); got != genesisFallback {
+		t.Fatalf("targeted CN: got %q, want %q", got, genesisFallback)
+	}
+	if n := took(all); n != 3 {
+		t.Errorf("a fallback genesis reached %d consumers, want 3", n)
+	}
+	reached := make(map[chan string]bool)
+	for range 20 {
+		idx.BroadcastGenesis("m", nil)
+		for _, c := range all {
+			if received(c) {
+				reached[c] = true
+			}
+		}
+	}
+	if len(reached) <= 3 {
+		t.Errorf("20 capped geneses all went to the same %d consumers", len(reached))
+	}
+
+	// A capped genesis targeting two countries reaches the second as well as the first.
+	ru := all[len(ir):]
+	ruReached := false
+	for range 20 {
+		idx.BroadcastGenesis("m", []string{"IR", "RU"})
+		if took(ru) > 0 {
+			ruReached = true
+		}
+		took(ir)
+	}
+	if !ruReached {
+		t.Error("20 capped geneses targeting IR,RU never reached an RU consumer")
+	}
+
+	idx.fanout.Store(0)
+	idx.BroadcastGenesis("m", []string{"IR"})
+	if n := took(ir); n != len(ir) {
+		t.Errorf("uncapped, a targeted genesis reached %d of %d IR consumers", n, len(ir))
 	}
 }
 
@@ -522,5 +594,61 @@ func TestConsumerIndex_DeleteCleansRooms(t *testing.T) {
 	if idx.Size() != 0 || len(idx.rooms) != 0 || len(idx.byRoom) != 0 || len(idx.byCountry) != 0 {
 		t.Errorf("index not empty after deleting everyone: size=%d rooms=%d byRoom=%d byCountry=%d",
 			idx.Size(), len(idx.rooms), len(idx.byRoom), len(idx.byCountry))
+	}
+}
+
+// TestGenesisReofferedUntilAnswered: a capped pool genesis no consumer answers is offered to
+// another sample each genesisReofferInterval, so a volunteer's genesis keeps reaching consumers
+// rather than waiting out its TTL with the first few.
+func TestGenesisReofferedUntilAnswered(t *testing.T) {
+	s := startTestServer(t, func(*http.Request) string { return "" })
+	s.f.SetGenesisFanout(2)
+	reoffers, reader := testCounter(t, "freddie.genesis.reoffers")
+	s.f.genesisReoffers = reoffers
+	var consumers []chan string
+	for range 12 {
+		consumers = append(consumers, s.subscribe("", ""))
+	}
+	s.waitForConsumers(12)
+	// The producer waits for an offer, as a real one does: one that hangs up isn't re-offered.
+	ctx, cancel := context.WithTimeout(s.ctx, 3*genesisReofferInterval)
+	defer cancel()
+	form := url.Values{
+		"data":    {"{}"},
+		"send-to": {common.SignalSendToGenesis},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.url+"/v1/signal", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(common.VersionHeader, common.Version)
+	go func() {
+		if res, err := http.DefaultClient.Do(req); err == nil {
+			res.Body.Close()
+		}
+	}()
+	reached := func() int {
+		n := 0
+		for _, c := range consumers {
+			select {
+			case <-c:
+				n++
+			default:
+			}
+		}
+		return n
+	}
+	time.Sleep(genesisReofferInterval / 2)
+	if n := reached(); n != 2 {
+		t.Fatalf("the first offer reached %d consumers, want the fanout of 2", n)
+	}
+	time.Sleep(genesisReofferInterval * 2)
+	if n := reached(); n < 2 {
+		t.Fatalf("no consumer was offered the unanswered genesis again (%d reached)", n)
+	}
+	if got := sumByLabels(t, reader, "targeting"); got[genesisUntargeted] < 1 || len(got) != 1 {
+		t.Errorf("re-offers by targeting = %v, want at least one untargeted", got)
 	}
 }
