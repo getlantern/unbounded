@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -187,6 +188,28 @@ func TestClassifyMessage_ICEMsgICECandidates(t *testing.T) {
 	}
 	n, ok := classifyMessage(common.SignalMsgICE, string(b))
 	want := peerNAT{role: "consumer", class: natClass{nat: natUndetermined}, candidates: 2, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+}
+
+// Candidates as pion's ice.Candidate.Marshal writes them, the form a bare ICE session sends, so a
+// change to pion's format shows up here.
+func TestClassifyMessage_PionMarshaledCandidates(t *testing.T) {
+	marshal := func(line string) string {
+		t.Helper()
+		c, err := ice.UnmarshalCandidate(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Marshal()
+	}
+	n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		marshal("candidate:1 1 udp 2130706431 10.0.2.2 5000 typ host"),
+		marshal("candidate:2 1 udp 1694498815 198.51.100.7 5000 typ srflx raddr 10.0.2.2 rport 5000"),
+		marshal("candidate:3 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.7 rport 5000"),
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 3, relay: true}
 	if !ok || n != want {
 		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
 	}

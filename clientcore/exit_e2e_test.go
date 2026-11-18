@@ -245,14 +245,14 @@ func TestDirectExitEndToEnd(t *testing.T) {
 		// personal.
 		personal bool
 		// pairing, if set, gives the producer a volunteer ticket for testPairingP and has Freddie
-		// deliver its pool genesis through pairing's room. Only its own pairing makes the session
-		// personal.
+		// deliver its pool genesis through pairing's room, so the consumer's offer names pairing.
+		// The session stays a pool session even for the producer's own pairing.
 		pairing string
 	}{
 		{"punched", vnet.EndpointIndependent, false, false, ""},
 		{"relayed", vnet.EndpointAddrPortDependent, true, false, ""},
 		{"personal", vnet.EndpointIndependent, false, true, ""},
-		{"pool genesis to its room", vnet.EndpointIndependent, false, true, testPairingP},
+		{"pool genesis to its room", vnet.EndpointIndependent, false, false, testPairingP},
 		{"pool genesis to another room", vnet.EndpointIndependent, false, false, testPairingQ},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

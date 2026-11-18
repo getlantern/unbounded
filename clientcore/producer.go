@@ -857,11 +857,13 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			offer := input[1].(common.OfferMsg)
 			servers := input[2].([]webrtc.ICEServer)
 			roomTURN := input[3].(bool)
-			// A pool genesis can still reach a consumer in one of the producer's rooms, whose offer
-			// then echoes the pairing Freddie stamped on that room's genesis. offerPairing checks it
-			// against the producer's own volunteer tickets, so a consumer can't claim one, and the
-			// session is personal too.
-			personal := input[4].(bool) || offerPairing(options, offer.Pairing) != ""
+			// The session is the kind of the genesis it answers, which Freddie's routing attests: a
+			// rooms-only genesis reaches only the producer's rooms. The offer's Pairing can't upgrade
+			// a pool genesis's session, though Freddie may hand one to a consumer in those rooms: the
+			// consumer writes Pairing, and Freddie forwards offers unchecked, so it proves only that
+			// the consumer knows a pairing ID. Giving such a friend the personal policy would take
+			// Freddie stamping the room's pairing on the offer's envelope, as it does a genesis's.
+			personal := input[4].(bool)
 			slog.Debug("Producer state 6, direct exit handshake...")
 			last.begin(replyTo, vpnStatus(options))
 			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)

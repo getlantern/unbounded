@@ -10,12 +10,10 @@ import (
 // them nil. Ready, Params and OnSession run on the signaling path, so they must be cheap and must
 // not block.
 //
-// Each session is personal or pool. A personal session's genesis went to the producer's rooms
-// alone, so only a consumer in one of them (a friend) could take it, or its offer came through one
-// of those rooms, as its pairing shows. Every other session is a pool session, whose consumer may
-// be anyone (a stranger). The embedder decides what each kind may reach. Ready is asked about the
-// genesis's kind, and Params and Serve about the session's, which an offer through a room can make
-// personal.
+// Each session is personal or pool, by the genesis it answers. A personal session's genesis went
+// to the producer's rooms alone, so Freddie offered it only to consumers in them (friends). Every
+// other genesis may reach any consumer (a stranger), and its sessions are pool sessions, even one
+// that Freddie happened to hand to a friend. The embedder decides what each kind may reach.
 type ExitOptions struct {
 	// Ready reports whether the producer can exit a session of this kind now. While it can, each
 	// genesis of that kind offers a direct exit (see common.GenesisMsg.DirectExit).

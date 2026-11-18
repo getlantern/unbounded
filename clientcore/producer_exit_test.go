@@ -305,20 +305,18 @@ func TestProducerOfferKeepsItsGenesisKind(t *testing.T) {
 	}
 }
 
-// A pool genesis can still reach a consumer in one of the producer's rooms. Its offer then carries
-// the room's pairing, which Freddie stamped on the genesis, and is personal if the pairing is one
-// of the producer's own volunteer tickets. Any other claim leaves it pool.
-func TestProducerPoolGenesisOfferFromItsRoom(t *testing.T) {
+// A pool genesis's session is a pool session whatever pairing its offer names, even the
+// producer's real one: the consumer writes the offer's Pairing, and Freddie forwards it unchecked,
+// so it proves only that the consumer knows the pairing ID.
+func TestProducerPoolGenesisOfferStaysPool(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		ticket   string
-		pairing  string
-		personal bool
+		name    string
+		ticket  string
+		pairing string
 	}{
-		{"matching pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingP, true},
-		{"another pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingQ, false},
-		{"no pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), "", false},
-		{"an inviter ticket", volunteerTicket(t, testPairingP, helperticket.RoleInviter), testPairingP, false},
+		{"the producer's real pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingP},
+		{"another pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingQ},
+		{"no pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewDefaultWebRTCOptions()
@@ -339,8 +337,8 @@ func TestProducerPoolGenesisOfferFromItsRoom(t *testing.T) {
 			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 			next, _ = fsm.state[6](context.Background(), fsm.com, input)
 			assert.Equal(t, 0, next)
-			assert.Equal(t, []bool{false, tc.personal}, asked, "the genesis, then state 6's recheck")
-			assert.Equal(t, []bool{tc.personal}, minted)
+			assert.Equal(t, []bool{false, false}, asked, "the genesis, then state 6's recheck")
+			assert.Equal(t, []bool{false}, minted)
 		})
 	}
 }
