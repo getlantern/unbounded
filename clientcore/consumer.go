@@ -54,7 +54,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 // newConsumerWebRTCSlot is newConsumerWebRTC reporting the worker's slot to
 // report, if non-nil: connected with its pairing when a connection opens, and
 // disconnected when it ends.
-func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string)) *WorkerFSM {
+func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool)) *WorkerFSM {
 	var scache STUNCache
 	// listPausedUntil is when a consumer with a mapped address next fetches the STUN list after
 	// a failed fetch.
@@ -78,7 +78,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// relays. Like pairing, it needs no lock.
 	var turnPC *webrtc.PeerConnection
 	if report == nil {
-		report = func(bool, string) {}
+		report = func(bool, string, bool) {}
 	}
 
 	return NewWorkerFSM(wg, []FSMstate{
@@ -280,6 +280,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			roomPairings := map[string]string{}
 			// The TURN servers Freddie stamped on each room candidate, by ReplyTo. Never logged.
 			roomICE := map[string][]webrtc.ICEServer{}
+			// The genesis messages that offered a direct exit, by ReplyTo.
+			directExits := map[string]bool{}
 
 		listenLoop:
 			for {
@@ -306,10 +308,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 						return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 					}
 
-					msg, _, err := common.DecodeSignal(rawMsg)
+					msg, payload, err := common.DecodeSignal(rawMsg)
 					if err != nil {
 						// Not the raw message: a room genesis carries its pairing.
-						slog.Debug("Error decoding signal message", "error", err, "bytes", len(rawMsg))
+						slog.Debug("Error decoding signal message", "bytes", len(rawMsg))
 						sleepOrDone(ctx, options.ErrorBackoff)
 						if ctx.Err() != nil {
 							// Cancelled during backoff: hand control back to the FSM
@@ -334,6 +336,9 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 					// TODO: post-MVP, evaluate the genesis message for suitability!
 					genesisCandidates = append(genesisCandidates, msg.ReplyTo)
+					if g, ok := payload.(common.GenesisMsg); ok && g.DirectExit {
+						directExits[msg.ReplyTo] = true
+					}
 					if msg.IsRoomGenesis() {
 						roomCandidates = append(roomCandidates, msg.ReplyTo)
 						if p := msg.RoomPairing(); p != "" {
@@ -364,6 +369,14 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// The pick comes first so a room pairing's TURN servers are in place before the offer.
 			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
 			pairing = roomPairings[replyTo]
+			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
+			// take one. The session needs no peer connection. It gets the peer connection's STUN
+			// servers, from state 0, and the room's TURN servers.
+			if directExits[replyTo] && takeExit(options) {
+				servers := slices.Concat(peerConnection.GetConfiguration().ICEServers, roomICE[replyTo])
+				_ = peerConnection.Close()
+				return 6, []interface{}{replyTo, servers, len(roomICE[replyTo]) > 0}
+			}
 			if servers := roomICE[replyTo]; len(servers) > 0 {
 				turnPC = peerConnection
 				if err := addICEServers(peerConnection, servers); err != nil {
@@ -490,14 +503,14 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// Looks like we got some kind of response. Should be an answer SDP in a SignalMsg
 			replyTo, answer, err := common.DecodeSignalMsg(answerBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "msg", string(answerBytes))
+				slog.Debug("Error decoding signal message", "bytes", len(answerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// TODO: here we assume valid answer SDP, but we need to handle the invalid case too
 			answerSDP, ok := answer.(webrtc.SessionDescription)
 			if !ok {
-				slog.Debug("Signal message is not an answer", "msg", string(answerBytes))
+				slog.Debug("Signal message is not an answer", "bytes", len(answerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -702,8 +715,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
 			rooms.succeeded()
-			report(true, pairing)
-			defer report(false, "")
+			report(true, pairing, false)
+			defer report(false, "", false)
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -834,6 +847,191 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			peerConnection.Close() // TODO: there's an err we should handle here
 			return 0, []interface{}{}
 		}),
+		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
+			// State 6: a direct exit's ICE handshake
+			// input[0]: string (reply-to UUID)
+			// input[1]: []webrtc.ICEServer (the STUN cohort, and a room pairing's TURN relays)
+			// input[2]: bool (whether input[1] has a room pairing's TURN relays)
+			replyTo := input[0].(string)
+			servers := input[1].([]webrtc.ICEServer)
+			roomTURN := input[2].(bool)
+			slog.Debug("Consumer state 6, direct exit handshake...")
+
+			// As in state 2: until Freddie accepts the offer, the attempt hasn't tested its producer.
+			offerAccepted := false
+			defer func() {
+				if !offerAccepted {
+					rooms.abandoned()
+				}
+			}()
+
+			natFail := natFailWindow(options.NATFailTimeout, roomTURN)
+			s, err := newICESession(options, true, servers, natFail)
+			if err != nil {
+				slog.Debug("Error creating ICE session", "error", err)
+				return 0, []interface{}{}
+			}
+			ufrag, pwd, err := s.credentials()
+			if err != nil {
+				slog.Debug("Error reading ICE credentials", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			offerJSON, err := json.Marshal(common.OfferMsg{
+				ICE:     &common.ICEOffer{Ufrag: ufrag, Pwd: pwd},
+				Tag:     options.Tag,
+				Country: options.ConsumerCountry,
+				Pairing: pairing,
+			})
+			if err != nil {
+				slog.Debug("Error marshaling JSON", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			status, answerBytes, err := postSignalTo(ctx, options, replyTo, common.SignalMsgOffer, offerJSON)
+			// As in state 2, a 200 means the producer took our offer, even if its body then fails.
+			if status == http.StatusOK {
+				offerAccepted = true
+			}
+			if err != nil {
+				slog.Debug("Couldn't signal the direct exit offer", "error", err)
+				sleepOrDone(ctx, options.ErrorBackoff)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			switch status {
+			case http.StatusOK:
+			case http.StatusNotFound:
+				slog.Debug("Too late for genesis message", "status_code", status)
+				_ = s.Close()
+				return 0, []interface{}{}
+			default:
+				slog.Debug("Unexpected http status code", "status_code", status)
+				sleepOrDone(ctx, options.ErrorBackoff)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if len(answerBytes) == 0 {
+				slog.Debug("No answer for our direct exit offer!")
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			// Never logged: the answer carries the session's credentials and the producer's
+			// addresses.
+			answerReplyTo, msg, err := common.DecodeSignalMsg(answerBytes)
+			answer, ok := msg.(common.ICEAnswer)
+			if err != nil || !ok {
+				slog.Debug("Signal message is not a direct exit answer")
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if answer.Ufrag == "" || answer.Pwd == "" || answer.CertPin == "" || answer.Password == "" || len(answer.Candidates) == 0 {
+				slog.Debug("Direct exit answer is incomplete, aborting!")
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			var gatherLimit time.Duration
+			if roomTURN {
+				gatherLimit = turnGatherWait
+			}
+			gatherStart := time.Now()
+			candidates, end, err := s.gather(ctx, gatherLimit)
+			if err != nil {
+				slog.Debug("Error gathering ICE candidates", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			logGatherEnd(end, time.Since(gatherStart))
+			if nonHost, _ := summarizeICECandidates(candidates); !nonHost {
+				if !cohortDropped {
+					scache.drop()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				}
+				if !iceNetOf(options).mapped() {
+					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+					_ = s.Close()
+					return 0, []interface{}{}
+				}
+			}
+
+			iceJSON, err := json.Marshal(common.ICEMsg{ICECandidates: candidates, ConsumerSessionID: options.ConsumerSessionID})
+			if err != nil {
+				slog.Debug("Error marshaling JSON", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			status, _, err = postSignalTo(ctx, options, answerReplyTo, common.SignalMsgICE, iceJSON)
+			if err != nil {
+				slog.Debug("Couldn't signal ICE candidates", "error", err)
+				sleepOrDone(ctx, options.ErrorBackoff)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if status != http.StatusOK {
+				slog.Debug("Signaling partner hung up, aborting!", "status_code", status)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			// The producer has our candidates now, so its checks start alongside ours.
+			if err := s.addRemote(answer.Candidates); err != nil {
+				slog.Debug("Error adding ICE candidates", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			connectCtx, cancel := context.WithTimeout(ctx, natFail)
+			err = s.connect(connectCtx, answer.Ufrag, answer.Pwd)
+			cancel()
+			if err != nil {
+				slog.Debug("NAT failure, aborting!", "nat_fail_window", natFail)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			slog.Debug("A direct exit session has been established!", "relayed", s.relayed())
+			return 7, []interface{}{s, answer.CertPin, answer.Password}
+		}),
+		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
+			// State 7: a direct exit session, handed to the embedder until it ends
+			// input[0]: *iceSession
+			// input[1]: string (the exit's certificate pin)
+			// input[2]: string (the session's password)
+			s := input[0].(*iceSession)
+			certPin := input[1].(string)
+			password := input[2].(string)
+			slog.Debug("Consumer state 7...")
+			select {
+			case <-s.done():
+				// It ended between the handshake and now: nothing to hand off.
+				slog.Debug("Direct exit session ended before handoff, resetting!")
+				_ = s.Close()
+				return 0, []interface{}{}
+			default:
+			}
+			rooms.succeeded()
+			report(true, pairing, true)
+			defer report(false, "", false)
+
+			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: s.relayed()})
+
+		exitloop:
+			for {
+				select {
+				case <-s.done():
+					slog.Debug("Direct exit session ended, resetting!")
+					break exitloop
+				case <-com.rx:
+					// The QUIC layer has no peer on this path, so whatever it sends here is dropped.
+				case <-ctx.Done():
+					break exitloop
+				}
+			}
+			_ = s.Close()
+			return 0, []interface{}{}
+		}),
 	})
 }
 
@@ -859,6 +1057,16 @@ func subscribeRequest(ctx context.Context, options *WebRTCOptions, tickets []str
 	}
 	slog.Debug("Subscribing to the genesis stream", "room_tickets", len(tickets))
 	return req, nil
+}
+
+// postSignalTo POSTs a consumer's signaling message of type typ to sendTo, and returns Freddie's
+// status and reply.
+func postSignalTo(ctx context.Context, options *WebRTCOptions, sendTo string, typ common.SignalMsgType, data []byte) (int, []byte, error) {
+	return postSignal(ctx, options, url.Values{
+		"data":    {string(data)},
+		"send-to": {sendTo},
+		"type":    {strconv.Itoa(int(typ))},
+	})
 }
 
 // roomTicketPoll is how often a rooms-only consumer without room tickets looks for them again.

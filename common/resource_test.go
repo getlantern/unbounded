@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/pion/webrtc/v4"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The 3-element form is what every release before the consumer-country field
@@ -431,4 +433,88 @@ func TestSignalMsg_ICEServersRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(out.ICEServers, in.ICEServers) {
 		t.Fatalf("got %+v, want %+v", out.ICEServers, in.ICEServers)
 	}
+}
+
+func TestGenesisMsgDirectExitOmittedWhenFalse(t *testing.T) {
+	b, err := json.Marshal(GenesisMsg{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "DirectExit", "an old producer's genesis must be byte-identical")
+
+	b, err = json.Marshal(GenesisMsg{DirectExit: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"DirectExit":true`)
+
+	var g GenesisMsg
+	require.NoError(t, json.Unmarshal([]byte(`{"PathAssertion":{}}`), &g))
+	assert.False(t, g.DirectExit)
+}
+
+func TestOfferMsgICEOmittedWhenNil(t *testing.T) {
+	b, err := json.Marshal(OfferMsg{Tag: "t"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), `"ICE"`, "an SDP offer must be byte-identical")
+
+}
+
+// An ICE offer's SDP is the zero SessionDescription, which pion writes with type "unknown" and
+// then refuses to read back. DecodeSignal must still read the offer.
+func TestDecodeSignalICEOffer(t *testing.T) {
+	want := OfferMsg{ICE: &ICEOffer{Ufrag: "u", Pwd: "p"}, Tag: "t", Country: "IR", Pairing: "pair"}
+	_, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgOffer, want))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestDecodeSignalSDPOfferUnchanged(t *testing.T) {
+	want := OfferMsg{SDP: webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: "v=0\r\n"}, Tag: "t"}
+	_, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgOffer, want))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func signalBytes(t *testing.T, typ SignalMsgType, payload any) []byte {
+	t.Helper()
+	p, err := json.Marshal(payload)
+	require.NoError(t, err)
+	raw, err := json.Marshal(SignalMsg{ReplyTo: "r", Type: typ, Payload: string(p)})
+	require.NoError(t, err)
+	return raw
+}
+
+func TestDecodeSignalICEAnswer(t *testing.T) {
+	want := ICEAnswer{
+		Ufrag:      "u",
+		Pwd:        "p",
+		Candidates: []string{"1 1 udp 2130706431 10.0.0.2 5000 typ host"},
+		CertPin:    "pin",
+		Password:   "pw",
+	}
+	replyTo, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgAnswer, ICEAnswerMsg{ICE: &want}))
+	require.NoError(t, err)
+	assert.Equal(t, "r", replyTo)
+	assert.Equal(t, want, got)
+}
+
+func TestDecodeSignalSDPAnswerUnchanged(t *testing.T) {
+	want := webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: "v=0\r\n"}
+	_, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgAnswer, want))
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+}
+
+func TestICEMsgCandidatesOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(ICEMsg{ConsumerSessionID: "s"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "ICECandidates")
+
+	_, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgICE, ICEMsg{ICECandidates: []string{"c"}, ConsumerSessionID: "s"}))
+	require.NoError(t, err)
+	assert.Equal(t, ICEMsg{ICECandidates: []string{"c"}, ConsumerSessionID: "s"}, got)
+}
+
+// A direct exit session's consumer is still a consumer for the UI, so Exit doesn't make
+// ConsumerInfo non-nil on its own, any more than Country does.
+func TestConsumerInfoExitDoesNotMakeItNonNil(t *testing.T) {
+	assert.True(t, ConsumerInfo{Exit: true}.Nil())
+	assert.False(t, ConsumerInfo{SessionID: "s", Exit: true}.Nil())
 }

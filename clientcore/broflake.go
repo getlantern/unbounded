@@ -45,6 +45,9 @@ type ConsumerSlot struct {
 	// answered, or "" for a pool producer, or when Freddie predates pairing
 	// attribution. Never log it.
 	Pairing string
+	// DirectExit is whether a connected slot is a direct exit session, which carries no QUIC
+	// traffic (see WebRTCOptions.OnExitPath).
+	DirectExit bool
 }
 
 // consumerSlots tracks a consumer's WebRTC slots for ConsumerSlots,
@@ -59,6 +62,10 @@ type consumerSlots struct {
 	// connects.
 	anyConnected bool
 	since        time.Time
+	// pathConnected and pathSince are anyConnected and since over the slots that carry QUIC
+	// traffic, leaving out direct exits: the no-path guard's view.
+	pathConnected bool
+	pathSince     time.Time
 	// watchers are signalled, without blocking, after every report.
 	watchers map[chan struct{}]struct{}
 }
@@ -76,17 +83,24 @@ func newConsumerSlots(n int, onChange ConsumerSlotChangeFunc) *consumerSlots {
 }
 
 // reporter returns the function slot idx's worker reports through.
-func (s *consumerSlots) reporter(idx int) func(connected bool, pairing string) {
-	return func(connected bool, pairing string) {
+func (s *consumerSlots) reporter(idx int) func(connected bool, pairing string, directExit bool) {
+	return func(connected bool, pairing string, directExit bool) {
 		if !connected {
 			pairing = ""
+			directExit = false
 		}
 		s.mu.Lock()
-		s.slots[idx] = ConsumerSlot{WorkerIdx: idx, Connected: connected, Pairing: pairing}
+		s.slots[idx] = ConsumerSlot{WorkerIdx: idx, Connected: connected, Pairing: pairing, DirectExit: directExit}
+		now := time.Now()
 		anyConnected := slices.ContainsFunc(s.slots, func(slot ConsumerSlot) bool { return slot.Connected })
 		if anyConnected != s.anyConnected {
 			s.anyConnected = anyConnected
-			s.since = time.Now()
+			s.since = now
+		}
+		pathConnected := slices.ContainsFunc(s.slots, func(slot ConsumerSlot) bool { return slot.Connected && !slot.DirectExit })
+		if pathConnected != s.pathConnected {
+			s.pathConnected = pathConnected
+			s.pathSince = now
 		}
 		for w := range s.watchers {
 			select {
@@ -117,6 +131,14 @@ func (s *consumerSlots) connected() (bool, time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.anyConnected, s.since
+}
+
+// pathConnectedSince is connected over the slots that carry QUIC traffic (see
+// consumerSlots.pathConnected).
+func (s *consumerSlots) pathConnectedSince() (bool, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pathConnected, s.pathSince
 }
 
 // watch returns a channel signalled after every slot report, coalescing the
@@ -150,14 +172,14 @@ func (b *BroflakeEngine) ConsumerSlots() []ConsumerSlot {
 // making its first connection from one that has lost its helper. A widget
 // reports false and the zero time.
 //
-// Connected means a slot's WebRTC data channel to a volunteer is open, not
-// that the QUIC connection over it, or the egress behind the volunteer, is
-// reachable.
+// Connected means a slot's WebRTC data channel to a volunteer, or its direct
+// exit session (see ConsumerSlot.DirectExit), is open, not that the QUIC
+// connection over it, or the egress behind the volunteer, is reachable.
 //
-// A rooms-only consumer's QUICLayer fails its streams and dials once this has
-// been false for WebRTCOptions.ConsumerNoPathGrace (see ErrNoConnectedPath),
-// so a caller reporting its helper's health can treat the helper as
-// unavailable from then, if not sooner.
+// A rooms-only consumer's QUICLayer fails its streams and dials once it has
+// gone WebRTCOptions.ConsumerNoPathGrace with no WebRTC data channel open
+// (see ErrNoConnectedPath). A direct exit doesn't count there, since it
+// carries no QUIC traffic.
 func (b *BroflakeEngine) ConsumerConnected() (connected bool, since time.Time) {
 	if b == nil || b.consumerSlots == nil {
 		return false, time.Time{}
