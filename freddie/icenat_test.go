@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
@@ -130,5 +131,86 @@ func TestClassifyMessage_SkipsPayloadsWithoutCandidates(t *testing.T) {
 func TestSDPCandidates_RejectsNonJSON(t *testing.T) {
 	if _, ok := sdpCandidates("not json"); ok {
 		t.Fatal("want ok=false for a payload that isn't a session description")
+	}
+}
+
+func iceAnswerJSON(t *testing.T, candidates ...string) string {
+	t.Helper()
+	b, err := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+		Ufrag: "u", Pwd: "p", Candidates: candidates, CertPin: "pin", Password: "pw",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A volunteer's answer to a direct exit offer carries its candidates as a bare ICE session writes
+// them, not in an SDP, and is classified from those.
+func TestClassifyMessage_ICEAnswer(t *testing.T) {
+	n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		"1 1 udp 2130706431 10.0.2.2 5000 typ host",
+		"2 1 udp 1694498815 198.51.100.7 40001 typ srflx raddr 10.0.2.2 rport 5000",
+		"3 1 udp 1694498815 198.51.100.7 40002 typ srflx raddr 10.0.2.2 rport 5000",
+		"4 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.7 rport 40001",
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natSymmetric}, candidates: 4, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+	if got := n.relayLabel(); got != "yes" {
+		t.Fatalf("relay label %q, want yes", got)
+	}
+
+	n, ok = classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		"2 1 udp 1694498815 198.51.100.7 5000 typ srflx raddr 10.0.2.2 rport 5000",
+		"not a candidate",
+	))
+	want = peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 1}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+
+	if n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t)); ok {
+		t.Fatalf("an ICE answer without candidates: got %+v, want no classification", n)
+	}
+}
+
+// A consumer's ICE message for a direct exit carries its candidates in ICECandidates, and is
+// classified from those.
+func TestClassifyMessage_ICEMsgICECandidates(t *testing.T) {
+	b, err := json.Marshal(common.ICEMsg{ConsumerSessionID: "s", ICECandidates: []string{
+		"2 1 udp 1694498815 198.51.100.9 30001 typ srflx raddr 10.0.1.2 rport 50000",
+		"4 1 udp 16777215 203.0.113.1 7001 typ relay raddr 198.51.100.9 rport 30001",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := classifyMessage(common.SignalMsgICE, string(b))
+	want := peerNAT{role: "consumer", class: natClass{nat: natUndetermined}, candidates: 2, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+}
+
+// Candidates as pion's ice.Candidate.Marshal writes them, the form a bare ICE session sends, so a
+// change to pion's format shows up here.
+func TestClassifyMessage_PionMarshaledCandidates(t *testing.T) {
+	marshal := func(line string) string {
+		t.Helper()
+		c, err := ice.UnmarshalCandidate(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Marshal()
+	}
+	n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		marshal("candidate:1 1 udp 2130706431 10.0.2.2 5000 typ host"),
+		marshal("candidate:2 1 udp 1694498815 198.51.100.7 5000 typ srflx raddr 10.0.2.2 rport 5000"),
+		marshal("candidate:3 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.7 rport 5000"),
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 3, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
 	}
 }

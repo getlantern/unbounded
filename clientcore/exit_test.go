@@ -16,40 +16,63 @@ import (
 
 func TestExitReady(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
-	assert.False(t, exitReady(o), "no Exit, as in a browser widget")
+	assert.False(t, exitReady(o, false), "no Exit, as in a browser widget")
 	o.Exit = &ExitOptions{}
-	assert.False(t, exitReady(o), "no Ready func")
+	assert.False(t, exitReady(o, false), "no Ready func")
 	ready := true
-	o.Exit.Ready = func() bool { return ready }
-	assert.False(t, exitReady(o), "no Params or Serve func")
-	o.Exit.Params = func() (string, string, bool) { return "pin", "pw", true }
-	assert.False(t, exitReady(o), "no Serve func")
-	o.Exit.Serve = func(context.Context, net.PacketConn, string) {}
-	assert.True(t, exitReady(o))
+	var asked []bool
+	o.Exit.Ready = func(personal bool) bool { asked = append(asked, personal); return ready }
+	assert.False(t, exitReady(o, false), "no Params or Serve func")
+	o.Exit.Params = func(bool) (string, string, bool) { return "pin", "pw", true }
+	assert.False(t, exitReady(o, false), "no Serve func")
+	o.Exit.Serve = func(context.Context, net.PacketConn, string, bool) {}
+	assert.True(t, exitReady(o, false))
+	assert.True(t, exitReady(o, true))
+	assert.Equal(t, []bool{false, true}, asked, "Ready is asked about the genesis's kind")
 	ready = false
-	assert.False(t, exitReady(o))
+	assert.False(t, exitReady(o, false))
+}
+
+// A producer may exit one kind of session and not the other: an exit with no allowlist for its
+// pool sessions offers only personal ones.
+func TestExitReadyByKind(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	o.Exit = &ExitOptions{
+		Ready:  func(personal bool) bool { return personal },
+		Params: func(bool) (string, string, bool) { return "pin", "pw", true },
+		Serve:  func(context.Context, net.PacketConn, string, bool) {},
+	}
+	assert.True(t, exitReady(o, true))
+	assert.False(t, exitReady(o, false))
+	_, _, ok := exitParams(o, false)
+	assert.False(t, ok, "no pool session's credentials are minted")
 }
 
 func TestExitParams(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
-	_, _, ok := exitParams(o)
+	_, _, ok := exitParams(o, false)
 	assert.False(t, ok, "no Exit")
 	ready := true
-	o.Exit = &ExitOptions{Ready: func() bool { return ready }}
-	_, _, ok = exitParams(o)
+	o.Exit = &ExitOptions{Ready: func(bool) bool { return ready }}
+	_, _, ok = exitParams(o, false)
 	assert.False(t, ok, "no Params func")
-	o.Exit.Params = func() (string, string, bool) { return "pin", "pw", true }
-	o.Exit.Serve = func(context.Context, net.PacketConn, string) {}
-	pin, pw, ok := exitParams(o)
+	var minted []bool
+	o.Exit.Params = func(personal bool) (string, string, bool) {
+		minted = append(minted, personal)
+		return "pin", "pw", true
+	}
+	o.Exit.Serve = func(context.Context, net.PacketConn, string, bool) {}
+	pin, pw, ok := exitParams(o, true)
 	assert.True(t, ok)
 	assert.Equal(t, "pin", pin)
 	assert.Equal(t, "pw", pw)
+	assert.Equal(t, []bool{true}, minted, "the credentials are minted for the session's kind")
 	ready = false
-	_, _, ok = exitParams(o)
+	_, _, ok = exitParams(o, false)
 	assert.False(t, ok, "readiness withdrawn after the genesis went out")
 	ready = true
 	o.Exit.Serve = nil
-	_, _, ok = exitParams(o)
+	_, _, ok = exitParams(o, false)
 	assert.False(t, ok, "nothing to serve the session with")
 }
 

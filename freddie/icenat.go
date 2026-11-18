@@ -139,15 +139,15 @@ func (n peerNAT) relayLabel() string {
 }
 
 // classifyMessage classifies the ICE candidates a signaling message carries: a volunteer's answer
-// SDP, or a consumer's ICE message. Other message types carry none. ok is false for a message
-// without candidates (data={}, or an SDP without a=candidate lines), which says nothing about the
-// peer's NAT and would otherwise land in no_srflx.
+// (an SDP, or a direct exit's ICE answer), or a consumer's ICE message. Other message types carry
+// none. ok is false for a message without candidates (data={}, or an SDP without a=candidate
+// lines), which says nothing about the peer's NAT and would otherwise land in no_srflx.
 func classifyMessage(msgType common.SignalMsgType, data string) (n peerNAT, ok bool) {
 	var cands []iceCandidate
 	switch msgType {
 	case common.SignalMsgAnswer:
 		n.role = "volunteer"
-		cands, ok = sdpCandidates(data)
+		cands, ok = answerCandidates(data)
 	case common.SignalMsgICE:
 		n.role = "consumer"
 		cands, ok = iceMsgCandidates(data)
@@ -186,6 +186,28 @@ func (f *Freddie) recordICENAT(ctx context.Context, span trace.Span, n peerNAT, 
 		attribute.Int("ice.candidates", n.candidates),
 		attribute.Bool("ice.relay", n.relay),
 	)
+}
+
+// answerCandidates reads a volunteer's answer: a direct exit's common.ICEAnswerMsg, told apart as
+// common.DecodeSignal does, or else an SDP.
+func answerCandidates(data string) ([]iceCandidate, bool) {
+	var msg common.ICEAnswerMsg
+	if json.Unmarshal([]byte(data), &msg) == nil && msg.ICE != nil {
+		return iceSessionCandidates(msg.ICE.Candidates), true
+	}
+	return sdpCandidates(data)
+}
+
+// iceSessionCandidates parses a bare ICE session's candidates, as ice.Candidate.Marshal writes
+// them: a candidate line without its "candidate:" prefix. Any that can't be parsed are skipped.
+func iceSessionCandidates(raw []string) []iceCandidate {
+	cands := make([]iceCandidate, 0, len(raw))
+	for _, r := range raw {
+		if c, ok := parseCandidateLine(r); ok {
+			cands = append(cands, c)
+		}
+	}
+	return cands
 }
 
 // sdpCandidates parses the a=candidate lines of a JSON-encoded webrtc.SessionDescription, the form
@@ -231,7 +253,8 @@ func parseCandidateLine(line string) (iceCandidate, bool) {
 	return c, true
 }
 
-// iceMsgCandidates reads a consumer's JSON-encoded common.ICEMsg.
+// iceMsgCandidates reads a consumer's JSON-encoded common.ICEMsg: its peer connection's
+// Candidates, or a direct exit session's ICECandidates.
 func iceMsgCandidates(data string) ([]iceCandidate, bool) {
 	var msg common.ICEMsg
 	if err := json.Unmarshal([]byte(data), &msg); err != nil {
@@ -248,5 +271,6 @@ func iceMsgCandidates(data string) ([]iceCandidate, bool) {
 			protocol: c.Protocol.String(),
 		})
 	}
+	cands = append(cands, iceSessionCandidates(msg.ICECandidates)...)
 	return cands, true
 }

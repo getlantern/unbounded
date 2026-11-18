@@ -19,6 +19,8 @@ import (
 	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // errBadCandidate refuses a peer's candidate that can't be parsed. It never quotes the candidate,
@@ -282,6 +284,16 @@ func (s *iceSession) relayed() bool {
 	return pair.Local.Type() == ice.CandidateTypeRelay || pair.Remote.Type() == ice.CandidateTypeRelay
 }
 
+// pairTypes is the selected pair as common.PairTypes, its local end first, or "" when no pair is
+// selected.
+func (s *iceSession) pairTypes() string {
+	pair, err := s.agent.GetSelectedCandidatePair()
+	if err != nil || pair == nil {
+		return ""
+	}
+	return common.PairTypes(pair.Local.Type().String(), pair.Remote.Type().String())
+}
+
 // done is closed when the session fails, disconnects or is closed. The session is then over:
 // its agent is closed, so its conn's reads and writes fail.
 func (s *iceSession) done() <-chan struct{} {
@@ -351,6 +363,29 @@ func (c *icePacketConn) SetReadDeadline(t time.Time) error {
 func (c *icePacketConn) SetWriteDeadline(t time.Time) error {
 	c.writeDeadline.Store(&t)
 	return nil
+}
+
+// tallyICECandidates counts a session's candidates by type, as candidateCounts does a peer
+// connection's. Candidates that can't be parsed are skipped.
+func tallyICECandidates(raw []string) candidateTally {
+	var t candidateTally
+	for _, r := range raw {
+		c, err := ice.UnmarshalCandidate(r)
+		if err != nil {
+			continue
+		}
+		switch c.Type() {
+		case ice.CandidateTypeHost:
+			t.host++
+		case ice.CandidateTypeServerReflexive:
+			t.srflx++
+		case ice.CandidateTypePeerReflexive:
+			t.prflx++
+		case ice.CandidateTypeRelay:
+			t.relay++
+		}
+	}
+	return t
 }
 
 // summarizeICECandidates reports whether any of a peer's candidates is server reflexive or

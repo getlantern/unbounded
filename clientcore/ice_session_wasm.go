@@ -33,7 +33,9 @@ func (s *iceSession) addRemote([]string) error                      { return err
 func (s *iceSession) connect(context.Context, string, string) error { return errICEUnavailable }
 func (s *iceSession) packetConn() net.PacketConn                    { return nil }
 func (s *iceSession) relayed() bool                                 { return false }
+func (s *iceSession) pairTypes() string                             { return "" }
 func (s *iceSession) done() <-chan struct{}                         { return nil }
 func (s *iceSession) Close() error                                  { return nil }
 
 func summarizeICECandidates([]string) (bool, net.IP) { return false, nil }
+func tallyICECandidates([]string) candidateTally     { return candidateTally{} }

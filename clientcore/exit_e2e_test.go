@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // exitFreddie relays signaling as Freddie does.
@@ -32,18 +34,42 @@ import (
 //     request's reply.
 //
 // With turn set, it delivers each genesis as a room's and stamps turn on it and on the offer it
-// delivers, as Freddie does for a pairing.
+// delivers, as Freddie does for a pairing. A rooms-only genesis is delivered as a room's too.
 type exitFreddie struct {
 	mu      sync.Mutex
 	next    int
 	waiting map[string]chan string
 	geneses chan string
 	turn    []webrtc.ICEServer
+	// posted gets each genesis POST's form, while it has room.
+	posted chan url.Values
+	// pairing, if set, is stamped on every genesis, delivered as a room's, as Freddie does for a
+	// consumer in that pairing's room.
+	pairing string
 }
 
 func newExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) string {
 	t.Helper()
-	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), turn: turnServers}
+	srv, _ := newRecordingExitFreddie(t, turnServers)
+	return srv
+}
+
+// newRecordingExitFreddie is newExitFreddie, also returning a channel of the genesis forms it
+// takes.
+func newRecordingExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) (string, <-chan url.Values) {
+	t.Helper()
+	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), turn: turnServers,
+		posted: make(chan url.Values, 64)}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return srv.URL, f.posted
+}
+
+// newPairingExitFreddie is newExitFreddie delivering every genesis as pairing's room's.
+func newPairingExitFreddie(t *testing.T, pairing string) string {
+	t.Helper()
+	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), posted: make(chan url.Values, 64),
+		pairing: pairing}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -93,8 +119,15 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 	}()
 	msg := common.SignalMsg{ReplyTo: id, Type: common.SignalMsgType(typ), Payload: r.Form.Get("data")}
-	if r.Form.Get("send-to") == common.SignalSendToGenesis {
-		msg.Room = len(f.turn) > 0
+	if sendTo := r.Form.Get("send-to"); sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms {
+		select {
+		case f.posted <- r.PostForm:
+		default:
+		}
+		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms || f.pairing != ""
+		if f.pairing != "" {
+			msg.Pairing = f.pairing
+		}
 		msg.ICEServers = f.turn
 		b, _ := json.Marshal(msg)
 		f.geneses <- string(b)
@@ -137,12 +170,19 @@ func e2eOptions(srv string, n transport.Net, stunURL string) *WebRTCOptions {
 	return o
 }
 
-// echoExit is an exit that sends every datagram back, and records each session's kind.
-func echoExit(ready bool, sessions chan<- bool) *ExitOptions {
+// echoExit is an exit that sends every datagram back, and records whether each session is a
+// direct exit. served, if set, gets whether each direct exit session it serves is personal.
+func echoExit(ready bool, sessions chan<- bool, served chan<- bool) *ExitOptions {
 	return &ExitOptions{
-		Ready:  func() bool { return ready },
-		Params: func() (string, string, bool) { return "pin", "password", ready },
-		Serve: func(ctx context.Context, conn net.PacketConn, password string) {
+		Ready:  func(bool) bool { return ready },
+		Params: func(bool) (string, string, bool) { return "pin", "password", ready },
+		Serve: func(ctx context.Context, conn net.PacketConn, password string, personal bool) {
+			if served != nil {
+				select {
+				case served <- personal:
+				default:
+				}
+			}
 			buf := make([]byte, 1500)
 			for {
 				n, addr, err := conn.ReadFrom(buf)
@@ -201,9 +241,19 @@ func TestDirectExitEndToEnd(t *testing.T) {
 		name     string
 		behavior vnet.EndpointDependencyType
 		turn     bool
+		// personal makes the producer serve its rooms alone, with a ticket, so its sessions are
+		// personal.
+		personal bool
+		// pairing, if set, gives the producer a volunteer ticket for testPairingP and has Freddie
+		// deliver its pool genesis through pairing's room, so the consumer's offer names pairing.
+		// The session stays a pool session even for the producer's own pairing.
+		pairing string
 	}{
-		{"punched", vnet.EndpointIndependent, false},
-		{"relayed", vnet.EndpointAddrPortDependent, true},
+		{"punched", vnet.EndpointIndependent, false, false, ""},
+		{"relayed", vnet.EndpointAddrPortDependent, true, false, ""},
+		{"personal", vnet.EndpointIndependent, false, true, ""},
+		{"pool genesis to its room", vnet.EndpointIndependent, false, false, testPairingP},
+		{"pool genesis to another room", vnet.EndpointIndependent, false, false, testPairingQ},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
@@ -212,10 +262,20 @@ func TestDirectExitEndToEnd(t *testing.T) {
 				turnServers = []webrtc.ICEServer{turnServer}
 			}
 			srv := newExitFreddie(t, turnServers)
+			if tc.pairing != "" {
+				srv = newPairingExitFreddie(t, tc.pairing)
+			}
 
 			sessions := make(chan bool, 4)
+			served := make(chan bool, 4)
 			po := e2eOptions(srv, pn, stunURL)
-			po.Exit = echoExit(true, sessions)
+			po.Exit = echoExit(true, sessions, served)
+			if tc.pairing != "" {
+				po.SetRoomTickets([]string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)})
+			} else if tc.personal {
+				po.SetRoomTickets([]string{"a.b"})
+				po.SetServePool(false)
+			}
 			startProducer(t, po)
 
 			paths := make(chan ExitPath, 1)
@@ -245,6 +305,12 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			assert.Equal(t, "pin", path.CertPin)
 			assert.Equal(t, "password", path.Password)
 			assert.Equal(t, tc.turn, path.Relayed)
+			select {
+			case personal := <-served:
+				assert.Equal(t, tc.personal, personal, "the session is served as its genesis's kind")
+			case <-time.After(5 * time.Second):
+				t.Fatal("the exit served no session")
+			}
 
 			msg := bytes.Repeat([]byte{0xcd}, 1200)
 			_, err := path.Conn.WriteTo(msg, nil)
@@ -275,7 +341,7 @@ func TestDirectExitFallsBackToWebRTC(t *testing.T) {
 
 			sessions := make(chan bool, 4)
 			po := e2eOptions(srv, pn, stunURL)
-			po.Exit = echoExit(tc.producerReady, sessions)
+			po.Exit = echoExit(tc.producerReady, sessions, nil)
 			startProducer(t, po)
 
 			co := e2eOptions(srv, cn, stunURL)
@@ -289,6 +355,62 @@ func TestDirectExitFallsBackToWebRTC(t *testing.T) {
 				assert.False(t, directExit)
 			case <-time.After(45 * time.Second):
 				t.Fatal("no session")
+			}
+		})
+	}
+}
+
+// A direct exit session reports what a peer connection's does with the next genesis: its TURN
+// result, how gathering ended, the path and the selected pair's types.
+func TestDirectExitReportsHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		behavior vnet.EndpointDependencyType
+		turn     bool
+	}{
+		{"punched", vnet.EndpointIndependent, false},
+		{"relayed", vnet.EndpointAddrPortDependent, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
+			var turnServers []webrtc.ICEServer
+			if tc.turn {
+				turnServers = []webrtc.ICEServer{turnServer}
+			}
+			srv, posted := newRecordingExitFreddie(t, turnServers)
+
+			// An exit that stops serving at once ends each session, so the producer's next
+			// genesis reports it.
+			po := e2eOptions(srv, pn, stunURL)
+			po.Exit = echoExit(true, make(chan bool, 4), nil)
+			po.Exit.Serve = func(context.Context, net.PacketConn, string, bool) {}
+			startProducer(t, po)
+			co := e2eOptions(srv, cn, stunURL)
+			co.OnExitPath = func(p ExitPath) { _ = p.Conn.Close() }
+			startConsumer(t, co)
+
+			deadline := time.After(45 * time.Second)
+			for {
+				select {
+				case form := <-posted:
+					if form.Get(common.PrevOutcomeField) != common.OutcomeConnected {
+						continue
+					}
+					if tc.turn {
+						assert.Equal(t, common.TURNOK, form.Get(common.PrevTURNField))
+						assert.Equal(t, common.PathRelay, form.Get(common.PrevPathField))
+						assert.Contains(t, form.Get(common.PrevPairField), "relay")
+					} else {
+						assert.Equal(t, common.TURNNone, form.Get(common.PrevTURNField))
+						assert.Equal(t, common.PathDirect, form.Get(common.PrevPathField))
+						assert.NotContains(t, form.Get(common.PrevPairField), "relay")
+					}
+					assert.Equal(t, form.Get(common.PrevPairField), common.NormalizePair(form.Get(common.PrevPairField)),
+						"a pair Freddie takes")
+					return
+				case <-deadline:
+					t.Fatal("no genesis reported a connected direct exit")
+				}
 			}
 		})
 	}
