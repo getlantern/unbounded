@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -899,6 +900,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 			logGatherEnd(end, time.Since(gatherStart))
+			tally := tallyICECandidates(candidates)
+			slog.Debug("Local candidates", "counts", tally.String())
+			last.gatheredICE(roomTURN, tally, end)
 
 			// As in state 3: a cohort that gave only host candidates is dropped, and without a
 			// mapped address there is nothing to offer.
@@ -997,12 +1001,14 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				last.record(common.OutcomeNATTimeout, nil)
 				return 0, []interface{}{}
 			}
-			slog.Debug("A direct exit session has been established!", "relayed", s.relayed())
+			pair := s.pairTypes()
+			slog.Debug("A direct exit session has been established!", "relayed", s.relayed(), "pair", pair)
 			last.record(common.OutcomeConnected, nil)
 			last.path = common.PathDirect
 			if s.relayed() {
 				last.path = common.PathRelay
 			}
+			last.pair = pair
 			return 7, []interface{}{s, offer, iceMsg.ConsumerSessionID, remoteAddr, password, personal}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -1242,6 +1248,12 @@ func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, end
 	o.gatherCut = gatherCutValue(end)
 }
 
+// gatheredICE is gathered for a direct exit session, whose candidates are counted in tally.
+func (o *attemptOutcome) gatheredICE(hadTURN bool, tally candidateTally, end gatherEnd) {
+	o.turn = turnOutcome(hadTURN, tally.relay > 0)
+	o.gatherCut = gatherCutValue(end)
+}
+
 // gatherCutValue is the common.PrevGatherCutField value for a wait that ended with end. A wait
 // that went on after the first relay is a cut too, since gathering hadn't completed, but it is
 // reported apart from one that ran to its limit (see common.GatherAfterRelay).
@@ -1268,15 +1280,22 @@ func sdpHasRelay(sdp string) bool {
 
 // turnResult is the common.TURN* value for an attempt that gathered cands.
 func turnResult(hadTURN bool, cands []webrtc.ICECandidate) string {
-	if !hadTURN {
+	return turnOutcome(hadTURN, slices.ContainsFunc(cands, func(c webrtc.ICECandidate) bool {
+		return c.Typ == webrtc.ICECandidateTypeRelay
+	}))
+}
+
+// turnOutcome is the common.TURN* value for an attempt that had TURN servers or not, and gathered
+// a relay candidate or not.
+func turnOutcome(hadTURN, gotRelay bool) string {
+	switch {
+	case !hadTURN:
 		return common.TURNNone
+	case gotRelay:
+		return common.TURNOK
+	default:
+		return common.TURNMissing
 	}
-	for _, c := range cands {
-		if c.Typ == webrtc.ICECandidateTypeRelay {
-			return common.TURNOK
-		}
-	}
-	return common.TURNMissing
 }
 
 // sendsToRoomsOnly reports whether a genesis message from a worker with the given tickets goes to

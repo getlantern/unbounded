@@ -163,20 +163,30 @@ func (g *candidateLog) snapshot() []webrtc.ICECandidate {
 // candidateCounts is cands as counts by type, in a fixed order and with no addresses, for logs. Every
 // type is listed even at zero, so a log always shows whether a TURN server gave a relay candidate.
 func candidateCounts(cands []webrtc.ICECandidate) string {
-	var host, srflx, prflx, relay int
+	var t candidateTally
 	for _, c := range cands {
 		switch c.Typ {
 		case webrtc.ICECandidateTypeHost:
-			host++
+			t.host++
 		case webrtc.ICECandidateTypeSrflx:
-			srflx++
+			t.srflx++
 		case webrtc.ICECandidateTypePrflx:
-			prflx++
+			t.prflx++
 		case webrtc.ICECandidateTypeRelay:
-			relay++
+			t.relay++
 		}
 	}
-	return fmt.Sprintf("host=%d srflx=%d prflx=%d relay=%d", host, srflx, prflx, relay)
+	return t.String()
+}
+
+// candidateTally is a set of candidates counted by type.
+type candidateTally struct {
+	host, srflx, prflx, relay int
+}
+
+// String is the tally as candidateCounts writes it.
+func (t candidateTally) String() string {
+	return fmt.Sprintf("host=%d srflx=%d prflx=%d relay=%d", t.host, t.srflx, t.prflx, t.relay)
 }
 
 // selectedPair is pc's selected candidate pair, or nil when no pair is selected or the browser

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -39,14 +40,25 @@ type exitFreddie struct {
 	waiting map[string]chan string
 	geneses chan string
 	turn    []webrtc.ICEServer
+	// posted gets each genesis POST's form, while it has room.
+	posted chan url.Values
 }
 
 func newExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) string {
 	t.Helper()
-	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), turn: turnServers}
+	srv, _ := newRecordingExitFreddie(t, turnServers)
+	return srv
+}
+
+// newRecordingExitFreddie is newExitFreddie, also returning a channel of the genesis forms it
+// takes.
+func newRecordingExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) (string, <-chan url.Values) {
+	t.Helper()
+	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), turn: turnServers,
+		posted: make(chan url.Values, 64)}
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
-	return srv.URL
+	return srv.URL, f.posted
 }
 
 func (f *exitFreddie) await() (string, chan string) {
@@ -94,6 +106,10 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	msg := common.SignalMsg{ReplyTo: id, Type: common.SignalMsgType(typ), Payload: r.Form.Get("data")}
 	if sendTo := r.Form.Get("send-to"); sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms {
+		select {
+		case f.posted <- r.PostForm:
+		default:
+		}
 		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms
 		msg.ICEServers = f.turn
 		b, _ := json.Marshal(msg)
@@ -311,6 +327,62 @@ func TestDirectExitFallsBackToWebRTC(t *testing.T) {
 				assert.False(t, directExit)
 			case <-time.After(45 * time.Second):
 				t.Fatal("no session")
+			}
+		})
+	}
+}
+
+// A direct exit session reports what a peer connection's does with the next genesis: its TURN
+// result, how gathering ended, the path and the selected pair's types.
+func TestDirectExitReportsHandshake(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		behavior vnet.EndpointDependencyType
+		turn     bool
+	}{
+		{"punched", vnet.EndpointIndependent, false},
+		{"relayed", vnet.EndpointAddrPortDependent, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
+			var turnServers []webrtc.ICEServer
+			if tc.turn {
+				turnServers = []webrtc.ICEServer{turnServer}
+			}
+			srv, posted := newRecordingExitFreddie(t, turnServers)
+
+			// An exit that stops serving at once ends each session, so the producer's next
+			// genesis reports it.
+			po := e2eOptions(srv, pn, stunURL)
+			po.Exit = echoExit(true, make(chan bool, 4), nil)
+			po.Exit.Serve = func(context.Context, net.PacketConn, string, bool) {}
+			startProducer(t, po)
+			co := e2eOptions(srv, cn, stunURL)
+			co.OnExitPath = func(p ExitPath) { _ = p.Conn.Close() }
+			startConsumer(t, co)
+
+			deadline := time.After(45 * time.Second)
+			for {
+				select {
+				case form := <-posted:
+					if form.Get(common.PrevOutcomeField) != common.OutcomeConnected {
+						continue
+					}
+					if tc.turn {
+						assert.Equal(t, common.TURNOK, form.Get(common.PrevTURNField))
+						assert.Equal(t, common.PathRelay, form.Get(common.PrevPathField))
+						assert.Contains(t, form.Get(common.PrevPairField), "relay")
+					} else {
+						assert.Equal(t, common.TURNNone, form.Get(common.PrevTURNField))
+						assert.Equal(t, common.PathDirect, form.Get(common.PrevPathField))
+						assert.NotContains(t, form.Get(common.PrevPairField), "relay")
+					}
+					assert.Equal(t, form.Get(common.PrevPairField), common.NormalizePair(form.Get(common.PrevPairField)),
+						"a pair Freddie takes")
+					return
+				case <-deadline:
+					t.Fatal("no genesis reported a connected direct exit")
+				}
 			}
 		})
 	}

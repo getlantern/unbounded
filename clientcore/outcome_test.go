@@ -121,6 +121,34 @@ func TestAttemptOutcome_CarriesVPNState(t *testing.T) {
 	}
 }
 
+// A direct exit session's gathering is reported as a peer connection's is: whether its TURN
+// servers gave it a relay candidate, and how the wait for them ended.
+func TestAttemptOutcome_ReportsICEGathering(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hadTURN bool
+		tally   candidateTally
+		end     gatherEnd
+		turn    string
+		cut     string
+	}{
+		{"pool", false, candidateTally{host: 1, srflx: 1}, gatherCompleted, common.TURNNone, ""},
+		{"relayed", true, candidateTally{srflx: 1, relay: 1}, gatherAfterRelay, common.TURNOK, common.GatherAfterRelay},
+		{"no relay", true, candidateTally{srflx: 1}, gatherCapped, common.TURNMissing, common.GatherCut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var last attemptOutcome
+			last.begin("offer-1", "")
+			last.gatheredICE(tc.hadTURN, tc.tally, tc.end)
+			last.record(common.OutcomeConnected, nil)
+			form := url.Values{}
+			last.addTo(form, 15*time.Second)
+			assert.Equal(t, tc.turn, form.Get(common.PrevTURNField))
+			assert.Equal(t, tc.cut, form.Get(common.PrevGatherCutField))
+		})
+	}
+}
+
 // How gathering ended is kept through the outcome and reported once with it.
 func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
 	relay := []webrtc.ICECandidate{{Typ: webrtc.ICECandidateTypeSrflx}, {Typ: webrtc.ICECandidateTypeRelay}}

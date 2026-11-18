@@ -199,6 +199,25 @@ func TestSummarizeICECandidates(t *testing.T) {
 	assert.Equal(t, "8.8.8.8", public.String())
 }
 
+// A direct exit session's candidates are counted by type, as candidateCounts counts a peer
+// connection's, skipping any that can't be parsed.
+func TestTallyICECandidates(t *testing.T) {
+	raw := []string{
+		"1 1 udp 2130706431 10.0.0.2 5000 typ host",
+		"2 1 udp 1694498815 198.51.100.1 6000 typ srflx raddr 10.0.0.2 rport 5000",
+		"3 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.1 rport 6000",
+		"not a candidate",
+	}
+	tally := tallyICECandidates(raw)
+	assert.Equal(t, candidateTally{host: 1, srflx: 1, relay: 1}, tally)
+	got := tally.String()
+	assert.Equal(t, "host=1 srflx=1 prflx=0 relay=1", got)
+	for _, addr := range []string{"10.0.0.2", "198.51.100.1", "203.0.113.1"} {
+		assert.NotContains(t, got, addr)
+	}
+	assert.Equal(t, candidateTally{}, tallyICECandidates(nil))
+}
+
 // A candidate that can't be parsed is refused with errBadCandidate, which never quotes it: the
 // candidate is the peer's address.
 func TestAddRemoteRefusesBadCandidateWithoutQuotingIt(t *testing.T) {

@@ -945,6 +945,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 			logGatherEnd(end, time.Since(gatherStart))
+			slog.Debug("Local candidates", "counts", tallyICECandidates(candidates).String())
 			if nonHost, _ := summarizeICECandidates(candidates); !nonHost {
 				if !cohortDropped {
 					scache.drop()
