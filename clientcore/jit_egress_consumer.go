@@ -41,7 +41,10 @@ func NewJITEgressConsumer(options *EgressOptions, act *activation, wg *sync.Wait
 			for {
 				select {
 				case msg := <-com.rx:
-					if msg.IpcType == ConsumerInfoIPC && !msg.Data.(common.ConsumerInfo).Nil() {
+					// A direct exit session's producer exits its traffic itself, so it never claims
+					// this slot's egress connection.
+					ci, _ := msg.Data.(common.ConsumerInfo)
+					if msg.IpcType == ConsumerInfoIPC && !ci.Nil() && !ci.Exit {
 						// Before doing anything else, send a "JIT unavailable" path assertion to indicate no
 						// connectivity opportunity for this slot, since it's been claimed. TODO nelson 07/25/2025:
 						// the JIT unavailable flag was invented to work alongside the ($, 1) path
@@ -54,7 +57,7 @@ func NewJITEgressConsumer(options *EgressOptions, act *activation, wg *sync.Wait
 						}) {
 							return 0, input
 						}
-						consumerInfoMsg = msg.Data.(common.ConsumerInfo)
+						consumerInfoMsg = ci
 						break waitforconsumerloop
 					}
 				// Since we're putting this state into an infinite loop, explicitly handle cancellation

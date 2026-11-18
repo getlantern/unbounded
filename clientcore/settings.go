@@ -130,6 +130,14 @@ type WebRTCOptions struct {
 	// Tuning overrides pion's ICE, DTLS and SCTP defaults on native builds.
 	// The zero value keeps every default.
 	Tuning WebRTCTuning
+	// Exit, on a producer, lets it exit sessions itself (see ExitOptions). Nil, the default and
+	// always in a browser widget, relays every session to the egress server as before. Set it
+	// before NewBroflake.
+	Exit *ExitOptions
+	// OnExitPath, on a consumer, takes each direct exit session as it connects (see ExitPath). It
+	// runs on the worker's goroutine and must not block. While it is nil, the consumer answers
+	// every genesis with an SDP offer, as before. Set it before NewBroflake.
+	OnExitPath func(ExitPath)
 	// ConnectGrace is the least time left for DTLS and the data channel to open once ICE connects,
 	// extending NATFailTimeout when ICE connects near its end.
 	ConnectGrace time.Duration
