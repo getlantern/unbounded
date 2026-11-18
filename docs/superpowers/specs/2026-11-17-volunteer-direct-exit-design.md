@@ -64,10 +64,10 @@ sequenceDiagram
 
     V->>F: GenesisMsg{DirectExit: true}
     F->>U: genesis
-    U->>F: ICEOfferMsg{ufrag, pwd}
+    U->>F: OfferMsg{ICE: ufrag, pwd}
     F->>V: offer
     Note over V: serve only if direct_exit flag,<br/>a current registration and rules pass ⚠️
-    V-->>U: ICEAnswerMsg{ufrag, pwd, cert pin, password}
+    V-->>U: ICEAnswerMsg{ufrag, pwd, candidates, cert pin, password}
     U->>V: ICE candidates both ways, as ICEMsg
     Note over U,V: ice.Agent connects: hole punched or TURN relay
     U->>V: junk datagram, then Hysteria2 handshake<br/>cert pin checked, session password
@@ -78,15 +78,13 @@ sequenceDiagram
 
 ### unbounded `clientcore`: ICE sessions
 
-**Signaling:**
+**Signaling.** Freddie's volunteer socket accepts only genesis and answer messages, and freddie times each step by message type. So the ICE session reuses today's types, with new optional fields, and freddie doesn't change:
 - `GenesisMsg` gets `DirectExit bool` (`json:",omitempty"`). A volunteer sets it only when `Exit.Ready` (below) is true. Old users' apps ignore it.
-- New signal types:
-  - `ICEOfferMsg{Ufrag, Pwd, Tag, Country, Pairing}` carries the same consumer fields as `OfferMsg`.
-  - `ICEAnswerMsg{Ufrag, Pwd, CertPin, Password}`.
-  
-  Candidates keep using `ICEMsg` in both directions.
-- A new user's app answers a `DirectExit` genesis with an `ICEOfferMsg`, and any other genesis with today's `OfferMsg`. An old volunteer never sets `DirectExit`, so it never receives an `ICEOfferMsg`.
-- Rooms, tickets, pairings and freddie's routing don't change. Freddie relays payloads without reading them.
+- The ICE offer is an `OfferMsg` with `ICE *ICEOffer{Ufrag, Pwd}` and an empty SDP. It keeps `OfferMsg`'s `Tag`, `Country` and `Pairing`. A decoder reads an ICE offer without its SDP, because pion can't read back a zero `SessionDescription`'s "unknown" type.
+- The ICE answer is a `SignalMsgAnswer` whose payload is `ICEAnswerMsg{ICE *ICEAnswer{Ufrag, Pwd, Candidates, CertPin, Password}}`. The volunteer's candidates travel in it, as today's answer SDP carries them.
+- The user's candidates go in `ICEMsg.ICECandidates []string`, in pion's `ice.Candidate.Marshal` form.
+- A new user's app answers a `DirectExit` genesis with an ICE offer, and any other genesis with today's SDP offer. An old volunteer never sets `DirectExit`, so it never receives an ICE offer.
+- Rooms, tickets, pairings and freddie's routing don't change. Freddie's ICE-NAT metrics don't classify ICE sessions, since they carry no SDP.
 
 **The ICE session:**
 - Both sides create a pion `ice.Agent` from the same `WebRTCOptions` as today: STUN and TURN servers, candidate types, `iceNet`, the protected net, NAT-fail timeout and tuning.

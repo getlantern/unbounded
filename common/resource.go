@@ -85,6 +85,10 @@ type ConsumerInfo struct {
 	// match to one of its own volunteer tickets. Local to the producer: it is
 	// never sent to the egress, and must never be logged.
 	Pairing string
+	// Exit says this consumer's session is a direct exit (see GenesisMsg.DirectExit): the
+	// producer exits its traffic itself, so no egress connection serves it. Local to the
+	// producer, like Pairing.
+	Exit bool
 }
 
 // Nil deliberately ignores Country and Pairing. A ConsumerInfo carrying nothing but a country
@@ -102,6 +106,10 @@ type Endpoint struct {
 
 type GenesisMsg struct {
 	PathAssertion PathAssertion
+	// DirectExit says the producer can carry this session over ICE alone and exit its traffic
+	// itself (see ICEOffer). A consumer that can answers with an ICE offer, and any other with an
+	// SDP offer as before. Omitted when false, so other producers' genesis messages are unchanged.
+	DirectExit bool `json:",omitempty"`
 }
 
 // TODO: We observe that OfferMsg and ConsumerInfo have a special relationship: OfferMsg is how
@@ -128,6 +136,41 @@ type OfferMsg struct {
 	// volunteer tickets' pairings. Omitted when empty, so a pool offer is
 	// byte-identical to releases before it, and an old producer ignores it.
 	Pairing string `json:",omitempty"`
+	// ICE, when set, offers a bare ICE session instead of a peer connection, and SDP is empty.
+	// A consumer sends one only in answer to a DirectExit genesis.
+	ICE *ICEOffer `json:",omitempty"`
+}
+
+// ICEOffer is a consumer's ICE credentials for a bare ICE session. Never logged.
+type ICEOffer struct {
+	Ufrag string
+	Pwd   string
+}
+
+// ICEAnswer is a producer's answer to an ICEOffer. It carries the producer's ICE credentials and
+// candidates, and what the consumer needs to use the exit over the session: the SHA-256 pin of
+// the exit certificate's public key, and the session's password. Never logged.
+type ICEAnswer struct {
+	Ufrag      string
+	Pwd        string
+	Candidates []string
+	CertPin    string
+	Password   string
+}
+
+// ICEAnswerMsg is the payload of a SignalMsgAnswer that answers an ICEOffer. An answer to an SDP
+// offer is a bare webrtc.SessionDescription, as before.
+type ICEAnswerMsg struct {
+	ICE *ICEAnswer
+}
+
+// iceOfferWire reads an OfferMsg without its SDP. An ICE offer's SDP is the zero
+// SessionDescription, which pion writes with type "unknown" and won't read back.
+type iceOfferWire struct {
+	Tag     string
+	Country string
+	Pairing string
+	ICE     *ICEOffer
 }
 
 // NB: in the last segment of our signaling handshake, the consumer sends the producer an ICEMsg,
@@ -135,11 +178,15 @@ type OfferMsg struct {
 type ICEMsg struct {
 	Candidates        []webrtc.ICECandidate
 	ConsumerSessionID string
+	// ICECandidates are a bare ICE session's candidates, as ice.Candidate.Marshal writes them,
+	// sent instead of Candidates. Omitted when empty, so other ICE messages are unchanged.
+	ICECandidates []string `json:",omitempty"`
 }
 
 // A little confusing: SignalMsg is actually the parent msg which encapsulates an underlying msg,
 // which could be a GenesisMsg, an OfferMsg, a webrtc.SessionDescription (which is currently sent
-// unencapsulated as a SignalMsgAnswer), or an ICEMsg, which is sent as a SignalMsgICE.
+// unencapsulated as a SignalMsgAnswer), an ICEAnswerMsg (also sent as a SignalMsgAnswer, in answer
+// to an ICE offer), or an ICEMsg, which is sent as a SignalMsgICE.
 type SignalMsg struct {
 	ReplyTo string
 	Type    SignalMsgType
@@ -236,10 +283,18 @@ func DecodeSignal(raw []byte) (SignalMsg, interface{}, error) {
 			err = json.Unmarshal([]byte(msg.Payload), &genesis)
 			return msg, genesis, err
 		case SignalMsgOffer:
+			var wire iceOfferWire
+			if json.Unmarshal([]byte(msg.Payload), &wire) == nil && wire.ICE != nil {
+				return msg, OfferMsg{Tag: wire.Tag, Country: wire.Country, Pairing: wire.Pairing, ICE: wire.ICE}, nil
+			}
 			var offer OfferMsg
 			err := json.Unmarshal([]byte(msg.Payload), &offer)
 			return msg, offer, err
 		case SignalMsgAnswer:
+			var iceAnswer ICEAnswerMsg
+			if json.Unmarshal([]byte(msg.Payload), &iceAnswer) == nil && iceAnswer.ICE != nil {
+				return msg, *iceAnswer.ICE, nil
+			}
 			var answer webrtc.SessionDescription
 			err := json.Unmarshal([]byte(msg.Payload), &answer)
 			return msg, answer, err
