@@ -2,7 +2,10 @@
 
 package clientcore
 
-import "github.com/pion/webrtc/v4"
+import (
+	"github.com/pion/ice/v4"
+	"github.com/pion/webrtc/v4"
+)
 
 // apply sets t's non-zero fields on se and reports whether it set any.
 func (t WebRTCTuning) apply(se *webrtc.SettingEngine) bool {
@@ -40,4 +43,26 @@ func (t WebRTCTuning) apply(se *webrtc.SettingEngine) bool {
 		set = true
 	}
 	return set
+}
+
+// iceOptions is apply for a bare ICE agent: the ICE fields alone, since it has no DTLS or SCTP.
+func (t WebRTCTuning) iceOptions() []ice.AgentOption {
+	var opts []ice.AgentOption
+	if t.ICEMaxBindingRequests > 0 {
+		opts = append(opts, ice.WithMaxBindingRequests(t.ICEMaxBindingRequests))
+	}
+	if t.STUNGatherTimeout > 0 {
+		opts = append(opts, ice.WithSTUNGatherTimeout(t.STUNGatherTimeout))
+	}
+	if t.ICEDisconnectedTimeout > 0 || t.ICEFailedTimeout > 0 || t.ICEKeepaliveInterval > 0 {
+		opts = append(opts,
+			ice.WithDisconnectedTimeout(orDefault(t.ICEDisconnectedTimeout, pionICEDisconnectedTimeout)),
+			ice.WithFailedTimeout(orDefault(t.ICEFailedTimeout, pionICEFailedTimeout)),
+			ice.WithKeepaliveInterval(orDefault(t.ICEKeepaliveInterval, pionICEKeepaliveInterval)),
+		)
+	}
+	if t.SrflxAcceptanceMinWait > 0 {
+		opts = append(opts, ice.WithSrflxAcceptanceMinWait(t.SrflxAcceptanceMinWait))
+	}
+	return opts
 }
