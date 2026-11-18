@@ -34,7 +34,8 @@ func TestExitParams(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	_, _, ok := exitParams(o)
 	assert.False(t, ok, "no Exit")
-	o.Exit = &ExitOptions{Ready: func() bool { return true }}
+	ready := true
+	o.Exit = &ExitOptions{Ready: func() bool { return ready }}
 	_, _, ok = exitParams(o)
 	assert.False(t, ok, "no Params func")
 	o.Exit.Params = func() (string, string, bool) { return "pin", "pw", true }
@@ -43,6 +44,10 @@ func TestExitParams(t *testing.T) {
 	assert.True(t, ok)
 	assert.Equal(t, "pin", pin)
 	assert.Equal(t, "pw", pw)
+	ready = false
+	_, _, ok = exitParams(o)
+	assert.False(t, ok, "readiness withdrawn after the genesis went out")
+	ready = true
 	o.Exit.Serve = nil
 	_, _, ok = exitParams(o)
 	assert.False(t, ok, "nothing to serve the session with")

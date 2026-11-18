@@ -123,19 +123,39 @@ func TestProducerRoutesSDPOfferAsBefore(t *testing.T) {
 // An ICE offer when the producer can no longer exit is dropped without an answer, so the consumer
 // moves on to another genesis.
 func TestProducerDropsICEOfferWhenItCantExit(t *testing.T) {
-	var posts atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts.Add(1) }))
-	t.Cleanup(srv.Close)
-	o := NewDefaultWebRTCOptions()
-	o.DiscoverySrv = srv.URL
-	o.Exit = readyExit()
-	o.Exit.Params = func() (string, string, bool) { return "", "", false }
-	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
-	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
-		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false,
-	})
-	assert.Equal(t, 0, next)
-	assert.Zero(t, posts.Load(), "no answer is sent")
+	for _, tc := range []struct {
+		name  string
+		setup func(e *ExitOptions, minted *atomic.Int32)
+	}{
+		{"params refused", func(e *ExitOptions, minted *atomic.Int32) {
+			e.Params = func() (string, string, bool) { minted.Add(1); return "", "", false }
+		}},
+		// The genesis offered a direct exit, then the embedder withdrew readiness (its flag turned
+		// off) before the offer arrived.
+		{"readiness withdrawn", func(e *ExitOptions, minted *atomic.Int32) {
+			e.Ready = func() bool { return false }
+			e.Params = func() (string, string, bool) { minted.Add(1); return "pin", "pw", true }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var posts, minted atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts.Add(1) }))
+			t.Cleanup(srv.Close)
+			o := NewDefaultWebRTCOptions()
+			o.DiscoverySrv = srv.URL
+			o.Exit = readyExit()
+			tc.setup(o.Exit, &minted)
+			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
+			next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
+				"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false,
+			})
+			assert.Equal(t, 0, next)
+			assert.Zero(t, posts.Load(), "no answer is sent")
+			if tc.name == "readiness withdrawn" {
+				assert.Zero(t, minted.Load(), "no credentials are minted")
+			}
+		})
+	}
 }
 
 // An ICE offer without credentials is dropped before the producer mints any, and reported as bad

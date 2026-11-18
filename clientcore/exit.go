@@ -44,9 +44,10 @@ func exitReady(options *WebRTCOptions) bool {
 }
 
 // exitParams mints a direct exit session's credentials, reporting false if the producer can't
-// serve one.
+// serve one. It asks Ready again: an offer can arrive after readiness was withdrawn, in reply to a
+// genesis sent before.
 func exitParams(options *WebRTCOptions) (certPin, password string, ok bool) {
-	if options.Exit == nil || options.Exit.Params == nil || options.Exit.Serve == nil {
+	if !exitReady(options) {
 		return "", "", false
 	}
 	return options.Exit.Params()
