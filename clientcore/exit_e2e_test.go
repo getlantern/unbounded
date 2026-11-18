@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // exitFreddie relays signaling as Freddie does.
@@ -42,6 +43,9 @@ type exitFreddie struct {
 	turn    []webrtc.ICEServer
 	// posted gets each genesis POST's form, while it has room.
 	posted chan url.Values
+	// pairing, if set, is stamped on every genesis, delivered as a room's, as Freddie does for a
+	// consumer in that pairing's room.
+	pairing string
 }
 
 func newExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) string {
@@ -59,6 +63,16 @@ func newRecordingExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) (stri
 	srv := httptest.NewServer(f)
 	t.Cleanup(srv.Close)
 	return srv.URL, f.posted
+}
+
+// newPairingExitFreddie is newExitFreddie delivering every genesis as pairing's room's.
+func newPairingExitFreddie(t *testing.T, pairing string) string {
+	t.Helper()
+	f := &exitFreddie{waiting: map[string]chan string{}, geneses: make(chan string, 64), posted: make(chan url.Values, 64),
+		pairing: pairing}
+	srv := httptest.NewServer(f)
+	t.Cleanup(srv.Close)
+	return srv.URL
 }
 
 func (f *exitFreddie) await() (string, chan string) {
@@ -110,7 +124,10 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case f.posted <- r.PostForm:
 		default:
 		}
-		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms
+		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms || f.pairing != ""
+		if f.pairing != "" {
+			msg.Pairing = f.pairing
+		}
 		msg.ICEServers = f.turn
 		b, _ := json.Marshal(msg)
 		f.geneses <- string(b)
@@ -227,10 +244,16 @@ func TestDirectExitEndToEnd(t *testing.T) {
 		// personal makes the producer serve its rooms alone, with a ticket, so its sessions are
 		// personal.
 		personal bool
+		// pairing, if set, gives the producer a volunteer ticket for testPairingP and has Freddie
+		// deliver its pool genesis through pairing's room. Only its own pairing makes the session
+		// personal.
+		pairing string
 	}{
-		{"punched", vnet.EndpointIndependent, false, false},
-		{"relayed", vnet.EndpointAddrPortDependent, true, false},
-		{"personal", vnet.EndpointIndependent, false, true},
+		{"punched", vnet.EndpointIndependent, false, false, ""},
+		{"relayed", vnet.EndpointAddrPortDependent, true, false, ""},
+		{"personal", vnet.EndpointIndependent, false, true, ""},
+		{"pool genesis to its room", vnet.EndpointIndependent, false, true, testPairingP},
+		{"pool genesis to another room", vnet.EndpointIndependent, false, false, testPairingQ},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
@@ -239,12 +262,17 @@ func TestDirectExitEndToEnd(t *testing.T) {
 				turnServers = []webrtc.ICEServer{turnServer}
 			}
 			srv := newExitFreddie(t, turnServers)
+			if tc.pairing != "" {
+				srv = newPairingExitFreddie(t, tc.pairing)
+			}
 
 			sessions := make(chan bool, 4)
 			served := make(chan bool, 4)
 			po := e2eOptions(srv, pn, stunURL)
 			po.Exit = echoExit(true, sessions, served)
-			if tc.personal {
+			if tc.pairing != "" {
+				po.SetRoomTickets([]string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)})
+			} else if tc.personal {
 				po.SetRoomTickets([]string{"a.b"})
 				po.SetServePool(false)
 			}

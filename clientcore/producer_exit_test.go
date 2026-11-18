@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // producerExitState2 runs producer state 2 against a Freddie that answers each genesis with reply,
@@ -299,6 +300,46 @@ func TestProducerOfferKeepsItsGenesisKind(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			assert.Equal(t, []bool{tc.personal, tc.personal}, asked, "the genesis, then state 6's recheck")
+			assert.Equal(t, []bool{tc.personal}, minted)
+		})
+	}
+}
+
+// A pool genesis can still reach a consumer in one of the producer's rooms. Its offer then carries
+// the room's pairing, which Freddie stamped on the genesis, and is personal if the pairing is one
+// of the producer's own volunteer tickets. Any other claim leaves it pool.
+func TestProducerPoolGenesisOfferFromItsRoom(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		ticket   string
+		pairing  string
+		personal bool
+	}{
+		{"matching pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingP, true},
+		{"another pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingQ, false},
+		{"no pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), "", false},
+		{"an inviter ticket", volunteerTicket(t, testPairingP, helperticket.RoleInviter), testPairingP, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := NewDefaultWebRTCOptions()
+			o.SetRoomTickets([]string{tc.ticket})
+			o.Exit = readyExit()
+			var asked, minted []bool
+			o.Exit.Ready = func(personal bool) bool { asked = append(asked, personal); return true }
+			// Refusing the credentials ends state 6 before it signals anything.
+			o.Exit.Params = func(personal bool) (string, string, bool) {
+				minted = append(minted, personal)
+				return "", "", false
+			}
+			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing}
+			next, input, _, _ := producerExitState2(t, o, offerReply(t, offer, nil))
+			require.Equal(t, 6, next)
+			assert.Equal(t, false, input[4], "a pool slot's genesis")
+
+			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
+			next, _ = fsm.state[6](context.Background(), fsm.com, input)
+			assert.Equal(t, 0, next)
+			assert.Equal(t, []bool{false, tc.personal}, asked, "the genesis, then state 6's recheck")
 			assert.Equal(t, []bool{tc.personal}, minted)
 		})
 	}
