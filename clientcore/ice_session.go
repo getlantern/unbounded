@@ -5,6 +5,7 @@ package clientcore
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/pion/ice/v4"
+	"github.com/pion/logging"
 	"github.com/pion/stun/v4"
 	"github.com/pion/transport/v5/stdnet"
 	"github.com/pion/webrtc/v4"
@@ -72,6 +74,12 @@ func newICESession(options *WebRTCOptions, controlling bool, servers []webrtc.IC
 		// A peer connection's networks. Without them a bare agent gathers no host or server
 		// reflexive candidates, only relayed ones.
 		ice.WithNetworkTypes([]ice.NetworkType{ice.NetworkTypeUDP4, ice.NetworkTypeUDP6}),
+		// pion's default logger takes its levels from PION_LOG_* and, at debug, prints the
+		// remote ufrag and pwd and candidate addresses. This agent's logs go nowhere.
+		ice.WithLoggerFactory(&logging.DefaultLoggerFactory{
+			Writer:          io.Discard,
+			DefaultLogLevel: logging.LogLevelDisabled,
+		}),
 	}
 	if pn.mux != nil {
 		opts = append(opts, ice.WithUDPMux(pn.mux))
