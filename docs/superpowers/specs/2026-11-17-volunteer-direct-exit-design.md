@@ -16,7 +16,7 @@ The paths after this change:
 
 | Path | Transport | Exit |
 |---|---|---|
-| 1. Direct peer (direct mode, reverse direct mode) | samizdat, unchanged | The helper |
+| 1. Direct peer: a port mapped by NAT-PMP, UPnP, PCP or by hand (direct mode), or reverse direct mode | samizdat, unchanged | The helper |
 | 2. App to app, hole punched | ICE + Hysteria2X | The volunteer |
 | 3. App to app, through TURN | ICE + TURN + Hysteria2X | The volunteer |
 | Browser widget, or an old app on either side | WebRTC data channel + QUIC, unchanged | The egress server |
@@ -252,3 +252,4 @@ So we can see how much traffic avoids the egress server, and how much goes throu
 - The app's warning copy and risk-acknowledgement modals.
 - Refusing direct-mode helpers in censored countries.
 - Any change to browser widgets, the egress server or the leaderboard.
+- Other protocols on path 1. Port-mapped direct mode stays samizdat for now. Later it should accept any inbound protocol lantern-box supports.
