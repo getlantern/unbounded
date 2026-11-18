@@ -17,11 +17,15 @@ func TestExitReady(t *testing.T) {
 	assert.False(t, exitReady(o), "no Exit, as in a browser widget")
 	o.Exit = &ExitOptions{}
 	assert.False(t, exitReady(o), "no Ready func")
-	ready := false
+	ready := true
 	o.Exit.Ready = func() bool { return ready }
-	assert.False(t, exitReady(o))
-	ready = true
+	assert.False(t, exitReady(o), "no Params or Serve func")
+	o.Exit.Params = func() (string, string, bool) { return "pin", "pw", true }
+	assert.False(t, exitReady(o), "no Serve func")
+	o.Exit.Serve = func(context.Context, net.PacketConn, string) {}
 	assert.True(t, exitReady(o))
+	ready = false
+	assert.False(t, exitReady(o))
 }
 
 func TestExitParams(t *testing.T) {

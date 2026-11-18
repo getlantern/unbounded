@@ -36,9 +36,11 @@ type ExitPath struct {
 	Relayed  bool
 }
 
-// exitReady reports whether a producer can offer a direct exit now.
+// exitReady reports whether a producer can offer a direct exit now. Without Params and Serve,
+// state 6 would refuse every offer the genesis drew in.
 func exitReady(options *WebRTCOptions) bool {
-	return options.Exit != nil && options.Exit.Ready != nil && options.Exit.Ready()
+	e := options.Exit
+	return e != nil && e.Ready != nil && e.Params != nil && e.Serve != nil && e.Ready()
 }
 
 // exitParams mints a direct exit session's credentials, reporting false if the producer can't
