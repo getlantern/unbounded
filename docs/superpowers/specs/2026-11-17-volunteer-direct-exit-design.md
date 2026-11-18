@@ -68,7 +68,7 @@ sequenceDiagram
     F->>V: offer
     Note over V: serve only if direct_exit flag,<br/>a current registration and rules pass ⚠️
     V-->>U: ICEAnswerMsg{ufrag, pwd, candidates, cert pin, password}
-    U->>V: ICE candidates both ways, as ICEMsg
+    U->>V: the user's ICE candidates, as ICEMsg.ICECandidates
     Note over U,V: ice.Agent connects: hole punched or TURN relay
     U->>V: junk datagram, then Hysteria2 handshake<br/>cert pin checked, session password
     U->>V: TCP stream or UDP datagram for host:port
