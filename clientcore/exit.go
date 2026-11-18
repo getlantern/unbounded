@@ -25,9 +25,10 @@ type ExitOptions struct {
 }
 
 // ExitPath is a consumer's connected direct exit session. Conn reaches the producer's exit, which
-// takes only the certificate CertPin pins and the session's Password. Relayed says whether ICE
-// chose a TURN relay. Closing Conn ends the session, and once the session ends, Conn's reads fail.
-// Never logged: it carries the session's credentials.
+// takes only the certificate CertPin pins and the session's Password. Conn's addresses are
+// placeholders, the same for every session, not either side's: its peer is always the producer.
+// Relayed says whether ICE chose a TURN relay. Closing Conn ends the session, and once the session
+// ends, Conn's reads fail. Never logged: it carries the session's credentials.
 type ExitPath struct {
 	Conn     net.PacketConn
 	CertPin  string
@@ -54,4 +55,10 @@ func observeSession(options *WebRTCOptions, directExit bool) {
 	if options.Exit != nil && options.Exit.OnSession != nil {
 		options.Exit.OnSession(directExit)
 	}
+}
+
+// takeExit reports whether a consumer takes a direct exit now: its embedder takes sessions, and
+// hasn't backed off them.
+func takeExit(options *WebRTCOptions) bool {
+	return options.OnExitPath != nil && (options.TakeExit == nil || options.TakeExit())
 }

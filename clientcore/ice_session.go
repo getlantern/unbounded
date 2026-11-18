@@ -21,6 +21,17 @@ import (
 // which is the peer's address.
 var errBadCandidate = errors.New("bad ICE candidate")
 
+// errTooManyCandidates refuses a peer's candidates when there are more than maxRemoteCandidates.
+var errTooManyCandidates = errors.New("too many ICE candidates")
+
+// errBadICEServer refuses a STUN or TURN URL that can't be parsed. It never quotes the URL, which
+// may name a TURN host.
+var errBadICEServer = errors.New("bad ICE server URL")
+
+// maxRemoteCandidates caps a peer's candidates: the agent checks each one from this side's address,
+// so a crafted list would otherwise aim checks wherever the peer likes, and cost CPU and memory.
+const maxRemoteCandidates = 32
+
 // iceSession is a direct exit session's transport: a bare ICE agent, with no DTLS or SCTP, whose
 // conn carries the exit's QUIC datagrams. The consumer controls it and dials, and the producer
 // accepts. It punches a hole or relays through TURN as a peer connection's agent would, with the
@@ -105,7 +116,7 @@ func iceURLs(servers []webrtc.ICEServer) ([]*stun.URI, error) {
 		for _, raw := range s.URLs {
 			u, err := stun.ParseURI(raw)
 			if err != nil {
-				return nil, err
+				return nil, errBadICEServer
 			}
 			if u.Scheme == stun.SchemeTypeTURN || u.Scheme == stun.SchemeTypeTURNS {
 				u.Username = s.Username
@@ -168,8 +179,11 @@ func (s *iceSession) gather(limit time.Duration) ([]string, gatherEnd, error) {
 	return slices.Clone(s.gathered), end, nil
 }
 
-// addRemote adds the other side's candidates.
+// addRemote adds the other side's candidates, refusing more than maxRemoteCandidates.
 func (s *iceSession) addRemote(raw []string) error {
+	if len(raw) > maxRemoteCandidates {
+		return errTooManyCandidates
+	}
 	for _, r := range raw {
 		c, err := ice.UnmarshalCandidate(r)
 		if err != nil {
@@ -224,35 +238,51 @@ func (s *iceSession) Close() error {
 	return s.agent.Close()
 }
 
-// icePacketConn is an ICE conn as a packet conn with one peer. Its addresses are taken once, when
-// it is made, so a QUIC endpoint keyed on them sees one stable peer even if ICE changes pairs.
+// Every session's packet conn gives these addresses: a one-peer conn needs only a stable key for a
+// QUIC endpoint to demultiplex on, and these say nothing about either side, so an exit that logs
+// a conn's addresses logs no user's IP.
+var (
+	icePeerAddr  net.Addr = &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1}
+	iceLocalAddr net.Addr = &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 1}
+)
+
+// icePacketConn is an ICE conn as a packet conn with one peer. Its addresses are placeholders
+// (see icePeerAddr), the same for every session, and it has no RemoteAddr.
 type icePacketConn struct {
-	*ice.Conn
-	local, peer net.Addr
+	conn *ice.Conn
 }
 
 func newICEPacketConn(c *ice.Conn) icePacketConn {
-	local, peer := c.LocalAddr(), c.RemoteAddr()
-	if local == nil {
-		local = &net.UDPAddr{}
-	}
-	if peer == nil {
-		peer = &net.UDPAddr{}
-	}
-	return icePacketConn{Conn: c, local: local, peer: peer}
+	return icePacketConn{conn: c}
 }
 
 func (c icePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
-	n, err := c.Read(p)
-	return n, c.peer, err
+	n, err := c.conn.Read(p)
+	return n, icePeerAddr, err
 }
 
 func (c icePacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
-	return c.Write(p)
+	return c.conn.Write(p)
+}
+
+func (c icePacketConn) Close() error {
+	return c.conn.Close()
 }
 
 func (c icePacketConn) LocalAddr() net.Addr {
-	return c.local
+	return iceLocalAddr
+}
+
+func (c icePacketConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+func (c icePacketConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c icePacketConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
 }
 
 // summarizeICECandidates reports whether any of a peer's candidates is server reflexive or

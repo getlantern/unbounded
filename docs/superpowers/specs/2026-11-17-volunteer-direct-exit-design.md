@@ -92,7 +92,7 @@ sequenceDiagram
   - The volunteer is the controlled agent and accepts.
   
   The result is an `ice.Conn`, a `net.Conn` over the chosen pair, punched or relayed. pion keeps STUN out of what `Read` returns.
-- Both sides treat the conn as a `net.PacketConn` of one peer through a small adapter.
+- Both sides treat the conn as a `net.PacketConn` of one peer through a small adapter. Its addresses are fixed placeholders, the same for every session, so nothing that logs them logs a user IP.
 - If the agent fails or disconnects, the session ends like a failed WebRTC session today, and the user's app moves to the next genesis.
 - The consumer's single slot, its no-path guard and its connection-state reporting cover ICE sessions as well as PeerConnections.
 
@@ -102,6 +102,7 @@ sequenceDiagram
   - `Params func() (pin, password string, ok bool)` mints a session's credentials.
   - `Serve func(ctx context.Context, conn net.PacketConn, password string)` serves one session.
 - User: the consumer reports `ExitPath{Conn net.PacketConn, CertPin, Password string}` to its embedder, instead of feeding the QUIC layer.
+  - `WebRTCOptions.TakeExit func() bool` lets lantern-box stop taking direct exits after repeated Hysteria2 failures, falling back to today's path.
 - A volunteer slot serving an ICE session leaves its egress worker idle. A slot serving a PeerConnection relays to the egress server as today.
 
 ### lantern-box

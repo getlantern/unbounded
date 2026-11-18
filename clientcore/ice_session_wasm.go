@@ -17,6 +17,8 @@ var errICEUnavailable = errors.New("direct exit sessions are native only")
 
 var errBadCandidate = errors.New("bad ICE candidate")
 
+const maxRemoteCandidates = 32
+
 type iceSession struct{}
 
 func newICESession(*WebRTCOptions, bool, []webrtc.ICEServer, time.Duration) (*iceSession, error) {

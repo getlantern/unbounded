@@ -42,6 +42,19 @@ func TestExitParams(t *testing.T) {
 	assert.False(t, ok, "nothing to serve the session with")
 }
 
+func TestTakeExit(t *testing.T) {
+	o := NewDefaultWebRTCOptions()
+	assert.False(t, takeExit(o), "no OnExitPath")
+	o.TakeExit = func() bool { return true }
+	assert.False(t, takeExit(o), "TakeExit alone can't take a session")
+	o.OnExitPath = func(ExitPath) {}
+	assert.True(t, takeExit(o))
+	o.TakeExit = func() bool { return false }
+	assert.False(t, takeExit(o), "the embedder backed off")
+	o.TakeExit = nil
+	assert.True(t, takeExit(o), "no TakeExit takes every direct exit")
+}
+
 func TestObserveSession(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	observeSession(o, true) // no Exit: no panic

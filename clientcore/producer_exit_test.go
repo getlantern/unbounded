@@ -8,10 +8,12 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pion/transport/v5/vnet"
 	"github.com/pion/webrtc/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,4 +118,41 @@ func TestProducerDropsICEOfferWhenItCantExit(t *testing.T) {
 	})
 	assert.Equal(t, 0, next)
 	assert.Zero(t, posts.Load(), "no answer is sent")
+}
+
+// An ICE offer without credentials is dropped before the producer mints any, and reported as bad
+// consumer ICE with the next genesis.
+func TestProducerDropsICEOfferWithoutCredentials(t *testing.T) {
+	cn, _, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
+	posted := make(chan url.Values, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() == nil {
+			posted <- r.PostForm
+		}
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.Net = cn
+	o.Exit = readyExit()
+	var minted atomic.Int32
+	o.Exit.Params = func() (string, string, bool) { minted.Add(1); return "pin", "pw", true }
+	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
+	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
+		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Pwd: "p"}}, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false,
+	})
+	assert.Equal(t, 0, next)
+	assert.Zero(t, minted.Load(), "no credentials are minted")
+	select {
+	case <-posted:
+		t.Fatal("answered an offer without credentials")
+	default:
+	}
+
+	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pc.Close() })
+	producerState2(fsm, pc)
+	assert.Equal(t, common.OutcomeBadConsumerICE, (<-posted).Get(common.PrevOutcomeField))
 }

@@ -138,6 +138,11 @@ type WebRTCOptions struct {
 	// runs on the worker's goroutine and must not block. While it is nil, the consumer answers
 	// every genesis with an SDP offer, as before. Set it before NewBroflake.
 	OnExitPath func(ExitPath)
+	// TakeExit, if set, is asked before each direct exit the consumer could take. While it reports
+	// false, the consumer answers every genesis with an SDP offer, as if OnExitPath were nil, so an
+	// embedder can fall back after direct exits keep failing. It runs on the signaling path, so it
+	// must be cheap and must not block.
+	TakeExit func() bool
 	// ConnectGrace is the least time left for DTLS and the data channel to open once ICE connects,
 	// extending NATFailTimeout when ICE connects near its end.
 	ConnectGrace time.Duration

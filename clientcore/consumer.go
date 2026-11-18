@@ -372,7 +372,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
 			// take one. The session needs no peer connection. It gets the peer connection's STUN
 			// servers, from state 0, and the room's TURN servers.
-			if directExits[replyTo] && options.OnExitPath != nil {
+			if directExits[replyTo] && takeExit(options) {
 				servers := slices.Concat(peerConnection.GetConfiguration().ICEServers, roomICE[replyTo])
 				_ = peerConnection.Close()
 				return 6, []interface{}{replyTo, servers, len(roomICE[replyTo]) > 0}
@@ -921,6 +921,11 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			answer, ok := msg.(common.ICEAnswer)
 			if err != nil || !ok {
 				slog.Debug("Signal message is not a direct exit answer")
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if answer.Ufrag == "" || answer.Pwd == "" || answer.CertPin == "" || answer.Password == "" || len(answer.Candidates) == 0 {
+				slog.Debug("Direct exit answer is incomplete, aborting!")
 				_ = s.Close()
 				return 0, []interface{}{}
 			}

@@ -218,7 +218,12 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			case <-time.After(45 * time.Second):
 				t.Fatal("no direct exit session")
 			}
-			assert.True(t, <-sessions, "the producer counts a direct exit")
+			select {
+			case directExit := <-sessions:
+				assert.True(t, directExit, "the producer counts a direct exit")
+			case <-time.After(45 * time.Second):
+				t.Fatal("the producer counted no session")
+			}
 			assert.Equal(t, "pin", path.CertPin)
 			assert.Equal(t, "password", path.Password)
 			assert.Equal(t, tc.turn, path.Relayed)

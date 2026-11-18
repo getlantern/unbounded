@@ -553,7 +553,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
 			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "msg", string(iceBytes))
+				slog.Debug("Error decoding signal message", "error", err, "bytes", len(iceBytes))
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -852,6 +852,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			last.begin(replyTo, vpnStatus(options))
 			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)
 
+			if offer.ICE.Ufrag == "" || offer.ICE.Pwd == "" {
+				slog.Debug("Direct exit offer has no ICE credentials, dropping it")
+				last.record(common.OutcomeBadConsumerICE, nil)
+				return 0, []interface{}{}
+			}
+
 			// The producer may have stopped being able to exit since its genesis. The offer then
 			// goes unanswered, and the consumer moves on.
 			certPin, password, ok := exitParams(options)
@@ -949,7 +955,8 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// Never logged: the message carries the consumer's addresses.
 			_, msg, err := common.DecodeSignalMsg(iceBytes)
 			iceMsg, ok := msg.(common.ICEMsg)
-			if err != nil || !ok || iceMsg.ConsumerSessionID == "" || len(iceMsg.ICECandidates) == 0 {
+			if err != nil || !ok || iceMsg.ConsumerSessionID == "" || len(iceMsg.ICECandidates) == 0 ||
+				len(iceMsg.ICECandidates) > maxRemoteCandidates {
 				slog.Debug("Bad ICE message from signaling partner, aborting!")
 				last.record(common.OutcomeBadConsumerICE, nil)
 				_ = s.Close()

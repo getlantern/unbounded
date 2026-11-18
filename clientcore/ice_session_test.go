@@ -5,6 +5,7 @@ package clientcore
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -194,4 +195,62 @@ func TestICEURLsCarryTURNCredentials(t *testing.T) {
 	assert.Empty(t, urls[0].Username)
 	assert.Equal(t, "u", urls[1].Username)
 	assert.Equal(t, "p", urls[1].Password)
+}
+
+// A peer can't make the session check more than maxRemoteCandidates addresses. The refusal
+// quotes none of them.
+func TestAddRemoteCapsCandidates(t *testing.T) {
+	cn, _, _, _ := newVNetICE(t, vnet.EndpointIndependent)
+	o := NewDefaultWebRTCOptions()
+	o.Net = cn
+	cands := func(n int) []string {
+		var c []string
+		for i := 0; i < n; i++ {
+			c = append(c, fmt.Sprintf("1 1 udp 2130706431 203.0.113.%d 5000 typ host", i+1))
+		}
+		return c
+	}
+	s, err := newICESession(o, true, nil, time.Second)
+	require.NoError(t, err)
+	defer func() { _ = s.Close() }()
+	err = s.addRemote(cands(maxRemoteCandidates + 1))
+	assert.ErrorIs(t, err, errTooManyCandidates)
+	assert.NotContains(t, err.Error(), "203.0.113")
+
+	s2, err := newICESession(o, true, nil, time.Second)
+	require.NoError(t, err)
+	defer func() { _ = s2.Close() }()
+	assert.NoError(t, s2.addRemote(cands(maxRemoteCandidates)))
+}
+
+// A session's packet conn gives fixed placeholder addresses, never either side's, and has no
+// RemoteAddr, so an exit that logs a conn's addresses logs nothing about the user.
+func TestICEPacketConnAddressesArePlaceholders(t *testing.T) {
+	cn, pn, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
+	consumer, producer := connectICE(t, cn, pn, []webrtc.ICEServer{{URLs: []string{stunURL}}}, WebRTCTuning{})
+	local := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 2), Port: 1}
+	peer := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 1}
+	for _, pair := range [][2]net.PacketConn{
+		{consumer.packetConn(), producer.packetConn()},
+		{producer.packetConn(), consumer.packetConn()},
+	} {
+		from, to := pair[0], pair[1]
+		assert.Equal(t, local.String(), to.LocalAddr().String())
+		_, ok := to.(interface{ RemoteAddr() net.Addr })
+		assert.False(t, ok, "no RemoteAddr to log")
+		_, err := from.WriteTo([]byte("x"), nil)
+		require.NoError(t, err)
+		require.NoError(t, to.SetReadDeadline(time.Now().Add(5*time.Second)))
+		_, addr, err := to.ReadFrom(make([]byte, 1500))
+		require.NoError(t, err)
+		assert.Equal(t, peer.String(), addr.String())
+	}
+}
+
+// A server URL that can't be parsed is refused with errBadICEServer, which never quotes it: it
+// may name a TURN host.
+func TestICEURLsRefuseBadServerWithoutQuotingIt(t *testing.T) {
+	_, err := iceURLs([]webrtc.ICEServer{{URLs: []string{"turn:relay.secret.example:3478:1"}}})
+	assert.ErrorIs(t, err, errBadICEServer)
+	assert.NotContains(t, err.Error(), "relay.secret.example")
 }
