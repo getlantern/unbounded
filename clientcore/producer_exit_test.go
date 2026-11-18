@@ -25,10 +25,24 @@ import (
 // and returns the next state, its input, and the genesis message the producer sent.
 func producerExitState2(t *testing.T, o *WebRTCOptions, reply []byte) (int, []interface{}, common.GenesisMsg, *webrtc.PeerConnection) {
 	t.Helper()
-	var sent common.GenesisMsg
+	sentCh := make(chan common.GenesisMsg, 16)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.NoError(t, r.ParseForm())
-		require.NoError(t, json.Unmarshal([]byte(r.Form.Get("data")), &sent))
+		var g common.GenesisMsg
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parsing the genesis POST: %v", err)
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if err := json.Unmarshal([]byte(r.Form.Get("data")), &g); err != nil {
+			t.Errorf("decoding the genesis: %v", err)
+			http.Error(w, "bad genesis", http.StatusBadRequest)
+			return
+		}
+		select {
+		case sentCh <- g:
+		default:
+			t.Error("more genesis messages than expected")
+		}
 		_, _ = w.Write(reply)
 	}))
 	t.Cleanup(srv.Close)
@@ -42,6 +56,10 @@ func producerExitState2(t *testing.T, o *WebRTCOptions, reply []byte) (int, []in
 	next, input := fsm.state[2](context.Background(), fsm.com, []interface{}{
 		pc, pa, make(chan *webrtc.DataChannel, 1), make(chan webrtc.PeerConnectionState, 16), make(chan struct{}, 1),
 	})
+	var sent common.GenesisMsg
+	for len(sentCh) > 0 {
+		sent = <-sentCh
+	}
 	return next, input, sent, pc
 }
 
@@ -154,5 +172,10 @@ func TestProducerDropsICEOfferWithoutCredentials(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = pc.Close() })
 	producerState2(fsm, pc)
-	assert.Equal(t, common.OutcomeBadConsumerICE, (<-posted).Get(common.PrevOutcomeField))
+	select {
+	case form := <-posted:
+		assert.Equal(t, common.OutcomeBadConsumerICE, form.Get(common.PrevOutcomeField))
+	case <-time.After(5 * time.Second):
+		t.Fatal("the producer posted no next genesis")
+	}
 }

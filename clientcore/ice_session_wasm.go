@@ -26,7 +26,7 @@ func newICESession(*WebRTCOptions, bool, []webrtc.ICEServer, time.Duration) (*ic
 }
 
 func (s *iceSession) credentials() (string, string, error) { return "", "", errICEUnavailable }
-func (s *iceSession) gather(time.Duration) ([]string, gatherEnd, error) {
+func (s *iceSession) gather(context.Context, time.Duration) ([]string, gatherEnd, error) {
 	return nil, 0, errICEUnavailable
 }
 func (s *iceSession) addRemote([]string) error                      { return errICEUnavailable }

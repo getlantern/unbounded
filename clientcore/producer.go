@@ -345,7 +345,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			if err != nil {
 				// Not the raw message: an offer may carry its consumer's pairing, and Freddie's TURN
 				// servers.
-				slog.Debug("Error decoding signal message", "error", err, "bytes", len(offerBytes))
+				slog.Debug("Error decoding signal message", "bytes", len(offerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -553,7 +553,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
 			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "bytes", len(iceBytes))
+				slog.Debug("Error decoding signal message", "bytes", len(iceBytes))
 				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -576,7 +576,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				// just serialized ICECandidates?
 				err := peerConnection.AddICECandidate(c.ToJSON())
 				if err != nil {
-					slog.Debug("Error adding ICE candidate", "error", err)
+					slog.Debug("Error adding ICE candidate")
 					last.record(common.OutcomeBadConsumerICE, peerConnection)
 					// Borked!
 					peerConnection.Close() // TODO: there's an err we should handle here
@@ -883,7 +883,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				gatherLimit = turnGatherWait
 			}
 			gatherStart := time.Now()
-			candidates, end, err := s.gather(gatherLimit)
+			candidates, end, err := s.gather(ctx, gatherLimit)
 			if err != nil {
 				slog.Debug("Error gathering ICE candidates", "error", err)
 				_ = s.Close()

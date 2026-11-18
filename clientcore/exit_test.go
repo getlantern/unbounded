@@ -3,6 +3,8 @@ package clientcore
 import (
 	"context"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -72,8 +74,16 @@ func TestObserveSession(t *testing.T) {
 // A direct exit session's ConsumerInfo reaches the JIT egress worker like any other, but the
 // worker must not dial the egress for it: the producer exits that session itself.
 func TestJITEgressIgnoresExitSessions(t *testing.T) {
+	// The egress records the subprotocols of each dial, which carry the session ID, and refuses it.
+	dials := make(chan string, 4)
+	egress := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		dials <- r.Header.Get("Sec-WebSocket-Protocol")
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	t.Cleanup(egress.Close)
 	eo := NewDefaultEgressOptions()
-	eo.Addr = "http://127.0.0.1:1" // never dialed
+	eo.Addr = egress.URL
+	eo.ErrorBackoff = 0
 	var wg sync.WaitGroup
 	fsm := NewJITEgressConsumer(eo, nil, &wg)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -91,14 +101,21 @@ func TestJITEgressIgnoresExitSessions(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("no path assertion")
 	}
-	fsm.com.rx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{SessionID: "s", Exit: true}}
+	// The worker reads its messages in order: had it taken the exit session, the dial would carry
+	// its ID, not the WebRTC session's that follows.
+	fsm.com.rx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{SessionID: "exit-session", Exit: true}}
+	fsm.com.rx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{SessionID: "webrtc-session"}}
 	select {
-	case msg := <-fsm.com.tx:
-		t.Fatalf("an exit session claimed the egress slot: %+v", msg)
-	case next := <-done:
-		t.Fatalf("state 0 went on to state %d for an exit session", next)
-	case <-time.After(300 * time.Millisecond):
+	case protocols := <-dials:
+		assert.Contains(t, protocols, "webrtc-session")
+		assert.NotContains(t, protocols, "exit-session")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the WebRTC session never claimed the slot")
 	}
-	cancel()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("state 0 didn't return after the failed dial")
+	}
+	assert.Empty(t, dials, "one dial, for the WebRTC session")
 }

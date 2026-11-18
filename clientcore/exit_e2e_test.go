@@ -86,6 +86,12 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	typ, _ := strconv.Atoi(r.Form.Get("type"))
 	id, reply := f.await()
+	// A message no longer waiting for its reply can't be replied to, as at Freddie.
+	defer func() {
+		f.mu.Lock()
+		delete(f.waiting, id)
+		f.mu.Unlock()
+	}()
 	msg := common.SignalMsg{ReplyTo: id, Type: common.SignalMsgType(typ), Payload: r.Form.Get("data")}
 	if r.Form.Get("send-to") == common.SignalSendToGenesis {
 		msg.Room = len(f.turn) > 0
@@ -105,10 +111,15 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Freddie's TTLs: offers and answers wait out the other side's ICE gathering.
+	ttl := 5 * time.Second
+	if msg.Type == common.SignalMsgOffer || msg.Type == common.SignalMsgAnswer {
+		ttl = 15 * time.Second
+	}
 	select {
 	case m := <-reply:
 		_, _ = io.WriteString(w, m)
-	case <-time.After(10 * time.Second):
+	case <-time.After(ttl):
 	case <-r.Context().Done():
 	}
 }
@@ -209,7 +220,14 @@ func TestDirectExitEndToEnd(t *testing.T) {
 
 			paths := make(chan ExitPath, 1)
 			co := e2eOptions(srv, cn, stunURL)
-			co.OnExitPath = func(p ExitPath) { paths <- p }
+			co.OnExitPath = func(p ExitPath) {
+				// Never block the consumer's worker: a path past the first is closed, ending it.
+				select {
+				case paths <- p:
+				default:
+					_ = p.Conn.Close()
+				}
+			}
 			startConsumer(t, co)
 
 			var path ExitPath

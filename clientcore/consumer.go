@@ -54,7 +54,7 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 // newConsumerWebRTCSlot is newConsumerWebRTC reporting the worker's slot to
 // report, if non-nil: connected with its pairing when a connection opens, and
 // disconnected when it ends.
-func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string)) *WorkerFSM {
+func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool)) *WorkerFSM {
 	var scache STUNCache
 	// listPausedUntil is when a consumer with a mapped address next fetches the STUN list after
 	// a failed fetch.
@@ -78,7 +78,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 	// relays. Like pairing, it needs no lock.
 	var turnPC *webrtc.PeerConnection
 	if report == nil {
-		report = func(bool, string) {}
+		report = func(bool, string, bool) {}
 	}
 
 	return NewWorkerFSM(wg, []FSMstate{
@@ -311,7 +311,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 					msg, payload, err := common.DecodeSignal(rawMsg)
 					if err != nil {
 						// Not the raw message: a room genesis carries its pairing.
-						slog.Debug("Error decoding signal message", "error", err, "bytes", len(rawMsg))
+						slog.Debug("Error decoding signal message", "bytes", len(rawMsg))
 						sleepOrDone(ctx, options.ErrorBackoff)
 						if ctx.Err() != nil {
 							// Cancelled during backoff: hand control back to the FSM
@@ -503,7 +503,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// Looks like we got some kind of response. Should be an answer SDP in a SignalMsg
 			replyTo, answer, err := common.DecodeSignalMsg(answerBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "bytes", len(answerBytes))
+				slog.Debug("Error decoding signal message", "bytes", len(answerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
@@ -715,8 +715,8 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			connectionChange := input[2].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[3].(chan struct{})
 			rooms.succeeded()
-			report(true, pairing)
-			defer report(false, "")
+			report(true, pairing, false)
+			defer report(false, "", false)
 
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
@@ -890,6 +890,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 			status, answerBytes, err := postSignalTo(ctx, options, replyTo, common.SignalMsgOffer, offerJSON)
+			// As in state 2, a 200 means the producer took our offer, even if its body then fails.
+			if status == http.StatusOK {
+				offerAccepted = true
+			}
 			if err != nil {
 				slog.Debug("Couldn't signal the direct exit offer", "error", err)
 				sleepOrDone(ctx, options.ErrorBackoff)
@@ -898,7 +902,6 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			}
 			switch status {
 			case http.StatusOK:
-				offerAccepted = true
 			case http.StatusNotFound:
 				slog.Debug("Too late for genesis message", "status_code", status)
 				_ = s.Close()
@@ -935,7 +938,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				gatherLimit = turnGatherWait
 			}
 			gatherStart := time.Now()
-			candidates, end, err := s.gather(gatherLimit)
+			candidates, end, err := s.gather(ctx, gatherLimit)
 			if err != nil {
 				slog.Debug("Error gathering ICE candidates", "error", err)
 				_ = s.Close()
@@ -1000,9 +1003,17 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			certPin := input[1].(string)
 			password := input[2].(string)
 			slog.Debug("Consumer state 7...")
+			select {
+			case <-s.done():
+				// It ended between the handshake and now: nothing to hand off.
+				slog.Debug("Direct exit session ended before handoff, resetting!")
+				_ = s.Close()
+				return 0, []interface{}{}
+			default:
+			}
 			rooms.succeeded()
-			report(true, pairing)
-			defer report(false, "")
+			report(true, pairing, true)
+			defer report(false, "", false)
 
 			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: s.relayed()})
 

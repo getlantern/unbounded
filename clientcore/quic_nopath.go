@@ -86,7 +86,7 @@ func (c *QUICLayer) guardPaths() {
 	var lastConnected bool
 	var lastSince time.Time
 	evaluate := func() {
-		connected, since := g.slots.connected()
+		connected, since := g.slots.pathConnectedSince()
 		if connected == lastConnected && since.Equal(lastSince) {
 			return
 		}
@@ -127,7 +127,7 @@ func (c *QUICLayer) guardPaths() {
 			// A timer armed for a state that has since changed (a slot that
 			// connected, or dropped again, before we heard) is stale: act on
 			// the current state instead.
-			if connected, since := g.slots.connected(); connected != lastConnected || !since.Equal(lastSince) {
+			if connected, since := g.slots.pathConnectedSince(); connected != lastConnected || !since.Equal(lastSince) {
 				evaluate()
 				continue
 			}

@@ -244,7 +244,7 @@ So we can see how much traffic avoids the egress server, and how much goes throu
    - the TURN share;
    - the refusal counts;
    - egress server bytes.
-4. To roll back, turn the flag off, globally or per country. Volunteers go back to today's path, with no client release.
+4. To roll back, turn the flag off, globally or per country. Volunteers go back to today's path, with no client release. The flag gates new direct exits only, through `ExitOptions.Ready`: a session already in producer state 7 runs until ICE ends, its `Serve` returns, or its worker stops. To end those at once, lantern-box's `Serve` must also watch the flag and return when it turns off.
 
 ## Out of scope
 

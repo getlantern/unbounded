@@ -18,7 +18,7 @@ import (
 
 // newGuardedLayer returns a QUICLayer guarded over a single consumer slot, whose reporter it also
 // returns. Nothing is listened on: tests hand the layer a connection themselves.
-func newGuardedLayer(t *testing.T, failAfter time.Duration) (*QUICLayer, func(bool, string)) {
+func newGuardedLayer(t *testing.T, failAfter time.Duration) (*QUICLayer, func(bool, string, bool)) {
 	t.Helper()
 	slots := newConsumerSlots(1, nil)
 	g := &noPathGuard{slots: slots, failAfter: failAfter}
@@ -80,13 +80,13 @@ func TestNoPathGuardFailsDialsAfterGrace(t *testing.T) {
 	}
 
 	// A slot connecting lets dials wait for a connection again.
-	report(true, "")
+	report(true, "", false)
 	eventually(t, "dials to wait again", func() bool {
 		return errors.Is(dialWithin(q, 10*time.Millisecond), context.DeadlineExceeded)
 	})
 
 	// And when it drops, they get the grace again before failing.
-	report(false, "")
+	report(false, "", false)
 	droppedAt := time.Now()
 	if err := dialWithin(q, 10*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("dial within the grace after a drop: got %v, want it to wait out its context", err)
@@ -102,13 +102,13 @@ func TestNoPathGuardFailsDialsAfterGrace(t *testing.T) {
 func TestNoPathGuardBriefDropDoesNotFail(t *testing.T) {
 	const grace = 150 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
-	report(true, "")
+	report(true, "", false)
 	time.Sleep(grace) // past the startup grace, but connected
 
 	// A drop shorter than the grace never fails a dial.
-	report(false, "")
+	report(false, "", false)
 	time.Sleep(grace / 3)
-	report(true, "")
+	report(true, "", false)
 	time.Sleep(grace)
 	if err := dialWithin(q, 10*time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("dial after a brief drop: got %v, want it to wait out its context", err)
@@ -128,7 +128,7 @@ func TestNoPathGuardCoalescedReconnectRestoresGrace(t *testing.T) {
 	// with a new since, and one signal.
 	slots := q.noPath.slots
 	slots.mu.Lock()
-	slots.since = time.Now()
+	slots.pathSince = time.Now()
 	for w := range slots.watchers {
 		select {
 		case w <- struct{}{}:
@@ -166,7 +166,7 @@ func TestUnguardedLayerDialsWait(t *testing.T) {
 func TestNoPathGuardResetsStreamsKeepsConn(t *testing.T) {
 	const grace = 100 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
-	report(true, "")
+	report(true, "", false)
 
 	conn := loopbackQUICConn(t)
 	q.mx.Lock()
@@ -186,7 +186,7 @@ func TestNoPathGuardResetsStreamsKeepsConn(t *testing.T) {
 		readErr <- err
 	}()
 
-	report(false, "")
+	report(false, "", false)
 	droppedAt := time.Now()
 	select {
 	case err := <-readErr:
@@ -217,7 +217,7 @@ func TestNoPathGuardResetsStreamsKeepsConn(t *testing.T) {
 func TestNoPathGuardFailsDialWaitingForStreamCredit(t *testing.T) {
 	const grace = 100 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
-	report(true, "")
+	report(true, "", false)
 
 	// The peer grants one stream, so a second dial waits in OpenStreamSync
 	// for credit the peer never sends.
@@ -247,7 +247,7 @@ func TestNoPathGuardFailsDialWaitingForStreamCredit(t *testing.T) {
 	case <-time.After(2 * grace):
 	}
 
-	report(false, "")
+	report(false, "", false)
 	select {
 	case err := <-dialErr:
 		if !errors.Is(err, ErrNoConnectedPath) {
@@ -261,7 +261,7 @@ func TestNoPathGuardFailsDialWaitingForStreamCredit(t *testing.T) {
 func TestNoPathGuardFailsSOCKS5Handshake(t *testing.T) {
 	const grace = 100 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
-	report(true, "")
+	report(true, "", false)
 
 	// The peer never answers, so the handshake waits on its greeting reply
 	// when the path fails.
@@ -287,7 +287,7 @@ func TestNoPathGuardFailsSOCKS5Handshake(t *testing.T) {
 	case <-time.After(2 * grace):
 	}
 
-	report(false, "")
+	report(false, "", false)
 	select {
 	case err := <-dialErr:
 		if !errors.Is(err, ErrNoConnectedPath) {
@@ -301,25 +301,51 @@ func TestNoPathGuardFailsSOCKS5Handshake(t *testing.T) {
 func TestNoPathGuardSlotReturningKeepsConn(t *testing.T) {
 	const grace = 50 * time.Millisecond
 	q, report := newGuardedLayer(t, grace)
-	report(true, "")
+	report(true, "", false)
 	conn := loopbackQUICConn(t)
 	q.mx.Lock()
 	q.eventualConn.set(conn)
 	q.mx.Unlock()
 
-	report(false, "")
+	report(false, "", false)
 	eventually(t, "the path to fail", func() bool {
 		return errors.Is(dialWithin(q, time.Second), ErrNoConnectedPath)
 	})
 	// A slot returning keeps the connection, which the egress migrates onto
 	// it, and dials use it again.
-	report(true, "")
+	report(true, "", false)
 	time.Sleep(2 * grace)
 	if conn.Context().Err() != nil {
 		t.Fatal("the QUIC connection closed although a slot reconnected")
 	}
 	if err := dialWithin(q, time.Second); err != nil {
 		t.Fatalf("dial after the slot returned: %v", err)
+	}
+}
+
+func TestNoPathGuardIgnoresDirectExits(t *testing.T) {
+	const grace = 50 * time.Millisecond
+	q, report := newGuardedLayer(t, grace)
+	// A direct exit carries no QUIC traffic, so it doesn't hold off the guard.
+	report(true, "", true)
+	if err := dialWithin(q, 5*time.Second); !errors.Is(err, ErrNoConnectedPath) {
+		t.Fatalf("dial with only a direct exit: got %v, want ErrNoConnectedPath", err)
+	}
+}
+
+func TestConsumerConnectedCountsDirectExits(t *testing.T) {
+	slots := newConsumerSlots(1, nil)
+	b := &BroflakeEngine{consumerSlots: slots}
+	slots.reporter(0)(true, "pairing", true)
+	if connected, _ := b.ConsumerConnected(); !connected {
+		t.Fatal("a direct exit connected: got disconnected")
+	}
+	if got := b.ConsumerSlots(); !got[0].Connected || !got[0].DirectExit || got[0].Pairing != "pairing" {
+		t.Fatalf("slot: got %+v, want a connected direct exit with its pairing", got[0])
+	}
+	slots.reporter(0)(false, "", true)
+	if got := b.ConsumerSlots(); got[0].Connected || got[0].DirectExit {
+		t.Fatalf("slot after the session ended: got %+v", got[0])
 	}
 }
 
@@ -330,13 +356,13 @@ func TestConsumerConnectedSince(t *testing.T) {
 	if connected, since := b.ConsumerConnected(); connected || !since.IsZero() {
 		t.Fatalf("new slots: got (%v, %v), want (false, zero)", connected, since)
 	}
-	slots.reporter(0)(false, "")
+	slots.reporter(0)(false, "", false)
 	if connected, since := b.ConsumerConnected(); connected || !since.IsZero() {
 		t.Fatalf("a slot failed its first attempt: got (%v, %v), want (false, zero)", connected, since)
 	}
 
 	before := time.Now()
-	slots.reporter(0)(true, "")
+	slots.reporter(0)(true, "", false)
 	connected, up := b.ConsumerConnected()
 	if !connected || up.Before(before) {
 		t.Fatalf("a slot connected: got (%v, %v), want connected since %v or later", connected, up, before)
@@ -344,14 +370,14 @@ func TestConsumerConnectedSince(t *testing.T) {
 
 	// Another slot connecting, or one of two dropping, changes nothing.
 	time.Sleep(time.Millisecond)
-	slots.reporter(1)(true, "")
-	slots.reporter(0)(false, "")
+	slots.reporter(1)(true, "", false)
+	slots.reporter(0)(false, "", false)
 	if connected, since := b.ConsumerConnected(); !connected || !since.Equal(up) {
 		t.Fatalf("one of two slots dropped: got (%v, %v), want (true, %v)", connected, since, up)
 	}
 
 	time.Sleep(time.Millisecond)
-	slots.reporter(1)(false, "")
+	slots.reporter(1)(false, "", false)
 	if connected, since := b.ConsumerConnected(); connected || !since.After(up) {
 		t.Fatalf("the last slot dropped: got (%v, %v), want disconnected since after %v", connected, since, up)
 	}

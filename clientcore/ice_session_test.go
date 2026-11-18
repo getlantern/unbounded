@@ -7,9 +7,11 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/pion/ice/v4"
 	"github.com/pion/logging"
 	"github.com/pion/transport/v5"
 	"github.com/pion/transport/v5/vnet"
@@ -94,9 +96,9 @@ func connectICE(t *testing.T, consumerNet, producerNet transport.Net, servers []
 	require.NoError(t, err)
 	pu, pp, err := producer.credentials()
 	require.NoError(t, err)
-	pCands, _, err := producer.gather(0)
+	pCands, _, err := producer.gather(context.Background(), 0)
 	require.NoError(t, err)
-	cCands, _, err := consumer.gather(0)
+	cCands, _, err := consumer.gather(context.Background(), 0)
 	require.NoError(t, err)
 	require.NoError(t, consumer.addRemote(pCands))
 	require.NoError(t, producer.addRemote(cCands))
@@ -130,6 +132,15 @@ func TestICESessionPunched(t *testing.T) {
 	assert.False(t, consumer.relayed())
 	exchange(t, consumer.packetConn(), producer.packetConn())
 	exchange(t, producer.packetConn(), consumer.packetConn())
+
+	// A write deadline holds for this conn alone, and leaves the session working.
+	expired := consumer.packetConn()
+	require.NoError(t, expired.SetWriteDeadline(time.Now().Add(-time.Second)))
+	_, err := expired.WriteTo([]byte("late"), icePeerAddr)
+	assert.ErrorIs(t, err, os.ErrDeadlineExceeded)
+	exchange(t, consumer.packetConn(), producer.packetConn())
+	require.NoError(t, expired.SetWriteDeadline(time.Time{}))
+	exchange(t, expired, producer.packetConn())
 }
 
 func TestICESessionRelayed(t *testing.T) {
@@ -138,6 +149,20 @@ func TestICESessionRelayed(t *testing.T) {
 	assert.True(t, consumer.relayed())
 	exchange(t, consumer.packetConn(), producer.packetConn())
 	exchange(t, producer.packetConn(), consumer.packetConn())
+}
+
+// A worker that stops while its session gathers doesn't wait out the gathering.
+func TestICESessionGatherStopsWithContext(t *testing.T) {
+	_, pn, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
+	o := NewDefaultWebRTCOptions()
+	o.Net = pn
+	s, err := newICESession(o, false, []webrtc.ICEServer{{URLs: []string{stunURL}}}, 5*time.Second)
+	require.NoError(t, err)
+	defer s.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err = s.gather(ctx, 0)
+	assert.ErrorIs(t, err, context.Canceled)
 }
 
 // When one side goes away, the other's session ends, so its FSM moves on.
@@ -156,8 +181,11 @@ func TestICESessionEndsWhenPeerCloses(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the consumer's session outlived the producer's")
 	}
-	_, _, err := consumer.packetConn().ReadFrom(make([]byte, 1500))
-	assert.Error(t, err, "reads fail once the session ends")
+	conn := consumer.packetConn()
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+	_, _, err := conn.ReadFrom(make([]byte, 1500))
+	require.Error(t, err, "reads fail once the session ends")
+	assert.NotErrorIs(t, err, os.ErrDeadlineExceeded, "the session's end, not the deadline, fails the read")
 }
 
 func TestSummarizeICECandidates(t *testing.T) {
@@ -181,7 +209,7 @@ func TestAddRemoteRefusesBadCandidateWithoutQuotingIt(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 	err = s.addRemote([]string{"1 1 udp 1 203.0.113.9 notaport typ host"})
-	assert.ErrorIs(t, err, errBadCandidate)
+	require.ErrorIs(t, err, errBadCandidate)
 	assert.NotContains(t, err.Error(), "203.0.113.9")
 }
 
@@ -214,7 +242,7 @@ func TestAddRemoteCapsCandidates(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = s.Close() }()
 	err = s.addRemote(cands(maxRemoteCandidates + 1))
-	assert.ErrorIs(t, err, errTooManyCandidates)
+	require.ErrorIs(t, err, errTooManyCandidates)
 	assert.NotContains(t, err.Error(), "203.0.113")
 
 	s2, err := newICESession(o, true, nil, time.Second)
@@ -251,6 +279,35 @@ func TestICEPacketConnAddressesArePlaceholders(t *testing.T) {
 // may name a TURN host.
 func TestICEURLsRefuseBadServerWithoutQuotingIt(t *testing.T) {
 	_, err := iceURLs([]webrtc.ICEServer{{URLs: []string{"turn:relay.secret.example:3478:1"}}})
-	assert.ErrorIs(t, err, errBadICEServer)
+	require.ErrorIs(t, err, errBadICEServer)
 	assert.NotContains(t, err.Error(), "relay.secret.example")
+}
+
+// A host with more interfaces than the other side accepts candidates from still sends the ones that
+// cross NATs.
+func TestOutboundCandidatesKeepsReachableOnes(t *testing.T) {
+	var gathered []ice.Candidate
+	for i := range maxRemoteCandidates + 8 {
+		c, err := ice.NewCandidateHost(&ice.CandidateHostConfig{
+			Network: "udp", Address: fmt.Sprintf("10.0.%d.1", i), Port: 1000 + i, Component: 1,
+		})
+		require.NoError(t, err)
+		gathered = append(gathered, c)
+	}
+	srflx, err := ice.NewCandidateServerReflexive(&ice.CandidateServerReflexiveConfig{
+		Network: "udp", Address: "203.0.113.7", Port: 2000, Component: 1, RelAddr: "10.0.0.1", RelPort: 1000,
+	})
+	require.NoError(t, err)
+	relay, err := ice.NewCandidateRelay(&ice.CandidateRelayConfig{
+		Network: "udp", Address: "198.51.100.9", Port: 3000, Component: 1, RelAddr: "203.0.113.7", RelPort: 2000,
+	})
+	require.NoError(t, err)
+	gathered = append(gathered, srflx, relay)
+
+	out := outboundCandidates(gathered)
+	require.Len(t, out, maxRemoteCandidates)
+	assert.Equal(t, relay.Marshal(), out[0])
+	assert.Equal(t, srflx.Marshal(), out[1])
+	assert.Equal(t, gathered[0].Marshal(), out[2], "host candidates keep their gathering order")
+	assert.Len(t, outboundCandidates(gathered[:3]), 3, "a short list is kept whole")
 }

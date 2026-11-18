@@ -8,8 +8,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/ice/v4"
@@ -44,7 +46,7 @@ type iceSession struct {
 	conn        *ice.Conn
 
 	mu        sync.Mutex
-	gathered  []string
+	gathered  []ice.Candidate
 	complete  chan struct{}
 	gatherEnd sync.Once
 	relay     chan struct{}
@@ -144,7 +146,7 @@ func (s *iceSession) onCandidate(c ice.Candidate) {
 		return
 	}
 	s.mu.Lock()
-	s.gathered = append(s.gathered, c.Marshal())
+	s.gathered = append(s.gathered, c)
 	s.mu.Unlock()
 	if c.Type() == ice.CandidateTypeRelay {
 		s.relayOnce.Do(func() { close(s.relay) })
@@ -172,8 +174,8 @@ func (s *iceSession) credentials() (ufrag, pwd string, err error) {
 
 // gather gathers the session's candidates and returns them as ice.Candidate.Marshal writes them.
 // It waits as awaitGathering does: with limit set, it goes on shortly after the first relay
-// candidate, or at the limit.
-func (s *iceSession) gather(limit time.Duration) ([]string, gatherEnd, error) {
+// candidate, or at the limit. It gives up when ctx ends.
+func (s *iceSession) gather(ctx context.Context, limit time.Duration) ([]string, gatherEnd, error) {
 	var firstRelay <-chan struct{}
 	if limit > 0 {
 		firstRelay = s.relay
@@ -181,10 +183,56 @@ func (s *iceSession) gather(limit time.Duration) ([]string, gatherEnd, error) {
 	if err := s.agent.GatherCandidates(); err != nil {
 		return nil, 0, err
 	}
-	end := awaitGathering(s.complete, firstRelay, turnRelayGrace, limit)
+	// Gathering complete, or ctx ended: either ends awaitGathering's wait.
+	waited := make(chan struct{})
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-s.complete:
+		case <-ctx.Done():
+		case <-stop:
+			return
+		}
+		close(waited)
+	}()
+	end := awaitGathering(waited, firstRelay, turnRelayGrace, limit)
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return slices.Clone(s.gathered), end, nil
+	return outboundCandidates(s.gathered), end, nil
+}
+
+// outboundCandidates is gathered as ice.Candidate.Marshal writes them, cut to the
+// maxRemoteCandidates the other side accepts. A host with many interfaces can gather more, so it
+// keeps the candidates most likely to connect across NATs first: relayed, then server and peer
+// reflexive, then host candidates on public addresses (a port-mapped one among them), then the
+// rest, each in gathering order.
+func outboundCandidates(gathered []ice.Candidate) []string {
+	rank := func(c ice.Candidate) int {
+		switch c.Type() {
+		case ice.CandidateTypeRelay:
+			return 0
+		case ice.CandidateTypeServerReflexive, ice.CandidateTypePeerReflexive:
+			return 1
+		}
+		if isPublicIP(c.Address()) {
+			return 2
+		}
+		return 3
+	}
+	ordered := slices.Clone(gathered)
+	slices.SortStableFunc(ordered, func(a, b ice.Candidate) int { return rank(a) - rank(b) })
+	if len(ordered) > maxRemoteCandidates {
+		ordered = ordered[:maxRemoteCandidates]
+	}
+	out := make([]string, len(ordered))
+	for i, c := range ordered {
+		out[i] = c.Marshal()
+	}
+	return out
 }
 
 // addRemote adds the other side's candidates, refusing more than maxRemoteCandidates.
@@ -256,41 +304,53 @@ var (
 
 // icePacketConn is an ICE conn as a packet conn with one peer. Its addresses are placeholders
 // (see icePeerAddr), the same for every session, and it has no RemoteAddr.
+//
+// Its write deadline is its own. ice.Conn sets one on the selected pair's local socket, which
+// also carries the agent's consent checks and, on a UDP mux, other sessions. A UDP write doesn't
+// block, so a write past the deadline fails at once instead.
 type icePacketConn struct {
-	conn *ice.Conn
+	conn          *ice.Conn
+	writeDeadline atomic.Pointer[time.Time]
 }
 
-func newICEPacketConn(c *ice.Conn) icePacketConn {
-	return icePacketConn{conn: c}
+func newICEPacketConn(c *ice.Conn) *icePacketConn {
+	return &icePacketConn{conn: c}
 }
 
-func (c icePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+func (c *icePacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	n, err := c.conn.Read(p)
 	return n, icePeerAddr, err
 }
 
-func (c icePacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+func (c *icePacketConn) WriteTo(p []byte, _ net.Addr) (int, error) {
+	if d := c.writeDeadline.Load(); d != nil && !d.IsZero() && !time.Now().Before(*d) {
+		return 0, os.ErrDeadlineExceeded
+	}
 	return c.conn.Write(p)
 }
 
-func (c icePacketConn) Close() error {
+func (c *icePacketConn) Close() error {
 	return c.conn.Close()
 }
 
-func (c icePacketConn) LocalAddr() net.Addr {
+func (c *icePacketConn) LocalAddr() net.Addr {
 	return iceLocalAddr
 }
 
-func (c icePacketConn) SetDeadline(t time.Time) error {
-	return c.conn.SetDeadline(t)
+func (c *icePacketConn) SetDeadline(t time.Time) error {
+	if err := c.SetReadDeadline(t); err != nil {
+		return err
+	}
+	return c.SetWriteDeadline(t)
 }
 
-func (c icePacketConn) SetReadDeadline(t time.Time) error {
+func (c *icePacketConn) SetReadDeadline(t time.Time) error {
 	return c.conn.SetReadDeadline(t)
 }
 
-func (c icePacketConn) SetWriteDeadline(t time.Time) error {
-	return c.conn.SetWriteDeadline(t)
+func (c *icePacketConn) SetWriteDeadline(t time.Time) error {
+	c.writeDeadline.Store(&t)
+	return nil
 }
 
 // summarizeICECandidates reports whether any of a peer's candidates is server reflexive or
