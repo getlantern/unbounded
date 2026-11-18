@@ -29,7 +29,7 @@ import (
 func TestGenesisFormWithoutRoomsIsUnchanged(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetTargetCountries([]string{"IR"})
-	got := genesisForm(o, []byte(`{"x":1}`), false)
+	got := genesisForm(o, []byte(`{"x":1}`), routeGenesis(o, false))
 	want := url.Values{
 		"data":                    {`{"x":1}`},
 		"send-to":                 {o.GenesisAddr},
@@ -46,12 +46,12 @@ func TestGenesisFormWithoutRoomsIsUnchanged(t *testing.T) {
 func TestGenesisFormReportsVolunteerKind(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.VolunteerKind = common.VolunteerKindServer
-	f := genesisForm(o, []byte(`{}`), false)
+	f := genesisForm(o, []byte(`{}`), routeGenesis(o, false))
 	if f.Get(common.VolunteerKindField) != common.VolunteerKindServer || f.Get(common.VolunteerMappedField) != "0" {
 		t.Fatalf("form %s", f.Encode())
 	}
 	o.VolunteerMapped = true
-	if got := genesisForm(o, []byte(`{}`), false).Get(common.VolunteerMappedField); got != "1" {
+	if got := genesisForm(o, []byte(`{}`), routeGenesis(o, false)).Get(common.VolunteerMappedField); got != "1" {
 		t.Fatalf("mapped %q, want 1", got)
 	}
 }
@@ -102,7 +102,7 @@ func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 		o := newOptions()
 		countries := o.targetCountries()
 		for _, roomSlot := range []bool{false, true} {
-			if got, want := genesisForm(o, g, roomSlot).Encode(), preRoomsGenesisForm(o, g).Encode(); got != want {
+			if got, want := genesisForm(o, g, routeGenesis(o, roomSlot)).Encode(), preRoomsGenesisForm(o, g).Encode(); got != want {
 				t.Errorf("case %d (countries %v, room slot %v): form %s, want %s", i, countries, roomSlot, got, want)
 			}
 		}
@@ -126,7 +126,7 @@ func TestNoRoomsWireIsByteIdenticalToPreRooms(t *testing.T) {
 func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetRoomTickets([]string{"a.b", "c.d"})
-	f := genesisForm(o, []byte(`{}`), false)
+	f := genesisForm(o, []byte(`{}`), routeGenesis(o, false))
 	if got := f[common.RoomTicketField]; !slices.Equal(got, []string{"a.b", "c.d"}) {
 		t.Errorf("room tickets %q", got)
 	}
@@ -140,7 +140,7 @@ func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 	// A rooms-only producer says so in send-to, which an old Freddie refuses,
 	// and not in the pool field, which an old Freddie ignores.
 	o.SetServePool(false)
-	f = genesisForm(o, []byte(`{}`), false)
+	f = genesisForm(o, []byte(`{}`), routeGenesis(o, false))
 	if got := f.Get("send-to"); got != common.SignalSendToGenesisRooms {
 		t.Errorf("a rooms-only producer sends to %q, want %q", got, common.SignalSendToGenesisRooms)
 	}
@@ -157,14 +157,14 @@ func TestGenesisFormCarriesRoomsAndPool(t *testing.T) {
 func TestGenesisFormHold(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetRoomTickets([]string{"a.b"})
-	if _, ok := genesisForm(o, []byte(`{}`), true)[common.HoldField]; ok {
+	if _, ok := genesisForm(o, []byte(`{}`), routeGenesis(o, true))[common.HoldField]; ok {
 		t.Error("a producer without the socket asked for a hold")
 	}
 	o.VolunteerSocket = true
-	if got := genesisForm(o, []byte(`{}`), true).Get(common.HoldField); got != "1" {
+	if got := genesisForm(o, []byte(`{}`), routeGenesis(o, true)).Get(common.HoldField); got != "1" {
 		t.Errorf("a room slot with the socket sends hold=%q, want 1", got)
 	}
-	if _, ok := genesisForm(o, []byte(`{}`), false)[common.HoldField]; ok {
+	if _, ok := genesisForm(o, []byte(`{}`), routeGenesis(o, false))[common.HoldField]; ok {
 		t.Error("a pool genesis asked for a hold")
 	}
 }
@@ -175,16 +175,16 @@ func TestGenesisFormHold(t *testing.T) {
 func TestRoomSlotGenesisIsRoomsOnly(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	o.SetRoomTickets([]string{"a.b"})
-	if got := genesisForm(o, []byte(`{}`), true).Get("send-to"); got != common.SignalSendToGenesisRooms {
+	if got := genesisForm(o, []byte(`{}`), routeGenesis(o, true)).Get("send-to"); got != common.SignalSendToGenesisRooms {
 		t.Errorf("a room slot sends to %q, want %q", got, common.SignalSendToGenesisRooms)
 	}
-	if got := genesisForm(o, []byte(`{}`), false).Get("send-to"); got != o.GenesisAddr {
+	if got := genesisForm(o, []byte(`{}`), routeGenesis(o, false)).Get("send-to"); got != o.GenesisAddr {
 		t.Errorf("another slot sends to %q, want %q", got, o.GenesisAddr)
 	}
 
 	// Without tickets it has no rooms, so it serves the pool like any other slot.
 	o.SetRoomTickets(nil)
-	if got := genesisForm(o, []byte(`{}`), true).Get("send-to"); got != o.GenesisAddr {
+	if got := genesisForm(o, []byte(`{}`), routeGenesis(o, true)).Get("send-to"); got != o.GenesisAddr {
 		t.Errorf("a room slot without tickets sends to %q, want %q", got, o.GenesisAddr)
 	}
 }

@@ -290,16 +290,22 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
+			// Where the genesis goes, read once: its kind, which a direct exit session answering it
+			// is served as, must match where it went, though the tickets and pool setting can change
+			// before an offer arrives.
+			route := routeGenesis(options, roomSlot)
+			personal := route.personal()
+
 			// Construct a genesis message. While the producer can exit traffic itself, it offers
 			// a direct exit, which a consumer that can take one answers with an ICE offer.
-			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExit: exitReady(options)})
+			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExit: exitReady(options, personal)})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// Signal the genesis message
-			form := genesisForm(options, g, roomSlot)
+			form := genesisForm(options, g, route)
 			last.addTo(form, options.NATFailTimeout)
 			preflightRep.addTo(form)
 
@@ -351,10 +357,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// An ICE offer takes a direct exit, which needs no peer connection. The session gets the
 			// peer connection's STUN servers, from state 0, and Freddie's TURN servers for a room.
+			// It is served as the kind of the genesis it answers.
 			if o, ok := offer.(common.OfferMsg); ok && o.ICE != nil {
 				servers := append(peerConnection.GetConfiguration().ICEServers, offerMsg.ICEServers...)
 				_ = peerConnection.Close()
-				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0}
+				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0, personal}
 			}
 
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
@@ -844,10 +851,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// input[1]: common.OfferMsg (with ICE)
 			// input[2]: []webrtc.ICEServer (the STUN cohort, and a room pairing's TURN relays)
 			// input[3]: bool (whether input[2] has a room pairing's TURN relays)
+			// input[4]: bool (whether the genesis the offer answers was personal, see ExitOptions)
 			replyTo := input[0].(string)
 			offer := input[1].(common.OfferMsg)
 			servers := input[2].([]webrtc.ICEServer)
 			roomTURN := input[3].(bool)
+			personal := input[4].(bool)
 			slog.Debug("Producer state 6, direct exit handshake...")
 			last.begin(replyTo, vpnStatus(options))
 			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)
@@ -860,7 +869,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// The producer may have stopped being able to exit since its genesis. The offer then
 			// goes unanswered, and the consumer moves on.
-			certPin, password, ok := exitParams(options)
+			certPin, password, ok := exitParams(options, personal)
 			if !ok {
 				slog.Debug("Can't exit now, dropping the direct exit offer")
 				return 0, []interface{}{}
@@ -994,7 +1003,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			if s.relayed() {
 				last.path = common.PathRelay
 			}
-			return 7, []interface{}{s, offer, iceMsg.ConsumerSessionID, remoteAddr, password}
+			return 7, []interface{}{s, offer, iceMsg.ConsumerSessionID, remoteAddr, password, personal}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 7: a direct exit session, served until it ends
@@ -1003,11 +1012,13 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// input[2]: string (consumer session ID)
 			// input[3]: net.IP
 			// input[4]: string (the session's password)
+			// input[5]: bool (whether the session is personal)
 			s := input[0].(*iceSession)
 			offer := input[1].(common.OfferMsg)
 			consumerSessionID := input[2].(string)
 			remoteAddr := input[3].(net.IP)
 			password := input[4].(string)
+			personal := input[5].(bool)
 			slog.Debug("Producer state 7...")
 
 			// Exit marks the session as one the egress never serves (see jit_egress_consumer.go).
@@ -1030,7 +1041,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			served := make(chan struct{})
 			go func() {
 				defer close(served)
-				options.Exit.Serve(serveCtx, s.packetConn(), password)
+				options.Exit.Serve(serveCtx, s.packetConn(), password, personal)
 			}()
 
 		serveloop:
@@ -1274,6 +1285,27 @@ func sendsToRoomsOnly(options *WebRTCOptions, roomSlot bool, tickets []string) b
 	return !options.ServesPool() || (roomSlot && len(tickets) > 0)
 }
 
+// genesisRoute is where one genesis message goes: the room tickets it carries, and whether it goes
+// to those rooms alone. It is read once per genesis, since the tickets and pool setting it is read
+// from can change at any time.
+type genesisRoute struct {
+	tickets   []string
+	roomsOnly bool
+}
+
+// routeGenesis reads where a worker's next genesis message goes.
+func routeGenesis(options *WebRTCOptions, roomSlot bool) genesisRoute {
+	tickets := options.CurrentRoomTickets()
+	return genesisRoute{tickets: tickets, roomsOnly: sendsToRoomsOnly(options, roomSlot, tickets)}
+}
+
+// personal reports whether the genesis can reach only consumers in the producer's rooms: it goes to
+// them alone, with tickets. A rooms-only genesis without tickets reaches nobody, and is counted as
+// pool, the stricter kind.
+func (r genesisRoute) personal() bool {
+	return r.roomsOnly && len(r.tickets) > 0
+}
+
 // servesTicketedRoomsOnly reports whether a worker's genesis messages go to its rooms alone and
 // it has room tickets, so Freddie may give it TURN servers with an offer.
 func servesTicketedRoomsOnly(options *WebRTCOptions, roomSlot bool) bool {
@@ -1291,10 +1323,10 @@ func servesTicketedRoomsOnly(options *WebRTCOptions, roomSlot bool) bool {
 // common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
 // that predates rooms refuses the genesis instead of broadcasting it.
 // So does a room slot (see newProducerWebRTC) while it has room tickets.
-func genesisForm(options *WebRTCOptions, g []byte, roomSlot bool) url.Values {
-	tickets := options.CurrentRoomTickets()
+func genesisForm(options *WebRTCOptions, g []byte, route genesisRoute) url.Values {
+	tickets := route.tickets
 	sendTo := options.GenesisAddr
-	if sendsToRoomsOnly(options, roomSlot, tickets) {
+	if route.roomsOnly {
 		sendTo = common.SignalSendToGenesisRooms
 	}
 	form := url.Values{

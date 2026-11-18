@@ -32,7 +32,7 @@ import (
 //     request's reply.
 //
 // With turn set, it delivers each genesis as a room's and stamps turn on it and on the offer it
-// delivers, as Freddie does for a pairing.
+// delivers, as Freddie does for a pairing. A rooms-only genesis is delivered as a room's too.
 type exitFreddie struct {
 	mu      sync.Mutex
 	next    int
@@ -93,8 +93,8 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 	}()
 	msg := common.SignalMsg{ReplyTo: id, Type: common.SignalMsgType(typ), Payload: r.Form.Get("data")}
-	if r.Form.Get("send-to") == common.SignalSendToGenesis {
-		msg.Room = len(f.turn) > 0
+	if sendTo := r.Form.Get("send-to"); sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms {
+		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms
 		msg.ICEServers = f.turn
 		b, _ := json.Marshal(msg)
 		f.geneses <- string(b)
@@ -137,12 +137,19 @@ func e2eOptions(srv string, n transport.Net, stunURL string) *WebRTCOptions {
 	return o
 }
 
-// echoExit is an exit that sends every datagram back, and records each session's kind.
-func echoExit(ready bool, sessions chan<- bool) *ExitOptions {
+// echoExit is an exit that sends every datagram back, and records whether each session is a
+// direct exit. served, if set, gets whether each direct exit session it serves is personal.
+func echoExit(ready bool, sessions chan<- bool, served chan<- bool) *ExitOptions {
 	return &ExitOptions{
-		Ready:  func() bool { return ready },
-		Params: func() (string, string, bool) { return "pin", "password", ready },
-		Serve: func(ctx context.Context, conn net.PacketConn, password string) {
+		Ready:  func(bool) bool { return ready },
+		Params: func(bool) (string, string, bool) { return "pin", "password", ready },
+		Serve: func(ctx context.Context, conn net.PacketConn, password string, personal bool) {
+			if served != nil {
+				select {
+				case served <- personal:
+				default:
+				}
+			}
 			buf := make([]byte, 1500)
 			for {
 				n, addr, err := conn.ReadFrom(buf)
@@ -201,9 +208,13 @@ func TestDirectExitEndToEnd(t *testing.T) {
 		name     string
 		behavior vnet.EndpointDependencyType
 		turn     bool
+		// personal makes the producer serve its rooms alone, with a ticket, so its sessions are
+		// personal.
+		personal bool
 	}{
-		{"punched", vnet.EndpointIndependent, false},
-		{"relayed", vnet.EndpointAddrPortDependent, true},
+		{"punched", vnet.EndpointIndependent, false, false},
+		{"relayed", vnet.EndpointAddrPortDependent, true, false},
+		{"personal", vnet.EndpointIndependent, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
@@ -214,8 +225,13 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			srv := newExitFreddie(t, turnServers)
 
 			sessions := make(chan bool, 4)
+			served := make(chan bool, 4)
 			po := e2eOptions(srv, pn, stunURL)
-			po.Exit = echoExit(true, sessions)
+			po.Exit = echoExit(true, sessions, served)
+			if tc.personal {
+				po.SetRoomTickets([]string{"a.b"})
+				po.SetServePool(false)
+			}
 			startProducer(t, po)
 
 			paths := make(chan ExitPath, 1)
@@ -245,6 +261,12 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			assert.Equal(t, "pin", path.CertPin)
 			assert.Equal(t, "password", path.Password)
 			assert.Equal(t, tc.turn, path.Relayed)
+			select {
+			case personal := <-served:
+				assert.Equal(t, tc.personal, personal, "the session is served as its genesis's kind")
+			case <-time.After(5 * time.Second):
+				t.Fatal("the exit served no session")
+			}
 
 			msg := bytes.Repeat([]byte{0xcd}, 1200)
 			_, err := path.Conn.WriteTo(msg, nil)
@@ -275,7 +297,7 @@ func TestDirectExitFallsBackToWebRTC(t *testing.T) {
 
 			sessions := make(chan bool, 4)
 			po := e2eOptions(srv, pn, stunURL)
-			po.Exit = echoExit(tc.producerReady, sessions)
+			po.Exit = echoExit(tc.producerReady, sessions, nil)
 			startProducer(t, po)
 
 			co := e2eOptions(srv, cn, stunURL)
