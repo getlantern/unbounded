@@ -1081,7 +1081,6 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				slog.Info("Direct exit failed: couldn't connect to the volunteer, ICE checks failed or the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
 				return 0, []interface{}{}
 			}
-			slog.Info("Direct exit session established: traffic exits directly through the volunteer", "relayed_via_turn", s.relayed(), "personal", answer.Personal)
 			established = true
 			return 7, []interface{}{s, answer.CertPin, answer.Password, answer.Personal}
 		}),
@@ -1108,11 +1107,14 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				return 0, []interface{}{}
 			default:
 			}
+			relayed := s.relayed()
+			// Logged here rather than in state 6, so every session logged as established also logs
+			// its end below.
+			slog.Info("Direct exit session established: traffic exits directly through the volunteer", "relayed_via_turn", relayed, "personal", personal)
 			rooms.succeeded()
 			report(true, pairing, true)
 			defer report(false, "", false)
 
-			relayed := s.relayed()
 			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: relayed, Personal: personal})
 
 		exitloop:

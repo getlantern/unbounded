@@ -1008,7 +1008,6 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 			pair := s.pairTypes()
-			slog.Info("Direct exit session established: serving a consumer's traffic directly", "relayed_via_turn", s.relayed(), "personal", personal, "candidate_types", pair)
 			last.record(common.OutcomeConnected, nil)
 			last.path = common.PathDirect
 			if s.relayed() {
@@ -1048,6 +1047,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}) {
 				return 0, input
 			}
+			// Logged here rather than in state 6, so every session logged as established also logs
+			// its end below.
+			slog.Info("Direct exit session established: serving a consumer's traffic directly", "relayed_via_turn", relayed, "personal", personal, "candidate_types", s.pairTypes())
 			observeSession(options, true)
 
 			// The session's bytes bypass the bus, so they're counted here and reported to the UI
