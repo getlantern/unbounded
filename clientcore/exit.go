@@ -15,16 +15,21 @@ import (
 // to the producer's rooms alone, so Freddie offered it only to consumers in them (friends). Every
 // other genesis may reach any consumer (a stranger), and its sessions are pool sessions, even one
 // that Freddie happened to hand to a friend. The embedder decides what each kind may reach.
+//
+// The exit is obfuscated: Serve, and the embedder's consumer side that takes each ExitPath, must
+// both run Hysteria2 with Salamander keyed from the session password. broflake only carries the
+// signal (common.GenesisMsg.DirectExitObfs) and the password; the key derivation lives with the
+// embedder (lantern-box). Peers that predate obfuscation never pair with these exits: they relay.
 type ExitOptions struct {
 	// Ready reports whether the producer can exit a session of this kind now. While it can, each
-	// genesis of that kind offers a direct exit (see common.GenesisMsg.DirectExit).
+	// genesis of that kind offers an obfuscated direct exit (see common.GenesisMsg.DirectExitObfs).
 	Ready func(personal bool) bool
 	// Params mints a session's credentials: the SHA-256 pin of the exit certificate's public key,
 	// and a password for this session alone. ok is false when the producer can no longer exit a
 	// session of this kind.
 	Params func(personal bool) (certPin, password string, ok bool)
 	// Serve serves one session on conn, which carries only that session's consumer, with the
-	// policy for its kind. It runs on its own goroutine and must return once ctx ends or conn's
+	// policy for its kind, obfuscated with Salamander keyed from password. It runs on its own goroutine and must return once ctx ends or conn's
 	// reads fail.
 	Serve func(ctx context.Context, conn net.PacketConn, password string, personal bool)
 	// OnSession, if set, is called as each session connects, with whether it is a direct exit
@@ -32,8 +37,9 @@ type ExitOptions struct {
 	OnSession func(directExit bool)
 }
 
-// ExitPath is a consumer's connected direct exit session. Conn reaches the producer's exit, which
-// takes only the certificate CertPin pins and the session's Password. Conn's addresses are
+// ExitPath is a consumer's connected direct exit session (see common.GenesisMsg.DirectExitObfs).
+// Conn reaches the producer's exit, which takes only the certificate CertPin pins and the
+// session's Password, and is obfuscated with Salamander keyed from Password (see ExitOptions). Conn's addresses are
 // placeholders, the same for every session, not either side's: its peer is always the producer.
 // Relayed says whether ICE chose a TURN relay. Closing Conn ends the session, and once the session
 // ends, Conn's reads fail. Never logged: it carries the session's credentials.
