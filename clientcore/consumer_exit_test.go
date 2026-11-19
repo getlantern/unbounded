@@ -368,3 +368,35 @@ func TestSingleSlotDropsPoolAnswerAndRelays(t *testing.T) {
 	next, _ = consumerState1(t, fsm, pc)
 	assert.Equal(t, 6, next, "the one after may take a room exit again")
 }
+
+// A lone slot whose room direct exit offer goes unanswered, as when the producer can't serve the
+// session's kind and drops the offer, relays on its next attempt rather than pick the same exit
+// again.
+func TestSingleSlotRelaysAfterUnansweredRoomExit(t *testing.T) {
+	g := genesisSignal(t, "g", true)
+	g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	raw, err := json.Marshal(g)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(append(raw, '\n'))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Patience = 50 * time.Millisecond
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.OnExitPath = func(ExitPath) {}
+	fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, exitRoomOnly)
+
+	pc, _ := newTestPeerConnection(t)
+	next, input := consumerState1(t, fsm, pc)
+	require.Equal(t, 6, next, "a lone slot takes a room exit")
+	next, _ = fsm.state[6](context.Background(), fsm.com, input)
+	assert.Equal(t, 0, next, "the unanswered offer ends the attempt")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 2, next, "the next attempt relays")
+}

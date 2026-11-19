@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -743,7 +744,9 @@ func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) 
 			if ticketOf == nil {
 				ticketOf = make(map[string]string)
 			}
-			ticketOf[room] = tk
+			// Its own copy: tk shares the whole header's memory, which the delivery store would
+			// otherwise keep alive after the subscription ends.
+			ticketOf[room] = strings.Clone(tk)
 		}
 	}
 	return rooms, ticketOf

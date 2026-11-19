@@ -426,8 +426,8 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
 			// take one. The session needs no peer connection. It gets the peer connection's STUN
 			// servers, from state 0, and the room's TURN servers.
-			// After a room exit that turned out not to be personal, one attempt relays, so the
-			// slot doesn't go straight back to the same producer's exit (see state 6).
+			// After a room exit that failed or turned out not to be personal, one attempt relays, so
+			// the slot doesn't go straight back to the same producer's exit (see state 6).
 			slotTakes := exits == exitAny || (exits == exitRoomOnly && pairing != "" && deliveryToken != "" && !relayNext)
 			relayNext = false
 			if directExits[replyTo] && slotTakes && takeExit(options) {
@@ -917,9 +917,16 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 
 			// As in state 2: until Freddie accepts the offer, the attempt hasn't tested its producer.
 			offerAccepted := false
+			established := false
 			defer func() {
 				if !offerAccepted {
 					rooms.abandoned()
+				}
+				// A lone slot's failed room exit, answered as pool, unanswered or never connected,
+				// makes its next attempt relay, so it can't keep picking an exit it can't use, such
+				// as a producer that offers a direct exit only while it can serve the pool.
+				if exits == exitRoomOnly && !established {
+					relayNext = true
 				}
 			}()
 
@@ -1008,7 +1015,6 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			// relays, whatever genesis it picks, so it can't loop on the same producer's exit.
 			if exits == exitRoomOnly && !answer.Personal {
 				slog.Debug("Room direct exit answered as pool, relaying instead")
-				relayNext = true
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
@@ -1073,6 +1079,7 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				return 0, []interface{}{}
 			}
 			slog.Debug("A direct exit session has been established!", "relayed", s.relayed())
+			established = true
 			return 7, []interface{}{s, answer.CertPin, answer.Password, answer.Personal}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
