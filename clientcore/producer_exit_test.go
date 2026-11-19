@@ -4,6 +4,7 @@ package clientcore
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -310,6 +311,15 @@ func TestProducerOfferKind(t *testing.T) {
 		{"no pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, "", false},
 		{"a pairing the producer holds no volunteer ticket for", []string{volunteerTicket(t, testPairingP, helperticket.RoleInviter)}, testPairingP, false},
 		{"a pairing, but no tickets", nil, testPairingP, false},
+		// A consumer whose access was revoked still knows the pairing ID, and a producer may still
+		// hold its expired ticket.
+		{"the producer's pairing, but only an expired ticket for it", []string{
+			volunteerTicketExpiring(t, testPairingP, time.Now().Add(-time.Minute)),
+		}, testPairingP, false},
+		{"the producer's pairing, with an expired and an unexpired ticket", []string{
+			volunteerTicketExpiring(t, testPairingP, time.Now().Add(-time.Minute)),
+			volunteerTicketExpiring(t, testPairingP, time.Now().Add(time.Hour)),
+		}, testPairingP, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewDefaultWebRTCOptions()
@@ -340,6 +350,30 @@ func TestProducerOfferKind(t *testing.T) {
 			assert.Equal(t, []bool{tc.personal}, minted)
 		})
 	}
+}
+
+// volunteerTicketExpiring is a signed volunteer ticket for pairing that expires at expires.
+func volunteerTicketExpiring(t *testing.T, pairing string, expires time.Time) string {
+	t.Helper()
+	_, priv, err := ed25519.GenerateKey(nil)
+	require.NoError(t, err)
+	tk, err := helperticket.Sign(priv, helperticket.Ticket{PairingID: pairing, Role: helperticket.RoleVolunteer, Expires: expires})
+	require.NoError(t, err)
+	return tk
+}
+
+// A session's kind takes only an unexpired ticket's pairing, while a session's pairing label
+// (offerPairing) still names one the producer holds an expired ticket for.
+func TestPersonalPairingNeedsUnexpiredTicket(t *testing.T) {
+	now := time.Now()
+	o := NewDefaultWebRTCOptions()
+	o.SetRoomTickets([]string{volunteerTicketExpiring(t, testPairingP, now.Add(time.Minute))})
+	assert.True(t, personalPairing(o, testPairingP, now))
+	assert.False(t, personalPairing(o, testPairingP, now.Add(time.Minute)), "expired at its expiry")
+	assert.False(t, personalPairing(o, testPairingP, now.Add(2*time.Minute)))
+	assert.Equal(t, testPairingP, offerPairing(o, testPairingP), "the label is unchanged")
+	assert.False(t, personalPairing(o, testPairingQ, now))
+	assert.False(t, personalPairing(o, "", now))
 }
 
 // The answer marks a pool session by leaving Personal out, so its JSON is what it was before
