@@ -225,13 +225,18 @@ type SignalMsg struct {
 	// the producer can tell which of its pairings it is serving.
 	//
 	// Freddie also sets it on an offer it relays to a producer, to the room
-	// it delivered the producer's genesis through, when the consumer that
-	// answered proved, with its inviter tickets in RoomTicketsHeader on the
-	// offer's POST, that it is admitted to that room now. Unlike OfferMsg's
-	// Pairing, which the consumer writes, only Freddie writes this one: a
-	// sender supplies only Payload. A Freddie that predates it sets nothing.
-	// Omitted otherwise. Never logged.
+	// it delivered the producer's genesis through to the very consumer that
+	// answered, which echoed that delivery's DeliveryToken, and only while
+	// the ticket that admitted the consumer to the room is still valid.
+	// Unlike OfferMsg's Pairing, which the consumer writes, only Freddie
+	// writes this one: a sender supplies only Payload. A Freddie that
+	// predates it sets nothing. Omitted otherwise. Never logged.
 	Pairing string `json:",omitempty"`
+	// DeliveryToken is set by Freddie, with Room, on a genesis message it
+	// delivered through a room: a random token for this one delivery to this
+	// one consumer. The consumer echoes it in DeliveryTokenField on its offer,
+	// once. Omitted otherwise. Never logged.
+	DeliveryToken string `json:",omitempty"`
 	// ICEServers is set by Freddie, with Room, on a genesis message it delivered through a room,
 	// and on the offer it returns to a producer whose genesis a room consumer took. The peer adds
 	// them (TURN relays) to its peer connection before gathering, so a pairing that can't connect

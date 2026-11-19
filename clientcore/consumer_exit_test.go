@@ -19,7 +19,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/getlantern/broflake/common"
-	"github.com/getlantern/broflake/common/helperticket"
 )
 
 func genesisSignal(t *testing.T, replyTo string, directExit bool) common.SignalMsg {
@@ -206,31 +205,33 @@ func TestConsumerExitPathCarriesKind(t *testing.T) {
 	}
 }
 
-// A consumer answering a room genesis with a direct exit offer shows Freddie its room tickets, so
-// Freddie can vouch for its admission to the producer. Answering a pool genesis, it shows none.
-func TestConsumerICEOfferCarriesTicketsForRoomGenesis(t *testing.T) {
-	ticket := volunteerTicket(t, testPairingP, helperticket.RoleInviter)
+// A consumer answering a room genesis with a direct exit offer echoes its delivery token to
+// Freddie, in the form rather than the payload the producer sees. Answering a pool genesis, it
+// echoes none.
+func TestConsumerICEOfferEchoesDeliveryToken(t *testing.T) {
+	const token = "00112233445566778899aabbccddeeff"
 	for _, room := range []bool{false, true} {
 		g := genesisSignal(t, "g", true)
 		if room {
-			g.Room, g.Pairing = true, testPairingP
+			g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, token
 		}
 		raw, err := json.Marshal(g)
 		require.NoError(t, err)
-		headers := make(chan string, 4)
+		forms := make(chan url.Values, 4)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method == http.MethodGet {
 				_, _ = w.Write(append(raw, '\n'))
 				return
 			}
-			headers <- r.Header.Get(common.RoomTicketsHeader)
+			if r.ParseForm() == nil {
+				forms <- r.PostForm
+			}
 			w.WriteHeader(http.StatusNotFound)
 		}))
 		t.Cleanup(srv.Close)
 		o := NewDefaultWebRTCOptions()
 		o.DiscoverySrv = srv.URL
 		o.Patience = 50 * time.Millisecond
-		o.SetRoomTickets([]string{ticket})
 		o.OnExitPath = func(ExitPath) {}
 		fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
 		pc, _ := newTestPeerConnection(t)
@@ -239,12 +240,13 @@ func TestConsumerICEOfferCarriesTicketsForRoomGenesis(t *testing.T) {
 		next, _ = fsm.state[6](context.Background(), fsm.com, input)
 		assert.Equal(t, 0, next)
 		select {
-		case h := <-headers:
+		case form := <-forms:
 			if room {
-				assert.Equal(t, ticket, h)
+				assert.Equal(t, token, form.Get(common.DeliveryTokenField))
 			} else {
-				assert.Empty(t, h, "no tickets for a pool genesis")
+				assert.Empty(t, form.Get(common.DeliveryTokenField), "no token for a pool genesis")
 			}
+			assert.NotContains(t, form.Get("data"), token, "the producer never sees the token")
 		default:
 			t.Fatal("no offer was posted")
 		}
@@ -281,10 +283,13 @@ func TestSlotExitsFor(t *testing.T) {
 func TestSlotTakesDirectExits(t *testing.T) {
 	pool := genesisSignal(t, "g", true)
 	room := genesisSignal(t, "g", true)
-	room.Room, room.Pairing = true, testPairingP
-	// A room genesis from a Freddie that predates pairing can't get a stamp, so it is a pool exit.
+	room.Room, room.Pairing, room.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	// A room genesis from a Freddie that predates pairing, or delivery tokens, can't get a stamp,
+	// so it is a pool exit.
 	unstamped := genesisSignal(t, "g", true)
 	unstamped.Room = true
+	untokened := genesisSignal(t, "g", true)
+	untokened.Room, untokened.Pairing = true, testPairingP
 	for _, tc := range []struct {
 		name    string
 		exits   slotExits
@@ -294,6 +299,7 @@ func TestSlotTakesDirectExits(t *testing.T) {
 		{"single slot, pool genesis", exitRoomOnly, pool, 2},
 		{"single slot, room genesis", exitRoomOnly, room, 6},
 		{"single slot, room genesis without a pairing", exitRoomOnly, unstamped, 2},
+		{"single slot, room genesis without a delivery token", exitRoomOnly, untokened, 2},
 		{"relay slot, pool genesis", exitNever, pool, 2},
 		{"relay slot, room genesis", exitNever, room, 2},
 		{"other slot, pool genesis", exitAny, pool, 6},
@@ -308,4 +314,57 @@ func TestSlotTakesDirectExits(t *testing.T) {
 			assert.Equal(t, tc.want, next)
 		})
 	}
+}
+
+// A lone slot whose room direct exit is answered as pool drops the session before connecting, and
+// its next attempt relays, even through the same room genesis; the one after may take a room exit
+// again.
+func TestSingleSlotDropsPoolAnswerAndRelays(t *testing.T) {
+	g := genesisSignal(t, "g", true)
+	g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	raw, err := json.Marshal(g)
+	require.NoError(t, err)
+	answer, err := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+		Ufrag: "u", Pwd: "p", CertPin: "pin", Password: "pw",
+		Candidates: []string{"2 1 udp 1694498815 1.2.3.20 6000 typ srflx raddr 10.0.2.2 rport 5000"},
+	}})
+	require.NoError(t, err)
+	reply, err := json.Marshal(common.SignalMsg{ReplyTo: "answer-id", Type: common.SignalMsgAnswer, Payload: string(answer)})
+	require.NoError(t, err)
+	var iceMsgs atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(append(raw, '\n'))
+			return
+		}
+		if r.ParseForm() == nil && r.Form.Get("type") != strconv.Itoa(int(common.SignalMsgOffer)) {
+			iceMsgs.Add(1)
+			return
+		}
+		_, _ = w.Write(reply)
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Patience = 50 * time.Millisecond
+	o.ErrorBackoff = 10 * time.Millisecond
+	var paths atomic.Int32
+	o.OnExitPath = func(ExitPath) { paths.Add(1) }
+	fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, exitRoomOnly)
+
+	pc, _ := newTestPeerConnection(t)
+	next, input := consumerState1(t, fsm, pc)
+	require.Equal(t, 6, next, "a lone slot takes a room exit")
+	next, _ = fsm.state[6](context.Background(), fsm.com, input)
+	assert.Equal(t, 0, next, "the pool answer ends the attempt")
+	assert.Zero(t, iceMsgs.Load(), "the session is dropped before the consumer sends its candidates")
+	assert.Zero(t, paths.Load(), "no exit path is handed to the embedder")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 2, next, "the next attempt relays")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 6, next, "the one after may take a room exit again")
 }
