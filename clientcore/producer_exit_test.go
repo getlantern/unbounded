@@ -87,9 +87,15 @@ func readyExit() *ExitOptions {
 
 func offerReply(t *testing.T, offer common.OfferMsg, servers []webrtc.ICEServer) []byte {
 	t.Helper()
+	return stampedOfferReply(t, offer, servers, "")
+}
+
+// stampedOfferReply is offerReply with stamped, the pairing Freddie vouches for, on its envelope.
+func stampedOfferReply(t *testing.T, offer common.OfferMsg, servers []webrtc.ICEServer, stamped string) []byte {
+	t.Helper()
 	p, err := json.Marshal(offer)
 	require.NoError(t, err)
-	b, err := json.Marshal(common.SignalMsg{ReplyTo: "offer-id", Type: common.SignalMsgOffer, Payload: string(p), ICEServers: servers})
+	b, err := json.Marshal(common.SignalMsg{ReplyTo: "offer-id", Type: common.SignalMsgOffer, Payload: string(p), ICEServers: servers, Pairing: stamped})
 	require.NoError(t, err)
 	return b
 }
@@ -119,7 +125,7 @@ func TestProducerRoutesICEOfferToDirectExit(t *testing.T) {
 	o.Exit = readyExit()
 	turnServers := []webrtc.ICEServer{{URLs: []string{"turn:1.2.3.1:3478?transport=udp"}, Username: "u", Credential: "p"}}
 	offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Tag: "tag"}
-	next, input, _, pc := producerExitState2(t, o, offerReply(t, offer, turnServers))
+	next, input, _, pc := producerExitState2(t, o, stampedOfferReply(t, offer, turnServers, testPairingP))
 	require.Equal(t, 6, next)
 	assert.Equal(t, "offer-id", input[0])
 	assert.Equal(t, offer, input[1])
@@ -127,7 +133,7 @@ func TestProducerRoutesICEOfferToDirectExit(t *testing.T) {
 	require.Len(t, servers, 2, "the STUN cohort and the room's TURN server")
 	assert.Equal(t, "stun:1.2.3.1:3478", servers[0].URLs[0])
 	assert.Equal(t, true, input[3])
-	assert.Len(t, input, 4, "the session's kind comes from the offer, in state 6")
+	assert.Equal(t, testPairingP, input[4], "the pairing Freddie stamped, for state 6 to decide the kind")
 	assert.Equal(t, webrtc.PeerConnectionStateClosed, pc.ConnectionState(), "a direct exit needs no peer connection")
 }
 
@@ -165,7 +171,7 @@ func TestProducerDropsICEOfferWhenItCantExit(t *testing.T) {
 			tc.setup(o.Exit, &minted)
 			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 			next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
-				"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false,
+				"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false, "",
 			})
 			assert.Equal(t, 0, next)
 			assert.Zero(t, posts.Load(), "no answer is sent")
@@ -196,7 +202,7 @@ func TestProducerDropsICEOfferWithoutCredentials(t *testing.T) {
 	o.Exit.Params = func(bool) (string, string, bool) { minted.Add(1); return "pin", "pw", true }
 	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
-		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Pwd: "p"}}, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false,
+		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Pwd: "p"}}, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false, "",
 	})
 	assert.Equal(t, 0, next)
 	assert.Zero(t, minted.Load(), "no credentials are minted")
@@ -259,9 +265,10 @@ func TestProducerGenesisAdvertisesExit(t *testing.T) {
 	}
 }
 
-// producerExitAnswer runs producer state 6 on offer, with o's exit, against a Freddie that records
-// the producer's answer and hangs up on it, and returns the answer, if any, and the next state.
-func producerExitAnswer(t *testing.T, o *WebRTCOptions, offer common.OfferMsg) (*common.ICEAnswer, int) {
+// producerExitAnswer runs producer state 6 on offer, stamped by Freddie with stamped, with o's exit,
+// against a Freddie that records the producer's answer and hangs up on it, and returns the answer,
+// if any, and the next state.
+func producerExitAnswer(t *testing.T, o *WebRTCOptions, offer common.OfferMsg, stamped string) (*common.ICEAnswer, int) {
 	t.Helper()
 	cn, _, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
 	answers := make(chan string, 4)
@@ -279,7 +286,7 @@ func producerExitAnswer(t *testing.T, o *WebRTCOptions, offer common.OfferMsg) (
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	next, _ := fsm.state[6](ctx, fsm.com, []interface{}{
-		"offer-id", offer, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false,
+		"offer-id", offer, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false, stamped,
 	})
 	select {
 	case data := <-answers:
@@ -292,34 +299,39 @@ func producerExitAnswer(t *testing.T, o *WebRTCOptions, offer common.OfferMsg) (
 	}
 }
 
-// A producer serving both its rooms and the pool decides each direct exit session's kind by its
-// offer: an offer claiming the pairing of one of the producer's volunteer tickets is personal,
-// any other is pool. The kind reaches the exit's credentials and the consumer, in the answer.
+// A producer serving both its rooms and the pool decides each direct exit session's kind by the
+// pairing Freddie stamped on its offer: one naming the pairing of one of the producer's unexpired
+// volunteer tickets is personal, any other is pool. The kind reaches the exit's credentials and
+// the consumer, in the answer.
 func TestProducerOfferKind(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		tickets  []string
 		pairing  string
 		personal bool
+		// claimed is the pairing the consumer wrote in its offer, which never counts.
+		claimed string
 	}{
-		{"the producer's own pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingP, true},
+		{"the producer's own pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingP, true, ""},
 		{"another of its pairings", []string{
 			volunteerTicket(t, testPairingQ, helperticket.RoleVolunteer),
 			volunteerTicket(t, testPairingP, helperticket.RoleVolunteer),
-		}, testPairingP, true},
-		{"an unknown pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingQ, false},
-		{"no pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, "", false},
-		{"a pairing the producer holds no volunteer ticket for", []string{volunteerTicket(t, testPairingP, helperticket.RoleInviter)}, testPairingP, false},
-		{"a pairing, but no tickets", nil, testPairingP, false},
+		}, testPairingP, true, ""},
+		{"an unknown pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingQ, false, ""},
+		{"no pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, "", false, ""},
+		{"a pairing the producer holds no volunteer ticket for", []string{volunteerTicket(t, testPairingP, helperticket.RoleInviter)}, testPairingP, false, ""},
+		{"a pairing, but no tickets", nil, testPairingP, false, ""},
 		// A consumer whose access was revoked still knows the pairing ID, and a producer may still
 		// hold its expired ticket.
 		{"the producer's pairing, but only an expired ticket for it", []string{
 			volunteerTicketExpiring(t, testPairingP, time.Now().Add(-time.Minute)),
-		}, testPairingP, false},
+		}, testPairingP, false, ""},
 		{"the producer's pairing, with an expired and an unexpired ticket", []string{
 			volunteerTicketExpiring(t, testPairingP, time.Now().Add(-time.Minute)),
 			volunteerTicketExpiring(t, testPairingP, time.Now().Add(time.Hour)),
-		}, testPairingP, true},
+		}, testPairingP, true, ""},
+		{"the consumer's claim alone", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, "", false, testPairingP},
+		{"a stamp and a different claim", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingP, true, testPairingQ},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewDefaultWebRTCOptions()
@@ -340,7 +352,7 @@ func TestProducerOfferKind(t *testing.T) {
 				minted = append(minted, personal)
 				return "pin", "pw", true
 			}
-			answer, next := producerExitAnswer(t, o, common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing})
+			answer, next := producerExitAnswer(t, o, common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.claimed}, tc.pairing)
 			assert.Equal(t, 0, next, "Freddie hung up on the answer")
 			require.NotNil(t, answer, "the offer was answered")
 			assert.Equal(t, tc.personal, answer.Personal)
@@ -413,7 +425,7 @@ func TestProducerDropsOfferForKindNotReady(t *testing.T) {
 
 			// The genesis offers a direct exit: a consumer reaching it could get the ready kind.
 			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing}
-			next, input, sent, _ := producerExitState2(t, o, offerReply(t, offer, nil))
+			next, input, sent, _ := producerExitState2(t, o, stampedOfferReply(t, offer, nil, tc.pairing))
 			assert.True(t, sent.DirectExitObfs)
 			require.Equal(t, 6, next)
 
@@ -435,7 +447,7 @@ func TestProducerDropsOfferForKindNotReady(t *testing.T) {
 			assert.Equal(t, 0, next)
 			assert.Zero(t, posts.Load(), "no answer is sent")
 			assert.Zero(t, minted.Load(), "no credentials are minted")
-			assert.Equal(t, tc.personal, sessionPersonal(o, offer))
+			assert.Equal(t, tc.personal, sessionPersonal(o, tc.pairing))
 		})
 	}
 }

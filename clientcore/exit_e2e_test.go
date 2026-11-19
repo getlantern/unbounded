@@ -44,7 +44,8 @@ type exitFreddie struct {
 	// posted gets each genesis POST's form, while it has room.
 	posted chan url.Values
 	// pairing, if set, is stamped on every genesis, delivered as a room's, as Freddie does for a
-	// consumer in that pairing's room.
+	// consumer in that pairing's room, and on every offer whose consumer shows room tickets, as
+	// Freddie does for a consumer admitted to the room.
 	pairing string
 }
 
@@ -134,6 +135,9 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if msg.Type == common.SignalMsgOffer {
 			msg.ICEServers = f.turn
+			if f.pairing != "" && r.Header.Get(common.RoomTicketsHeader) != "" {
+				msg.Pairing = f.pairing
+			}
 		}
 		b, _ := json.Marshal(msg)
 		if !f.deliver(r.Form.Get("send-to"), string(b)) {
@@ -279,6 +283,9 @@ func TestDirectExitEndToEnd(t *testing.T) {
 
 			paths := make(chan ExitPath, 1)
 			co := e2eOptions(srv, cn, stunURL)
+			if tc.pairing != "" {
+				co.SetRoomTickets([]string{volunteerTicket(t, tc.pairing, helperticket.RoleInviter)})
+			}
 			co.OnExitPath = func(p ExitPath) {
 				// Never block the consumer's worker: a path past the first is closed, ending it.
 				select {

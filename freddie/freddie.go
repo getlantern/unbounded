@@ -436,6 +436,7 @@ type Freddie struct {
 	offerConsumers *offerConsumerCache
 	roomGeneses    *roomGenesisSet
 	heldGeneses    *heldGeneses
+	genesisRooms   *genesisRooms
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -457,6 +458,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		offerConsumers: newOfferConsumerCache(time.Now),
 		roomGeneses:    newRoomGenesisSet(time.Now),
 		heldGeneses:    newHeldGeneses(),
+		genesisRooms:   newGenesisRooms(),
 	}
 
 	var err error
@@ -974,6 +976,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	defer func() {
 		if !waiting {
 			signalTable.Delete(reqID)
+			f.genesisRooms.drop(reqID)
 		}
 	}()
 
@@ -1049,6 +1052,11 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			}
 			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg)})
 		}
+		// Remembered before delivery, so a room consumer's offer can't arrive before its room is
+		// known, and forgotten once the genesis turns out to have gone to the pool or to nobody.
+		if len(rooms) > 0 {
+			f.genesisRooms.set(reqID, rooms)
+		}
 		var matched bool
 		var outcome string
 		// Read once, so a re-offer goes through the table the genesis was first offered through.
@@ -1082,6 +1090,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		if matched {
 			f.roomGeneses.add(reqID)
 			offerICE = roomICE
+		} else if held == nil {
+			f.genesisRooms.drop(reqID)
 		}
 		// A held genesis is counted once its hold ends, taken or not.
 		if len(rooms) > 0 && held == nil {
@@ -1113,6 +1123,16 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
 			}
 			f.offerConsumers.add(reqID, oc)
+			if pairing := f.offerPairing(sendTo, r); pairing != "" {
+				stamped, err := json.Marshal(common.SignalMsg{
+					ReplyTo: reqID, Type: common.SignalMsgType(msgType), Payload: data, Pairing: pairing,
+				})
+				if err != nil {
+					f.offerConsumers.take(reqID)
+					return refused(http.StatusBadRequest)
+				}
+				msg = stamped
+			}
 		}
 		// Likewise each peer's NAT is linked to the offer before the message is published: the
 		// recipient can act on it at once, so the consumer's ICE message, and then the producer's
@@ -1190,6 +1210,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	if held != nil {
 		return signalReply{status: http.StatusOK, held: true, await: func(done <-chan struct{}) string {
 			defer signalTable.Delete(reqID)
+			defer f.genesisRooms.drop(reqID)
 			defer f.heldGeneses.release(held)
 			taken := held.taken
 			timeout := time.NewTimer(heldGenesisTTL)
@@ -1234,6 +1255,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	}
 	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
 		defer signalTable.Delete(reqID)
+		defer f.genesisRooms.drop(reqID)
 		// No re-offer in the TTL's last interval: its consumers' offers would come too late. Taken
 		// before the ticker starts, so the tick that ends that interval is always past it.
 		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
@@ -1266,6 +1288,29 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			}
 		}
 	}}
+}
+
+// offerPairing returns the pairing to stamp on an offer, posted in r, that answers genesisID: the
+// room Freddie delivered the genesis through, if genesisID is a room genesis still waiting for its
+// offer and the consumer is admitted to that room now. The consumer proves admission as it does at
+// subscribe, with its inviter tickets in common.RoomTicketsHeader, verified afresh, so an expired
+// ticket or one whose key Freddie no longer trusts admits nothing. Only Freddie writes the stamp,
+// on the envelope it builds: the consumer supplies only the offer's payload, so it can't set it.
+// "" stamps nothing, as for every pool genesis.
+//
+// A room genesis goes only to its rooms' consumers (see consumerIndex.DeliverGenesis), so an
+// admitted consumer answering it reached it through one of them. The stamp names the first room
+// both share, in the order delivery uses: the producer only checks that the stamp names one of its
+// own pairings, so any shared room is one the consumer is admitted to.
+func (f *Freddie) offerPairing(genesisID string, r *http.Request) string {
+	if !f.genesisRooms.has(genesisID) {
+		return ""
+	}
+	tickets := common.ParseRoomTicketsHeader(r.Header.Values(common.RoomTicketsHeader))
+	if len(tickets) == 0 {
+		return ""
+	}
+	return f.genesisRooms.room(genesisID, f.verifyRoomTickets(tickets, helperticket.RoleInviter))
 }
 
 // recordGenesisReoffer counts a capped pool genesis's re-offer, by its targeting outcome. Only the

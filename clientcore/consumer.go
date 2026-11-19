@@ -892,7 +892,18 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
-			status, answerBytes, err := postSignalTo(ctx, options, replyTo, common.SignalMsgOffer, offerJSON)
+			// Answering a room genesis, the consumer shows Freddie its inviter tickets, so Freddie
+			// can vouch to the producer that it is admitted to the room now, which gets it the
+			// producer's personal exit (see common.SignalMsg.Pairing). Only Freddie sees them.
+			var tickets []string
+			if pairing != "" {
+				tickets = options.CurrentRoomTickets()
+			}
+			status, answerBytes, err := postSignalWithTickets(ctx, options, url.Values{
+				"data":    {string(offerJSON)},
+				"send-to": {replyTo},
+				"type":    {strconv.Itoa(int(common.SignalMsgOffer))},
+			}, tickets)
 			// As in state 2, a 200 means the producer took our offer, even if its body then fails.
 			if status == http.StatusOK {
 				offerAccepted = true
