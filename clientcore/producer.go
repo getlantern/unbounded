@@ -1070,19 +1070,19 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				case <-report.C:
 					tryReportExitBytes(com, conn)
 				case <-s.done():
-					slog.Info("Direct exit session ended", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				case <-served:
-					slog.Info("Direct exit service stopped, ending the session", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				case <-com.rx:
 					// Nothing upstream serves this slot while it exits itself, so whatever reaches
 					// it is dropped.
 				case <-ctx.Done():
-					slog.Info("Direct exit session ended: this volunteer stopped it", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				}
 			}
+			// One message for every way out: a shutdown or an ICE disconnect also ends Serve, so
+			// which case the select took doesn't say why the session ended.
+			slog.Info("Direct exit session ended", "relayed_via_turn", relayed, "personal", personal)
 			cancel()
 			_ = s.Close()
 			<-served
