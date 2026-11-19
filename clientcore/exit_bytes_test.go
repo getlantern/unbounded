@@ -95,8 +95,19 @@ func TestDirectExitReportsBytesToUI(t *testing.T) {
 		}
 	}()
 
-	next, _ := fsm.state[7](ctx, fsm.com, []interface{}{producer, common.OfferMsg{}, "session", net.IP{1, 2, 3, 4}, "pw", true})
-	assert.Equal(t, 0, next)
+	// state 7 runs until Serve returns, which waits on every byte sent, so bound it: a lost
+	// datagram fails the test here, and the deferred cancel then ends the session.
+	ended := make(chan int, 1)
+	go func() {
+		next, _ := fsm.state[7](ctx, fsm.com, []interface{}{producer, common.OfferMsg{}, "session", net.IP{1, 2, 3, 4}, "pw", true})
+		ended <- next
+	}()
+	select {
+	case next := <-ended:
+		assert.Equal(t, 0, next)
+	case <-time.After(10 * time.Second):
+		t.Fatal("the direct exit session never ended")
+	}
 	select {
 	case <-forwarded:
 	case <-time.After(5 * time.Second):
