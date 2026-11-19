@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"sync"
 	"testing"
@@ -169,4 +170,19 @@ func TestExitBytesCountTowardDownstreamThroughput(t *testing.T) {
 	assert.Equal(t, 500, size)
 	assert.Equal(t, 1, wid)
 	assert.Equal(t, int64(500), m.bytesPerSec.Load())
+}
+
+// A count past what an int holds on 32-bit platforms reaches the UI whole, in int-sized parts.
+func TestInIntsSplitsLargeCounts(t *testing.T) {
+	var total int64
+	var parts int
+	n := int64(math.MaxInt32)*3 + 7
+	inInts(n, func(p int) {
+		assert.Positive(t, p)
+		total += int64(p)
+		parts++
+	})
+	assert.Equal(t, n, total)
+	assert.GreaterOrEqual(t, parts, 1)
+	inInts(0, func(int) { t.Error("called for zero") })
 }

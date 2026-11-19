@@ -76,9 +76,10 @@ func takeExit(options *WebRTCOptions) bool {
 
 // exitBytes is the data of an ExitBytesIPC: the bytes a direct exit session carried since its
 // last report. up is what the consumer sent the exit, down what the exit sent back, matching the
-// directions of relayed chunks.
+// directions of relayed chunks. They are int64 because an int is 32 bits on some platforms, and
+// counts held back while the slot's channel is full can grow past that.
 type exitBytes struct {
-	up, down int
+	up, down int64
 }
 
 // countingPacketConn counts the bytes a direct exit session's conn carries, so that they reach
@@ -106,7 +107,7 @@ func (c *countingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 
 // take returns the bytes counted since the last take.
 func (c *countingPacketConn) take() exitBytes {
-	return exitBytes{up: int(c.up.Swap(0)), down: int(c.down.Swap(0))}
+	return exitBytes{up: c.up.Swap(0), down: c.down.Swap(0)}
 }
 
 // reportExitBytes sends the bytes conn counted since its last report to the UI, if there are
@@ -129,7 +130,7 @@ func tryReportExitBytes(com *ipcChan, conn *countingPacketConn) {
 	select {
 	case com.tx <- IPCMsg{IpcType: ExitBytesIPC, Data: b}:
 	default:
-		conn.up.Add(int64(b.up))
-		conn.down.Add(int64(b.down))
+		conn.up.Add(b.up)
+		conn.down.Add(b.down)
 	}
 }

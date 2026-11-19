@@ -3,6 +3,7 @@ package clientcore
 
 import (
 	"context"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -136,6 +137,15 @@ func (m *downstreamMeter) handle(msg IPCMsg) {
 	}
 }
 
+// inInts calls f with n in parts that fit an int, which is 32 bits on some platforms.
+func inInts(n int64, f func(int)) {
+	for n > 0 {
+		part := min(n, math.MaxInt)
+		f(int(part))
+		n -= part
+	}
+}
+
 func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 	return newDownstreamMeter(ctx, ui).handle
 }
@@ -151,7 +161,7 @@ func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, do
 	// Upstream bytes are batched per worker and flushed at uiRefreshHz rather than firing a UI
 	// event per chunk, since every event crosses the JS boundary on wasm
 	var mu sync.Mutex
-	pending := make(map[workerID]int)
+	pending := make(map[workerID]int64)
 	// deliverMu orders batch delivery against connection changes, so bytes relayed for a
 	// worker slot are never delivered after that slot's next consumer has connected
 	var deliverMu sync.Mutex
@@ -166,10 +176,10 @@ func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, do
 		defer deliverMu.Unlock()
 		mu.Lock()
 		batch := pending
-		pending = make(map[workerID]int, len(batch))
+		pending = make(map[workerID]int64, len(batch))
 		mu.Unlock()
 		for wid, size := range batch {
-			ui.OnUpstreamChunk(size, int(wid))
+			inInts(size, func(n int) { ui.OnUpstreamChunk(n, int(wid)) })
 		}
 	}
 
@@ -188,7 +198,7 @@ func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, do
 		}
 	}()
 
-	addPending := func(wid workerID, size int) {
+	addPending := func(wid workerID, size int64) {
 		mu.Lock()
 		pending[wid] += size
 		mu.Unlock()
@@ -202,18 +212,18 @@ func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, do
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
 		case ChunkIPC:
-			addPending(msg.Wid, len(msg.Data.([]byte)))
+			addPending(msg.Wid, int64(len(msg.Data.([]byte))))
 		case ExitBytesIPC:
 			// A direct exit session's bytes, which bypass the bus. They arrive in order with the
 			// slot's ConsumerInfoIPC, so they are delivered before its next connection change.
 			b := msg.Data.(exitBytes)
-			if b.down > 0 {
+			inInts(b.down, func(n int) {
 				if down != nil {
-					down.chunk(b.down, msg.Wid)
+					down.chunk(n, msg.Wid)
 				} else {
-					ui.OnDownstreamChunk(b.down, int(msg.Wid))
+					ui.OnDownstreamChunk(n, int(msg.Wid))
 				}
-			}
+			})
 			if b.up > 0 {
 				addPending(msg.Wid, b.up)
 			}
@@ -223,9 +233,7 @@ func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, do
 			size := pending[msg.Wid]
 			delete(pending, msg.Wid)
 			mu.Unlock()
-			if size > 0 {
-				ui.OnUpstreamChunk(size, int(msg.Wid))
-			}
+			inInts(size, func(n int) { ui.OnUpstreamChunk(n, int(msg.Wid)) })
 
 			ci := msg.Data.(common.ConsumerInfo)
 
