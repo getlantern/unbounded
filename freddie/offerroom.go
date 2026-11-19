@@ -2,6 +2,7 @@ package freddie
 
 import (
 	"container/list"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"sync"
@@ -61,14 +62,42 @@ func (s *deliveryTokens) issue(d delivery) string {
 	s.Lock()
 	defer s.Unlock()
 	now := s.now()
+	s.sweepLocked(now, maxDeliveryTokens-1)
+	s.m[token] = s.order.PushBack(deliveryEntry{token: token, delivery: d, expires: now.Add(deliveryTokenTTL)})
+	return token
+}
+
+// sweepLocked forgets expired tokens, and the oldest live ones while more than keep remain.
+func (s *deliveryTokens) sweepLocked(now time.Time, keep int) {
 	for e := s.order.Front(); e != nil; e = s.order.Front() {
-		if s.order.Len() < maxDeliveryTokens && now.Before(e.Value.(deliveryEntry).expires) {
+		if s.order.Len() <= keep && now.Before(e.Value.(deliveryEntry).expires) {
 			break
 		}
 		s.remove(e)
 	}
-	s.m[token] = s.order.PushBack(deliveryEntry{token: token, delivery: d, expires: now.Add(deliveryTokenTTL)})
-	return token
+}
+
+// sweep forgets expired tokens.
+func (s *deliveryTokens) sweep() {
+	s.Lock()
+	defer s.Unlock()
+	s.sweepLocked(s.now(), maxDeliveryTokens)
+}
+
+// sweepEvery sweeps the store every interval until ctx is done, so the tickets and rooms of
+// unredeemed tokens don't outlive their tokens for long when no later delivery comes to sweep
+// them.
+func (s *deliveryTokens) sweepEvery(ctx context.Context, interval time.Duration) {
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.sweep()
+		}
+	}
 }
 
 // take returns token's delivery and forgets it, so each token is redeemed once. ok is false for an

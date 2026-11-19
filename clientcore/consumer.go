@@ -1095,8 +1095,12 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			slog.Debug("Consumer state 7...")
 			select {
 			case <-s.done():
-				// It ended between the handshake and now: nothing to hand off.
+				// It ended between the handshake and now: nothing to hand off. For a lone slot that
+				// is a failed room exit too, so its next attempt relays (see state 6).
 				slog.Debug("Direct exit session ended before handoff, resetting!")
+				if exits == exitRoomOnly {
+					relayNext = true
+				}
 				_ = s.Close()
 				return 0, []interface{}{}
 			default:

@@ -233,6 +233,12 @@ func TestDeliveryTokens(t *testing.T) {
 	if _, ok := s.take(c); ok {
 		t.Fatal("an expired token should not be redeemed")
 	}
+	s.issue(d)
+	now = now.Add(deliveryTokenTTL)
+	s.sweep()
+	if len(s.m) != 0 || s.order.Len() != 0 {
+		t.Fatal("a sweep should forget expired tokens with no delivery to follow")
+	}
 	for range maxDeliveryTokens + 10 {
 		s.issue(d)
 	}
