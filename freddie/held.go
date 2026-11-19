@@ -60,10 +60,10 @@ func (h *heldGeneses) deliverOrHold(g *heldGenesis, deliver func() bool) (delive
 }
 
 // take hands the subscribing consumer in rooms the newest genesis held for any of them, as its
-// room's message, and stops holding it. ok is false when none is held. The newest is the likeliest
+// room's roomGenesis, and stops holding it. ok is false when none is held. The newest is the likeliest
 // to have a volunteer still waiting behind it: one that stopped without a word leaves its genesis
 // held until heldGenesisTTL ends.
-func (h *heldGeneses) take(rooms []string) (g *heldGenesis, msg string, ok bool) {
+func (h *heldGeneses) take(rooms []string) (g *heldGenesis, rg roomGenesis, ok bool) {
 	h.Lock()
 	defer h.Unlock()
 	var takenRoom string
@@ -77,16 +77,16 @@ func (h *heldGeneses) take(rooms []string) (g *heldGenesis, msg string, ok bool)
 		}
 	}
 	if g == nil {
-		return nil, "", false
+		return nil, roomGenesis{}, false
 	}
 	h.removeLocked(g)
 	close(g.taken)
-	for _, rg := range g.rooms {
-		if rg.room == takenRoom {
-			msg = rg.msg
+	for _, r := range g.rooms {
+		if r.room == takenRoom {
+			rg = r
 		}
 	}
-	return g, msg, true
+	return g, rg, true
 }
 
 // release stops holding g, if it is still held.

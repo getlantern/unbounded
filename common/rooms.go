@@ -52,6 +52,13 @@ const (
 	// it everywhere, so the producer gets today's reply either way.
 	HoldField = "hold"
 
+	// DeliveryTokenField on a consumer's offer POST echoes the
+	// SignalMsg.DeliveryToken of the room genesis the offer answers, so
+	// Freddie can vouch to the producer for the room it delivered that
+	// genesis through (see SignalMsg.Pairing). It is a form field, not part
+	// of the offer's payload, so the producer never sees it. Never logged.
+	DeliveryTokenField = "delivery-token"
+
 	// MaxRoomTickets bounds how many tickets Freddie verifies per request.
 	// It matches lantern-cloud's limit of 20 pairings per side.
 	MaxRoomTickets = 20

@@ -1354,17 +1354,18 @@ func genesisOffersExit(options *WebRTCOptions, r genesisRoute) bool {
 // Freddie stamped on its offer's envelope (see common.SignalMsg.Pairing): whether stamped names the
 // pairing of one of the producer's own unexpired volunteer tickets (see personalPairing).
 //
-// Freddie stamps an offer only when it delivered the genesis through that pairing's room and the
-// consumer proved, with its inviter tickets as it offered, that it is admitted to the room now.
-// So a personal session goes only to a consumer Freddie currently admits to one of the producer's
-// rooms: the trust the producer already extends to its room consumers. The consumer can't write
-// the stamp, and the pairing the consumer writes in its offer (OfferMsg.Pairing) doesn't count, as
-// it proves only that the consumer once learned the pairing ID, from its own ticket, say, which
-// outlives its admission. The window that remains is Freddie's room admission's: a consumer whose
-// pairing ended still gets personal sessions until its last inviter ticket for the room expires,
-// unless Freddie stops trusting the ticket's key first. A Freddie that predates stamping stamps nothing, and every session is
-// then pool, the stricter kind: Freddie must be deployed before a volunteer serving both its rooms
-// and the pool serves its friends personal exits.
+// Freddie stamps an offer only for the consumer it delivered the genesis to through that
+// pairing's room, which echoes that one delivery's single-use token, and only while the ticket
+// that admitted it to the room is still valid. So a personal session goes only to a consumer
+// Freddie currently admits to one of the producer's rooms: the trust the producer already extends
+// to its room consumers. The consumer can't write the stamp, and the pairing the consumer writes
+// in its offer (OfferMsg.Pairing) doesn't count, as it proves only that the consumer once learned
+// the pairing ID, from its own ticket, say, which outlives its admission. The window that remains
+// is Freddie's room admission's: a consumer whose pairing ended still gets personal sessions until
+// the ticket that admitted it expires, unless Freddie stops trusting the ticket's key first. A
+// Freddie that predates stamping stamps nothing, and every session is then pool, the stricter
+// kind: Freddie must be deployed before a volunteer serving both its rooms and the pool serves its
+// friends personal exits.
 func sessionPersonal(options *WebRTCOptions, stamped string) bool {
 	return personalPairing(options, stamped, time.Now())
 }

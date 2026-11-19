@@ -266,11 +266,6 @@ func (vc *volunteerConn) isClosed() bool {
 // postSignal POSTs form to Freddie's signaling endpoint. A body that can't be read comes back as
 // an error along with the status.
 func postSignal(ctx context.Context, options *WebRTCOptions, form url.Values) (int, []byte, error) {
-	return postSignalWithTickets(ctx, options, form, nil)
-}
-
-// postSignalWithTickets is postSignal carrying tickets, if any, in common.RoomTicketsHeader.
-func postSignalWithTickets(ctx context.Context, options *WebRTCOptions, form url.Values, tickets []string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(
 		ctx,
 		"POST",
@@ -282,9 +277,6 @@ func postSignalWithTickets(ctx context.Context, options *WebRTCOptions, form url
 	}
 	req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Add(common.VersionHeader, common.Version)
-	if len(tickets) > 0 {
-		req.Header.Set(common.RoomTicketsHeader, strings.Join(tickets, ","))
-	}
 
 	res, err := options.HTTPClient.Do(req)
 	if err != nil {

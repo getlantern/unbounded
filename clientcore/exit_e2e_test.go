@@ -43,11 +43,14 @@ type exitFreddie struct {
 	turn    []webrtc.ICEServer
 	// posted gets each genesis POST's form, while it has room.
 	posted chan url.Values
-	// pairing, if set, is stamped on every genesis, delivered as a room's, as Freddie does for a
-	// consumer in that pairing's room, and on every offer whose consumer shows room tickets, as
-	// Freddie does for a consumer admitted to the room.
+	// pairing, if set, is stamped on every genesis, delivered as a room's with a delivery token,
+	// as Freddie does for a consumer in that pairing's room, and on every offer that echoes the
+	// token, as Freddie does for the consumer it delivered the genesis to.
 	pairing string
 }
+
+// exitFreddieToken is the delivery token exitFreddie gives every room delivery.
+const exitFreddieToken = "00112233445566778899aabbccddeeff"
 
 func newExitFreddie(t *testing.T, turnServers []webrtc.ICEServer) string {
 	t.Helper()
@@ -128,6 +131,7 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		msg.Room = len(f.turn) > 0 || sendTo == common.SignalSendToGenesisRooms || f.pairing != ""
 		if f.pairing != "" {
 			msg.Pairing = f.pairing
+			msg.DeliveryToken = exitFreddieToken
 		}
 		msg.ICEServers = f.turn
 		b, _ := json.Marshal(msg)
@@ -135,7 +139,7 @@ func (f *exitFreddie) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		if msg.Type == common.SignalMsgOffer {
 			msg.ICEServers = f.turn
-			if f.pairing != "" && r.Header.Get(common.RoomTicketsHeader) != "" {
+			if f.pairing != "" && r.Form.Get(common.DeliveryTokenField) == exitFreddieToken {
 				msg.Pairing = f.pairing
 			}
 		}

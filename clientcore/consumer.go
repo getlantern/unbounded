@@ -111,6 +111,12 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 	// it at every pick; states 2 and 5 read it. A worker's states run on one
 	// goroutine, so it needs no lock. It is never logged.
 	var pairing string
+	// deliveryToken is the token Freddie gave us with the room genesis the current attempt
+	// answers, or "". Set and read like pairing. Never logged.
+	var deliveryToken string
+	// relayNext makes the next attempt of an exitRoomOnly slot relay rather than take a direct
+	// exit (see state 6). Read and cleared at the next pick.
+	var relayNext bool
 	// turnPC is the peer connection state 1 last added a room pairing's TURN servers to. Failures
 	// before SetLocalDescription bring the same peer connection back to state 1, which then trades it
 	// for a fresh one rather than add servers to it again or offer a pool genesis through a room's
@@ -317,6 +323,8 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			roomCandidates := []string{}
 			// The pairing Freddie stamped on each room candidate, by ReplyTo.
 			roomPairings := map[string]string{}
+			// The delivery token Freddie gave us with each room candidate, by ReplyTo. Never logged.
+			roomTokens := map[string]string{}
 			// The TURN servers Freddie stamped on each room candidate, by ReplyTo. Never logged.
 			roomICE := map[string][]webrtc.ICEServer{}
 			// The genesis messages that offered a direct exit, by ReplyTo.
@@ -386,6 +394,9 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 						if p := msg.RoomPairing(); p != "" {
 							roomPairings[msg.ReplyTo] = p
 						}
+						if msg.DeliveryToken != "" {
+							roomTokens[msg.ReplyTo] = msg.DeliveryToken
+						}
 						if len(msg.ICEServers) > 0 {
 							roomICE[msg.ReplyTo] = msg.ICEServers
 						}
@@ -411,10 +422,14 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			// The pick comes first so a room pairing's TURN servers are in place before the offer.
 			replyTo := rooms.pick(ctx, genesisCandidates, roomCandidates)
 			pairing = roomPairings[replyTo]
+			deliveryToken = roomTokens[replyTo]
 			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
 			// take one. The session needs no peer connection. It gets the peer connection's STUN
 			// servers, from state 0, and the room's TURN servers.
-			slotTakes := exits == exitAny || (exits == exitRoomOnly && pairing != "")
+			// After a room exit that turned out not to be personal, one attempt relays, so the
+			// slot doesn't go straight back to the same producer's exit (see state 6).
+			slotTakes := exits == exitAny || (exits == exitRoomOnly && pairing != "" && deliveryToken != "" && !relayNext)
+			relayNext = false
 			if directExits[replyTo] && slotTakes && takeExit(options) {
 				servers := slices.Concat(peerConnection.GetConfiguration().ICEServers, roomICE[replyTo])
 				_ = peerConnection.Close()
@@ -932,18 +947,18 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
-			// Answering a room genesis, the consumer shows Freddie its inviter tickets, so Freddie
-			// can vouch to the producer that it is admitted to the room now, which gets it the
-			// producer's personal exit (see common.SignalMsg.Pairing). Only Freddie sees them.
-			var tickets []string
-			if pairing != "" {
-				tickets = options.CurrentRoomTickets()
-			}
-			status, answerBytes, err := postSignalWithTickets(ctx, options, url.Values{
+			// Answering a room genesis, the consumer echoes its delivery token, so Freddie can
+			// vouch to the producer for the room it delivered the genesis through, which gets it
+			// the producer's personal exit (see common.SignalMsg.Pairing). Only Freddie sees it.
+			form := url.Values{
 				"data":    {string(offerJSON)},
 				"send-to": {replyTo},
 				"type":    {strconv.Itoa(int(common.SignalMsgOffer))},
-			}, tickets)
+			}
+			if deliveryToken != "" {
+				form.Set(common.DeliveryTokenField, deliveryToken)
+			}
+			status, answerBytes, err := postSignal(ctx, options, form)
 			// As in state 2, a 200 means the producer took our offer, even if its body then fails.
 			if status == http.StatusOK {
 				offerAccepted = true
@@ -983,6 +998,17 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			}
 			if answer.Ufrag == "" || answer.Pwd == "" || answer.CertPin == "" || answer.Password == "" || len(answer.Candidates) == 0 {
 				slog.Debug("Direct exit answer is incomplete, aborting!")
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			// A slot that takes only room exits, a lone slot, would have no relay at all on a pool
+			// exit (see slotExitsFor). A room exit can still come back pool: the consumer's
+			// admission or the producer's ticket lapsed, or Freddie didn't vouch for it. So it
+			// drops the session before connecting, as a failed attempt, and its next attempt
+			// relays, whatever genesis it picks, so it can't loop on the same producer's exit.
+			if exits == exitRoomOnly && !answer.Personal {
+				slog.Debug("Room direct exit answered as pool, relaying instead")
+				relayNext = true
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
