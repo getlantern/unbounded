@@ -1014,7 +1014,7 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			// drops the session before connecting, as a failed attempt, and its next attempt
 			// relays, whatever genesis it picks, so it can't loop on the same producer's exit.
 			if exits == exitRoomOnly && !answer.Personal {
-				slog.Debug("Room direct exit answered as pool, relaying instead")
+				slog.Info("Direct exit not taken: a room volunteer answered as a pool exit, so the next attempt relays instead of exiting directly")
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
@@ -1074,11 +1074,11 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			err = s.connect(connectCtx, answer.Ufrag, answer.Pwd)
 			cancel()
 			if err != nil {
-				slog.Debug("NAT failure, aborting!", "nat_fail_window", natFail)
+				slog.Info("Direct exit failed: couldn't connect to the volunteer before the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
 				_ = s.Close()
 				return 0, []interface{}{}
 			}
-			slog.Debug("A direct exit session has been established!", "relayed", s.relayed())
+			slog.Info("Direct exit session established: traffic exits directly through the volunteer", "relayed_via_turn", s.relayed(), "personal", answer.Personal)
 			established = true
 			return 7, []interface{}{s, answer.CertPin, answer.Password, answer.Personal}
 		}),
@@ -1097,7 +1097,7 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			case <-s.done():
 				// It ended between the handshake and now: nothing to hand off. For a lone slot that
 				// is a failed room exit too, so its next attempt relays (see state 6).
-				slog.Debug("Direct exit session ended before handoff, resetting!")
+				slog.Info("Direct exit session ended before it carried any traffic", "personal", personal)
 				if exits == exitRoomOnly {
 					relayNext = true
 				}
@@ -1109,13 +1109,14 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			report(true, pairing, true)
 			defer report(false, "", false)
 
-			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: s.relayed(), Personal: personal})
+			relayed := s.relayed()
+			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: relayed, Personal: personal})
 
 		exitloop:
 			for {
 				select {
 				case <-s.done():
-					slog.Debug("Direct exit session ended, resetting!")
+					slog.Info("Direct exit session ended", "relayed_via_turn", relayed, "personal", personal)
 					break exitloop
 				case <-com.rx:
 					// The QUIC layer has no peer on this path, so whatever it sends here is dropped.

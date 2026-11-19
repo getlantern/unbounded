@@ -877,7 +877,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// goes unanswered, and the consumer moves on once Freddie gives up on the answer.
 			certPin, password, ok := exitParams(options, personal)
 			if !ok {
-				slog.Debug("Can't exit now, dropping the direct exit offer")
+				slog.Info("Direct exit offer dropped: this volunteer can't serve a direct exit of the offered kind right now", "personal", personal)
 				return 0, []interface{}{}
 			}
 
@@ -1003,12 +1003,12 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				if ctx.Err() != nil {
 					return 0, []interface{}{}
 				}
-				slog.Debug("NAT traversal timeout, aborting!", "nat_fail_window", last.natFail)
+				slog.Info("Direct exit failed: couldn't connect to the consumer before the NAT traversal window ran out", "nat_fail_window", last.natFail, "personal", personal)
 				last.record(common.OutcomeNATTimeout, nil)
 				return 0, []interface{}{}
 			}
 			pair := s.pairTypes()
-			slog.Debug("A direct exit session has been established!", "relayed", s.relayed(), "pair", pair)
+			slog.Info("Direct exit session established: serving a consumer's traffic directly", "relayed_via_turn", s.relayed(), "personal", personal, "candidate_types", pair)
 			last.record(common.OutcomeConnected, nil)
 			last.path = common.PathDirect
 			if s.relayed() {
@@ -1031,6 +1031,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			remoteAddr := input[3].(net.IP)
 			password := input[4].(string)
 			personal := input[5].(bool)
+			relayed := s.relayed()
 			slog.Debug("Producer state 7...")
 
 			// Exit marks the session as one the egress never serves (see jit_egress_consumer.go).
@@ -1067,10 +1068,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				case <-report.C:
 					tryReportExitBytes(com, conn)
 				case <-s.done():
-					slog.Debug("Direct exit session ended, resetting!")
+					slog.Info("Direct exit session ended", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				case <-served:
-					slog.Debug("Direct exit service stopped, resetting!")
+					slog.Info("Direct exit service stopped, ending the session", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				case <-com.rx:
 					// Nothing upstream serves this slot while it exits itself, so whatever reaches
