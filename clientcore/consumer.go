@@ -55,13 +55,45 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 // report, if non-nil: connected with its pairing when a connection opens, and
 // disconnected when it ends.
 func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool)) *WorkerFSM {
-	return newConsumerWebRTCRelaySlot(options, wg, rooms, report, false)
+	return newConsumerWebRTCExitSlot(options, wg, rooms, report, exitAny)
 }
 
-// newConsumerWebRTCRelaySlot is newConsumerWebRTCSlot for a slot that never takes a direct exit if
-// relayOnly is set (see isRelaySlot): it answers a genesis that offers one with an SDP offer and
-// relays, as it would through a producer without an exit.
-func newConsumerWebRTCRelaySlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool), relayOnly bool) *WorkerFSM {
+// slotExits is which direct exits a consumer slot takes (see slotExitsFor).
+type slotExits int
+
+const (
+	// exitAny takes a direct exit from any genesis that offers one.
+	exitAny slotExits = iota
+	// exitRoomOnly takes a direct exit only from a genesis Freddie delivered through one of the
+	// consumer's rooms, with its pairing, which gets the producer's personal exit.
+	exitRoomOnly
+	// exitNever never takes a direct exit.
+	exitNever
+)
+
+// slotExitsFor is which direct exits slot i of a consumer's size slots takes.
+//
+// A pool direct exit carries only what the pool's policy admits, its allowlisted hosts, and the
+// embedder (lantern-box) sends the rest over the relay path, which needs a slot that relays. So
+// with more than one slot, the last never takes a direct exit (see isRelaySlot) and the others
+// take any. A consumer with only one slot would have no relay at all on a pool exit, so it takes
+// a direct exit only from a room genesis, whose exit Freddie's stamp makes personal, carrying
+// everything, and relays through every other genesis, as before direct exits.
+func slotExitsFor(i, size int) slotExits {
+	switch {
+	case size <= 1:
+		return exitRoomOnly
+	case isRelaySlot(i, size):
+		return exitNever
+	default:
+		return exitAny
+	}
+}
+
+// newConsumerWebRTCExitSlot is newConsumerWebRTCSlot taking only the direct exits exits allows. A
+// genesis offering one it doesn't take gets an SDP offer, and the slot relays, as it would through
+// a producer without an exit.
+func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool), exits slotExits) *WorkerFSM {
 	var scache STUNCache
 	// listPausedUntil is when a consumer with a mapped address next fetches the STUN list after
 	// a failed fetch.
@@ -382,7 +414,8 @@ func newConsumerWebRTCRelaySlot(options *WebRTCOptions, wg *sync.WaitGroup, room
 			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
 			// take one. The session needs no peer connection. It gets the peer connection's STUN
 			// servers, from state 0, and the room's TURN servers.
-			if directExits[replyTo] && !relayOnly && takeExit(options) {
+			slotTakes := exits == exitAny || (exits == exitRoomOnly && pairing != "")
+			if directExits[replyTo] && slotTakes && takeExit(options) {
 				servers := slices.Concat(peerConnection.GetConfiguration().ICEServers, roomICE[replyTo])
 				_ = peerConnection.Close()
 				return 6, []interface{}{replyTo, servers, len(roomICE[replyTo]) > 0}

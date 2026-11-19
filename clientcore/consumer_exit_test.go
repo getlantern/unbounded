@@ -267,19 +267,45 @@ func TestIsRelaySlot(t *testing.T) {
 	}
 }
 
-// A relay slot answers a genesis that offers a direct exit with an SDP offer, so the consumer keeps
-// a relayed path, while any other slot takes the exit.
-func TestRelaySlotNeverTakesDirectExit(t *testing.T) {
-	for _, relayOnly := range []bool{false, true} {
-		o := streamingFreddie(t, genesisSignal(t, "g", true))
-		o.OnExitPath = func(ExitPath) {}
-		fsm := newConsumerWebRTCRelaySlot(o, nil, newRoomPreference(time.Now), nil, relayOnly)
-		pc, _ := newTestPeerConnection(t)
-		next, _ := consumerState1(t, fsm, pc)
-		if relayOnly {
-			assert.Equal(t, 2, next, "the relay slot offers SDP")
-		} else {
-			assert.Equal(t, 6, next, "another slot takes the direct exit")
-		}
+func TestSlotExitsFor(t *testing.T) {
+	assert.Equal(t, exitRoomOnly, slotExitsFor(0, 1), "a single slot")
+	assert.Equal(t, exitAny, slotExitsFor(0, 2))
+	assert.Equal(t, exitNever, slotExitsFor(1, 2), "the relay slot")
+	assert.Equal(t, exitAny, slotExitsFor(3, 5))
+	assert.Equal(t, exitNever, slotExitsFor(4, 5))
+}
+
+// Which genesis messages offering a direct exit a slot answers with an ICE offer (state 6) rather
+// than an SDP offer (state 2): a single slot takes only a room genesis's, whose exit is personal; the
+// relay slot of several takes none; any other takes every one.
+func TestSlotTakesDirectExits(t *testing.T) {
+	pool := genesisSignal(t, "g", true)
+	room := genesisSignal(t, "g", true)
+	room.Room, room.Pairing = true, testPairingP
+	// A room genesis from a Freddie that predates pairing can't get a stamp, so it is a pool exit.
+	unstamped := genesisSignal(t, "g", true)
+	unstamped.Room = true
+	for _, tc := range []struct {
+		name    string
+		exits   slotExits
+		genesis common.SignalMsg
+		want    int
+	}{
+		{"single slot, pool genesis", exitRoomOnly, pool, 2},
+		{"single slot, room genesis", exitRoomOnly, room, 6},
+		{"single slot, room genesis without a pairing", exitRoomOnly, unstamped, 2},
+		{"relay slot, pool genesis", exitNever, pool, 2},
+		{"relay slot, room genesis", exitNever, room, 2},
+		{"other slot, pool genesis", exitAny, pool, 6},
+		{"other slot, room genesis", exitAny, room, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := streamingFreddie(t, tc.genesis)
+			o.OnExitPath = func(ExitPath) {}
+			fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, tc.exits)
+			pc, _ := newTestPeerConnection(t)
+			next, _ := consumerState1(t, fsm, pc)
+			assert.Equal(t, tc.want, next)
+		})
 	}
 }
