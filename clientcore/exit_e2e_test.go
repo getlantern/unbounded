@@ -241,19 +241,20 @@ func TestDirectExitEndToEnd(t *testing.T) {
 		name     string
 		behavior vnet.EndpointDependencyType
 		turn     bool
-		// personal makes the producer serve its rooms alone, with a ticket, so its sessions are
-		// personal.
-		personal bool
+		// roomsOnly makes the producer serve its rooms alone.
+		roomsOnly bool
 		// pairing, if set, gives the producer a volunteer ticket for testPairingP and has Freddie
-		// deliver its pool genesis through pairing's room, so the consumer's offer names pairing.
-		// The session stays a pool session even for the producer's own pairing.
+		// deliver its genesis through pairing's room, so the consumer's offer names pairing.
 		pairing string
+		// personal is whether the session is served, and reported to the consumer, as personal:
+		// only for an offer naming the producer's own pairing.
+		personal bool
 	}{
-		{"punched", vnet.EndpointIndependent, false, false, ""},
-		{"relayed", vnet.EndpointAddrPortDependent, true, false, ""},
-		{"personal", vnet.EndpointIndependent, false, true, ""},
-		{"pool genesis to its room", vnet.EndpointIndependent, false, false, testPairingP},
-		{"pool genesis to another room", vnet.EndpointIndependent, false, false, testPairingQ},
+		{"punched", vnet.EndpointIndependent, false, false, "", false},
+		{"relayed", vnet.EndpointAddrPortDependent, true, false, "", false},
+		{"rooms only", vnet.EndpointIndependent, false, true, testPairingP, true},
+		{"mixed genesis to its room", vnet.EndpointIndependent, false, false, testPairingP, true},
+		{"mixed genesis to another room", vnet.EndpointIndependent, false, false, testPairingQ, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cn, pn, stunURL, turnServer := newVNetICE(t, tc.behavior)
@@ -272,10 +273,8 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			po.Exit = echoExit(true, sessions, served)
 			if tc.pairing != "" {
 				po.SetRoomTickets([]string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)})
-			} else if tc.personal {
-				po.SetRoomTickets([]string{"a.b"})
-				po.SetServePool(false)
 			}
+			po.SetServePool(!tc.roomsOnly)
 			startProducer(t, po)
 
 			paths := make(chan ExitPath, 1)
@@ -305,9 +304,10 @@ func TestDirectExitEndToEnd(t *testing.T) {
 			assert.Equal(t, "pin", path.CertPin)
 			assert.Equal(t, "password", path.Password)
 			assert.Equal(t, tc.turn, path.Relayed)
+			assert.Equal(t, tc.personal, path.Personal, "the consumer learns the session's kind")
 			select {
 			case personal := <-served:
-				assert.Equal(t, tc.personal, personal, "the session is served as its genesis's kind")
+				assert.Equal(t, tc.personal, personal, "the session is served as its offer's kind")
 			case <-time.After(5 * time.Second):
 				t.Fatal("the exit served no session")
 			}

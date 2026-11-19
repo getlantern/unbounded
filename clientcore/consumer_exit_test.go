@@ -178,3 +178,29 @@ func TestConsumerRejectsIncompleteAnswer(t *testing.T) {
 	require.Equal(t, int32(1), answered.Load(), "the incomplete answer was served")
 	assert.Zero(t, iceMsgs.Load(), "no ICE message is sent")
 }
+
+// State 7 tells the embedder the session's kind, from the producer's answer, so it sends a pool
+// session only what the pool's policy admits.
+func TestConsumerExitPathCarriesKind(t *testing.T) {
+	for _, personal := range []bool{false, true} {
+		o := NewDefaultWebRTCOptions()
+		paths := make(chan ExitPath, 1)
+		o.OnExitPath = func(p ExitPath) { paths <- p }
+		s, err := newICESession(o, true, nil, time.Second)
+		require.NoError(t, err)
+		fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+		// The session never connects, so it is served until ctx ends.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		next, _ := fsm.state[7](ctx, fsm.com, []interface{}{s, "pin", "pw", personal})
+		cancel()
+		assert.Equal(t, 0, next)
+		select {
+		case p := <-paths:
+			assert.Equal(t, personal, p.Personal)
+			assert.Equal(t, "pin", p.CertPin)
+			assert.Equal(t, "pw", p.Password)
+		default:
+			t.Fatal("no exit path")
+		}
+	}
+}

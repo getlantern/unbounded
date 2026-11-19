@@ -499,6 +499,7 @@ func TestDecodeSignalICEAnswer(t *testing.T) {
 		Candidates: []string{"1 1 udp 2130706431 10.0.0.2 5000 typ host"},
 		CertPin:    "pin",
 		Password:   "pw",
+		Personal:   true,
 	}
 	replyTo, got, err := DecodeSignalMsg(signalBytes(t, SignalMsgAnswer, ICEAnswerMsg{ICE: &want}))
 	require.NoError(t, err)
