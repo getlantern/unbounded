@@ -250,3 +250,36 @@ func TestConsumerICEOfferCarriesTicketsForRoomGenesis(t *testing.T) {
 		}
 	}
 }
+
+func TestIsRelaySlot(t *testing.T) {
+	for _, c := range []struct {
+		i, size int
+		want    bool
+	}{
+		{0, 1, false},
+		{0, 2, false},
+		{1, 2, true},
+		{0, 5, false},
+		{3, 5, false},
+		{4, 5, true},
+	} {
+		assert.Equal(t, c.want, isRelaySlot(c.i, c.size), "isRelaySlot(%d, %d)", c.i, c.size)
+	}
+}
+
+// A relay slot answers a genesis that offers a direct exit with an SDP offer, so the consumer keeps
+// a relayed path, while any other slot takes the exit.
+func TestRelaySlotNeverTakesDirectExit(t *testing.T) {
+	for _, relayOnly := range []bool{false, true} {
+		o := streamingFreddie(t, genesisSignal(t, "g", true))
+		o.OnExitPath = func(ExitPath) {}
+		fsm := newConsumerWebRTCRelaySlot(o, nil, newRoomPreference(time.Now), nil, relayOnly)
+		pc, _ := newTestPeerConnection(t)
+		next, _ := consumerState1(t, fsm, pc)
+		if relayOnly {
+			assert.Equal(t, 2, next, "the relay slot offers SDP")
+		} else {
+			assert.Equal(t, 6, next, "another slot takes the direct exit")
+		}
+	}
+}

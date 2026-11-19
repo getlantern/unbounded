@@ -367,7 +367,7 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		nConsumers := 1 // bfOpt.PTableSize
 		slots = newConsumerSlots(nConsumers, bfOpt.OnConsumerSlotChangeFunc)
 		for i := 0; i < nConsumers; i++ {
-			pfsms = append(pfsms, *newConsumerWebRTCSlot(rtcOpt, &wgReady, newRoomPreference(time.Now), slots.reporter(i)))
+			pfsms = append(pfsms, *newConsumerWebRTCRelaySlot(rtcOpt, &wgReady, newRoomPreference(time.Now), slots.reporter(i), isRelaySlot(i, nConsumers)))
 		}
 		pTable = NewWorkerTable(pfsms)
 		if rtcOpt.ConsumerRoomsOnly {
@@ -432,6 +432,15 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	ui.OnReady()
 	ui.OnStartup()
 	return bfconn, ui, nil
+}
+
+// isRelaySlot reports whether slot i of a consumer's size slots never takes a direct exit. With
+// more than one slot, the last doesn't, so the consumer always has a relayed path for what a pool
+// direct exit won't carry: the embedder sends a pool exit only what the pool's policy admits (see
+// ExitPath.Personal) and falls back to the relay for the rest, which it couldn't if every slot
+// were on a direct exit. A consumer with only one slot takes direct exits with it, as before.
+func isRelaySlot(i, size int) bool {
+	return size > 1 && i == size-1
 }
 
 // isRoomSlot reports whether slot i of a widget's size producer slots is a room slot (see
