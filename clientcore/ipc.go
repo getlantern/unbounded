@@ -7,12 +7,14 @@ import "context"
 // PathAssertionIPC: how upstream processes describe their connectivity for downstream processes
 // ConsumerInfoIPC: how downstream processes describe their connectivity for upstream processes
 // ConnectivityCheckIPC: how processes request the connectivity situation from their counterparts
+// ExitBytesIPC: bytes a direct exit session carried, for the UI alone (see exitBytes)
 
 const (
 	ChunkIPC msgType = iota
 	PathAssertionIPC
 	ConsumerInfoIPC
 	ConnectivityCheckIPC
+	ExitBytesIPC
 )
 
 const (

@@ -84,8 +84,22 @@ func (ui UIImpl) onConsumerConnectionChangeInfo(state int, workerIdx int, info c
 	}
 }
 
-func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
-	var bytesPerSec int64
+// uiHandlers are the bus's upstream and downstream UI handlers, sharing one downstream
+// throughput meter so that a direct exit session's downstream bytes, which reach the upstream
+// handler, count toward it.
+func uiHandlers(ctx context.Context, ui UIImpl, netstated, tag string) (onTx, onRx func(IPCMsg)) {
+	down := newDownstreamMeter(ctx, ui)
+	return upstreamUIHandler(ctx, ui, netstated, tag, down), down.handle
+}
+
+// downstreamMeter reports downstream chunks, and their throughput at uiRefreshHz.
+type downstreamMeter struct {
+	ui          UIImpl
+	bytesPerSec int64
+}
+
+func newDownstreamMeter(ctx context.Context, ui UIImpl) *downstreamMeter {
+	m := &downstreamMeter{ui: ui}
 	var tick uint
 	tickInterval := time.Second / uiRefreshHz
 
@@ -97,27 +111,43 @@ func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ui.OnDownstreamThroughput(int(atomic.LoadInt64(&bytesPerSec)))
+				ui.OnDownstreamThroughput(int(atomic.LoadInt64(&m.bytesPerSec)))
 				tick++
 				if tick == uiRefreshHz {
-					atomic.SwapInt64(&bytesPerSec, 0)
+					atomic.SwapInt64(&m.bytesPerSec, 0)
 					tick = 0
 				}
 			}
 		}
 	}()
 
-	return func(msg IPCMsg) {
-		switch msg.IpcType {
-		case ChunkIPC:
-			size := len(msg.Data.([]byte))
-			atomic.AddInt64(&bytesPerSec, int64(size))
-			ui.OnDownstreamChunk(size, int(msg.Wid))
-		}
+	return m
+}
+
+func (m *downstreamMeter) chunk(size int, wid workerID) {
+	atomic.AddInt64(&m.bytesPerSec, int64(size))
+	m.ui.OnDownstreamChunk(size, int(wid))
+}
+
+func (m *downstreamMeter) handle(msg IPCMsg) {
+	switch msg.IpcType {
+	case ChunkIPC:
+		m.chunk(len(msg.Data.([]byte)), msg.Wid)
 	}
 }
 
+func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+	return newDownstreamMeter(ctx, ui).handle
+}
+
+// UpstreamUIHandler handles the bus's upstream traffic. A direct exit session's downstream bytes
+// reach it too, and go to OnDownstreamChunk without counting toward a DownstreamUIHandler's
+// throughput: uiHandlers pairs the two so that they do.
 func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+	return upstreamUIHandler(ctx, ui, netstated, tag, nil)
+}
+
+func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, down *downstreamMeter) func(msg IPCMsg) {
 	// Upstream bytes are batched per worker and flushed at uiRefreshHz rather than firing a UI
 	// event per chunk, since every event crosses the JS boundary on wasm
 	var mu sync.Mutex
@@ -158,16 +188,34 @@ func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) fu
 		}
 	}()
 
+	addPending := func(wid workerID, size int) {
+		mu.Lock()
+		pending[wid] += size
+		mu.Unlock()
+		// the bus can deliver a chunk it picked up before cancellation after the batching
+		// goroutine's final flush, which would otherwise strand it in pending
+		if ctx.Err() != nil {
+			flush()
+		}
+	}
+
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
 		case ChunkIPC:
-			mu.Lock()
-			pending[msg.Wid] += len(msg.Data.([]byte))
-			mu.Unlock()
-			// the bus can deliver a chunk it picked up before cancellation after the batching
-			// goroutine's final flush, which would otherwise strand it in pending
-			if ctx.Err() != nil {
-				flush()
+			addPending(msg.Wid, len(msg.Data.([]byte)))
+		case ExitBytesIPC:
+			// A direct exit session's bytes, which bypass the bus. They arrive in order with the
+			// slot's ConsumerInfoIPC, so they are delivered before its next connection change.
+			b := msg.Data.(exitBytes)
+			if b.down > 0 {
+				if down != nil {
+					down.chunk(b.down, msg.Wid)
+				} else {
+					ui.OnDownstreamChunk(b.down, int(msg.Wid))
+				}
+			}
+			if b.up > 0 {
+				addPending(msg.Wid, b.up)
 			}
 		case ConsumerInfoIPC:
 			deliverMu.Lock()

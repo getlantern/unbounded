@@ -408,10 +408,11 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	ui.OnUpstreamChunkFunc = bfOpt.OnUpstreamChunkFunc
 
 	// Step 4: Set up the bus, bind upstream and downstream UI handlers
+	onTx, onRx := uiHandlers(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag)
 	var bus = NewIpcObserver(
 		bfOpt.BusBufferSz,
-		UpstreamUIHandler(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag),
-		DownstreamUIHandler(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag),
+		onTx,
+		onRx,
 	)
 
 	// Step 5: Build consumer router and producer router

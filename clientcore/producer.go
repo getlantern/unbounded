@@ -1049,16 +1049,25 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			}
 			observeSession(options, true)
 
+			// The session's bytes bypass the bus, so they're counted here and reported to the UI
+			// on the slot's own channel, ahead of its disconnect.
+			conn := &countingPacketConn{PacketConn: s.packetConn()}
 			serveCtx, cancel := context.WithCancel(ctx)
 			served := make(chan struct{})
 			go func() {
 				defer close(served)
-				options.Exit.Serve(serveCtx, s.packetConn(), password, personal)
+				options.Exit.Serve(serveCtx, conn, password, personal)
 			}()
+			report := time.NewTicker(time.Second / uiRefreshHz)
+			defer report.Stop()
 
 		serveloop:
 			for {
 				select {
+				case <-report.C:
+					if !reportExitBytes(ctx, com, conn) {
+						break serveloop
+					}
 				case <-s.done():
 					slog.Debug("Direct exit session ended, resetting!")
 					break serveloop
@@ -1076,7 +1085,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			_ = s.Close()
 			<-served
 
-			// We've reset this slot, so announce the nil connectivity situation
+			// We've reset this slot, so report the session's last bytes and then announce the
+			// nil connectivity situation
+			if !reportExitBytes(ctx, com, conn) {
+				return 0, []interface{}{}
+			}
 			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}) {
 				return 0, []interface{}{}
 			}
