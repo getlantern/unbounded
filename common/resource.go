@@ -167,13 +167,15 @@ type ICEOffer struct {
 // ICEAnswer is a producer's answer to an ICEOffer. It carries the producer's ICE credentials and
 // candidates, and what the consumer needs to use the exit over the session: the SHA-256 pin of
 // the exit certificate's public key, and the session's password, which also keys the exit's
-// Salamander obfuscation (see GenesisMsg.DirectExitObfs). Never logged.
+// Salamander obfuscation (see GenesisMsg.DirectExitObfs). Personal says whether the producer
+// serves the session under its personal policy rather than the pool's. Never logged.
 type ICEAnswer struct {
 	Ufrag      string
 	Pwd        string
 	Candidates []string
 	CertPin    string
 	Password   string
+	Personal   bool `json:",omitempty"`
 }
 
 // ICEAnswerMsg is the payload of a SignalMsgAnswer that answers an ICEOffer. An answer to an SDP

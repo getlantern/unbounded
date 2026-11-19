@@ -5,6 +5,7 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -125,7 +126,7 @@ func TestProducerRoutesICEOfferToDirectExit(t *testing.T) {
 	require.Len(t, servers, 2, "the STUN cohort and the room's TURN server")
 	assert.Equal(t, "stun:1.2.3.1:3478", servers[0].URLs[0])
 	assert.Equal(t, true, input[3])
-	assert.Equal(t, false, input[4], "a pool genesis's session")
+	assert.Len(t, input, 4, "the session's kind comes from the offer, in state 6")
 	assert.Equal(t, webrtc.PeerConnectionStateClosed, pc.ConnectionState(), "a direct exit needs no peer connection")
 }
 
@@ -163,7 +164,7 @@ func TestProducerDropsICEOfferWhenItCantExit(t *testing.T) {
 			tc.setup(o.Exit, &minted)
 			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 			next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
-				"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false, false,
+				"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}, []webrtc.ICEServer(nil), false,
 			})
 			assert.Equal(t, 0, next)
 			assert.Zero(t, posts.Load(), "no answer is sent")
@@ -194,7 +195,7 @@ func TestProducerDropsICEOfferWithoutCredentials(t *testing.T) {
 	o.Exit.Params = func(bool) (string, string, bool) { minted.Add(1); return "pin", "pw", true }
 	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
 	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{
-		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Pwd: "p"}}, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false, false,
+		"offer-id", common.OfferMsg{ICE: &common.ICEOffer{Pwd: "p"}}, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false,
 	})
 	assert.Equal(t, 0, next)
 	assert.Zero(t, minted.Load(), "no credentials are minted")
@@ -216,133 +217,191 @@ func TestProducerDropsICEOfferWithoutCredentials(t *testing.T) {
 	}
 }
 
-// A genesis is personal when it goes to the producer's rooms alone with room tickets: a room slot
-// holding tickets, or a producer that doesn't serve the pool. Ready is asked about that kind, and
-// an offer answering the genesis carries it on to state 6.
-func TestProducerGenesisKind(t *testing.T) {
-	for _, tc := range []struct {
+// A genesis offers a direct exit while the producer can serve a kind of session that a consumer
+// reaching it could get: a rooms-only genesis with tickets reaches only the producer's rooms, so
+// personal; one reaching the pool alone, pool; one reaching both, either.
+func TestProducerGenesisAdvertisesExit(t *testing.T) {
+	type readiness struct{ pool, personal bool }
+	for _, route := range []struct {
 		name      string
 		roomSlot  bool
 		tickets   []string
 		servePool bool
-		personal  bool
+		// offered maps the exit's readiness to whether the genesis offers a direct exit.
+		offered func(r readiness) bool
 	}{
-		{"pool slot", false, nil, true, false},
-		{"pool slot with tickets", false, []string{"a.b"}, true, false},
-		{"room slot with tickets", true, []string{"a.b"}, true, true},
-		{"room slot without tickets", true, nil, true, false},
-		{"rooms only with tickets", false, []string{"a.b"}, false, true},
-		// A rooms-only genesis without tickets reaches nobody, so it is never personal.
-		{"rooms only without tickets", false, nil, false, false},
+		{"pool slot", false, nil, true, func(r readiness) bool { return r.pool }},
+		{"pool slot with tickets (mixed)", false, []string{"a.b"}, true, func(r readiness) bool { return r.pool || r.personal }},
+		{"room slot with tickets", true, []string{"a.b"}, true, func(r readiness) bool { return r.personal }},
+		{"room slot without tickets", true, nil, true, func(r readiness) bool { return r.pool }},
+		{"rooms only with tickets", false, []string{"a.b"}, false, func(r readiness) bool { return r.personal }},
+		// A rooms-only genesis without tickets reaches nobody, and is counted as pool.
+		{"rooms only without tickets", false, nil, false, func(r readiness) bool { return r.pool }},
+	} {
+		for _, r := range []readiness{{false, false}, {true, false}, {false, true}, {true, true}} {
+			t.Run(fmt.Sprintf("%s/pool=%v,personal=%v", route.name, r.pool, r.personal), func(t *testing.T) {
+				o := NewDefaultWebRTCOptions()
+				o.SetRoomTickets(route.tickets)
+				o.SetServePool(route.servePool)
+				o.Exit = readyExit()
+				o.Exit.Ready = func(personal bool) bool {
+					if personal {
+						return r.personal
+					}
+					return r.pool
+				}
+				_, _, sent, _ := producerExitState2Slot(t, o, route.roomSlot, nil, nil)
+				assert.Equal(t, route.offered(r), sent.DirectExitObfs)
+				assert.False(t, sent.DirectExit)
+			})
+		}
+	}
+}
+
+// producerExitAnswer runs producer state 6 on offer, with o's exit, against a Freddie that records
+// the producer's answer and hangs up on it, and returns the answer, if any, and the next state.
+func producerExitAnswer(t *testing.T, o *WebRTCOptions, offer common.OfferMsg) (*common.ICEAnswer, int) {
+	t.Helper()
+	cn, _, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
+	answers := make(chan string, 4)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ParseForm() == nil {
+			answers <- r.PostForm.Get("data")
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	o.DiscoverySrv = srv.URL
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.Net = cn
+	fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	next, _ := fsm.state[6](ctx, fsm.com, []interface{}{
+		"offer-id", offer, []webrtc.ICEServer{{URLs: []string{stunURL}}}, false,
+	})
+	select {
+	case data := <-answers:
+		var msg common.ICEAnswerMsg
+		require.NoError(t, json.Unmarshal([]byte(data), &msg))
+		require.NotNil(t, msg.ICE)
+		return msg.ICE, next
+	default:
+		return nil, next
+	}
+}
+
+// A producer serving both its rooms and the pool decides each direct exit session's kind by its
+// offer: an offer claiming the pairing of one of the producer's volunteer tickets is personal,
+// any other is pool. The kind reaches the exit's credentials and the consumer, in the answer.
+func TestProducerOfferKind(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		tickets  []string
+		pairing  string
+		personal bool
+	}{
+		{"the producer's own pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingP, true},
+		{"another of its pairings", []string{
+			volunteerTicket(t, testPairingQ, helperticket.RoleVolunteer),
+			volunteerTicket(t, testPairingP, helperticket.RoleVolunteer),
+		}, testPairingP, true},
+		{"an unknown pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, testPairingQ, false},
+		{"no pairing", []string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)}, "", false},
+		{"a pairing the producer holds no volunteer ticket for", []string{volunteerTicket(t, testPairingP, helperticket.RoleInviter)}, testPairingP, false},
+		{"a pairing, but no tickets", nil, testPairingP, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewDefaultWebRTCOptions()
 			o.SetRoomTickets(tc.tickets)
-			o.SetServePool(tc.servePool)
+			o.SetServePool(true)
 			o.Exit = readyExit()
-			var asked []bool
-			o.Exit.Ready = func(personal bool) bool { asked = append(asked, personal); return true }
-			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}
-			next, input, sent, _ := producerExitState2Slot(t, o, tc.roomSlot, offerReply(t, offer, nil), nil)
-			require.Equal(t, 6, next)
-			assert.True(t, sent.DirectExitObfs)
-			assert.False(t, sent.DirectExit)
-			assert.Equal(t, []bool{tc.personal}, asked)
-			assert.Equal(t, tc.personal, input[4])
-		})
-	}
-}
-
-// The kind state 6 gets is the kind of the genesis the offer answers, even if the producer's
-// tickets or pool setting changed while the genesis waited for it: an offer answering a pool
-// genesis is never served as personal, nor one answering a personal genesis as pool.
-func TestProducerOfferKeepsItsGenesisKind(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		setup    func(o *WebRTCOptions)
-		change   func(o *WebRTCOptions)
-		roomSlot bool
-		personal bool
-	}{
-		{"pool genesis, then rooms only", func(o *WebRTCOptions) {}, func(o *WebRTCOptions) {
-			o.SetRoomTickets([]string{"a.b"})
-			o.SetServePool(false)
-		}, true, false},
-		{"personal genesis, then tickets gone", func(o *WebRTCOptions) {
-			o.SetRoomTickets([]string{"a.b"})
-		}, func(o *WebRTCOptions) {
-			o.SetRoomTickets(nil)
-		}, true, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			o := NewDefaultWebRTCOptions()
-			tc.setup(o)
-			o.Exit = readyExit()
-			var asked, minted []bool
 			var mu sync.Mutex
+			var asked, minted []bool
 			o.Exit.Ready = func(personal bool) bool {
 				mu.Lock()
 				defer mu.Unlock()
 				asked = append(asked, personal)
 				return true
 			}
-			// Refusing the credentials ends state 6 before it signals anything.
 			o.Exit.Params = func(personal bool) (string, string, bool) {
 				mu.Lock()
 				defer mu.Unlock()
 				minted = append(minted, personal)
-				return "", "", false
+				return "pin", "pw", true
 			}
-			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}
-			next, input, _, _ := producerExitState2Slot(t, o, tc.roomSlot, offerReply(t, offer, nil), func() { tc.change(o) })
-			require.Equal(t, 6, next)
-			assert.Equal(t, tc.personal, input[4])
-
-			fsm := newProducerWebRTC(o, nil, tc.roomSlot, newVolunteerSignaler(o))
-			next, _ = fsm.state[6](context.Background(), fsm.com, input)
-			assert.Equal(t, 0, next)
+			answer, next := producerExitAnswer(t, o, common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing})
+			assert.Equal(t, 0, next, "Freddie hung up on the answer")
+			require.NotNil(t, answer, "the offer was answered")
+			assert.Equal(t, tc.personal, answer.Personal)
 			mu.Lock()
 			defer mu.Unlock()
-			assert.Equal(t, []bool{tc.personal, tc.personal}, asked, "the genesis, then state 6's recheck")
+			assert.Equal(t, []bool{tc.personal}, asked)
 			assert.Equal(t, []bool{tc.personal}, minted)
 		})
 	}
 }
 
-// A pool genesis's session is a pool session whatever pairing its offer names, even the
-// producer's real one: the consumer writes the offer's Pairing, and Freddie forwards it unchecked,
-// so it proves only that the consumer knows the pairing ID.
-func TestProducerPoolGenesisOfferStaysPool(t *testing.T) {
+// The answer marks a pool session by leaving Personal out, so its JSON is what it was before
+// sessions had kinds.
+func TestICEAnswerOmitsPoolKind(t *testing.T) {
+	b, err := json.Marshal(common.ICEAnswer{Ufrag: "u"})
+	require.NoError(t, err)
+	assert.NotContains(t, string(b), "Personal")
+	b, err = json.Marshal(common.ICEAnswer{Ufrag: "u", Personal: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"Personal":true`)
+}
+
+// A mixed genesis offers a direct exit while the producer can serve either kind, so an offer may
+// come for the kind it can't serve. That offer is dropped at once, unanswered and with no
+// credentials minted, as one that comes after the producer stopped being able to exit: the worker
+// goes back to state 0 for its next genesis, and the consumer moves on when Freddie gives up on
+// the answer.
+func TestProducerDropsOfferForKindNotReady(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		ticket  string
-		pairing string
+		name      string
+		readyPool bool
+		pairing   string
+		personal  bool
 	}{
-		{"the producer's real pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingP},
-		{"another pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), testPairingQ},
-		{"no pairing", volunteerTicket(t, testPairingP, helperticket.RoleVolunteer), ""},
+		{"a stranger, with only personal sessions ready", false, "", false},
+		{"a friend, with only pool sessions ready", true, testPairingP, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := NewDefaultWebRTCOptions()
-			o.SetRoomTickets([]string{tc.ticket})
+			o.SetRoomTickets([]string{volunteerTicket(t, testPairingP, helperticket.RoleVolunteer)})
+			o.SetServePool(true)
 			o.Exit = readyExit()
-			var asked, minted []bool
-			o.Exit.Ready = func(personal bool) bool { asked = append(asked, personal); return true }
-			// Refusing the credentials ends state 6 before it signals anything.
-			o.Exit.Params = func(personal bool) (string, string, bool) {
-				minted = append(minted, personal)
-				return "", "", false
-			}
-			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing}
-			next, input, _, _ := producerExitState2(t, o, offerReply(t, offer, nil))
-			require.Equal(t, 6, next)
-			assert.Equal(t, false, input[4], "a pool slot's genesis")
+			o.Exit.Ready = func(personal bool) bool { return personal != tc.readyPool }
+			var minted atomic.Int32
+			o.Exit.Params = func(bool) (string, string, bool) { minted.Add(1); return "pin", "pw", true }
 
+			// The genesis offers a direct exit: a consumer reaching it could get the ready kind.
+			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}, Pairing: tc.pairing}
+			next, input, sent, _ := producerExitState2(t, o, offerReply(t, offer, nil))
+			assert.True(t, sent.DirectExitObfs)
+			require.Equal(t, 6, next)
+
+			var posts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { posts.Add(1) }))
+			t.Cleanup(srv.Close)
+			o.DiscoverySrv = srv.URL
 			fsm := newProducerWebRTC(o, nil, false, newVolunteerSignaler(o))
-			next, _ = fsm.state[6](context.Background(), fsm.com, input)
+			done := make(chan int, 1)
+			go func() {
+				next, _ := fsm.state[6](context.Background(), fsm.com, input)
+				done <- next
+			}()
+			select {
+			case next = <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("state 6 hung on an offer for a kind it can't serve")
+			}
 			assert.Equal(t, 0, next)
-			assert.Equal(t, []bool{false, false}, asked, "the genesis, then state 6's recheck")
-			assert.Equal(t, []bool{false}, minted)
+			assert.Zero(t, posts.Load(), "no answer is sent")
+			assert.Zero(t, minted.Load(), "no credentials are minted")
+			assert.Equal(t, tc.personal, sessionPersonal(o, offer))
 		})
 	}
 }

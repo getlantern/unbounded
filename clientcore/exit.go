@@ -11,18 +11,20 @@ import (
 // them nil. Ready, Params and OnSession run on the signaling path, so they must be cheap and must
 // not block.
 //
-// Each session is personal or pool, by the genesis it answers. A personal session's genesis went
-// to the producer's rooms alone, so Freddie offered it only to consumers in them (friends). Every
-// other genesis may reach any consumer (a stranger), and its sessions are pool sessions, even one
-// that Freddie happened to hand to a friend. The embedder decides what each kind may reach.
+// Each session is personal or pool, by the offer that opens it. A personal session's offer claims
+// the pairing of one of the producer's own volunteer tickets, which Freddie stamped on the room
+// genesis it delivered to that consumer (a friend). Every other session is a pool session: a
+// stranger sees only pool genesis messages, which carry no pairing. The embedder decides what each
+// kind may reach, and the consumer learns its session's kind (ExitPath.Personal).
 //
 // The exit is obfuscated: Serve, and the embedder's consumer side that takes each ExitPath, must
 // both run Hysteria2 with Salamander keyed from the session password. broflake only carries the
 // signal (common.GenesisMsg.DirectExitObfs) and the password; the key derivation lives with the
 // embedder (lantern-box). Peers that predate obfuscation never pair with these exits: they relay.
 type ExitOptions struct {
-	// Ready reports whether the producer can exit a session of this kind now. While it can, each
-	// genesis of that kind offers an obfuscated direct exit (see common.GenesisMsg.DirectExitObfs).
+	// Ready reports whether the producer can exit a session of this kind now. While it can exit a
+	// kind that a consumer reaching a genesis could get, the genesis offers an obfuscated direct
+	// exit (see common.GenesisMsg.DirectExitObfs). An offer for a kind it can't exit is dropped.
 	Ready func(personal bool) bool
 	// Params mints a session's credentials: the SHA-256 pin of the exit certificate's public key,
 	// and a password for this session alone. ok is false when the producer can no longer exit a
@@ -48,6 +50,10 @@ type ExitPath struct {
 	CertPin  string
 	Password string
 	Relayed  bool
+	// Personal says whether the producer serves this session under its personal policy, with no
+	// allowlist, rather than the pool's (see ExitOptions). A consumer must send a pool session
+	// only what the pool policy admits.
+	Personal bool
 }
 
 // exitReady reports whether a producer can offer a direct exit of this kind now. Without Params

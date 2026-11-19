@@ -291,16 +291,15 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			// Where the genesis goes, read once: its kind, which a direct exit session answering it
-			// is served as, must match where it went, though the tickets and pool setting can change
+			// Where the genesis goes, read once, though the tickets and pool setting can change
 			// before an offer arrives.
 			route := routeGenesis(options, roomSlot)
-			personal := route.personal()
 
-			// Construct a genesis message. While the producer can exit traffic itself, it offers
-			// an obfuscated direct exit, which a consumer that can take one answers with an ICE
-			// offer. It never sets the legacy DirectExit, so old consumers relay.
-			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExitObfs: exitReady(options, personal)})
+			// Construct a genesis message. While the producer can exit some session a consumer
+			// reaching this genesis could get, it offers an obfuscated direct exit, which a consumer
+			// that can take one answers with an ICE offer. It never sets the legacy DirectExit, so
+			// old consumers relay.
+			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExitObfs: genesisOffersExit(options, route)})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
@@ -359,11 +358,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// An ICE offer takes a direct exit, which needs no peer connection. The session gets the
 			// peer connection's STUN servers, from state 0, and Freddie's TURN servers for a room.
-			// It is served as the kind of the genesis it answers.
+			// Its kind comes from the offer (see state 6).
 			if o, ok := offer.(common.OfferMsg); ok && o.ICE != nil {
 				servers := append(peerConnection.GetConfiguration().ICEServers, offerMsg.ICEServers...)
 				_ = peerConnection.Close()
-				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0, personal}
+				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0}
 			}
 
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
@@ -853,18 +852,14 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// input[1]: common.OfferMsg (with ICE)
 			// input[2]: []webrtc.ICEServer (the STUN cohort, and a room pairing's TURN relays)
 			// input[3]: bool (whether input[2] has a room pairing's TURN relays)
-			// input[4]: bool (whether the genesis the offer answers was personal, see ExitOptions)
 			replyTo := input[0].(string)
 			offer := input[1].(common.OfferMsg)
 			servers := input[2].([]webrtc.ICEServer)
 			roomTURN := input[3].(bool)
-			// The session is the kind of the genesis it answers, which Freddie's routing attests: a
-			// rooms-only genesis reaches only the producer's rooms. The offer's Pairing can't upgrade
-			// a pool genesis's session, though Freddie may hand one to a consumer in those rooms: the
-			// consumer writes Pairing, and Freddie forwards offers unchecked, so it proves only that
-			// the consumer knows a pairing ID. Giving such a friend the personal policy would take
-			// Freddie stamping the room's pairing on the offer's envelope, as it does a genesis's.
-			personal := input[4].(bool)
+			// The session's kind is decided by the offer, not by where the genesis went, since a
+			// pool slot's genesis carrying room tickets reaches both the producer's rooms and the
+			// pool (see sessionPersonal).
+			personal := sessionPersonal(options, offer)
 			slog.Debug("Producer state 6, direct exit handshake...")
 			last.begin(replyTo, vpnStatus(options))
 			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)
@@ -875,8 +870,10 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				return 0, []interface{}{}
 			}
 
-			// The producer may have stopped being able to exit since its genesis. The offer then
-			// goes unanswered, and the consumer moves on.
+			// The producer may have stopped being able to exit since its genesis, or it may never
+			// have been able to exit this offer's kind: a genesis that reaches both the producer's
+			// rooms and the pool offers a direct exit while it can serve either kind. The offer then
+			// goes unanswered, and the consumer moves on once Freddie gives up on the answer.
 			certPin, password, ok := exitParams(options, personal)
 			if !ok {
 				slog.Debug("Can't exit now, dropping the direct exit offer")
@@ -934,6 +931,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				Candidates: candidates,
 				CertPin:    certPin,
 				Password:   password,
+				Personal:   personal,
 			}})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
@@ -1336,11 +1334,35 @@ func routeGenesis(options *WebRTCOptions, roomSlot bool) genesisRoute {
 	return genesisRoute{tickets: tickets, roomsOnly: sendsToRoomsOnly(options, roomSlot, tickets)}
 }
 
-// personal reports whether the genesis can reach only consumers in the producer's rooms: it goes to
-// them alone, with tickets. A rooms-only genesis without tickets reaches nobody, and is counted as
-// pool, the stricter kind.
-func (r genesisRoute) personal() bool {
-	return r.roomsOnly && len(r.tickets) > 0
+// genesisOffersExit reports whether a genesis going by route offers a direct exit: whether the
+// producer can serve at least one kind of session that a consumer reaching it could get (see
+// sessionPersonal). A rooms-only genesis with tickets reaches only the producer's rooms, whose
+// consumers' offers claim their pairing, so its sessions are personal. A genesis that reaches the
+// pool may be answered by a stranger, whose session is pool, or, while it carries tickets, by a
+// consumer in one of the producer's rooms, whose session is personal. A rooms-only genesis without
+// tickets reaches nobody, and is counted as pool, the stricter kind.
+func genesisOffersExit(options *WebRTCOptions, r genesisRoute) bool {
+	hasTickets := len(r.tickets) > 0
+	if r.roomsOnly && hasTickets {
+		return exitReady(options, true)
+	}
+	return exitReady(options, false) || (hasTickets && exitReady(options, true))
+}
+
+// sessionPersonal reports whether a direct exit session answering offer is personal: whether the
+// offer's pairing claim names the pairing of one of the producer's own volunteer tickets (see
+// offerPairing). Freddie stamps that pairing only on a genesis it delivers to a consumer in the
+// producer's room, and the consumer echoes it in its offer.
+//
+// Freddie forwards offers unchecked, so the claim proves only that the consumer knows one of this
+// producer's pairing IDs. That is safe: a stranger sees only the producer's pool genesis messages,
+// which carry no pairing, and never learns a pairing ID of this producer, so it can't claim one. A
+// validated claim is the same trust the producer already extends to its room consumers: it is
+// the claim by which it attributes a session to one of its pairings (common.ConsumerInfo.Pairing),
+// and a consumer that knows the pairing ID is one the volunteer's pairing let into its room. A
+// claim that doesn't validate, or none, gets a pool session, the stricter kind.
+func sessionPersonal(options *WebRTCOptions, offer common.OfferMsg) bool {
+	return offerPairing(options, offer.Pairing) != ""
 }
 
 // servesTicketedRoomsOnly reports whether a worker's genesis messages go to its rooms alone and

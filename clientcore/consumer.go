@@ -996,16 +996,18 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 				return 0, []interface{}{}
 			}
 			slog.Debug("A direct exit session has been established!", "relayed", s.relayed())
-			return 7, []interface{}{s, answer.CertPin, answer.Password}
+			return 7, []interface{}{s, answer.CertPin, answer.Password, answer.Personal}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 7: a direct exit session, handed to the embedder until it ends
 			// input[0]: *iceSession
 			// input[1]: string (the exit's certificate pin)
 			// input[2]: string (the session's password)
+			// input[3]: bool (whether the producer serves the session as personal)
 			s := input[0].(*iceSession)
 			certPin := input[1].(string)
 			password := input[2].(string)
+			personal := input[3].(bool)
 			slog.Debug("Consumer state 7...")
 			select {
 			case <-s.done():
@@ -1019,7 +1021,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			report(true, pairing, true)
 			defer report(false, "", false)
 
-			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: s.relayed()})
+			options.OnExitPath(ExitPath{Conn: s.packetConn(), CertPin: certPin, Password: password, Relayed: s.relayed(), Personal: personal})
 
 		exitloop:
 			for {
