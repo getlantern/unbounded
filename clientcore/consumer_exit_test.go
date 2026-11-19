@@ -23,7 +23,12 @@ import (
 
 func genesisSignal(t *testing.T, replyTo string, directExit bool) common.SignalMsg {
 	t.Helper()
-	p, err := json.Marshal(common.GenesisMsg{DirectExit: directExit})
+	return genesisSignalOf(t, replyTo, common.GenesisMsg{DirectExitObfs: directExit})
+}
+
+func genesisSignalOf(t *testing.T, replyTo string, g common.GenesisMsg) common.SignalMsg {
+	t.Helper()
+	p, err := json.Marshal(g)
 	require.NoError(t, err)
 	return common.SignalMsg{ReplyTo: replyTo, Type: common.SignalMsgGenesis, Payload: string(p)}
 }
@@ -61,6 +66,16 @@ func TestConsumerTakeExitGatesDirectExit(t *testing.T) {
 			assert.Equal(t, 2, next)
 		}
 	}
+}
+
+// An old producer's genesis offers an unobfuscated exit, which a new consumer can't use: it gets an
+// SDP offer, as from a producer without an exit.
+func TestConsumerOffersSDPToLegacyDirectExit(t *testing.T) {
+	o := streamingFreddie(t, genesisSignalOf(t, "g", common.GenesisMsg{DirectExit: true}))
+	o.OnExitPath = func(ExitPath) {}
+	pc, _ := newTestPeerConnection(t)
+	next, _ := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+	assert.Equal(t, 2, next)
 }
 
 func TestConsumerOffersSDPToOldProducers(t *testing.T) {

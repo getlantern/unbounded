@@ -298,8 +298,9 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			personal := route.personal()
 
 			// Construct a genesis message. While the producer can exit traffic itself, it offers
-			// a direct exit, which a consumer that can take one answers with an ICE offer.
-			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExit: exitReady(options, personal)})
+			// an obfuscated direct exit, which a consumer that can take one answers with an ICE
+			// offer. It never sets the legacy DirectExit, so old consumers relay.
+			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExitObfs: exitReady(options, personal)})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}

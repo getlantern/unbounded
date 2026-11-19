@@ -85,7 +85,7 @@ type ConsumerInfo struct {
 	// match to one of its own volunteer tickets. Local to the producer: it is
 	// never sent to the egress, and must never be logged.
 	Pairing string
-	// Exit says this consumer's session is a direct exit (see GenesisMsg.DirectExit): the
+	// Exit says this consumer's session is a direct exit (see GenesisMsg.DirectExitObfs): the
 	// producer exits its traffic itself, so no egress connection serves it. Local to the
 	// producer, like Pairing.
 	Exit bool
@@ -106,10 +106,26 @@ type Endpoint struct {
 
 type GenesisMsg struct {
 	PathAssertion PathAssertion
-	// DirectExit says the producer can carry this session over ICE alone and exit its traffic
-	// itself (see ICEOffer). A consumer that can answers with an ICE offer, and any other with an
-	// SDP offer as before. Omitted when false, so other producers' genesis messages are unchanged.
+	// DirectExit is the legacy signal for an unobfuscated direct exit: stock Hysteria2 over the
+	// bare ICE session, whose QUIC Initial exposes the SNI. Old producers send it and old
+	// consumers act on it. New peers neither send it nor act on it: a new consumer treats a
+	// genesis carrying only DirectExit as an ordinary relay genesis and answers with an SDP offer,
+	// as it would a producer without an exit. It stays in the struct for old peers' sake.
 	DirectExit bool `json:",omitempty"`
+	// DirectExitObfs says the producer can carry this session over ICE alone and exit its traffic
+	// itself (see ICEOffer), with an obfuscated exit: Hysteria2 with Salamander keyed from the
+	// session password (see clientcore.ExitOptions). A consumer that can answers with an ICE
+	// offer, and any other with an SDP offer as before. Omitted when false, so other producers'
+	// genesis messages are unchanged.
+	//
+	// It replaces DirectExit because the two exits are wire-incompatible, and no mixed pairing
+	// may attempt one:
+	//
+	//	consumer  producer  result
+	//	old       new       relays: the old consumer ignores DirectExitObfs
+	//	new       old       relays: the new consumer ignores DirectExit
+	//	new       new       obfuscated direct exit
+	DirectExitObfs bool `json:",omitempty"`
 }
 
 // TODO: We observe that OfferMsg and ConsumerInfo have a special relationship: OfferMsg is how
@@ -137,11 +153,12 @@ type OfferMsg struct {
 	// byte-identical to releases before it, and an old producer ignores it.
 	Pairing string `json:",omitempty"`
 	// ICE, when set, offers a bare ICE session instead of a peer connection, and SDP is empty.
-	// A consumer sends one only in answer to a DirectExit genesis.
+	// A consumer sends one only in answer to a DirectExitObfs genesis.
 	ICE *ICEOffer `json:",omitempty"`
 }
 
-// ICEOffer is a consumer's ICE credentials for a bare ICE session. Never logged.
+// ICEOffer is a consumer's ICE credentials for a bare ICE session, which carries an obfuscated
+// direct exit (see GenesisMsg.DirectExitObfs). Never logged.
 type ICEOffer struct {
 	Ufrag string
 	Pwd   string
@@ -149,7 +166,8 @@ type ICEOffer struct {
 
 // ICEAnswer is a producer's answer to an ICEOffer. It carries the producer's ICE credentials and
 // candidates, and what the consumer needs to use the exit over the session: the SHA-256 pin of
-// the exit certificate's public key, and the session's password. Never logged.
+// the exit certificate's public key, and the session's password, which also keys the exit's
+// Salamander obfuscation (see GenesisMsg.DirectExitObfs). Never logged.
 type ICEAnswer struct {
 	Ufrag      string
 	Pwd        string

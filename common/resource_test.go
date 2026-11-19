@@ -440,13 +440,24 @@ func TestGenesisMsgDirectExitOmittedWhenFalse(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "DirectExit", "an old producer's genesis must be byte-identical")
 
+	b, err = json.Marshal(GenesisMsg{DirectExitObfs: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(b), `"DirectExitObfs":true`)
+	assert.NotContains(t, string(b), `"DirectExit":`)
+
 	b, err = json.Marshal(GenesisMsg{DirectExit: true})
 	require.NoError(t, err)
-	assert.Contains(t, string(b), `"DirectExit":true`)
+	assert.Contains(t, string(b), `"DirectExit":true`, "an old producer's legacy signal still decodes and encodes")
 
 	var g GenesisMsg
 	require.NoError(t, json.Unmarshal([]byte(`{"PathAssertion":{}}`), &g))
 	assert.False(t, g.DirectExit)
+	assert.False(t, g.DirectExitObfs)
+
+	g = GenesisMsg{}
+	require.NoError(t, json.Unmarshal([]byte(`{"PathAssertion":{},"DirectExit":true}`), &g))
+	assert.True(t, g.DirectExit)
+	assert.False(t, g.DirectExitObfs, "an old producer's genesis never offers an obfuscated exit")
 }
 
 func TestOfferMsgICEOmittedWhenNil(t *testing.T) {

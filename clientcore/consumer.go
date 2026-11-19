@@ -336,7 +336,10 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 
 					// TODO: post-MVP, evaluate the genesis message for suitability!
 					genesisCandidates = append(genesisCandidates, msg.ReplyTo)
-					if g, ok := payload.(common.GenesisMsg); ok && g.DirectExit {
+					// Only an obfuscated exit is a direct exit candidate. A genesis with only the
+					// legacy DirectExit is an old producer's unobfuscated exit, which we can't use,
+					// so we relay through it as through a producer without an exit.
+					if g, ok := payload.(common.GenesisMsg); ok && g.DirectExitObfs {
 						directExits[msg.ReplyTo] = true
 					}
 					if msg.IsRoomGenesis() {

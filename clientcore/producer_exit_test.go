@@ -95,18 +95,21 @@ func offerReply(t *testing.T, offer common.OfferMsg, servers []webrtc.ICEServer)
 func TestProducerGenesisOffersDirectExitOnlyWhenReady(t *testing.T) {
 	o := NewDefaultWebRTCOptions()
 	_, _, sent, _ := producerExitState2(t, o, nil)
-	assert.False(t, sent.DirectExit, "a producer without Exit, such as a widget")
+	assert.False(t, sent.DirectExitObfs, "a producer without Exit, such as a widget")
+	assert.False(t, sent.DirectExit)
 
 	o = NewDefaultWebRTCOptions()
 	o.Exit = readyExit()
 	o.Exit.Ready = func(bool) bool { return false }
 	_, _, sent, _ = producerExitState2(t, o, nil)
-	assert.False(t, sent.DirectExit, "a producer that can't exit now")
+	assert.False(t, sent.DirectExitObfs, "a producer that can't exit now")
+	assert.False(t, sent.DirectExit)
 
 	o = NewDefaultWebRTCOptions()
 	o.Exit = readyExit()
 	_, _, sent, _ = producerExitState2(t, o, nil)
-	assert.True(t, sent.DirectExit)
+	assert.True(t, sent.DirectExitObfs)
+	assert.False(t, sent.DirectExit, "a new producer never sends the legacy unobfuscated signal")
 }
 
 func TestProducerRoutesICEOfferToDirectExit(t *testing.T) {
@@ -242,7 +245,8 @@ func TestProducerGenesisKind(t *testing.T) {
 			offer := common.OfferMsg{ICE: &common.ICEOffer{Ufrag: "u", Pwd: "p"}}
 			next, input, sent, _ := producerExitState2Slot(t, o, tc.roomSlot, offerReply(t, offer, nil), nil)
 			require.Equal(t, 6, next)
-			assert.True(t, sent.DirectExit)
+			assert.True(t, sent.DirectExitObfs)
+			assert.False(t, sent.DirectExit)
 			assert.Equal(t, []bool{tc.personal}, asked)
 			assert.Equal(t, tc.personal, input[4])
 		})
