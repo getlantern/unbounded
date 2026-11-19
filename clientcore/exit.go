@@ -3,6 +3,7 @@ package clientcore
 import (
 	"context"
 	"net"
+	"sync/atomic"
 )
 
 // ExitOptions let a producer carry sessions over ICE alone and exit their traffic itself, instead
@@ -71,4 +72,65 @@ func observeSession(options *WebRTCOptions, directExit bool) {
 // hasn't backed off them.
 func takeExit(options *WebRTCOptions) bool {
 	return options.OnExitPath != nil && (options.TakeExit == nil || options.TakeExit())
+}
+
+// exitBytes is the data of an ExitBytesIPC: the bytes a direct exit session carried since its
+// last report. up is what the consumer sent the exit, down what the exit sent back, matching the
+// directions of relayed chunks. They are int64 because an int is 32 bits on some platforms, and
+// counts held back while the slot's channel is full can grow past that.
+type exitBytes struct {
+	up, down int64
+}
+
+// countingPacketConn counts the bytes a direct exit session's conn carries, so that they reach
+// the UI as relayed bytes do.
+type countingPacketConn struct {
+	net.PacketConn
+	up, down atomic.Int64
+}
+
+func (c *countingPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
+	n, addr, err := c.PacketConn.ReadFrom(p)
+	if n > 0 {
+		c.up.Add(int64(n))
+	}
+	return n, addr, err
+}
+
+func (c *countingPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
+	n, err := c.PacketConn.WriteTo(p, addr)
+	if n > 0 {
+		c.down.Add(int64(n))
+	}
+	return n, err
+}
+
+// take returns the bytes counted since the last take.
+func (c *countingPacketConn) take() exitBytes {
+	return exitBytes{up: c.up.Swap(0), down: c.down.Swap(0)}
+}
+
+// reportExitBytes sends the bytes conn counted since its last report to the UI, if there are
+// any, reporting false if ctx ended first.
+func reportExitBytes(ctx context.Context, com *ipcChan, conn *countingPacketConn) bool {
+	b := conn.take()
+	if b.up == 0 && b.down == 0 {
+		return true
+	}
+	return sendCtx(ctx, com.tx, IPCMsg{IpcType: ExitBytesIPC, Data: b})
+}
+
+// tryReportExitBytes is reportExitBytes for the periodic report: when the slot's channel is full
+// it keeps the counts for the next report rather than wait.
+func tryReportExitBytes(com *ipcChan, conn *countingPacketConn) {
+	b := conn.take()
+	if b.up == 0 && b.down == 0 {
+		return
+	}
+	select {
+	case com.tx <- IPCMsg{IpcType: ExitBytesIPC, Data: b}:
+	default:
+		conn.up.Add(b.up)
+		conn.down.Add(b.down)
+	}
 }
