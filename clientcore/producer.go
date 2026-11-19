@@ -1350,19 +1350,41 @@ func genesisOffersExit(options *WebRTCOptions, r genesisRoute) bool {
 }
 
 // sessionPersonal reports whether a direct exit session answering offer is personal: whether the
-// offer's pairing claim names the pairing of one of the producer's own volunteer tickets (see
-// offerPairing). Freddie stamps that pairing only on a genesis it delivers to a consumer in the
-// producer's room, and the consumer echoes it in its offer.
+// offer's pairing claim names the pairing of one of the producer's own unexpired volunteer tickets
+// (see personalPairing). Freddie stamps that pairing only on a genesis it delivers to a consumer in
+// the producer's room, and the consumer echoes it in its offer.
 //
 // Freddie forwards offers unchecked, so the claim proves only that the consumer knows one of this
 // producer's pairing IDs. That is safe: a stranger sees only the producer's pool genesis messages,
 // which carry no pairing, and never learns a pairing ID of this producer, so it can't claim one. A
 // validated claim is the same trust the producer already extends to its room consumers: it is
-// the claim by which it attributes a session to one of its pairings (common.ConsumerInfo.Pairing),
-// and a consumer that knows the pairing ID is one the volunteer's pairing let into its room. A
-// claim that doesn't validate, or none, gets a pool session, the stricter kind.
+// the claim by which it attributes a session to one of its pairings (common.ConsumerInfo.Pairing).
+// A claim that doesn't validate, or none, gets a pool session, the stricter kind.
 func sessionPersonal(options *WebRTCOptions, offer common.OfferMsg) bool {
-	return offerPairing(options, offer.Pairing) != ""
+	return personalPairing(options, offer.Pairing, time.Now())
+}
+
+// personalPairing reports whether claimed is the pairing of one of the producer's own volunteer
+// tickets that hasn't expired at now. It is stricter than offerPairing, which also accepts a
+// ticket that has expired but is still held, because it grants an unrestricted session rather
+// than a label: a consumer whose access to the room was revoked still knows the pairing ID (from
+// its own ticket, say), and could otherwise keep claiming it on pool genesis messages for as long
+// as the producer holds a stale ticket. The tickets are only read locally, never fetched.
+//
+// The window that remains: a revoked pairing still gets personal sessions until the producer's
+// last ticket for it expires, the same window Freddie's room admission has, since Freddie too
+// admits a ticket until it expires.
+func personalPairing(options *WebRTCOptions, claimed string, now time.Time) bool {
+	if claimed == "" {
+		return false
+	}
+	for _, tk := range options.CurrentRoomTickets() {
+		t, ok := helperticket.Claims(tk)
+		if ok && t.Role == helperticket.RoleVolunteer && t.PairingID == claimed && now.Before(t.Expires) {
+			return true
+		}
+	}
+	return false
 }
 
 // servesTicketedRoomsOnly reports whether a worker's genesis messages go to its rooms alone and
