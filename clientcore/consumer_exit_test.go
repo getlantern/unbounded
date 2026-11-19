@@ -19,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 func genesisSignal(t *testing.T, replyTo string, directExit bool) common.SignalMsg {
@@ -201,6 +202,51 @@ func TestConsumerExitPathCarriesKind(t *testing.T) {
 			assert.Equal(t, "pw", p.Password)
 		default:
 			t.Fatal("no exit path")
+		}
+	}
+}
+
+// A consumer answering a room genesis with a direct exit offer shows Freddie its room tickets, so
+// Freddie can vouch for its admission to the producer. Answering a pool genesis, it shows none.
+func TestConsumerICEOfferCarriesTicketsForRoomGenesis(t *testing.T) {
+	ticket := volunteerTicket(t, testPairingP, helperticket.RoleInviter)
+	for _, room := range []bool{false, true} {
+		g := genesisSignal(t, "g", true)
+		if room {
+			g.Room, g.Pairing = true, testPairingP
+		}
+		raw, err := json.Marshal(g)
+		require.NoError(t, err)
+		headers := make(chan string, 4)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				_, _ = w.Write(append(raw, '\n'))
+				return
+			}
+			headers <- r.Header.Get(common.RoomTicketsHeader)
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		o := NewDefaultWebRTCOptions()
+		o.DiscoverySrv = srv.URL
+		o.Patience = 50 * time.Millisecond
+		o.SetRoomTickets([]string{ticket})
+		o.OnExitPath = func(ExitPath) {}
+		fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+		pc, _ := newTestPeerConnection(t)
+		next, input := consumerState1(t, fsm, pc)
+		require.Equal(t, 6, next)
+		next, _ = fsm.state[6](context.Background(), fsm.com, input)
+		assert.Equal(t, 0, next)
+		select {
+		case h := <-headers:
+			if room {
+				assert.Equal(t, ticket, h)
+			} else {
+				assert.Empty(t, h, "no tickets for a pool genesis")
+			}
+		default:
+			t.Fatal("no offer was posted")
 		}
 	}
 }

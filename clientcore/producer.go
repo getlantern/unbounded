@@ -358,11 +358,11 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 
 			// An ICE offer takes a direct exit, which needs no peer connection. The session gets the
 			// peer connection's STUN servers, from state 0, and Freddie's TURN servers for a room.
-			// Its kind comes from the offer (see state 6).
+			// Its kind comes from the pairing Freddie stamped on the offer's envelope (see state 6).
 			if o, ok := offer.(common.OfferMsg); ok && o.ICE != nil {
 				servers := append(peerConnection.GetConfiguration().ICEServers, offerMsg.ICEServers...)
 				_ = peerConnection.Close()
-				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0}
+				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0, offerMsg.Pairing}
 			}
 
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
@@ -852,6 +852,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// input[1]: common.OfferMsg (with ICE)
 			// input[2]: []webrtc.ICEServer (the STUN cohort, and a room pairing's TURN relays)
 			// input[3]: bool (whether input[2] has a room pairing's TURN relays)
+			// input[4]: string (the pairing Freddie stamped on the offer's envelope, or "")
 			replyTo := input[0].(string)
 			offer := input[1].(common.OfferMsg)
 			servers := input[2].([]webrtc.ICEServer)
@@ -859,7 +860,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			// The session's kind is decided by the offer, not by where the genesis went, since a
 			// pool slot's genesis carrying room tickets reaches both the producer's rooms and the
 			// pool (see sessionPersonal).
-			personal := sessionPersonal(options, offer)
+			personal := sessionPersonal(options, input[4].(string))
 			slog.Debug("Producer state 6, direct exit handshake...")
 			last.begin(replyTo, vpnStatus(options))
 			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)
@@ -1349,38 +1350,38 @@ func genesisOffersExit(options *WebRTCOptions, r genesisRoute) bool {
 	return exitReady(options, false) || (hasTickets && exitReady(options, true))
 }
 
-// sessionPersonal reports whether a direct exit session answering offer is personal: whether the
-// offer's pairing claim names the pairing of one of the producer's own unexpired volunteer tickets
-// (see personalPairing). Freddie stamps that pairing only on a genesis it delivers to a consumer in
-// the producer's room, and the consumer echoes it in its offer.
+// sessionPersonal reports whether a direct exit session is personal, given stamped, the pairing
+// Freddie stamped on its offer's envelope (see common.SignalMsg.Pairing): whether stamped names the
+// pairing of one of the producer's own unexpired volunteer tickets (see personalPairing).
 //
-// Freddie forwards offers unchecked, so the claim proves only that the consumer knows one of this
-// producer's pairing IDs. That is safe: a stranger sees only the producer's pool genesis messages,
-// which carry no pairing, and never learns a pairing ID of this producer, so it can't claim one. A
-// validated claim is the same trust the producer already extends to its room consumers: it is
-// the claim by which it attributes a session to one of its pairings (common.ConsumerInfo.Pairing).
-// A claim that doesn't validate, or none, gets a pool session, the stricter kind.
-func sessionPersonal(options *WebRTCOptions, offer common.OfferMsg) bool {
-	return personalPairing(options, offer.Pairing, time.Now())
+// Freddie stamps an offer only when it delivered the genesis through that pairing's room and the
+// consumer proved, with its inviter tickets as it offered, that it is admitted to the room now.
+// So a personal session goes only to a consumer Freddie currently admits to one of the producer's
+// rooms: the trust the producer already extends to its room consumers. The consumer can't write
+// the stamp, and the pairing the consumer writes in its offer (OfferMsg.Pairing) doesn't count, as
+// it proves only that the consumer once learned the pairing ID, from its own ticket, say, which
+// outlives its admission. The window that remains is Freddie's room admission's: a consumer whose
+// pairing ended still gets personal sessions until its last inviter ticket for the room expires,
+// unless Freddie stops trusting the ticket's key first. A Freddie that predates stamping stamps nothing, and every session is
+// then pool, the stricter kind: Freddie must be deployed before a volunteer serving both its rooms
+// and the pool serves its friends personal exits.
+func sessionPersonal(options *WebRTCOptions, stamped string) bool {
+	return personalPairing(options, stamped, time.Now())
 }
 
-// personalPairing reports whether claimed is the pairing of one of the producer's own volunteer
+// personalPairing reports whether stamped is the pairing of one of the producer's own volunteer
 // tickets that hasn't expired at now. It is stricter than offerPairing, which also accepts a
 // ticket that has expired but is still held, because it grants an unrestricted session rather
-// than a label: a consumer whose access to the room was revoked still knows the pairing ID (from
-// its own ticket, say), and could otherwise keep claiming it on pool genesis messages for as long
-// as the producer holds a stale ticket. The tickets are only read locally, never fetched.
-//
-// The window that remains: a revoked pairing still gets personal sessions until the producer's
-// last ticket for it expires, the same window Freddie's room admission has, since Freddie too
-// admits a ticket until it expires.
-func personalPairing(options *WebRTCOptions, claimed string, now time.Time) bool {
-	if claimed == "" {
+// than a label: the producer serves a pairing personal sessions only while it is itself still
+// admitted to that pairing's room. Freddie checks the consumer's side (see sessionPersonal). The
+// tickets are only read locally, never fetched.
+func personalPairing(options *WebRTCOptions, stamped string, now time.Time) bool {
+	if stamped == "" {
 		return false
 	}
 	for _, tk := range options.CurrentRoomTickets() {
 		t, ok := helperticket.Claims(tk)
-		if ok && t.Role == helperticket.RoleVolunteer && t.PairingID == claimed && now.Before(t.Expires) {
+		if ok && t.Role == helperticket.RoleVolunteer && t.PairingID == stamped && now.Before(t.Expires) {
 			return true
 		}
 	}

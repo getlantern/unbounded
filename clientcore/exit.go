@@ -11,11 +11,12 @@ import (
 // them nil. Ready, Params and OnSession run on the signaling path, so they must be cheap and must
 // not block.
 //
-// Each session is personal or pool, by the offer that opens it. A personal session's offer claims
-// the pairing of one of the producer's own volunteer tickets, which Freddie stamped on the room
-// genesis it delivered to that consumer (a friend). Every other session is a pool session: a
-// stranger sees only pool genesis messages, which carry no pairing. The embedder decides what each
-// kind may reach, and the consumer learns its session's kind (ExitPath.Personal).
+// Each session is personal or pool, by the offer that opens it. A personal session's offer
+// carries, on the envelope Freddie built for it, the pairing of one of the producer's own unexpired
+// volunteer tickets: Freddie stamps it only for a consumer (a friend) that got the genesis through
+// that pairing's room and is admitted to the room as it offers. Every other session is a pool
+// session, as is every session through a Freddie that predates stamping. The embedder decides what
+// each kind may reach, and the consumer learns its session's kind (ExitPath.Personal).
 //
 // The exit is obfuscated: Serve, and the embedder's consumer side that takes each ExitPath, must
 // both run Hysteria2 with Salamander keyed from the session password. broflake only carries the

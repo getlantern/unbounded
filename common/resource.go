@@ -149,7 +149,9 @@ type OfferMsg struct {
 	// Pairing is the helper pairing of the room genesis this offer answers, as
 	// Freddie stamped it (see SignalMsg.Pairing), or "" for a pool genesis.
 	// It is a claim: the producer accepts it only if it names one of its own
-	// volunteer tickets' pairings. Omitted when empty, so a pool offer is
+	// volunteer tickets' pairings, and only to label the session. A direct
+	// exit session's kind comes from the pairing Freddie stamps on the offer's
+	// envelope instead (see SignalMsg.Pairing). Omitted when empty, so a pool offer is
 	// byte-identical to releases before it, and an old producer ignores it.
 	Pairing string `json:",omitempty"`
 	// ICE, when set, offers a bare ICE session instead of a peer connection, and SDP is empty.
@@ -220,8 +222,15 @@ type SignalMsg struct {
 	// delivered this genesis message through. Freddie sends it only to a
 	// consumer that is itself in that room, so it reveals nothing the
 	// consumer's own tickets don't. The consumer echoes it in its OfferMsg so
-	// the producer can tell which of its pairings it is serving. Omitted
-	// otherwise. Never logged.
+	// the producer can tell which of its pairings it is serving.
+	//
+	// Freddie also sets it on an offer it relays to a producer, to the room
+	// it delivered the producer's genesis through, when the consumer that
+	// answered proved, with its inviter tickets in RoomTicketsHeader on the
+	// offer's POST, that it is admitted to that room now. Unlike OfferMsg's
+	// Pairing, which the consumer writes, only Freddie writes this one: a
+	// sender supplies only Payload. A Freddie that predates it sets nothing.
+	// Omitted otherwise. Never logged.
 	Pairing string `json:",omitempty"`
 	// ICEServers is set by Freddie, with Room, on a genesis message it delivered through a room,
 	// and on the offer it returns to a producer whose genesis a room consumer took. The peer adds
