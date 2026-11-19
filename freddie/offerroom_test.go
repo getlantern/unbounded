@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
@@ -260,6 +261,32 @@ func TestDeliveryTokens_Concurrent(t *testing.T) {
 	wg.Wait()
 	if len(s.m) != 0 || s.order.Len() != 0 {
 		t.Errorf("%d tokens left", len(s.m))
+	}
+}
+
+// Racing redemptions of one token: exactly one wins.
+func TestDeliveryTokens_RacingTake(t *testing.T) {
+	s := newDeliveryTokens(time.Now)
+	for range 50 {
+		tok := s.issue(delivery{genesisID: "g"})
+		start := make(chan struct{})
+		var won atomic.Int32
+		var wg sync.WaitGroup
+		for range 8 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				if _, ok := s.take(tok); ok {
+					won.Add(1)
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if n := won.Load(); n != 1 {
+			t.Fatalf("%d redemptions of one token succeeded, want 1", n)
+		}
 	}
 }
 
