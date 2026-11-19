@@ -1003,7 +1003,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 				if ctx.Err() != nil {
 					return 0, []interface{}{}
 				}
-				slog.Info("Direct exit failed: couldn't connect to the consumer before the NAT traversal window ran out", "nat_fail_window", last.natFail, "personal", personal)
+				slog.Info("Direct exit failed: couldn't connect to the consumer, ICE checks failed or the NAT traversal window ran out", "nat_fail_window", last.natFail, "personal", personal)
 				last.record(common.OutcomeNATTimeout, nil)
 				return 0, []interface{}{}
 			}
@@ -1077,6 +1077,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 					// Nothing upstream serves this slot while it exits itself, so whatever reaches
 					// it is dropped.
 				case <-ctx.Done():
+					slog.Info("Direct exit session ended: this volunteer stopped it", "relayed_via_turn", relayed, "personal", personal)
 					break serveloop
 				}
 			}

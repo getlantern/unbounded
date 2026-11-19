@@ -1078,7 +1078,7 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				if ctx.Err() != nil {
 					return 0, []interface{}{}
 				}
-				slog.Info("Direct exit failed: couldn't connect to the volunteer before the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
+				slog.Info("Direct exit failed: couldn't connect to the volunteer, ICE checks failed or the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
 				return 0, []interface{}{}
 			}
 			slog.Info("Direct exit session established: traffic exits directly through the volunteer", "relayed_via_turn", s.relayed(), "personal", answer.Personal)
@@ -1124,6 +1124,7 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 				case <-com.rx:
 					// The QUIC layer has no peer on this path, so whatever it sends here is dropped.
 				case <-ctx.Done():
+					slog.Info("Direct exit session ended: this client stopped it", "relayed_via_turn", relayed, "personal", personal)
 					break exitloop
 				}
 			}
