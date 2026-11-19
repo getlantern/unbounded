@@ -1065,9 +1065,7 @@ func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool
 			for {
 				select {
 				case <-report.C:
-					if !reportExitBytes(ctx, com, conn) {
-						break serveloop
-					}
+					tryReportExitBytes(com, conn)
 				case <-s.done():
 					slog.Debug("Direct exit session ended, resetting!")
 					break serveloop

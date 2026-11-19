@@ -118,3 +118,18 @@ func reportExitBytes(ctx context.Context, com *ipcChan, conn *countingPacketConn
 	}
 	return sendCtx(ctx, com.tx, IPCMsg{IpcType: ExitBytesIPC, Data: b})
 }
+
+// tryReportExitBytes is reportExitBytes for the periodic report: when the slot's channel is full
+// it keeps the counts for the next report rather than wait.
+func tryReportExitBytes(com *ipcChan, conn *countingPacketConn) {
+	b := conn.take()
+	if b.up == 0 && b.down == 0 {
+		return
+	}
+	select {
+	case com.tx <- IPCMsg{IpcType: ExitBytesIPC, Data: b}:
+	default:
+		conn.up.Add(int64(b.up))
+		conn.down.Add(int64(b.down))
+	}
+}
