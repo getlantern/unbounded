@@ -493,6 +493,7 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		heldGeneses:    newHeldGeneses(),
 		deliveries:     newDeliveryTokens(time.Now),
 	}
+	go f.deliveries.sweepEvery(ctx, deliveryTokenTTL)
 
 	var err error
 
