@@ -1074,8 +1074,11 @@ func newConsumerWebRTCExitSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms
 			err = s.connect(connectCtx, answer.Ufrag, answer.Pwd)
 			cancel()
 			if err != nil {
-				slog.Info("Direct exit failed: couldn't connect to the volunteer before the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
 				_ = s.Close()
+				if ctx.Err() != nil {
+					return 0, []interface{}{}
+				}
+				slog.Info("Direct exit failed: couldn't connect to the volunteer before the NAT traversal window ran out", "nat_fail_window", natFail, "personal", answer.Personal)
 				return 0, []interface{}{}
 			}
 			slog.Info("Direct exit session established: traffic exits directly through the volunteer", "relayed_via_turn", s.relayed(), "personal", answer.Personal)
