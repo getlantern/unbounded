@@ -95,7 +95,7 @@ func uiHandlers(ctx context.Context, ui UIImpl, netstated, tag string) (onTx, on
 // downstreamMeter reports downstream chunks, and their throughput at uiRefreshHz.
 type downstreamMeter struct {
 	ui          UIImpl
-	bytesPerSec int64
+	bytesPerSec atomic.Int64
 }
 
 func newDownstreamMeter(ctx context.Context, ui UIImpl) *downstreamMeter {
@@ -111,10 +111,10 @@ func newDownstreamMeter(ctx context.Context, ui UIImpl) *downstreamMeter {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ui.OnDownstreamThroughput(int(atomic.LoadInt64(&m.bytesPerSec)))
+				ui.OnDownstreamThroughput(int(m.bytesPerSec.Load()))
 				tick++
 				if tick == uiRefreshHz {
-					atomic.SwapInt64(&m.bytesPerSec, 0)
+					m.bytesPerSec.Store(0)
 					tick = 0
 				}
 			}
@@ -125,7 +125,7 @@ func newDownstreamMeter(ctx context.Context, ui UIImpl) *downstreamMeter {
 }
 
 func (m *downstreamMeter) chunk(size int, wid workerID) {
-	atomic.AddInt64(&m.bytesPerSec, int64(size))
+	m.bytesPerSec.Add(int64(size))
 	m.ui.OnDownstreamChunk(size, int(wid))
 }
 

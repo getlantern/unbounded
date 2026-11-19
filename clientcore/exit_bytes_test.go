@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -169,5 +168,5 @@ func TestExitBytesCountTowardDownstreamThroughput(t *testing.T) {
 	upstreamUIHandler(ctx, ui, "", "", m)(IPCMsg{IpcType: ExitBytesIPC, Data: exitBytes{down: 500}, Wid: 1})
 	assert.Equal(t, 500, size)
 	assert.Equal(t, 1, wid)
-	assert.Equal(t, int64(500), atomic.LoadInt64(&m.bytesPerSec))
+	assert.Equal(t, int64(500), m.bytesPerSec.Load())
 }
