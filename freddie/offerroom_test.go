@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/helperticket"
@@ -285,5 +286,24 @@ func TestOfferPairing_HeldGenesis(t *testing.T) {
 	}
 	if offer.Pairing != pairingP {
 		t.Errorf("stamped pairing %q, want the room's", offer.Pairing)
+	}
+}
+
+// The ticket kept for a room's delivery tokens is its own copy, not a slice of the request's whole
+// room tickets header, which could otherwise be padded to keep a large header alive.
+func TestVerifyRoomTicketsBy_CopiesTicket(t *testing.T) {
+	k := newRoomKeys(t)
+	s := startRoomServer(t, k)
+	inv := k.ticket(pairingP, helperticket.RoleInviter, ticketOK)
+	tickets := common.ParseRoomTicketsHeader([]string{inv + ",x"})
+	if len(tickets) == 0 || tickets[0] != inv {
+		t.Fatal("the header should parse to the ticket")
+	}
+	rooms, ticketOf := s.f.verifyRoomTicketsBy(tickets, helperticket.RoleInviter)
+	if len(rooms) != 1 || ticketOf[pairingP] != inv {
+		t.Fatal("the ticket should admit to its room")
+	}
+	if unsafe.StringData(ticketOf[pairingP]) == unsafe.StringData(tickets[0]) {
+		t.Error("the kept ticket shares the header's memory")
 	}
 }
