@@ -55,6 +55,13 @@ func newConsumerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPr
 // report, if non-nil: connected with its pairing when a connection opens, and
 // disconnected when it ends.
 func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool)) *WorkerFSM {
+	return newConsumerWebRTCRelaySlot(options, wg, rooms, report, false)
+}
+
+// newConsumerWebRTCRelaySlot is newConsumerWebRTCSlot for a slot that never takes a direct exit if
+// relayOnly is set (see isRelaySlot): it answers a genesis that offers one with an SDP offer and
+// relays, as it would through a producer without an exit.
+func newConsumerWebRTCRelaySlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *roomPreference, report func(connected bool, pairing string, directExit bool), relayOnly bool) *WorkerFSM {
 	var scache STUNCache
 	// listPausedUntil is when a consumer with a mapped address next fetches the STUN list after
 	// a failed fetch.
@@ -375,7 +382,7 @@ func newConsumerWebRTCSlot(options *WebRTCOptions, wg *sync.WaitGroup, rooms *ro
 			// A producer that offers a direct exit gets an ICE offer instead, when our embedder can
 			// take one. The session needs no peer connection. It gets the peer connection's STUN
 			// servers, from state 0, and the room's TURN servers.
-			if directExits[replyTo] && takeExit(options) {
+			if directExits[replyTo] && !relayOnly && takeExit(options) {
 				servers := slices.Concat(peerConnection.GetConfiguration().ICEServers, roomICE[replyTo])
 				_ = peerConnection.Close()
 				return 6, []interface{}{replyTo, servers, len(roomICE[replyTo]) > 0}
