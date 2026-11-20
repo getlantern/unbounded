@@ -348,12 +348,19 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 		`level=INFO msg="Room genesis ended" tickets=1 refused=0 rooms=1 matched=true held=false pool=true socket=false result=producer_left`,
 		`level=WARN msg="Room genesis ended" tickets=2 refused=1 rooms=1 matched=false held=false pool=true socket=false result=producer_left`,
 	}
+	// The handlers finish independently, so the lines may come in any order.
 	if len(genesisLines) != len(want) {
 		t.Fatalf("logged %d room genesis lines, want %d (one per genesis posted with tickets): %q", len(genesisLines), len(want), genesisLines)
 	}
-	for i, line := range genesisLines {
-		if !strings.Contains(line, want[i]) {
-			t.Errorf("room genesis line %d is %q, want it to contain %q", i, line, want[i])
+	for _, w := range want {
+		n := 0
+		for _, line := range genesisLines {
+			if strings.Contains(line, w) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%d room genesis lines contain %q, want 1: %q", n, w, genesisLines)
 		}
 	}
 	if !strings.Contains(logs.String(), `msg="Room consumer tickets refused" tickets=2 refused=1 rooms=1`) {
