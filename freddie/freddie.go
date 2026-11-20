@@ -1279,6 +1279,18 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 	if held != nil {
 		return signalReply{status: http.StatusOK, held: true, await: func(done <-chan struct{}) string {
 			defer signalTable.Delete(reqID)
+			// Logged as matched if a consumer took it, checked once the hold is released and no
+			// consumer can take it any more: one can take it just as a timeout or hang-up ends the
+			// wait, which then never sees it taken.
+			defer func() {
+				select {
+				case <-held.taken:
+					if roomLog != nil {
+						roomLog.matched = true
+					}
+				default:
+				}
+			}()
 			defer f.heldGeneses.release(held)
 			taken := held.taken
 			timeout := time.NewTimer(heldGenesisTTL)
@@ -1292,9 +1304,6 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			// paired volunteer.
 			markTaken := func() {
 				taken, matched = nil, true
-				if roomLog != nil {
-					roomLog.matched = true
-				}
 				f.roomGeneses.add(reqID)
 				offerICE = heldICE
 			}
