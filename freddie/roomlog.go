@@ -18,6 +18,17 @@ type roomGenesisLog struct {
 	pool    bool
 	socket  bool
 	started time.Time
+	// left is set by an await that ended because its producer hung up.
+	left bool
+}
+
+// producerLeft records that the genesis's await ended because its producer hung up. It's set in
+// the branch that ends the await, not inferred afterwards, since a producer may hang up just after
+// a timeout. A nil l is a genesis that isn't logged.
+func (l *roomGenesisLog) producerLeft() {
+	if l != nil {
+		l.left = true
+	}
 }
 
 // wrap returns await, logging how the genesis ended once it does.
@@ -25,13 +36,12 @@ func (l *roomGenesisLog) wrap(await func(done <-chan struct{}) string) func(done
 	return func(done <-chan struct{}) string {
 		res := await(done)
 		result := "answered"
-		if res == "" {
+		switch {
+		case res != "":
+		case l.left:
+			result = "producer_left"
+		default:
 			result = "timeout"
-			select {
-			case <-done:
-				result = "producer_left"
-			default:
-			}
 		}
 		l.log(result)
 		return res
