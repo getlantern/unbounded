@@ -735,7 +735,8 @@ func (f *Freddie) verifyRoomTickets(tickets []string, role helperticket.Role) []
 // room, and how many tickets were refused.
 func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) (rooms []string, ticketOf map[string]string, refused int) {
 	if f.RoomTicket == nil {
-		return nil, nil, 0
+		// Rooms are off, so no ticket admits anyone anywhere.
+		return nil, nil, len(tickets)
 	}
 	for _, tk := range tickets {
 		room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID)
@@ -1291,6 +1292,9 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 			// paired volunteer.
 			markTaken := func() {
 				taken, matched = nil, true
+				if roomLog != nil {
+					roomLog.matched = true
+				}
 				f.roomGeneses.add(reqID)
 				offerICE = heldICE
 			}
@@ -1315,6 +1319,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 					span.AddEvent("timeout waiting for response")
 					return ""
 				case <-done:
+					roomLog.producerLeft()
 					return ""
 				}
 			}
@@ -1350,6 +1355,7 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 				span.AddEvent("timeout waiting for response")
 				return ""
 			case <-done:
+				roomLog.producerLeft()
 				return ""
 			}
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -49,6 +50,7 @@ func recvGenesis(t *testing.T, ch chan string, within time.Duration) (common.Sig
 // A room consumer that subscribes after its volunteer's genesis gets it at once, and its offer
 // reaches the volunteer.
 func TestHeldGenesis_TakenOnSubscribe(t *testing.T) {
+	logs := captureLogs(t)
 	k := newRoomKeys(t)
 	s := startRoomServer(t, k)
 	turn := []webrtc.ICEServer{{URLs: []string{"turn:turn.example:3478"}}}
@@ -88,6 +90,10 @@ func TestHeldGenesis_TakenOnSubscribe(t *testing.T) {
 		t.Fatal("the answer never reached the consumer")
 	}
 	assert.True(t, s.f.roomGeneses.has(genesis.ReplyTo), "a held genesis a room consumer took is a room attempt")
+	// Held when posted, so it's logged as matched only because the consumer took it later.
+	assert.Eventually(t, func() bool {
+		return strings.Contains(logs.String(), `msg="Room genesis ended" tickets=1 refused=0 rooms=1 matched=true held=true pool=false socket=true result=answered`)
+	}, 2*time.Second, 10*time.Millisecond, "logged %q", logs.String())
 }
 
 // A held genesis goes to one consumer: the next to subscribe to its room gets nothing.
