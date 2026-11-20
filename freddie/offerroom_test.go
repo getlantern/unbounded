@@ -332,7 +332,7 @@ func TestVerifyRoomTicketsBy_CopiesTicket(t *testing.T) {
 	if len(tickets) == 0 || tickets[0] != inv {
 		t.Fatal("the header should parse to the ticket")
 	}
-	rooms, ticketOf := s.f.verifyRoomTicketsBy(tickets, helperticket.RoleInviter)
+	rooms, ticketOf, _ := s.f.verifyRoomTicketsBy(tickets, helperticket.RoleInviter)
 	if len(rooms) != 1 || ticketOf[pairingP] != inv {
 		t.Fatal("the ticket should admit to its room")
 	}

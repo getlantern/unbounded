@@ -724,23 +724,26 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 }
 
 // verifyRoomTickets returns the distinct rooms that tickets, already normalized, admit a client in
-// role to. Invalid tickets are dropped without a trace: neither they nor the rooms are logged,
-// traced or counted, and every kind of failure looks the same.
+// role to. Invalid tickets are dropped: neither they nor the rooms are logged or traced, and every
+// kind of failure looks the same. Only how many were refused is logged, by the callers.
 func (f *Freddie) verifyRoomTickets(tickets []string, role helperticket.Role) []string {
-	rooms, _ := f.verifyRoomTicketsBy(tickets, role)
+	rooms, _, _ := f.verifyRoomTicketsBy(tickets, role)
 	return rooms
 }
 
 // verifyRoomTicketsBy is verifyRoomTickets, also returning the first ticket that admits to each
-// room.
-func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) ([]string, map[string]string) {
+// room, and how many tickets were refused.
+func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) (rooms []string, ticketOf map[string]string, refused int) {
 	if f.RoomTicket == nil {
-		return nil, nil
+		return nil, nil, 0
 	}
-	var rooms []string
-	var ticketOf map[string]string
 	for _, tk := range tickets {
-		if room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID); ok && room != "" && !slices.Contains(rooms, room) {
+		room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID)
+		if !ok || room == "" {
+			refused++
+			continue
+		}
+		if !slices.Contains(rooms, room) {
 			rooms = append(rooms, room)
 			if ticketOf == nil {
 				ticketOf = make(map[string]string)
@@ -750,7 +753,7 @@ func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) 
 			ticketOf[room] = strings.Clone(tk)
 		}
 	}
-	return rooms, ticketOf
+	return rooms, ticketOf, refused
 }
 
 const (
@@ -911,7 +914,9 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 
 	// Verified at every subscribe, so an ended pairing's consumer leaves its room within one
 	// ticket lifetime plus one consumerTTL. Rooms are never put on the span.
-	rooms, ticketOf := f.verifyRoomTicketsBy(common.ParseRoomTicketsHeader(r.Header.Values(common.RoomTicketsHeader)), helperticket.RoleInviter)
+	tickets := common.ParseRoomTicketsHeader(r.Header.Values(common.RoomTicketsHeader))
+	rooms, ticketOf, refused := f.verifyRoomTicketsBy(tickets, helperticket.RoleInviter)
+	logRefusedConsumerTickets(len(tickets), refused, len(rooms))
 	consumerChan := consumerTable.AddRoomConsumer(consumerID, country, rooms, ticketOf)
 	defer consumerTable.Delete(consumerID)
 
@@ -1015,7 +1020,14 @@ func refused(status int) signalReply {
 // postSignal handles one signaling message, whose fields r.Form holds, as POST /v1/signal
 // describes. r also gives the sender's headers, for its version and country. viaSocket says it
 // came over a volunteer socket, the one transport that may hold a genesis (see common.HoldField).
-func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request, viaSocket bool) signalReply {
+func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request, viaSocket bool) (reply signalReply) {
+	// Set for a genesis posted with room tickets, which is logged once it ends.
+	var roomLog *roomGenesisLog
+	defer func() {
+		if roomLog != nil && reply.await != nil {
+			reply.await = roomLog.wrap(reply.await)
+		}
+	}()
 	reqID := uuid.NewString()
 	span.SetAttributes(attribute.String("request.id", reqID))
 
@@ -1073,7 +1085,8 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		// first room-aware clients did, to SignalSendToGenesis with pool=0.
 		f.recordProducerOutcome(ctx, span, r)
 		f.recordSTUNPreflights(ctx, r)
-		rooms := f.verifyRoomTickets(common.NormalizeRoomTickets(r.Form[common.RoomTicketField]), helperticket.RoleVolunteer)
+		tickets := common.NormalizeRoomTickets(r.Form[common.RoomTicketField])
+		rooms, _, refusedTickets := f.verifyRoomTicketsBy(tickets, helperticket.RoleVolunteer)
 		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
 		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
 		var roomICE []webrtc.ICEServer
@@ -1135,6 +1148,18 @@ func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Reque
 		if matched {
 			f.roomGeneses.add(reqID)
 			offerICE = roomICE
+		}
+		if len(tickets) > 0 {
+			roomLog = &roomGenesisLog{
+				tickets: len(tickets),
+				refused: refusedTickets,
+				rooms:   len(rooms),
+				matched: matched,
+				held:    held != nil,
+				pool:    servePool,
+				socket:  viaSocket,
+				started: time.Now(),
+			}
 		}
 		// A held genesis is counted once its hold ends, taken or not.
 		if len(rooms) > 0 && held == nil {
