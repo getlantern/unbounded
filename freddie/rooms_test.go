@@ -334,6 +334,32 @@ func TestHandleSignal_RoomsLeaveNoTrace(t *testing.T) {
 	}
 	check("log", logs.String())
 
+	// Each genesis posted with tickets logs one line when it ends, with counts and its result
+	// only, and the consumer's expired ticket is logged as refused.
+	var genesisLines []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, `msg="Room genesis ended"`) {
+			genesisLines = append(genesisLines, line)
+		}
+	}
+	// The test's producers hang up before anyone answers.
+	want := []string{
+		`level=INFO msg="Room genesis ended" tickets=1 refused=0 rooms=1 matched=true held=false pool=false socket=false result=producer_left`,
+		`level=INFO msg="Room genesis ended" tickets=1 refused=0 rooms=1 matched=true held=false pool=true socket=false result=producer_left`,
+		`level=WARN msg="Room genesis ended" tickets=2 refused=1 rooms=1 matched=false held=false pool=true socket=false result=producer_left`,
+	}
+	if len(genesisLines) != len(want) {
+		t.Fatalf("logged %d room genesis lines, want %d (one per genesis posted with tickets): %q", len(genesisLines), len(want), genesisLines)
+	}
+	for i, line := range genesisLines {
+		if !strings.Contains(line, want[i]) {
+			t.Errorf("room genesis line %d is %q, want it to contain %q", i, line, want[i])
+		}
+	}
+	if !strings.Contains(logs.String(), `msg="Room consumer tickets refused" tickets=2 refused=1 rooms=1`) {
+		t.Errorf("no refused ticket warning for the consumer's expired ticket in %q", logs.String())
+	}
+
 	// A genesis span carries the same attribute keys, and the same recipient, whether or not the
 	// producer is paired, so a span doesn't single out a paired volunteer.
 	var genesisKeys []string
