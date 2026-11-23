@@ -48,7 +48,7 @@
       "vpnCtaBtn": "Get Lantern VPN",
       "vpnCtaTitle": "Keep helping even when this page is closed.",
       "vpnCtaBody": "Download Lantern VPN to keep helping people in the background while you surf.",
-      "vpnCtaNote": "Keep helping even after you close this page."
+      "vpnCtaNote": "Help even more people by installing the app."
     }
   },
   "zh-Hans": {
@@ -84,7 +84,7 @@
       "vpnCtaBtn": "获取 Lantern VPN",
       "vpnCtaTitle": "即使关闭此页面，也能继续提供帮助。",
       "vpnCtaBody": "下载 Lantern VPN，在您上网时于后台持续帮助他人。",
-      "vpnCtaNote": "关闭此页面后，也能继续提供帮助。"
+      "vpnCtaNote": "通过安装应用帮助更多的人。"
     }
   },
   "ar": {
@@ -120,7 +120,7 @@
       "vpnCtaBtn": "احصل على Lantern VPN",
       "vpnCtaTitle": "واصل المساعدة حتى عند إغلاق هذه الصفحة.",
       "vpnCtaBody": "نزّل Lantern VPN لمواصلة مساعدة الآخرين في الخلفية أثناء تصفحك للإنترنت.",
-      "vpnCtaNote": "واصل المساعدة حتى بعد إغلاق هذه الصفحة."
+      "vpnCtaNote": "ساعد المزيد من الأشخاص من خلال تثبيت التطبيق."
     }
   },
   "ru": {
@@ -156,7 +156,7 @@
       "vpnCtaBtn": "Получить Lantern VPN",
       "vpnCtaTitle": "Продолжайте помогать, даже когда эта страница закрыта.",
       "vpnCtaBody": "Скачайте Lantern VPN, чтобы продолжать помогать людям в фоновом режиме, пока вы пользуетесь интернетом.",
-      "vpnCtaNote": "Продолжайте помогать даже после закрытия этой страницы."
+      "vpnCtaNote": "Помогите ещё большему количеству людей, установив приложение."
     }
   },
   "fa": {
@@ -192,7 +192,7 @@
       "vpnCtaBtn": "دریافت Lantern VPN",
       "vpnCtaTitle": "حتی وقتی این صفحه بسته است، به کمک کردن ادامه دهید.",
       "vpnCtaBody": "Lantern VPN را دانلود کنید تا هنگام وب‌گردی، در پس‌زمینه به دیگران کمک کنید.",
-      "vpnCtaNote": "حتی پس از بستن این صفحه، به کمک کردن ادامه دهید."
+      "vpnCtaNote": "با نصب برنامه به افراد بیشتری کمک کنید."
     }
   },
   "zh-Hant-TW": {
@@ -228,7 +228,7 @@
       "vpnCtaBtn": "取得 Lantern VPN",
       "vpnCtaTitle": "即使關閉此頁面，也能繼續提供協助。",
       "vpnCtaBody": "下載 Lantern VPN，在您上網時於背景持續幫助他人。",
-      "vpnCtaNote": "關閉此頁面後，也能繼續提供協助。"
+      "vpnCtaNote": "透過安裝應用程式來幫助更多人。"
     }
   },
   "es-419": {
@@ -264,7 +264,7 @@
       "vpnCtaBtn": "Obtener Lantern VPN",
       "vpnCtaTitle": "Sigue ayudando incluso cuando esta página esté cerrada.",
       "vpnCtaBody": "Descarga Lantern VPN para seguir ayudando a otras personas en segundo plano mientras navegas.",
-      "vpnCtaNote": "Sigue ayudando incluso después de cerrar esta página."
+      "vpnCtaNote": "Ayuda a aún más personas instalando la aplicación."
     }
   },
   "zh": {
@@ -300,7 +300,7 @@
       "vpnCtaBtn": "获取 Lantern VPN",
       "vpnCtaTitle": "即使关闭此页面，也能继续提供帮助。",
       "vpnCtaBody": "下载 Lantern VPN，在您上网时于后台持续帮助他人。",
-      "vpnCtaNote": "关闭此页面后，也能继续提供帮助。"
+      "vpnCtaNote": "通过安装应用帮助更多的人。"
     }
   },
   "en-US": {
@@ -336,7 +336,7 @@
       "vpnCtaBtn": "Get Lantern VPN",
       "vpnCtaTitle": "Keep helping even when this page is closed.",
       "vpnCtaBody": "Download Lantern VPN to keep helping people in the background while you surf.",
-      "vpnCtaNote": "Keep helping even after you close this page."
+      "vpnCtaNote": "Help even more people by installing the app."
     }
   }
 }
