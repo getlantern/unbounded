@@ -28,7 +28,7 @@ export const Column = styled.div<{$maxWidth?: number}>`
 
 export const Note = styled.p`
 	&& {
-		font-weight: 500;
+		font-weight: 400;
 		font-size: 14px;
 		line-height: 23px;
 		text-align: center;
