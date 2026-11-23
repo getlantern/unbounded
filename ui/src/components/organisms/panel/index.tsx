@@ -15,7 +15,7 @@ import {ExpandCollapsePanel} from '../../atoms/expandCollapse'
 import {useLatch} from '../../../hooks/useLatch'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
-import ExtensionCta from '../../molecules/extensionCta'
+import VpnCta from '../../molecules/vpnCta'
 
 const Panel = () => {
 	const {width, settings} = useContext(AppContext)
@@ -65,7 +65,7 @@ const Panel = () => {
 						{
 							!menu && (target === Targets.WEB) && (
 								<CtaWrapper>
-									<ExtensionCta isSmall={true}/>
+									<VpnCta isSmall={true}/>
 								</CtaWrapper>
 							)
 						}

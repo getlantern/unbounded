@@ -8,7 +8,7 @@ import {useTranslation} from 'react-i18next'
 
 const Info = () => {
 	const {t} = useTranslation()
-	const {theme, keepText, infoLink} = useContext(AppContext).settings
+	const {theme, infoLink} = useContext(AppContext).settings
 	const [active, setActive] = useState(false)
 	return (
 		<>
@@ -24,7 +24,6 @@ const Info = () => {
 						<Text>
 							{t('intro')}
 							{/*<a href={'https://lantern.io'} target={'_blank'} rel={'noreferrer'}>Lantern</a>.*/}
-							{ !!keepText && ` ${t('keep')}` }
 							{ !!infoLink.length && <LinkWrapper dangerouslySetInnerHTML={{__html: infoLink}} />}
 						</Text>
 					</Wrapper>

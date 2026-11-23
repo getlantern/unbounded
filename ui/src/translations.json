@@ -44,7 +44,9 @@
       "countriesHelped": "Countries you've helped",
       "countryData_one": "{{data}} · {{count}} person",
       "countryData_other": "{{data}} · {{count}} people",
-      "unknownCountry": "Unknown location"
+      "unknownCountry": "Unknown location",
+      "vpnCtaBtn": "Get Lantern VPN",
+      "vpnCtaNote": "Help even more people by installing the app."
     }
   },
   "zh-Hans": {
@@ -76,7 +78,9 @@
       "censoredMsg2": "下载 Lantern 以访问被封锁的网站和应用程序。",
       "censoredBtn": "下载 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 制作，充满了 {{love}}"
+      "love": "由 {{lantern}} 制作，充满了 {{love}}",
+      "vpnCtaBtn": "获取 Lantern VPN",
+      "vpnCtaNote": "通过安装应用帮助更多的人。"
     }
   },
   "ar": {
@@ -108,7 +112,9 @@
       "censoredMsg2": "قم بتنزيل Lantern للوصول إلى المواقع والتطبيقات المحجوبة.",
       "censoredBtn": "تحميل Lantern",
       "censoredIgnore": "تجاهل",
-      "love": "صُنع بحب {{love}} من قِبل {{lantern}}"
+      "love": "صُنع بحب {{love}} من قِبل {{lantern}}",
+      "vpnCtaBtn": "احصل على Lantern VPN",
+      "vpnCtaNote": "ساعد المزيد من الأشخاص من خلال تثبيت التطبيق."
     }
   },
   "ru": {
@@ -140,7 +146,9 @@
       "censoredMsg2": "Скачайте Lantern, чтобы получить доступ к заблокированным сайтам и приложениям.",
       "censoredBtn": "Скачать Lantern",
       "censoredIgnore": "Игнорировать",
-      "love": "Сделано с {{love}} компанией {{lantern}}"
+      "love": "Сделано с {{love}} компанией {{lantern}}",
+      "vpnCtaBtn": "Получить Lantern VPN",
+      "vpnCtaNote": "Помогите ещё большему количеству людей, установив приложение."
     }
   },
   "fa": {
@@ -172,7 +180,9 @@
       "censoredMsg2": "لانترن را دانلود کنید تا به سایت‌ها و برنامه‌های مسدود شده دسترسی پیدا کنید.",
       "censoredBtn": "دانلود لنترن",
       "censoredIgnore": "نادیده گرفتن",
-      "love": "ساخته‌شده با {{love}} توسط {{lantern}}"
+      "love": "ساخته‌شده با {{love}} توسط {{lantern}}",
+      "vpnCtaBtn": "دریافت Lantern VPN",
+      "vpnCtaNote": "با نصب برنامه به افراد بیشتری کمک کنید."
     }
   },
   "zh-Hant-TW": {
@@ -204,7 +214,9 @@
       "censoredMsg2": "下載 Lantern 以訪問被封鎖的網站和應用程式。",
       "censoredBtn": "下載 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 製作，充滿了 {{love}}"
+      "love": "由 {{lantern}} 製作，充滿了 {{love}}",
+      "vpnCtaBtn": "取得 Lantern VPN",
+      "vpnCtaNote": "透過安裝應用程式來幫助更多人。"
     }
   },
   "es-419": {
@@ -236,7 +248,9 @@
       "censoredMsg2": "Descarga Lantern para acceder a sitios y aplicaciones bloqueadas.",
       "censoredBtn": "Descargar Lantern",
       "censoredIgnore": "Ignorar",
-      "love": "Hecho con {{love}} por {{lantern}}"
+      "love": "Hecho con {{love}} por {{lantern}}",
+      "vpnCtaBtn": "Obtener Lantern VPN",
+      "vpnCtaNote": "Ayuda a aún más personas instalando la aplicación."
     }
   },
   "zh": {
@@ -268,7 +282,9 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "vpnCtaBtn": "获取 Lantern VPN",
+      "vpnCtaNote": "通过安装应用帮助更多的人。"
     }
   },
   "en-US": {
@@ -300,7 +316,9 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "vpnCtaBtn": "Get Lantern VPN",
+      "vpnCtaNote": "Help even more people by installing the app."
     }
   }
 }

@@ -6,6 +6,7 @@ export const COLORS = {
 	white: '#ffffff',
 	green: '#00A83E',
 	green2: '#006163',
+	blue1: '#EFFDFF',
 	grey1: '#F8FAFB',
 	grey2: '#EDEFEF',
 	grey3: '#EBEBEB',
@@ -77,7 +78,6 @@ export interface Settings {
 	branding: boolean
 	target: Targets
 	mock: boolean
-	keepText: boolean
 	menu: boolean
 	title: boolean
 	share: boolean
@@ -98,7 +98,6 @@ export const defaultSettings: Settings = {
 	branding: true,
 	target: Targets.WEB,
 	mock: false,
-	keepText: true,
 	menu: false, // @todo make true after extension is ready
 	title: false,
 	share: false,
@@ -127,10 +126,6 @@ export const WASM_CLIENT_CONFIG = {
 	egressEndpoint: process.env.REACT_APP_EGRESS_ENDPOINT!,
 }
 
-// @todo rm stubbing out store urls until extension is ready
-export const APP_STORE_LINKS = {
-	chrome: 'https://chromewebstore.google.com/detail/unbounded/jonhnkjdlimggpmbehgkgpjgphoepfdj',
-	// chrome: 'https://unbounded.lantern.io/coming-soon',
-	firefox: 'https://addons.mozilla.org/en-US/firefox/addon/lanternactionmode/',
-	// firefox: 'https://unbounded.lantern.io/coming-soon',
-}
+export const VPN_SITE_URL = 'https://vpn.lantern.io/'
+// Hosts where the widget is rendered as part of the Action Mode website itself rather than embedded on a partner site
+export const ACTION_MODE_SITE_HOSTS = ['actionmode.lantern.io', 'unbounded.lantern.io']

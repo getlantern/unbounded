@@ -16,7 +16,7 @@ import useWindowSize from '../../../hooks/useWindowSize'
 import About from '../../molecules/about'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
-import ExtensionCta from '../../molecules/extensionCta'
+import VpnCta from '../../molecules/vpnCta'
 
 const Floating = () => {
 	const {width, settings} = useContext(AppContext)
@@ -107,7 +107,7 @@ const Floating = () => {
 								{
 									!menu && (target === Targets.WEB) && (
 										<CtaWrapper>
-											<ExtensionCta isSmall={true}/>
+											<VpnCta isSmall={true}/>
 										</CtaWrapper>
 									)
 								}

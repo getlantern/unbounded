@@ -17,3 +17,23 @@ export const Container = styled.div`
 	gap: 8px;
   border: 1px solid ${(props: Props) => props.theme === Themes.LIGHT ? COLORS.grey2 : COLORS.grey4};
 `
+export const Column = styled.div`
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+`
+
+export const Note = styled.p`
+	&& {
+		font-weight: 400;
+		font-size: 14px;
+		line-height: 23px;
+		text-align: center;
+		color: ${({theme}: {theme: Themes}) => theme === Themes.DARK ? COLORS.grey2 : COLORS.grey4};
+		margin: 0;
+		padding: 0;
+		text-transform: none;
+	}
+`
