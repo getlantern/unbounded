@@ -7,6 +7,8 @@ import Panel from './components/organisms/panel'
 import usePageVisibility from './hooks/usePageVisibility'
 import {useEmitterState} from './hooks/useStateEmitter'
 import {sharingEmitter, WasmInterface} from './utils/wasmInterface'
+import {loadFeatureFlags} from './utils/featureFlags'
+import useSupportCountryPreset from './hooks/useSupportCountryPreset'
 import {isMobile} from './utils/isMobile'
 import Editor from './components/organisms/editor'
 import Floating from "./components/organisms/floating";
@@ -34,6 +36,14 @@ const App = ({appId, embed}: Props) => {
   const [mobileBg, desktopBg] = [settings.mobileBg, settings.desktopBg]
   const wasmInterface = useRef<WasmInterface>()
   const [width, setWidth] = useState(0)
+
+  // Fetched without waiting on it, so rendering and wasm init never do. The extension popup
+  // has no client of its own and mirrors the offscreen window's flags instead (useMessaging).
+  useEffect(() => {
+    if (target !== Targets.EXTENSION_POPUP) loadFeatureFlags()
+  }, [target])
+
+  useSupportCountryPreset(settings.supportCountry)
 
   useLayoutEffect(() => {
     if (wasmInterface.current) return // already initialized or initializing

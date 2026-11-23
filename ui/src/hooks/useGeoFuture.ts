@@ -2,10 +2,13 @@ import {useCallback, useContext, useEffect, useRef, useState} from 'react'
 import {Connection, connectionsEmitter, sharingEmitter} from '../utils/wasmInterface'
 import {useEmitterState} from './useStateEmitter'
 import {countries} from '../utils/countries'
+import {geoLookup} from '../utils/geo'
 import {pushNotification} from '../components/molecules/notification'
 import {AppContext} from '../context'
 import {Targets} from '../constants'
 import {useTranslation} from 'react-i18next'
+
+export {geoLookup}
 
 type ISO = keyof typeof countries
 
@@ -37,28 +40,6 @@ const CENSORED_ISO_FALLBACK = 'IR'
 const UNCENSORED_ISO_FALLBACK = 'US'
 const ARCH_ALTITUDE_GAP = 0.05
 const ARCH_ALTITUDE_MIN = 0.3
-
-// this function is a fallback if geo lookup fails. It uses the navigator's language to determine the country
-const getCountryFromNavigator = (): ISO => {
-	const lang = navigator.language
-	console.warn(
-		`Uncensored geo lookup failed, using fallback. Navigator language: ${lang}, ISO: ${lang.split('-')?.[1]}, fallback: ${UNCENSORED_ISO_FALLBACK}`
-	)
-	return lang.split('-')?.[1] as ISO || UNCENSORED_ISO_FALLBACK
-}
-
-// a null ip results in a self lookup
-export const geoLookup = async (ip: string | null): Promise<ISO> => {
-	const isSelf = ip === null
-	try {
-		const res = await fetch(`${process.env.REACT_APP_GEO_LOOKUP_URL}/${isSelf ? '' : ip}`)
-		const data = await res.json()
-		return data.Country.IsoCode
-	} catch (e) {
-		if (!isSelf) console.warn(`Censored geo lookup failed for ${ip}, using fallback. Fallback: ${CENSORED_ISO_FALLBACK}`)
-		return isSelf ? getCountryFromNavigator() : CENSORED_ISO_FALLBACK
-	}
-}
 
 const geoLookupAll = async (connections: Connection[]): Promise<GeoLookup[]> => {
 	const res = await Promise.all(connections.map(connection => geoLookup(connection.addr)))

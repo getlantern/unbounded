@@ -1,0 +1,15 @@
+{
+  "ticket": {
+    "expired_at_unix": "1800000900",
+    "inviter_token": "eyJ2IjoxLCJrIjoiZGJjMjk4MjUiLCJwIjoiNmYxYzJiMGUtOGE3ZC00YzFlLTlmMDAtMDEyMzQ1Njc4OWFiIiwiciI6Imludml0ZXIiLCJlIjoxODAwMDAwOTAwfQ.n6a05OiRDaY974qpiTraSK5nDjL8-DPcb8Yf2DvSYcCGoXFmiYqEas_NJug6RkZtA_FUTnH4udgO0CcoFGdYDQ",
+    "kid": "dbc29825",
+    "pairing_id": "6f1c2b0e-8a7d-4c1e-9f00-0123456789ab",
+    "payload_json": "{\"v\":1,\"k\":\"dbc29825\",\"p\":\"6f1c2b0e-8a7d-4c1e-9f00-0123456789ab\",\"r\":\"volunteer\",\"e\":1800000900}",
+    "previous_kid": "5c29b78f",
+    "previous_public_key_hex": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+    "previous_token": "eyJ2IjoxLCJrIjoiNWMyOWI3OGYiLCJwIjoiNmYxYzJiMGUtOGE3ZC00YzFlLTlmMDAtMDEyMzQ1Njc4OWFiIiwiciI6InZvbHVudGVlciIsImUiOjE4MDAwMDA5MDB9.qVLwDKhjB3T2vDjNsJGpgmz3iE0AalgjZlMWdsiE3jdpiqtNuLjtdIpqE9HhofgZ49MA8XefyWeXPoCcXsbqCQ",
+    "public_key_hex": "fd1724385aa0c75b64fb78cd602fa1d991fdebf76b13c58ed702eac835e9f618",
+    "token": "eyJ2IjoxLCJrIjoiZGJjMjk4MjUiLCJwIjoiNmYxYzJiMGUtOGE3ZC00YzFlLTlmMDAtMDEyMzQ1Njc4OWFiIiwiciI6InZvbHVudGVlciIsImUiOjE4MDAwMDA5MDB9.D_GcmByzgEhByMPPX1Ok-FR4b7ZNor_d1kyK2IFWbl6E6dvmlouiOT1RunJgwPxzJHDBMlTTL4rnaBM6zxq9Bg",
+    "verify_at_unix": "1800000000"
+  }
+}

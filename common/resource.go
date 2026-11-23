@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	// "errors"
 	"net"
+	"slices"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -16,6 +17,17 @@ const (
 )
 
 const (
+	// SubprotocolsHeader is spelled in Go's canonical MIME form, NOT the RFC 6455
+	// form, and the difference is load-bearing. RFC 6455 writes the header as
+	// "Sec-WebSocket-Protocol" (capital S in Socket); textproto.CanonicalMIMEHeaderKey
+	// capitalizes only the first letter after each hyphen, yielding
+	// "Sec-Websocket-Protocol".
+	//
+	// The egress indexes the header map directly with this constant
+	// (r.Header[common.SubprotocolsHeader]), and http.Header keys are stored
+	// canonicalized — so "correcting" this to the RFC spelling would make every lookup
+	// return nothing, and every connection would be refused as though the client had
+	// sent no subprotocols at all. Silently, and for all clients.
 	SubprotocolsHeader      = "Sec-Websocket-Protocol"
 	subprotocolsMagicCookie = "un80und3d"
 )
@@ -61,8 +73,28 @@ type ConsumerInfo struct {
 	Addr      net.IP
 	Tag       string
 	SessionID string
+	// Country is the consumer's self-declared ISO-3166-1 alpha-2 country, or "" if
+	// it chose not to say. Copied from the OfferMsg by the producer and forwarded to
+	// the egress at WebSocket dial time, which is the only way the egress can learn
+	// it: the consumer sits behind the donor's data channel, so the egress only ever
+	// observes the *donor's* address.
+	Country string
+	// Pairing is the helper pairing (room) this consumer reached the producer
+	// through, or "" for a pool consumer, for a consumer or Freddie that
+	// predates pairing attribution, or for a pairing the producer couldn't
+	// match to one of its own volunteer tickets. Local to the producer: it is
+	// never sent to the egress, and must never be logged.
+	Pairing string
+	// Exit says this consumer's session is a direct exit (see GenesisMsg.DirectExitObfs): the
+	// producer exits its traffic itself, so no egress connection serves it. Local to the
+	// producer, like Pairing.
+	Exit bool
 }
 
+// Nil deliberately ignores Country and Pairing. A ConsumerInfo carrying nothing but a country
+// describes no consumer, and jit_egress_consumer keys "has a consumer claimed this
+// slot" on this method — treating a stray country as an occupied slot would wedge
+// the slot waiting for a session that does not exist.
 func (ci ConsumerInfo) Nil() bool {
 	return ci.Addr == nil && ci.Tag == "" && ci.SessionID == ""
 }
@@ -74,6 +106,26 @@ type Endpoint struct {
 
 type GenesisMsg struct {
 	PathAssertion PathAssertion
+	// DirectExit is the legacy signal for an unobfuscated direct exit: stock Hysteria2 over the
+	// bare ICE session, whose QUIC Initial exposes the SNI. Old producers send it and old
+	// consumers act on it. New peers neither send it nor act on it: a new consumer treats a
+	// genesis carrying only DirectExit as an ordinary relay genesis and answers with an SDP offer,
+	// as it would a producer without an exit. It stays in the struct for old peers' sake.
+	DirectExit bool `json:",omitempty"`
+	// DirectExitObfs says the producer can carry this session over ICE alone and exit its traffic
+	// itself (see ICEOffer), with an obfuscated exit: Hysteria2 with Salamander keyed from the
+	// session password (see clientcore.ExitOptions). A consumer that can answers with an ICE
+	// offer, and any other with an SDP offer as before. Omitted when false, so other producers'
+	// genesis messages are unchanged.
+	//
+	// It replaces DirectExit because the two exits are wire-incompatible, and no mixed pairing
+	// may attempt one:
+	//
+	//	consumer  producer  result
+	//	old       new       relays: the old consumer ignores DirectExitObfs
+	//	new       old       relays: the new consumer ignores DirectExit
+	//	new       new       obfuscated direct exit
+	DirectExitObfs bool `json:",omitempty"`
 }
 
 // TODO: We observe that OfferMsg and ConsumerInfo have a special relationship: OfferMsg is how
@@ -84,6 +136,63 @@ type GenesisMsg struct {
 type OfferMsg struct {
 	SDP webrtc.SessionDescription
 	Tag string
+	// Country is the consumer's self-declared ISO-3166-1 alpha-2 country, or "" to
+	// decline. Consumer-supplied rather than derived: the producer could geolocate
+	// the address it already extracts from the remote ICE candidates, but that makes
+	// the disclosure implicit and unrefusable, whereas a field the consumer fills in
+	// is a choice it can decline by leaving empty.
+	//
+	// Wire-compatible in both directions because this is JSON: an old consumer omits
+	// the field and a new producer reads "", while an old producer ignores a field a
+	// new consumer sends.
+	Country string
+	// Pairing is the helper pairing of the room genesis this offer answers, as
+	// Freddie stamped it (see SignalMsg.Pairing), or "" for a pool genesis.
+	// It is a claim: the producer accepts it only if it names one of its own
+	// volunteer tickets' pairings, and only to label the session. A direct
+	// exit session's kind comes from the pairing Freddie stamps on the offer's
+	// envelope instead (see SignalMsg.Pairing). Omitted when empty, so a pool offer is
+	// byte-identical to releases before it, and an old producer ignores it.
+	Pairing string `json:",omitempty"`
+	// ICE, when set, offers a bare ICE session instead of a peer connection, and SDP is empty.
+	// A consumer sends one only in answer to a DirectExitObfs genesis.
+	ICE *ICEOffer `json:",omitempty"`
+}
+
+// ICEOffer is a consumer's ICE credentials for a bare ICE session, which carries an obfuscated
+// direct exit (see GenesisMsg.DirectExitObfs). Never logged.
+type ICEOffer struct {
+	Ufrag string
+	Pwd   string
+}
+
+// ICEAnswer is a producer's answer to an ICEOffer. It carries the producer's ICE credentials and
+// candidates, and what the consumer needs to use the exit over the session: the SHA-256 pin of
+// the exit certificate's public key, and the session's password, which also keys the exit's
+// Salamander obfuscation (see GenesisMsg.DirectExitObfs). Personal says whether the producer
+// serves the session under its personal policy rather than the pool's. Never logged.
+type ICEAnswer struct {
+	Ufrag      string
+	Pwd        string
+	Candidates []string
+	CertPin    string
+	Password   string
+	Personal   bool `json:",omitempty"`
+}
+
+// ICEAnswerMsg is the payload of a SignalMsgAnswer that answers an ICEOffer. An answer to an SDP
+// offer is a bare webrtc.SessionDescription, as before.
+type ICEAnswerMsg struct {
+	ICE *ICEAnswer
+}
+
+// iceOfferWire reads an OfferMsg without its SDP. An ICE offer's SDP is the zero
+// SessionDescription, which pion writes with type "unknown" and won't read back.
+type iceOfferWire struct {
+	Tag     string
+	Country string
+	Pairing string
+	ICE     *ICEOffer
 }
 
 // NB: in the last segment of our signaling handshake, the consumer sends the producer an ICEMsg,
@@ -91,15 +200,50 @@ type OfferMsg struct {
 type ICEMsg struct {
 	Candidates        []webrtc.ICECandidate
 	ConsumerSessionID string
+	// ICECandidates are a bare ICE session's candidates, as ice.Candidate.Marshal writes them,
+	// sent instead of Candidates. Omitted when empty, so other ICE messages are unchanged.
+	ICECandidates []string `json:",omitempty"`
 }
 
 // A little confusing: SignalMsg is actually the parent msg which encapsulates an underlying msg,
 // which could be a GenesisMsg, an OfferMsg, a webrtc.SessionDescription (which is currently sent
-// unencapsulated as a SignalMsgAnswer), or an ICEMsg, which is sent as a SignalMsgICE.
+// unencapsulated as a SignalMsgAnswer), an ICEAnswerMsg (also sent as a SignalMsgAnswer, in answer
+// to an ICE offer), or an ICEMsg, which is sent as a SignalMsgICE.
 type SignalMsg struct {
 	ReplyTo string
 	Type    SignalMsgType
 	Payload string
+	// Room is set by Freddie on a genesis message it delivered to this
+	// consumer through one of its rooms, so the consumer can prefer its own
+	// helpers. Producers cannot set it: they only supply Payload. Omitted
+	// otherwise, so every other message is unchanged on the wire.
+	Room bool `json:",omitempty"`
+	// Pairing is set by Freddie, with Room, to the pairing ID of the room it
+	// delivered this genesis message through. Freddie sends it only to a
+	// consumer that is itself in that room, so it reveals nothing the
+	// consumer's own tickets don't. The consumer echoes it in its OfferMsg so
+	// the producer can tell which of its pairings it is serving.
+	//
+	// Freddie also sets it on an offer it relays to a producer, to the room
+	// it delivered the producer's genesis through to the very consumer that
+	// answered, which echoed that delivery's DeliveryToken, and only while
+	// the ticket that admitted the consumer to the room is still valid.
+	// Unlike OfferMsg's Pairing, which the consumer writes, only Freddie
+	// writes this one: a sender supplies only Payload. A Freddie that
+	// predates it sets nothing. Omitted otherwise. Never logged.
+	Pairing string `json:",omitempty"`
+	// DeliveryToken is set by Freddie, with Room, on a genesis message it
+	// delivered through a room: a random token for this one delivery to this
+	// one consumer. The consumer echoes it in DeliveryTokenField on its offer,
+	// once. Omitted otherwise. Never logged.
+	DeliveryToken string `json:",omitempty"`
+	// ICEServers is set by Freddie, with Room, on a genesis message it delivered through a room,
+	// and on the offer it returns to a producer whose genesis a room consumer took. The peer adds
+	// them (TURN relays) to its peer connection before gathering, so a pairing that can't connect
+	// directly can connect through a relay. Producers and consumers cannot set it. Omitted
+	// otherwise, so every other message is unchanged on the wire. Never logged: it carries
+	// credentials.
+	ICEServers []webrtc.ICEServer `json:",omitempty"`
 }
 
 // TODO: presently unused, should we just stop supporting old clients and version-enforce them off the network?
@@ -152,6 +296,15 @@ func fallBackIceCandidatesDecoder(raw []byte) ([]webrtc.ICECandidate, error) {
 */
 
 func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
+	msg, payload, err := DecodeSignal(raw)
+	return msg.ReplyTo, payload, err
+}
+
+// DecodeSignal is DecodeSignalMsg returning the whole envelope rather than
+// only its ReplyTo, so callers can read its other fields (such as Room)
+// without decoding raw twice. The envelope is zero whenever DecodeSignalMsg
+// would return an empty ReplyTo.
+func DecodeSignal(raw []byte) (SignalMsg, interface{}, error) {
 	var err error
 	var msg SignalMsg
 
@@ -162,23 +315,31 @@ func DecodeSignalMsg(raw []byte) (string, interface{}, error) {
 		case SignalMsgGenesis:
 			var genesis GenesisMsg
 			err = json.Unmarshal([]byte(msg.Payload), &genesis)
-			return msg.ReplyTo, genesis, err
+			return msg, genesis, err
 		case SignalMsgOffer:
+			var wire iceOfferWire
+			if json.Unmarshal([]byte(msg.Payload), &wire) == nil && wire.ICE != nil {
+				return msg, OfferMsg{Tag: wire.Tag, Country: wire.Country, Pairing: wire.Pairing, ICE: wire.ICE}, nil
+			}
 			var offer OfferMsg
 			err := json.Unmarshal([]byte(msg.Payload), &offer)
-			return msg.ReplyTo, offer, err
+			return msg, offer, err
 		case SignalMsgAnswer:
+			var iceAnswer ICEAnswerMsg
+			if json.Unmarshal([]byte(msg.Payload), &iceAnswer) == nil && iceAnswer.ICE != nil {
+				return msg, *iceAnswer.ICE, nil
+			}
 			var answer webrtc.SessionDescription
 			err := json.Unmarshal([]byte(msg.Payload), &answer)
-			return msg.ReplyTo, answer, err
+			return msg, answer, err
 		case SignalMsgICE:
 			var iceMsg ICEMsg
 			err := json.Unmarshal([]byte(msg.Payload), &iceMsg)
-			return msg.ReplyTo, iceMsg, err
+			return msg, iceMsg, err
 		}
 	}
 
-	return "", nil, err
+	return SignalMsg{}, nil, err
 }
 
 // We need to pass a few different data items from uncensored peer to egress server at WebSocket
@@ -192,11 +353,145 @@ func NewSubprotocolsRequest(csid, version string) []string {
 	return []string{subprotocolsMagicCookie, csid, version}
 }
 
-func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
-	if len(s) != 3 {
-		return "", "", false
+// NewSubprotocolsRequestWithCountry is NewSubprotocolsRequest plus an optional
+// consumer country, so the egress can attribute a session to the region it is
+// actually serving. The egress otherwise only ever sees the *donor's* address:
+// the consumer sits behind the donor's WebRTC data channel, so nothing about
+// where a session terminates is observable server-side without being told.
+//
+// Deliberately a separate constructor rather than a new parameter on
+// NewSubprotocolsRequest: callers that have no country to offer, or that choose
+// not to disclose one, should keep emitting the 3-element form and stay
+// byte-identical on the wire to every release before this one.
+//
+// Privacy note: this travels consumer -> donor -> egress, so a donor forwarding
+// it can read it. A donor already learns far more than a country code from ICE
+// candidate exchange (the consumer's public IP), so the marginal disclosure to
+// the donor is small — but it is not zero, and an empty country is always a
+// valid choice. Pass a country only when the consumer has consented to it.
+func NewSubprotocolsRequestWithCountry(csid, version, country string) []string {
+	// Normalize before emitting, with the same function the parser applies. Two
+	// reasons: a lowercase "cn" reaches the egress as "CN" rather than being
+	// discarded there, and anything that is not a country code at all collapses to ""
+	// and takes the 3-element path instead of putting a value on the wire that the
+	// receiver is guaranteed to throw away.
+	country = normalizeCountry(country)
+	if country == "" {
+		return NewSubprotocolsRequest(csid, version)
 	}
-	return s[1], s[2], true
+	return []string{subprotocolsMagicCookie, csid, version, country}
+}
+
+// ParseSubprotocolsRequest accepts both the 3-element form and the 4-element
+// form that carries a consumer country, so a new egress keeps serving old
+// donors. Because the field is trailing and optional, an old egress also keeps
+// serving new donors only if it tolerates the extra element — it does not (it
+// requires exactly 3), so donors must not emit the 4-element form until the
+// egress fleet has been upgraded past this commit.
+func ParseSubprotocolsRequest(s []string) (csid string, version string, ok bool) {
+	csid, version, _, ok = ParseSubprotocolsRequestWithCountry(s)
+	return csid, version, ok
+}
+
+// SubprotocolsContainMagicCookie reports whether the cookie appears anywhere in s,
+// i.e. whether the peer looks like it was trying to speak this protocol at all —
+// independent of whether it got position, arity, or anything else right.
+//
+// Deliberately "anywhere" rather than "in the leading position", even though the
+// parser requires it to lead. The two questions are different and only one of them
+// is about parsing:
+//
+//   - can this be parsed as our protocol?  -> the cookie must LEAD (see
+//     ParseSubprotocolsRequestWithCountry)
+//   - might these values contain a consumer session ID?  -> the cookie appearing
+//     ANYWHERE is enough to suspect so
+//
+// The second question is the one this answers, because it gates what reaches the
+// log. A first version checked the leading position for both and so claimed a
+// property it did not have: a client that built the list in the wrong order, say
+// [csid, cookie, version], fails a leading-position check while carrying a real
+// session ID — precisely the value withheld on purpose. Widening to "anywhere" is
+// what makes the claim below actually true.
+//
+// A peer that fails this check cannot have supplied a consumer session ID: it shows
+// no sign of following the format that carries one, so its values are safe to record
+// in order to identify the caller. A peer that passes may well have a real session
+// ID among its values, however garbled the rest, so those stay unlogged.
+//
+// The false-positive cost is negligible in the other direction: the cookie is a
+// nonce-like constant, so unrelated software containing it by coincidence is not a
+// realistic concern, and the consequence would only be declining to log values.
+func SubprotocolsContainMagicCookie(s []string) bool {
+	return slices.Contains(s, subprotocolsMagicCookie)
+}
+
+// ParseSubprotocolsRequestWithCountry additionally returns the consumer country
+// when the peer supplied one; country is "" for the 3-element form. It
+// accepts everything ParseSubprotocolsRequestWithActivation does and
+// drops the activation ID.
+//
+// The magic cookie is validated, not only the arity. The first parser
+// checked length alone, so any 3-element Sec-Websocket-Protocol list
+// parsed as ok and the mismatch surfaced later as a vaguer
+// websocket.Accept failure. The cookie is a single shared constant that
+// has never changed, so nothing that has ever spoken this protocol is
+// affected by rejecting a wrong one.
+func ParseSubprotocolsRequestWithCountry(s []string) (csid, version, country string, ok bool) {
+	csid, version, country, _, ok = ParseSubprotocolsRequestWithActivation(s)
+	return csid, version, country, ok
+}
+
+// normalizeCountry bounds an untrusted country to a two-letter ISO-3166-1 alpha-2
+// code, uppercased, or returns "" to mean "not supplied".
+//
+// This value arrives in a client-controlled Sec-Websocket-Protocol element and
+// flows into span attributes. Passing it through verbatim would let any peer
+// mint arbitrarily long or arbitrarily many distinct attribute values, which is
+// a cardinality and payload amplification attack on the tracing backend rather
+// than merely bad data. Dropping unparseable values is deliberate: a session
+// labelled "not supplied" is a small loss, whereas a session that can label
+// itself anything is a liability.
+//
+// Rejecting rather than truncating, because a truncated garbage value is
+// indistinguishable from a real code and would silently pollute the same
+// dimension.
+func normalizeCountry(country string) string {
+	if len(country) != 2 {
+		return ""
+	}
+	out := []byte(country)
+	for i, c := range out {
+		switch {
+		case c >= 'a' && c <= 'z':
+			out[i] = c - ('a' - 'A')
+		case c >= 'A' && c <= 'Z':
+			// already canonical
+		default:
+			return ""
+		}
+	}
+
+	// Codes that mean "no country" are declined rather than passed through, because
+	// they collide with the receiver's own label for that: the egress records
+	// unresolvable traffic as the literal "unknown", so accepting ZZ would put two
+	// different labels on the same concept and split it across a dashboard. ZZ and AA
+	// are ISO-3166-1 user-assigned, i.e. defined by the standard as not designating a
+	// country, and ZZ conventionally means unknown.
+	//
+	// Deliberately not a full ISO-3166-1 alpha-2 allowlist, which is the obvious next
+	// step and the wrong one. It would need maintaining as assignments change, and it
+	// would reject codes our own geolocation emits — MaxMind uses XK for Kosovo, which
+	// is not an official ISO assignment, so an allowlist would discard real signal
+	// from the donor side while adding none. More fundamentally, this value is
+	// self-reported and unverifiable: a consumer in one country can claim another, so
+	// membership checking tidies the label space without making the data truer. The
+	// space is already bounded at 26*26, which is what actually matters for
+	// cardinality.
+	switch string(out) {
+	case "ZZ", "AA":
+		return ""
+	}
+	return string(out)
 }
 
 func NewSubprotocolsResponse() []string {

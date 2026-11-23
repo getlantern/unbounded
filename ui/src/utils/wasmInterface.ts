@@ -3,6 +3,10 @@ import {StateEmitter} from '../hooks/useStateEmitter'
 import MockWasmClient from '../mocks/mockWasmClient'
 import {MessageTypes, SIGNATURE, Targets, WASM_CLIENT_CONFIG} from '../constants'
 import {messageCheck} from './messages'
+import {installFreezeWatchdog} from './freezeWatchdog'
+import {lookupPeerCountry} from './geo'
+import {ANYWHERE, sanitizeSupportCountry, storeSupportCountry, supportCountryChoice, supportCountryEmitter} from './supportCountry'
+import {supportCountryEnabledEmitter} from './featureFlags'
 
 type WebAssemblyInstance = InstanceType<typeof WebAssembly.Instance>
 
@@ -21,11 +25,37 @@ export interface Throughput {
 	bytesPerSec: number
 }
 
+// down is data relayed to the people being helped, up is data they sent through the volunteer
+export interface Bytes {
+	down: number
+	up: number
+}
+
+// iso is '' when the peer's country could not be determined
+export interface CountryStat extends Bytes {
+	iso: string
+	people: number
+}
+
+interface Peer {
+	iso: string
+	resolved: boolean
+	pending: Bytes
+}
+
+const STATS_FLUSH_MS = 1000
+
 // create state emitters
 export const connectionsEmitter = new StateEmitter<Connection[]>([])
 export const averageThroughputEmitter = new StateEmitter<number>(0)
+export const servedConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeConnectionsEmitter = new StateEmitter<number>(0)
 export const lifetimeChunksEmitter = new StateEmitter<Chunk[]>([])
+export const lifetimeUploadBytesEmitter = new StateEmitter<number>(0)
+export const sessionBytesEmitter = new StateEmitter<Bytes>({down: 0, up: 0})
+export const uploadThroughputEmitter = new StateEmitter<number>(0)
+export const downloadThroughputEmitter = new StateEmitter<number>(0)
+export const countryStatsEmitter = new StateEmitter<CountryStat[]>([])
 export const readyEmitter = new StateEmitter<boolean>(false)
 export const sharingEmitter = new StateEmitter<boolean>(false)
 
@@ -34,6 +64,7 @@ export interface WasmClientEventMap {
 	'ready': CustomEvent;
 	'downstreamChunk': { detail: Chunk };
 	'downstreamThroughput': { detail: Throughput };
+	'upstreamChunk': { detail: Chunk };
 	'consumerConnectionChange': { detail: Connection };
 }
 
@@ -67,6 +98,16 @@ export interface WasmClient extends EventTarget {
 	stop(): void
 
 	debug(): void
+
+	// setTargetCountries names the countries (comma-separated ISO codes, '' for none) whose
+	// people this volunteer prefers to help; it applies from each worker's next connection
+	// attempt. Optional because older wasm builds and MockWasmClient lack it.
+	setTargetCountries?(countries: string): void
+
+	// liveness returns the Go-side heartbeat (see clientcore/watchdog_wasm_impl.go).
+	// Optional because the wasm binary deployed to embed.lantern.io can predate it —
+	// it does today — and because MockWasmClient has no Go runtime to report on.
+	liveness?(): {goTicks: number; goLastTickMs: number; goStartedMs: number; goIntervalMs: number; goNowMs: number} | undefined
 }
 
 
@@ -84,6 +125,7 @@ declare global {
 		tag: string,
 		egressAddr: string,
 		egressEndpoint: string,
+		targetCountries?: string,
 	): WasmClient;
 }
 
@@ -91,6 +133,81 @@ interface Config {
 	mock: boolean
 	target: Targets
 }
+
+// Forwards a viewer's choice from the extension popup to the offscreen client that runs the wasm.
+export const sendSupportCountry = (country: string) => window.parent.postMessage({
+	type: MessageTypes.WASM_SUPPORT_COUNTRY,
+	[SIGNATURE]: true,
+	data: {supportCountry: country}
+}, '*')
+
+// A choice sent before the offscreen window was listening is lost, so the popup re-sends its
+// viewer's latest choice each time the offscreen client reports ready. Only the viewer's own
+// choice is sent, never the mirrored emitter, which may still hold an older echo.
+export const resendSupportCountryChoice = () => {
+	if (!supportCountryEnabledEmitter.state) return
+	const country = supportCountryChoice()
+	if (country !== null) sendSupportCountry(country)
+}
+
+export const mergeCountryStats = (stats: CountryStat[], deltas: CountryStat[]): CountryStat[] => {
+	const merged = stats.map(s => ({...s}))
+	deltas.forEach(delta => {
+		const found = merged.find(s => s.iso === delta.iso)
+		if (!found) return merged.push({...delta})
+		found.down += delta.down
+		found.up += delta.up
+		found.people += delta.people
+	})
+	return merged
+}
+
+// Byte accounting flushed to the emitters every STATS_FLUSH_MS, so chunk-rate events don't
+// re-render the UI or rewrite storage on every chunk. It is page-wide, like the emitters: each
+// embed has its own WasmInterface, and per-instance timers would overwrite each other's rates.
+const pageStats = {
+	bytes: {down: 0, up: 0} as Bytes,
+	countries: {} as { [iso: string]: CountryStat },
+	interval: undefined as ReturnType<typeof setInterval> | undefined,
+	lastFlushAt: performance.now(),
+}
+
+const flushPageStats = () => {
+	const {down, up} = pageStats.bytes
+	// a throttled or stalled timer flushes late, so speeds are normalized by the time actually
+	// elapsed; it is floored at one interval so an early flush from start()/stop() can't spike them
+	const now = performance.now()
+	const seconds = Math.max(now - pageStats.lastFlushAt, STATS_FLUSH_MS) / 1000
+	pageStats.lastFlushAt = now
+	uploadThroughputEmitter.update(Math.round(up / seconds))
+	downloadThroughputEmitter.update(Math.round(down / seconds))
+	if (down || up) {
+		const session = sessionBytesEmitter.state
+		sessionBytesEmitter.update({down: session.down + down, up: session.up + up})
+		if (up) lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + up)
+		pageStats.bytes = {down: 0, up: 0}
+	}
+	const deltas = Object.values(pageStats.countries)
+	if (!deltas.length) return
+	pageStats.countries = {}
+	countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, deltas))
+}
+
+// lifetime download bytes are kept per connection slot; restored totals from storage merge the
+// same way as live chunks
+export const addLifetimeChunks = (added: Chunk[]) => {
+	const chunks = [...lifetimeChunksEmitter.state.map(c => ({...c})), ...added].reduce((acc: Chunk[], chunk) => {
+		const found = acc.find((c: Chunk) => c.workerIdx === chunk.workerIdx)
+		if (found) found.size += chunk.size
+		else acc.push({...chunk})
+		return acc
+	}, [])
+	lifetimeChunksEmitter.update(chunks)
+}
+
+// The country the client may be given: none at all while the feature is switched off, whatever
+// the emitter holds.
+export const effectiveSupportCountry = () => supportCountryEnabledEmitter.state ? supportCountryEmitter.state : ANYWHERE
 
 export class WasmInterface {
 	go: typeof go
@@ -101,6 +218,7 @@ export class WasmInterface {
 	throughput: Throughput
 	// smoothed and agg data
 	connections: Connection[]
+	peers: { [key: number]: Peer }
 	// states
 	ready: boolean
 	initializing: boolean
@@ -112,6 +230,7 @@ export class WasmInterface {
 		this.connectionMap = {}
 		this.throughput = {bytesPerSec: 0}
 		this.connections = []
+		this.peers = {}
 		this.go = go
 		this.target = Targets.WEB
 	}
@@ -125,6 +244,25 @@ export class WasmInterface {
 
 		this.initializing = true
 		this.target = target
+
+		// Start watching before instantiating, not after. Compiling a 12MB wasm
+		// module is the single heaviest thing this page does and a plausible freeze
+		// site, so a watchdog installed after it would be blind to exactly the
+		// window most likely to hang. The liveness getter tolerates the client not
+		// existing yet, which is the reason it is a getter and not a value.
+		installFreezeWatchdog({
+			liveness: () => this.wasmClient?.liveness?.(),
+			sharing: () => sharingEmitter.state,
+		})
+
+		supportCountryEmitter.on(this.applySupportCountry)
+		supportCountryEnabledEmitter.on(this.applySupportCountryEnabled)
+
+		// In an extension offscreen window, listen for the popup's commands now rather than after
+		// the wasm loads: a country choice sent meanwhile is kept for the client built below,
+		// even if the popup closes before it could re-send it.
+		if (target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
+
 		if (mock) { // fake it till you make it
 			this.wasmClient = new MockWasmClient(this)
 			this.instance = {} as WebAssemblyInstance
@@ -160,9 +298,28 @@ export class WasmInterface {
 				WASM_CLIENT_CONFIG.stunBatchSize,
 				WASM_CLIENT_CONFIG.tag,
 				WASM_CLIENT_CONFIG.egressAddr,
-				WASM_CLIENT_CONFIG.egressEndpoint
+				WASM_CLIENT_CONFIG.egressEndpoint,
+				effectiveSupportCountry()
 			)
 		}
+	}
+
+	// Safe to call while sharing: the client applies it from each worker's next connection
+	// attempt and leaves established connections alone, so no restart is needed. The popup has
+	// no client of its own: its emitter mirrors the offscreen client's, and only a viewer's
+	// choice is sent there (sendSupportCountry), so mirrored updates never echo back. Start
+	// carries no country for the same reason: the popup's emitter may hold a stale echo.
+	applySupportCountry = (country: any) => {
+		if (typeof country !== 'string' || this.target === Targets.EXTENSION_POPUP) return
+		if (!supportCountryEnabledEmitter.state) return
+		this.wasmClient?.setTargetCountries?.(country)
+	}
+
+	// Switching the feature off clears any country already applied; switching it on applies the
+	// current one.
+	applySupportCountryEnabled = () => {
+		if (this.target === Targets.EXTENSION_POPUP) return
+		this.wasmClient?.setTargetCountries?.(effectiveSupportCountry())
 	}
 
 	start = () => {
@@ -177,6 +334,10 @@ export class WasmInterface {
 			}, '*')
 		}
 		else {
+			// credit bytes from the previous session's teardown to lifetime totals before resetting the session
+			this.flushStats()
+			sessionBytesEmitter.update({down: 0, up: 0})
+			this.wasmClient.setTargetCountries?.(effectiveSupportCountry())
 			this.wasmClient.start()
 			sharingEmitter.update(true)
 		}
@@ -197,6 +358,9 @@ export class WasmInterface {
 			readyEmitter.update(this.ready)
 			this.wasmClient.stop()
 			sharingEmitter.update(false)
+			this.flushStats()
+			uploadThroughputEmitter.update(0)
+			downloadThroughputEmitter.update(0)
 			// mark every connection disconnected so arcs and the helping count
 			// clear on stop instead of lingering until the workers wind down.
 			// (emitting an empty array would NOT clear arcs: useGeo's updateArcs
@@ -213,16 +377,51 @@ export class WasmInterface {
 		return Object.keys(map).map(idx => map[parseInt(idx)])
 	}
 
-	handleChunk = (e: { detail: Chunk }) => {
-		const {detail} = e
-		const chunks = [...lifetimeChunksEmitter.state, detail].reduce((acc: Chunk[], chunk) => {
-			const found = acc.find((c: Chunk) => c.workerIdx === chunk.workerIdx)
-			if (found) found.size += chunk.size
-			else acc.push(chunk)
-			return acc
-		}, [])
-		lifetimeChunksEmitter.update(chunks)
+	handleChunk = (e: { detail: Chunk }) => addLifetimeChunks([e.detail])
+
+	handleDownstreamChunk = (e: { detail: Chunk }) => {
+		this.handleChunk(e)
+		this.accumulate(e.detail.workerIdx, {down: e.detail.size, up: 0})
 	}
+
+	handleUpstreamChunk = (e: { detail: Chunk }) => {
+		this.accumulate(e.detail.workerIdx, {down: 0, up: e.detail.size})
+	}
+
+	accumulate = (workerIdx: number, bytes: Bytes) => {
+		pageStats.bytes.down += bytes.down
+		pageStats.bytes.up += bytes.up
+		const peer = this.peers[workerIdx]
+		if (!peer) return
+		if (peer.resolved) this.addCountry(peer.iso, bytes, 0)
+		else {
+			peer.pending.down += bytes.down
+			peer.pending.up += bytes.up
+		}
+	}
+
+	addCountry = (iso: string, bytes: Bytes, people: number) => {
+		const stat = pageStats.countries[iso] || {iso, down: 0, up: 0, people: 0}
+		stat.down += bytes.down
+		stat.up += bytes.up
+		stat.people += people
+		pageStats.countries[iso] = stat
+	}
+
+	// a slot is reused for each new person, so each connection gets its own Peer; a lookup that
+	// resolves after the slot moved on still credits the person it was started for
+	trackPeer = ({workerIdx, addr}: Connection) => {
+		const peer: Peer = {iso: '', resolved: false, pending: {down: 0, up: 0}}
+		this.peers[workerIdx] = peer
+		lookupPeerCountry(addr).then(iso => {
+			peer.iso = iso || ''
+			peer.resolved = true
+			this.addCountry(peer.iso, peer.pending, 1)
+			peer.pending = {down: 0, up: 0}
+		})
+	}
+
+	flushStats = () => flushPageStats()
 
 	handleThroughput = (e: { detail: Throughput }) => {
 		const {detail} = e
@@ -250,7 +449,9 @@ export class WasmInterface {
 		// emit state
 		connectionsEmitter.update(this.connections)
 		if (existingState === -1 && state === 1) {
+			this.trackPeer(connection)
 			lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + 1)
+			servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1)
 		}
 	}
 
@@ -266,6 +467,16 @@ export class WasmInterface {
 			case MessageTypes.WASM_START:
 				this.start()
 				break
+			case MessageTypes.WASM_SUPPORT_COUNTRY: {
+				// a popup may not apply, or store, a country while the feature is off
+				if (!supportCountryEnabledEmitter.state) break
+				// the offscreen client owns the choice, so it persists it too: a later preset
+				// re-apply here must not revert it when storage is unavailable
+				const country = sanitizeSupportCountry(message.data?.supportCountry)
+				storeSupportCountry(country)
+				supportCountryEmitter.update(country)
+				break
+			}
 			case MessageTypes.WASM_STOP:
 				this.stop()
 				break
@@ -275,13 +486,15 @@ export class WasmInterface {
 	initListeners = () => {
 		if (!this.wasmClient) return console.warn('Wasm client has not been initialized, aborting listener init.')
 
-		// if the widget is running in an extension offscreen window, listen for messages from the popup (start/stop)
-		if (this.target === Targets.EXTENSION_OFFSCREEN) window.addEventListener('message', this.onMessage)
-
 		// register listeners
-		this.wasmClient.addEventListener('downstreamChunk', this.handleChunk)
+		this.wasmClient.addEventListener('downstreamChunk', this.handleDownstreamChunk)
+		this.wasmClient.addEventListener('upstreamChunk', this.handleUpstreamChunk)
 		this.wasmClient.addEventListener('downstreamThroughput', this.handleThroughput)
 		this.wasmClient.addEventListener('consumerConnectionChange', this.handleConnection)
 		this.wasmClient.addEventListener('ready', this.handleReady)
+
+		// the popup receives these stats synced from the offscreen window; flushing its own empty
+		// accumulators would overwrite them
+		if (this.target !== Targets.EXTENSION_POPUP && !pageStats.interval) pageStats.interval = setInterval(flushPageStats, STATS_FLUSH_MS)
 	}
 }

@@ -1,0 +1,373 @@
+<?php
+/**
+ * Plugin Name:       Lantern Action Mode
+ * Plugin URI:        https://actionmode.lantern.io
+ * Description:       Let visitors volunteer a slice of their connection to help people reach the open internet. Enable the widget per page, on all posts, or on the homepage.
+ * Version:           1.4.0
+ * Requires at least: 5.0
+ * Requires PHP:      7.4
+ * Author:            Lantern
+ * Author URI:        https://lantern.io
+ * License:           GPL-3.0-or-later
+ * License URI:       https://www.gnu.org/licenses/gpl-3.0.html
+ * Text Domain:       unbounded-by-lantern
+ */
+
+// The plugin is a thin client for the Action Mode network: it prints the widget
+// element and loads the widget bundle, and everything else -- peer discovery,
+// transport, the WebAssembly proxy -- happens in the service. Nothing here
+// starts proxying; the widget does that only when a visitor flips its switch.
+
+if (!defined('ABSPATH')) {
+    exit;
+}
+
+/**
+ * URL of the widget bundle.
+ *
+ * Filterable so a site can serve the bundle itself rather than from
+ * embed.lantern.io. Self-hosting pins the widget to whatever build was copied,
+ * which will eventually fall out of step with the network, so the hosted URL is
+ * the default.
+ *
+ * @return string
+ */
+function browsers_unbounded_script_url() {
+    return apply_filters('browsers_unbounded_script_url', 'https://embed.lantern.io/static/js/main.js');
+}
+
+/**
+ * Countries a site can ask its visitors to support by default.
+ *
+ * Keep in sync with censoredCountryCodes in ui/src/utils/countries.ts: the
+ * widget ignores any code not on that list. Keys are lowercase because the
+ * stored value passes through sanitize_key(); the widget uppercases it.
+ *
+ * @return array<string, string> Country name keyed by lowercase ISO code.
+ */
+function browsers_unbounded_support_countries() {
+    return array(
+        'ae' => __('United Arab Emirates', 'unbounded-by-lantern'),
+        'az' => __('Azerbaijan', 'unbounded-by-lantern'),
+        'bh' => __('Bahrain', 'unbounded-by-lantern'),
+        'by' => __('Belarus', 'unbounded-by-lantern'),
+        'cn' => __('China', 'unbounded-by-lantern'),
+        'cu' => __('Cuba', 'unbounded-by-lantern'),
+        'eg' => __('Egypt', 'unbounded-by-lantern'),
+        'et' => __('Ethiopia', 'unbounded-by-lantern'),
+        'ir' => __('Iran', 'unbounded-by-lantern'),
+        'kz' => __('Kazakhstan', 'unbounded-by-lantern'),
+        'mm' => __('Myanmar', 'unbounded-by-lantern'),
+        'pk' => __('Pakistan', 'unbounded-by-lantern'),
+        'ru' => __('Russia', 'unbounded-by-lantern'),
+        'rw' => __('Rwanda', 'unbounded-by-lantern'),
+        'sa' => __('Saudi Arabia', 'unbounded-by-lantern'),
+        'sd' => __('Sudan', 'unbounded-by-lantern'),
+        'th' => __('Thailand', 'unbounded-by-lantern'),
+        'tr' => __('Turkey', 'unbounded-by-lantern'),
+        'uz' => __('Uzbekistan', 'unbounded-by-lantern'),
+        've' => __('Venezuela', 'unbounded-by-lantern'),
+        'vn' => __('Vietnam', 'unbounded-by-lantern'),
+    );
+}
+
+/** @return array<string, string[]> Allowed values keyed by option, first entry is the default. */
+function browsers_unbounded_allowed_values() {
+    return array(
+        'layout'          => array('banner', 'panel', 'floating', 'simple'),
+        'theme'           => array('dark', 'light', 'auto'),
+        'location'        => array('header', 'footer'),
+        // '' (the default) means "wherever needed": no country preference
+        'support_country' => array_merge(array(''), array_keys(browsers_unbounded_support_countries())),
+    );
+}
+
+/**
+ * Stored options, normalised through the same rules applied on save.
+ *
+ * Reading through the sanitizer rather than merging over a defaults array
+ * matters on upgrade: 1.1 stored whatever was posted, so a site can be holding
+ * a value like location=sidebar that no longer matches any <option> and would
+ * otherwise reach the front end unchecked.
+ *
+ * @return array<string, string>
+ */
+function browsers_unbounded_get_options() {
+    return browsers_unbounded_options_sanitize(get_option('browsers_unbounded_options'));
+}
+
+// hooks for the admin ui
+add_action('admin_menu', 'browsers_unbounded_plugin_menu');
+add_action('admin_init', 'browsers_unbounded_register_settings');
+
+// hooks for the public ui
+function browsers_unbounded_add_hooks_based_on_location() {
+    $options = browsers_unbounded_get_options();
+
+    if ($options['location'] === 'header') {
+        add_action('wp_head', 'browsers_unbounded_add_element');
+    } else {
+        add_action('wp_footer', 'browsers_unbounded_add_element');
+    }
+}
+add_action('init', 'browsers_unbounded_add_hooks_based_on_location');
+add_action('wp_enqueue_scripts', 'browsers_unbounded_enqueue_script');
+add_action('add_meta_boxes', 'browsers_unbounded_add_meta_box');
+add_action('save_post', 'browsers_unbounded_save_meta_box_data');
+
+ // menu item for settings page
+function browsers_unbounded_plugin_menu() {
+    add_menu_page(
+        __('Action Mode Settings', 'unbounded-by-lantern'),
+        __('Action Mode', 'unbounded-by-lantern'),
+        'manage_options',
+        'browsers-unbounded-settings',
+        'browsers_unbounded_plugin_settings_page'
+    );
+}
+
+// settings for storing plugin options
+function browsers_unbounded_register_settings() {
+    register_setting('browsers_unbounded_options_group', 'browsers_unbounded_options', array(
+        'sanitize_callback' => 'browsers_unbounded_options_sanitize',
+        'default'           => array(),
+    ));
+    add_settings_section('browsers_unbounded_main_section', null, null, 'browsers-unbounded-settings');
+    add_settings_field('browsers_unbounded_layout', __('Layout', 'unbounded-by-lantern'), 'browsers_unbounded_layout_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_theme', __('Theme', 'unbounded-by-lantern'), 'browsers_unbounded_theme_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_location', __('Location', 'unbounded-by-lantern'), 'browsers_unbounded_location_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_support_country', __('Country to Support', 'unbounded-by-lantern'), 'browsers_unbounded_support_country_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section', array('label_for' => 'browsers_unbounded_support_country'));
+    add_settings_field('browsers_unbounded_homepage', __('Display on Homepage', 'unbounded-by-lantern'), 'browsers_unbounded_homepage_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+    add_settings_field('browsers_unbounded_posts', __('Display on Posts', 'unbounded-by-lantern'), 'browsers_unbounded_posts_callback', 'browsers-unbounded-settings', 'browsers_unbounded_main_section');
+}
+
+/**
+ * Normalises the option array, on save and on read.
+ *
+ * The select values reach the front end as attributes on the widget element and
+ * the checkboxes decide whether it renders at all, so anything not on the
+ * allowlist falls back to the default rather than being stored and echoed.
+ *
+ * Always returns every key, which is what lets it double as the read path in
+ * browsers_unbounded_get_options().
+ *
+ * @param mixed $input Raw submitted or stored value.
+ * @return array<string, string>
+ */
+function browsers_unbounded_options_sanitize($input) {
+    // Two callers pass something that need not be an array: register_setting
+    // hands over whatever was posted, and get_option() returns false when
+    // nothing is stored yet.
+    if (!is_array($input)) {
+        $input = array();
+    }
+
+    $allowed = browsers_unbounded_allowed_values();
+    $clean = array();
+
+    foreach ($allowed as $key => $values) {
+        // is_scalar guard rather than relying on sanitize_key's own, which only
+        // grew one around WP 5.6; before that an array reached strtolower().
+        $submitted = (isset($input[$key]) && is_scalar($input[$key]))
+            ? sanitize_key($input[$key])
+            : '';
+        $clean[$key] = in_array($submitted, $values, true) ? $submitted : $values[0];
+    }
+
+    foreach (array('homepage', 'posts') as $key) {
+        $clean[$key] = empty($input[$key]) ? '' : 'on';
+    }
+
+    return $clean;
+}
+
+// render settings page
+function browsers_unbounded_plugin_settings_page() {
+    if (!current_user_can('manage_options')) {
+        return;
+    }
+    ?>
+    <div class="wrap">
+        <h2><?php esc_html_e('Action Mode Settings', 'unbounded-by-lantern'); ?></h2>
+        <form method="post" action="options.php">
+            <?php settings_fields('browsers_unbounded_options_group'); ?>
+            <?php do_settings_sections('browsers-unbounded-settings'); ?>
+            <?php submit_button(); ?>
+        </form>
+    </div>
+    <?php
+}
+
+// cb for rendering setting fields
+function browsers_unbounded_layout_callback() {
+    $layout = browsers_unbounded_get_options()['layout'];
+    ?>
+    <select id='browsers_unbounded_layout' name='browsers_unbounded_options[layout]'>
+        <option value='banner' <?php selected($layout, 'banner'); ?>><?php esc_html_e('Banner', 'unbounded-by-lantern'); ?></option>
+        <option value='panel' <?php selected($layout, 'panel'); ?>><?php esc_html_e('Panel', 'unbounded-by-lantern'); ?></option>
+        <option value='floating' <?php selected($layout, 'floating'); ?>><?php esc_html_e('Floating', 'unbounded-by-lantern'); ?></option>
+        <option value='simple' <?php selected($layout, 'simple'); ?>><?php esc_html_e('Simple', 'unbounded-by-lantern'); ?></option>
+    </select>
+    <p class="description"><?php esc_html_e('Select Action Mode layout.', 'unbounded-by-lantern'); ?></p>
+    <?php
+}
+
+
+function browsers_unbounded_theme_callback() {
+    $theme = browsers_unbounded_get_options()['theme'];
+    ?>
+    <select id='browsers_unbounded_theme' name='browsers_unbounded_options[theme]'>
+        <option value='light' <?php selected($theme, 'light'); ?>><?php esc_html_e('Light', 'unbounded-by-lantern'); ?></option>
+        <option value='dark' <?php selected($theme, 'dark'); ?>><?php esc_html_e('Dark', 'unbounded-by-lantern'); ?></option>
+        <option value='auto' <?php selected($theme, 'auto'); ?>><?php esc_html_e('Auto', 'unbounded-by-lantern'); ?></option>
+    </select>
+    <p class="description"><?php esc_html_e('Select Action Mode theme.', 'unbounded-by-lantern'); ?></p>
+    <?php
+}
+
+function browsers_unbounded_location_callback() {
+    $location = browsers_unbounded_get_options()['location'];
+    ?>
+    <select id='browsers_unbounded_location' name='browsers_unbounded_options[location]'>
+        <option value='header' <?php selected($location, 'header'); ?>><?php esc_html_e('Header', 'unbounded-by-lantern'); ?></option>
+        <option value='footer' <?php selected($location, 'footer'); ?>><?php esc_html_e('Footer', 'unbounded-by-lantern'); ?></option>
+    </select>
+    <p class="description"><?php esc_html_e('Select where to add Action Mode.', 'unbounded-by-lantern'); ?></p>
+    <?php
+}
+
+function browsers_unbounded_support_country_callback() {
+    $support_country = browsers_unbounded_get_options()['support_country'];
+    ?>
+    <select id='browsers_unbounded_support_country' name='browsers_unbounded_options[support_country]'>
+        <option value='' <?php selected($support_country, ''); ?>><?php esc_html_e('Anyone, wherever needed', 'unbounded-by-lantern'); ?></option>
+        <?php foreach (browsers_unbounded_support_countries() as $code => $name) : ?>
+            <option value='<?php echo esc_attr($code); ?>' <?php selected($support_country, $code); ?>><?php echo esc_html($name); ?></option>
+        <?php endforeach; ?>
+    </select>
+    <p class="description"><?php esc_html_e('Preselect a country for visitors to support. Visitors can still change it, and when nobody from that country needs help their connection goes wherever it is needed. Takes effect only once Lantern enables country support for the network; until then it is saved but has no effect.', 'unbounded-by-lantern'); ?></p>
+    <?php
+}
+
+function browsers_unbounded_homepage_callback() {
+    $homepage = browsers_unbounded_get_options()['homepage'];
+    ?>
+    <input type='checkbox' id='browsers_unbounded_homepage' name='browsers_unbounded_options[homepage]' <?php checked($homepage, 'on'); ?> />
+    <label for='browsers_unbounded_homepage'><?php esc_html_e('Enable widget on the homepage', 'unbounded-by-lantern'); ?></label>
+    <?php
+}
+
+function browsers_unbounded_posts_callback() {
+    $posts = browsers_unbounded_get_options()['posts'];
+    ?>
+    <input type='checkbox' id='browsers_unbounded_posts' name='browsers_unbounded_options[posts]' <?php checked($posts, 'on'); ?> />
+    <label for='browsers_unbounded_posts'><?php esc_html_e('Enable widget on all posts', 'unbounded-by-lantern'); ?></label>
+    <?php
+}
+
+
+// meta box to the page editor to enable the unbounded widget
+function browsers_unbounded_add_meta_box() {
+    add_meta_box('browsers-unbounded-enable', __('Enable Action Mode', 'unbounded-by-lantern'), 'browsers_unbounded_meta_box_callback', 'page', 'side');
+}
+
+// renders meta box in the page editor
+function browsers_unbounded_meta_box_callback($post) {
+    wp_nonce_field('browsers_unbounded_meta_box', 'browsers_unbounded_meta_box_nonce');
+    $value = get_post_meta($post->ID, '_browsers_unbounded_enable', true);
+    ?>
+    <label for="browsers_unbounded_field">
+        <input type="checkbox" id="browsers_unbounded_field" name="browsers_unbounded_field" value="1" <?php checked($value, 1); ?> />
+        <?php esc_html_e('Enable Action Mode on this page', 'unbounded-by-lantern'); ?>
+    </label>
+    <?php
+}
+
+// saves state meta box checkbox
+function browsers_unbounded_save_meta_box_data($post_id) {
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return;
+    }
+    if (!isset($_POST['browsers_unbounded_meta_box_nonce'])) {
+        return;
+    }
+    $nonce = sanitize_text_field(wp_unslash($_POST['browsers_unbounded_meta_box_nonce']));
+    if (!wp_verify_nonce($nonce, 'browsers_unbounded_meta_box')) {
+        return;
+    }
+    if (!current_user_can('edit_post', $post_id)) {
+        return;
+    }
+    $is_enabled = isset($_POST['browsers_unbounded_field']) ? '1' : '';
+    update_post_meta($post_id, '_browsers_unbounded_enable', $is_enabled);
+}
+
+/**
+ * Whether the widget should render on the request being served.
+ *
+ * @return bool
+ */
+function browsers_unbounded_should_display() {
+    global $post;
+    $options = browsers_unbounded_get_options();
+
+    $is_enabled = (is_page() && $post) ? get_post_meta($post->ID, '_browsers_unbounded_enable', true) : false;
+    $display_on_homepage = $options['homepage'] === 'on';
+    $display_on_posts = $options['posts'] === 'on';
+
+    return (bool) $is_enabled
+        || (is_single() && $display_on_posts)
+        || ($display_on_homepage && (is_front_page() || is_home()));
+}
+
+// enqueues the widget bundle when the widget is going to render
+function browsers_unbounded_enqueue_script() {
+    if (!browsers_unbounded_should_display()) {
+        return;
+    }
+
+    // No version string: the bundle is served unversioned, and appending ?ver=
+    // would only bust the CDN cache for every visitor.
+    wp_enqueue_script(
+        'browsers-unbounded-widget',
+        browsers_unbounded_script_url(),
+        array(),
+        null,
+        browsers_unbounded_get_options()['location'] === 'footer'
+    );
+}
+
+// the bundle is self-contained and does not block rendering, so defer it. Set
+// via filter rather than wp_enqueue_script's $args array, which needs WP 6.3.
+function browsers_unbounded_defer_script($tag, $handle) {
+    if ($handle !== 'browsers-unbounded-widget') {
+        return $tag;
+    }
+    return str_replace(' src=', ' defer="defer" src=', $tag);
+}
+add_filter('script_loader_tag', 'browsers_unbounded_defer_script', 10, 2);
+
+// prints the element the widget bundle mounts into
+function browsers_unbounded_add_element() {
+    if (!browsers_unbounded_should_display()) {
+        return;
+    }
+
+    $options = browsers_unbounded_get_options();
+
+    // The tag name is the widget's public API -- the bundle only looks for
+    // "browsers-unbounded" (or the legacy "lantern-network") -- so it stays put
+    // even though the product is now called Lantern Action Mode.
+    // Omitted when unset, so sites that never touch the setting print exactly
+    // the markup they did before it existed.
+    $support_country = $options['support_country'] === ''
+        ? ''
+        : sprintf(" data-support-country='%s'", esc_attr($options['support_country']));
+
+    printf(
+        "<browsers-unbounded data-layout='%s' data-theme='%s'%s style='width: 100%%;'></browsers-unbounded>",
+        esc_attr($options['layout']),
+        esc_attr($options['theme']),
+        $support_country
+    );
+}

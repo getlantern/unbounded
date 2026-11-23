@@ -1,6 +1,6 @@
 {
-  "short_name": "Browsers Unbounded",
-  "name": "Browsers Unbounded",
+  "short_name": "Action Mode",
+  "name": "Lantern Action Mode",
   "start_url": ".",
   "display": "standalone",
   "theme_color": "#000000",

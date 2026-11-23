@@ -16,11 +16,12 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/attribute"
+	otelcodes "go.opentelemetry.io/otel/codes"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/getlantern/broflake/common"
-	"github.com/getlantern/telemetry"
 )
 
 // TODO: rate limiters and fancy settings and such:
@@ -40,13 +41,33 @@ var nQUICStreams uint64
 // nQUICConnections is the number of open QUIC connections
 var nQUICConnections uint64
 
-// nIngressBytes is the number of bytes received over all WebSocket connections since the last otel measurement callback
-var nIngressBytes uint64
+// nQUICConnectionsDialed counts every QUIC connection the egress has dialed. Each one is a
+// consumer whose WebRTC hop through a volunteer came up, so against freddie's delivered ICE
+// messages it gives the share of signaling handshakes that end in a working connection.
+var nQUICConnectionsDialed uint64
 
-var nClientsCounter metric.Int64ObservableUpDownCounter
-var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
-var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
-var nIngressBytesCounter metric.Int64ObservableUpDownCounter
+// The metric instruments, their otel callback and the provider lifecycle live in
+// metrics.go. They are process-scoped, not per-listener, which is the whole point
+// of them being over there.
+
+// tracer emits one span per WebSocket session. Sessions are the unit an
+// operator actually asks about ("did this consumer get served?"), and a span
+// per session carries the consumer session ID without the unbounded-cardinality
+// problem that the same ID would cause as a metric label.
+var tracer = otel.Tracer("github.com/getlantern/broflake/egress")
+
+// Span and attribute names for the per-session spans.
+const (
+	spanWebSocketSession = "egress.websocket_session"
+
+	attrConsumerSessionID = "broflake.consumer_session_id"
+	attrDonorCountry      = "broflake.donor_country"
+	attrConsumerCountry   = "broflake.consumer_country"
+	attrIngressBytes      = "broflake.session_ingress_bytes"
+	attrQUICStreams       = "broflake.session_quic_streams"
+	attrTeardownReason    = "broflake.teardown_reason"
+	attrProtocolVersion   = "broflake.protocol_version"
+)
 
 type proxyListener struct {
 	net.Listener
@@ -54,6 +75,10 @@ type proxyListener struct {
 	connections  chan net.Conn
 	addr         net.Addr
 	closeMetrics func(ctx context.Context) error
+	activations  *activations
+	// releaseCert removes this listener's certificate from the process-wide
+	// certificate gauges. Idempotent, like closeMetrics.
+	releaseCert func()
 }
 
 func (l proxyListener) Accept() (net.Conn, error) {
@@ -67,9 +92,20 @@ func (l proxyListener) Addr() net.Addr {
 
 func (l proxyListener) Close() error {
 	err := l.Listener.Close()
+	l.releaseCert()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	l.closeMetrics(ctx)
+
+	// Logged rather than returned, and definitely rather than discarded as it was.
+	// A failed shutdown means the provider could not flush, so whatever it had
+	// buffered is gone — worth knowing, since the symptom is otherwise a metric
+	// that simply stops with no explanation. But it is not a reason to tell the
+	// caller that closing the listener failed: telemetry is observability, never a
+	// gate, and conflating the two would have a lost flush look like a lost socket.
+	if metricsErr := l.closeMetrics(ctx); metricsErr != nil {
+		slog.Warn("Metrics shutdown failed; buffered telemetry was likely dropped",
+			"error", metricsErr)
+	}
 	return err
 }
 
@@ -88,9 +124,65 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	consumerSessionID, version, ok := common.ParseSubprotocolsRequest(subprotocols)
+	consumerSessionID, version, consumerCountry, activationID, ok := common.ParseSubprotocolsRequestWithActivation(subprotocols)
 	if !ok {
-		slog.Debug("Refused WebSocket connection, missing subprotocols")
+		// ParseSubprotocolsRequestWithActivation returns !ok for three different
+		// situations with three different owners, so they are reported separately.
+		// Collapsing them is not a cosmetic loss: the egress refused ~9
+		// connections/second for ten days, and the single "missing subprotocols"
+		// label was consistent with every competing explanation, so it identified
+		// nobody.
+		//
+		// Test the RAW header for absence, not the filtered list:
+		// "Sec-WebSocket-Protocol: ," filters down to zero values, so keying off the
+		// filtered slice reported a client that clearly sent something as though it
+		// had sent nothing.
+		reason, msg, logValues := classifySubprotocolRefusal(rawSubprotocols, subprotocols)
+
+		// A status only for the legacy client, because it is the only one of these
+		// where a specific remedy exists and a real operator is plausibly watching.
+		// These nine hosts have been retrying roughly once a second for months, and
+		// from the outside the client looks healthy the whole time: websocket.Dial
+		// returns an error, the client backs off and tries again, and that is
+		// indistinguishable from ordinary transient network trouble. Nothing says the
+		// handshake itself is obsolete. A status code is the only channel we have to
+		// whoever runs them.
+		//
+		// 426 rather than the 418 used above for a version-header mismatch: 426 is the
+		// registered status for "you must upgrade to talk to me", so it reads correctly
+		// in a log without knowing this codebase, and keeping the two distinct means a
+		// refusal's status alone says which check rejected it.
+		if reason == refusedLegacyTeamClient {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			w.Write([]byte("426 upgrade required: this client predates the current " +
+				"handshake and cannot be served; please update Action Mode\n"))
+		}
+
+		recordRefusal(reason)
+		// The counter is the record; the log is a sample. See refusalLogInterval —
+		// these lines were 96% of the journal on unbounded-us.
+		if shouldLog, suppressed := shouldLogRefusal(reason, time.Now()); shouldLog {
+			// Built inside the throttle, not before it. peerAttrs resolves the
+			// donor's country, which is a geo database lookup, and this branch
+			// is the ~9 refusals/second path described above — building attrs
+			// unconditionally meant paying for that lookup on every refusal to
+			// discard it on all but one per minute.
+			attrs := append(peerAttrs(r), "subprotocol_count", len(subprotocols))
+			if logValues {
+				// Bounded even though the cookie mismatch means no session ID is
+				// present: these are still unbounded, peer-chosen bytes headed
+				// for disk.
+				attrs = append(attrs, "subprotocol_values", truncateForLog(strings.Join(subprotocols, "|")))
+			}
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			// Info so it leaves the host. This is the sample that identifies a
+			// refused population — country, user agent and the raw subprotocol
+			// values — and the throttle is what makes it safe at an exported
+			// level.
+			slog.Info(msg, attrs...)
+		}
 		return
 	}
 
@@ -100,7 +192,14 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	if !common.IsValidProtocolVersion(versionHeader) {
 		w.WriteHeader(http.StatusTeapot)
 		w.Write([]byte("418\n"))
-		slog.Debug("Refused WebSocket connection, bad protocol version")
+		recordRefusal(refusedBadProtocolVersion)
+		if shouldLog, suppressed := shouldLogRefusal(refusedBadProtocolVersion, time.Now()); shouldLog {
+			attrs := append(peerAttrs(r), "version", truncateForLog(version))
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			slog.Info("Refused WebSocket connection, bad protocol version", attrs...)
+		}
 		return
 	}
 
@@ -110,9 +209,62 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// https://github.com/getlantern/broflake/issues/45
 
 	if consumerSessionID == "" {
-		slog.Debug("Refused WebSocket connection, missing consumer session ID")
+		recordRefusal(refusedMissingCSID)
+		if shouldLog, suppressed := shouldLogRefusal(refusedMissingCSID, time.Now()); shouldLog {
+			attrs := peerAttrs(r)
+			if suppressed > 0 {
+				attrs = append(attrs, "suppressed_since_last", suppressed)
+			}
+			slog.Info("Refused WebSocket connection, missing consumer session ID", attrs...)
+		}
 		return
 	}
+
+	// One span per WebSocket session. Started before websocket.Accept so that a
+	// failed accept is still visible rather than vanishing, and parented to the
+	// otelhttp request span. We discard the returned context deliberately: the
+	// QUIC stream goroutine below runs on its own lifecycle (wsContext), and
+	// threading a request-scoped context into it would tie stream teardown to
+	// this handler's span rather than to the migration window.
+	//
+	// The donor country is not known until the peer address resolves after
+	// Accept, so it is attached further down.
+	_, span := tracer.Start(r.Context(), spanWebSocketSession, oteltrace.WithAttributes(
+		attribute.String(attrConsumerSessionID, csidPrefix(consumerSessionID)),
+		attribute.String(attrProtocolVersion, version),
+	))
+	if consumerCountry != "" {
+		span.SetAttributes(attribute.String(attrConsumerCountry, consumerCountry))
+	}
+
+	// Per-session counters. These are the numbers that answer "did this session
+	// actually carry traffic?", which the fleet-wide counters cannot.
+	var sessionBytes int64
+	var sessionStreams int64
+	var keepaliveFailed atomic.Bool
+	teardown := teardownWebSocketClosed
+	defer func() {
+		// A wedged peer is distinguishable from a disconnected one only by an
+		// unanswered keepalive, so let that outrank the generic close reason.
+		if keepaliveFailed.Load() {
+			teardown = teardownKeepaliveTimeout
+		}
+		// Count it as well as recording it on the span. The span is sampled at 1%, so
+		// it answers "what happened in this session" but cannot answer "how often does
+		// this happen" — which is the question a detector asks.
+		recordTeardown(teardown)
+		span.SetAttributes(
+			attribute.Int64(attrIngressBytes, atomic.LoadInt64(&sessionBytes)),
+			attribute.Int64(attrQUICStreams, atomic.LoadInt64(&sessionStreams)),
+			attribute.String(attrTeardownReason, string(teardown)),
+		)
+		// A session that moved no bytes is the failure mode worth finding, so
+		// mark it on the span rather than leaving every session status Unset.
+		if atomic.LoadInt64(&sessionBytes) == 0 {
+			span.SetStatus(otelcodes.Error, "session carried no ingress bytes")
+		}
+		span.End()
+	}()
 
 	c, err := websocket.Accept(
 		w,
@@ -124,32 +276,62 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		},
 	)
 	if err != nil {
+		teardown = teardownAcceptFailed
+		span.RecordError(err)
 		slog.Debug("Error accepting WebSocket connection", "error", err)
 		return
 	}
 
 	tcpAddr, err := net.ResolveTCPAddr("tcp", r.RemoteAddr)
 	if err != nil {
+		// c is already accepted at this point but wspconn — and its deferred
+		// Close — is not built until below, so this path leaked the connection
+		// and its goroutines. Pre-existing on main; closing it here since this
+		// branch is being touched anyway.
+		c.CloseNow()
+		teardown = teardownPeerAddrBad
+		span.RecordError(err)
 		slog.Debug("Error resolving TCPAddr", "error", err)
 		return
 	}
 
+	// Resolved once per session, never per packet: this is a database lookup and
+	// the read path is hot.
+	//
+	// donorGeoAddr, not tcpAddr: behind Caddy the transport peer is always loopback,
+	// which geolocates to nothing. tcpAddr stays the transport address for wspconn and
+	// netstate below, where loopback is the right answer.
+	donorCC := donorCountry(donorGeoAddr(r, tcpAddr))
+	stats := statsFor(donorCC)
+	span.SetAttributes(attribute.String(attrDonorCountry, donorCC))
+
+	atomic.AddInt64(&stats.clients, 1)
+	defer atomic.AddInt64(&stats.clients, -1)
+
 	wspconn := errorlessWebSocketPacketConn{
-		w:         c,
-		addr:      common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
-		keepalive: websocketKeepalive,
-		tcpAddr:   tcpAddr,
-		readError: make(chan error),
+		w:               c,
+		addr:            common.DebugAddr(fmt.Sprintf("WebSocket connection %v", uuid.NewString())),
+		keepalive:       websocketKeepalive,
+		tcpAddr:         tcpAddr,
+		readError:       make(chan error),
+		stats:           stats,
+		sessionBytes:    &sessionBytes,
+		keepaliveFailed: &keepaliveFailed,
+		ioSets:          proxyIOSetsFor(donorCC),
+		frameV1:         &atomic.Bool{},
 	}
 
 	defer wspconn.Close()
-	slog.Debug("Accepted a new WebSocket connection!", "csid", consumerSessionID, "total", atomic.AddUint64(&nClients, 1))
+	slog.Debug("Accepted a new WebSocket connection!", "csid", csidPrefix(consumerSessionID), "donor_country", donorCC, "total", atomic.AddUint64(&nClients, 1))
 
-	conn, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
+	conn, donor, err := l.connectionManager.createOrMigrate(consumerSessionID, &wspconn)
 	if err != nil {
+		teardown = teardownMigrateFailed
+		span.RecordError(err)
 		slog.Debug("createOrMigrate error, closing!", "error", err)
 		return
 	}
+	l.activations.record(r.Context(), activationID, donorCC)
 
 	// Here we enter the steady state for the WebSocket tunnel and continue until there's some reason
 	// to tear the tunnel down. An explainer about teardown: teardown begins when we intercept a read
@@ -157,7 +339,7 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	// is no longer connected. (See commentary around errorlessWebSocketPacketConn for more context
 	// around error interception). When we intercept a read error on the errorlessWebSocketPacketConn,
 	// we wait for a bounded duration of time (the "migration window"), and then we delete the QUIC
-	// connection state from the connection manager if it has not been migrated within that window.
+	// connection state only if this donor still owns it when that window ends.
 	// The deletion operation will cause AcceptStream (below) to return an error, which returns from
 	// and cleans up the stream handling goroutine. If the QUIC connection DID migrate within the
 	// migration window, we keep its state intact, and we forcibly kill the stream handling goroutine
@@ -171,13 +353,13 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		for {
 			stream, err := conn.AcceptStream(wsContext)
-
 			if err != nil {
 				slog.Debug("QUIC AcceptStream error, terminating handler", "addr", wspconn.addr, "error", err)
 				QUICLayerError <- struct{}{}
 				close(QUICLayerError)
 				return
 			}
+			atomic.AddInt64(&sessionStreams, 1)
 			slog.Debug("Accepted a new QUIC stream!", "total", atomic.AddUint64(&nQUICStreams, 1))
 
 			l.connections <- common.QUICStreamNetConn{
@@ -198,9 +380,8 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// necessary, then return from handleWebsocket.
 		slog.Debug("read error, waiting for migration...", "addr", wspconn.addr, "migration_window_s", l.connectionManager.migrationWindow.Seconds())
 
-		t1 := time.Now()
 		<-time.After(l.connectionManager.migrationWindow)
-		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, t1)
+		l.connectionManager.deleteIfCurrent(consumerSessionID, conn, donor)
 		wsCancel()
 	case <-QUICLayerError:
 		// Unexpected *inside-out* tunnel collapse: we should only enter this path if there's a bug. If
@@ -208,64 +389,27 @@ func (l proxyListener) handleWebsocket(w http.ResponseWriter, r *http.Request) {
 		// initiate as part of our orderly outside-in tunnel collapse. This can happen, for example,
 		// if the QUIC connection times out due to inactivity. To resynchronize, we delete the QUIC
 		// connection state and return from handleWebsocket, closing the tunnel completely.
-		l.connectionManager.deleteIfNotMigratedSince(consumerSessionID, time.Now().Add(24*time.Hour))
+		l.connectionManager.deleteOnQUICFailure(consumerSessionID, conn)
 	}
 }
 
 func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (net.Listener, error) {
-	closeFuncMetric := telemetry.EnableOTELMetrics(ctx)
-	m := otel.Meter("github.com/getlantern/broflake/egress")
-	var err error
-	nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets")
+	// Instruments and the otel callback are installed once for the process, not once
+	// per listener; see metrics.go for what calling this twice used to do. What comes
+	// back is this listener's release function, not a global off switch — it shuts
+	// telemetry down only when the last listener closes.
+	closeFuncMetric, err := startMetrics(ctx)
 	if err != nil {
-		closeFuncMetric(ctx)
 		return nil, err
 	}
 
-	nQUICConnectionsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-connections")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
+	// Geolocation is on by default; GEODB only overrides which database is used.
+	// It is observability, never a gate on serving traffic — a failure here labels
+	// series "unknown" and changes nothing else.
+	initDonorGeo()
 
-	nQUICStreamsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-streams")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes")
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
-
-	_, err = m.RegisterCallback(
-		func(ctx context.Context, o metric.Observer) error {
-			c := atomic.LoadUint64(&nClients)
-			o.ObserveInt64(nClientsCounter, int64(c))
-
-			q := atomic.LoadUint64(&nQUICConnections)
-			o.ObserveInt64(nQUICConnectionsCounter, int64(q))
-
-			s := atomic.LoadUint64(&nQUICStreams)
-			o.ObserveInt64(nQUICStreamsCounter, int64(s))
-
-			b := atomic.LoadUint64(&nIngressBytes)
-			o.ObserveInt64(nIngressBytesCounter, int64(b))
-
-			atomic.StoreUint64(&nIngressBytes, uint64(0))
-			return nil
-		},
-		nClientsCounter,
-		nQUICConnectionsCounter,
-		nQUICStreamsCounter,
-		nIngressBytesCounter,
-	)
-	if err != nil {
-		closeFuncMetric(ctx)
-		return nil, err
-	}
+	// After startMetrics, so the line reaches the exported logs.
+	releaseCert := registerEgressCert(tlsConfig)
 
 	cm := &connectionManager{
 		connections:     make(map[string]*connectionRecord),
@@ -281,6 +425,8 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 		connections:       make(chan net.Conn, 2048),
 		addr:              ll.Addr(),
 		closeMetrics:      closeFuncMetric,
+		releaseCert:       releaseCert,
+		activations:       newActivations(newMemoryActivations()),
 	}
 
 	// Use a fresh ServeMux per listener rather than http.DefaultServeMux.
@@ -298,7 +444,9 @@ func NewListener(ctx context.Context, ll net.Listener, tlsConfig *tls.Config) (n
 	// above already cover the only useful signals (concurrent ws/quic/streams,
 	// ingress bytes); per-request HTTP metrics on a single upgrade endpoint
 	// add no information.
-	mux.Handle("/ws", otelhttp.NewHandler(http.HandlerFunc(l.handleWebsocket), "/ws",
+	mux.HandleFunc(freezeReportPath, l.handleFreezeReport)
+
+	mux.Handle("/ws", otelhttp.NewHandler(withURLFull(http.HandlerFunc(l.handleWebsocket)), "/ws",
 		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider())))
 
 	srv := &http.Server{

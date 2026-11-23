@@ -15,9 +15,12 @@ import (
 
 type UIImpl struct {
 	UI
-	BroflakeEngine         *BroflakeEngine
-	ID                     string
-	OnConnectionChangeFunc ConnectionChangeFunc
+	BroflakeEngine             *BroflakeEngine
+	ID                         string
+	OnConnectionChangeFunc     ConnectionChangeFunc
+	OnConnectionChangeInfoFunc ConnectionChangeInfoFunc
+	OnDownstreamChunkFunc      ChunkFunc
+	OnUpstreamChunkFunc        ChunkFunc
 }
 
 func (ui *UIImpl) Init(bf *BroflakeEngine) {
@@ -43,6 +46,50 @@ func (ui *UIImpl) Init(bf *BroflakeEngine) {
 		"debug",
 		js.FuncOf(func(this js.Value, args []js.Value) interface{} { ui.Debug(); return nil }),
 	)
+
+	// setTargetCountries("IR") or setTargetCountries("IR,RU") names the countries whose consumers
+	// this widget prefers to serve; "" clears the preference. Safe to call at any time: each
+	// worker picks it up with its next genesis message.
+	js.Global().Get(ui.ID).Set(
+		"setTargetCountries",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			csv := ""
+			if len(args) > 0 && args[0].Type() == js.TypeString {
+				csv = args[0].String()
+			}
+			ui.BroflakeEngine.setTargetCountries(strings.Split(csv, ","))
+			return nil
+		}),
+	)
+
+	// setRoomTickets(["...", "..."]) or setRoomTickets("...,...") gives the
+	// widget its helper pairings' volunteer tickets (from POST
+	// /v1/helper/tickets). setRoomTickets([]) leaves every room, and so does
+	// any argument it does not recognise, on purpose: see roomTicketsArg.
+	// Safe to call at any time. Nothing here logs: tickets are credentials.
+	js.Global().Get(ui.ID).Set(
+		"setRoomTickets",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			ui.BroflakeEngine.setRoomTickets(roomTicketsArg(jsArg(args, 0)))
+			return nil
+		}),
+	)
+
+	// setServePool(true) also serves everyone ("help others too");
+	// setServePool(false), or anything but a boolean true, limits the widget
+	// to its pairings' rooms: see servePoolArg.
+	js.Global().Get(ui.ID).Set(
+		"setServePool",
+		js.FuncOf(func(this js.Value, args []js.Value) interface{} {
+			ui.BroflakeEngine.setServePool(servePoolArg(jsArg(args, 0)))
+			return nil
+		}),
+	)
+
+	// Exposes liveness() so the page can tell a wedged Go runtime apart from a
+	// wedged browser main thread. See watchdog_wasm_impl.go for why that
+	// distinction is the one that matters.
+	installWatchdog(ui.ID)
 }
 
 func (ui UIImpl) Start() {
@@ -79,6 +126,9 @@ func (ui UIImpl) OnStartup() {
 // 'downstreamChunk' fires once for each chunk of data received
 // 'size' is the size of the chunk in bytes, 'workerIdx' is the 0-indexed ID of the connection slot
 func (ui UIImpl) OnDownstreamChunk(size int, workerIdx int) {
+	if ui.OnDownstreamChunkFunc != nil {
+		ui.OnDownstreamChunkFunc(size, workerIdx)
+	}
 	detail := map[string]interface{}{"size": size, "workerIdx": workerIdx}
 	ui.fireEvent("downstreamChunk", detail)
 }
@@ -88,6 +138,17 @@ func (ui UIImpl) OnDownstreamChunk(size int, workerIdx int) {
 func (ui UIImpl) OnDownstreamThroughput(bytesPerSec int) {
 	detail := map[string]interface{}{"bytesPerSec": bytesPerSec}
 	ui.fireEvent("downstreamThroughput", detail)
+}
+
+// 'upstreamChunk' fires up to uiRefreshHz times per second for each connection slot that sent
+// data upstream since the last event. 'size' is the number of bytes sent since then, 'workerIdx'
+// is the 0-indexed ID of the connection slot
+func (ui UIImpl) OnUpstreamChunk(size int, workerIdx int) {
+	if ui.OnUpstreamChunkFunc != nil {
+		ui.OnUpstreamChunkFunc(size, workerIdx)
+	}
+	detail := map[string]interface{}{"size": size, "workerIdx": workerIdx}
+	ui.fireEvent("upstreamChunk", detail)
 }
 
 // 'consumerConnectionChange' fires when a consumer connects or disconnects. 'state' is 1 or -1,
@@ -107,4 +168,35 @@ func (ui UIImpl) OnConsumerConnectionChange(state int, workerIdx int, addr net.I
 
 	detail := map[string]interface{}{"state": state, "workerIdx": workerIdx, "addr": addrString}
 	ui.fireEvent("consumerConnectionChange", detail)
+}
+
+// jsArg converts args[i] for the native-tested argument mappings in
+// ui_args.go: a boolean, string or number to bool, string or float64, an
+// array to []any of those, and anything else, including a missing argument,
+// undefined and null, to nil.
+func jsArg(args []js.Value, i int) any {
+	if i >= len(args) {
+		return nil
+	}
+	v := args[i]
+	if v.Type() == js.TypeObject && js.Global().Get("Array").Call("isArray", v).Bool() {
+		out := make([]any, v.Length())
+		for j := range out {
+			out[j] = jsScalar(v.Index(j))
+		}
+		return out
+	}
+	return jsScalar(v)
+}
+
+func jsScalar(v js.Value) any {
+	switch v.Type() {
+	case js.TypeBoolean:
+		return v.Bool()
+	case js.TypeString:
+		return v.String()
+	case js.TypeNumber:
+		return v.Float()
+	}
+	return nil
 }

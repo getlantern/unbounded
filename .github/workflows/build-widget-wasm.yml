@@ -1,0 +1,341 @@
+name: Build widget (wasm)
+
+# The browser widget is compiled to js/wasm from ./cmd (see cmd/build_web.sh),
+# but nothing in CI built that target, and ui/public/widget.wasm is a committed
+# prebuilt binary. Between them, a source change could break the widget build
+# and every check would still pass — which is exactly what happened: covertdtls
+# landed in clientcore without wasm build tags and broke `GOOS=js GOARCH=wasm
+# go build ./cmd` on main, undetected.
+#
+# The build job exists so that failure mode cannot recur silently.
+#
+# It now also publishes. Until 2026-08-05 widget.wasm reached embed.lantern.io only
+# via someone running `yarn deploy` by hand, and the consequence was a live widget
+# four months stale: the binary served on 2026-08-03 predated the Go liveness
+# heartbeat by half a day and predated its own source by far longer. A release step
+# that only happens when a human remembers is a release step that does not happen.
+#
+# Publishing is gated on the wasm build AND the full native test suite, so "it reached
+# users" implies "it compiled for the target and every package passed". That is a
+# real gate but not a complete one — there is no functional or browser test of the
+# widget, so a change that compiles and unit-tests clean can still ship a broken
+# widget to every donor. Worth closing before relying on this too heavily.
+#
+# Publishes BOTH halves of embed.lantern.io: widget.wasm and the page that loads it.
+#
+# It began as wasm-only, which turned out to be worse than useless for the thing it
+# was added for. unbounded.lantern.io is a separate Next.js site that pulls the
+# widget in via <script src="https://embed.lantern.io/static/js/main.js">, so the
+# page JS ships from this branch too. Automating only the binary left #383's freeze
+# watchdog with no path to production at all, and left a trap: `yarn deploy` (the
+# manual page deploy) pushes the committed ui/public/widget.wasm, which would have
+# silently reverted the automated binary to a months-old build.
+#
+# Both are published from one job so they cannot disagree, and widget.wasm is
+# written from the Go build *after* the page files are copied — so whatever stale
+# binary ui/public/ happens to hold is always overwritten rather than shipped.
+#
+# The page build config comes from ui/.env.production.example, which is tracked and
+# byte-identical to the gitignored ui/.env.production. Nothing in it is secret: every
+# REACT_APP_* value is compiled into a world-readable bundle by definition, and the
+# one token-shaped key (STRAPI_API_TOKEN) is read only by scripts/translate.js, not
+# by the build.
+#
+# Build only, no `go vet`: vetting under wasm tags currently reports four
+# pre-existing findings in clientcore (user.go lostcancel x2, unreachable code in
+# egress_consumer.go and webrtc_api_js.go) that native vet never type-checks.
+# Adding the step would land this job red on arrival. Worth fixing separately,
+# then enabling here.
+#
+# No step interpolates event data (issue/PR titles, branch names, commit
+# messages) into a run: command, so there is no workflow-injection surface here.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clientcore/**'
+      - 'common/**'
+      - 'cmd/**'
+      - 'netstate/**'
+      - 'ui/**'
+      - 'egress/**'
+      - 'freddie/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-widget-wasm.yml'
+  pull_request:
+    paths:
+      - 'clientcore/**'
+      - 'common/**'
+      - 'cmd/**'
+      - 'netstate/**'
+      - 'ui/**'
+      - 'egress/**'
+      - 'freddie/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/build-widget-wasm.yml'
+
+# Read-only by default. Only the publish job widens this, and only for itself.
+permissions:
+  contents: read
+
+jobs:
+  build-wasm:
+    name: go build js/wasm
+    runs-on: ubuntu-latest
+    steps:
+      # persist-credentials: false because this job never pushes. checkout
+      # otherwise leaves the token in .git/config, and both this job and `test`
+      # below execute PR-authored code — a test or build directive added by a pull
+      # request could read it out. Read-only on fork PRs, but there is no reason
+      # for it to be readable at all here.
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
+
+      - name: Build widget for js/wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        # Mirrors cmd/build_web.sh, minus the output path: we only care that it
+        # compiles. -o /dev/null keeps the artifact out of the workspace so it
+        # can't be mistaken for something publishable.
+        run: go build -ldflags "-s -w" -o /dev/null ./cmd
+
+      - name: Run browser-only tests for js/wasm
+        # The native test job skips files built only for wasm. go_js_wasm_exec
+        # runs the test binary under Node, which the runner image includes.
+        # env -i keeps the environment under the size the wasm runtime accepts.
+        run: |
+          env -i HOME="$HOME" PATH="$(go env GOROOT)/lib/wasm:$PATH" \
+            GOCACHE="$(go env GOCACHE)" GOMODCACHE="$(go env GOMODCACHE)" GOPATH="$(go env GOPATH)" \
+            GOOS=js GOARCH=wasm \
+            go test -run 'TestProducerNetOfIgnoresMappedOptionsInTheBrowser' ./clientcore/
+
+  test:
+    name: go test (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
+
+      # Every package, not just the ones the widget is built from. The narrower list
+      # meant the egress was never tested here at all: its paths did not trigger this
+      # workflow, and even when another path did, the command excluded it. 42 tests
+      # across five egress files had never run in CI, and #385, #387, #395, #397 and
+      # #399 all merged on local verification alone.
+      #
+      # The whole suite runs in about six seconds with -race, so the narrower list was
+      # not buying anything.
+      #
+      # -race because it earns its runtime here. Three separate concurrency and
+      # ordering bugs this cycle were caught only by -race locally — a geo test suite
+      # that depended on a network download completing, and two lost-update paths in
+      # the refusal and teardown tallies. Without it CI would have been green on all
+      # three.
+      #
+      # Native rather than js/wasm: there is no wasm test runner, and the build job
+      # above already covers that target compiling.
+      - name: Test
+        run: go test -race ./...
+
+  publish:
+    name: publish widget + page to gh-pages
+    # Both gates must pass. A publish that only required compilation would put a
+    # binary in front of every donor on the strength of the type checker alone.
+    needs: [build-wasm, test]
+    # Merges only. A PR must never be able to publish — it would let any fork's
+    # branch write to the branch users are served from.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the built wasm to gh-pages
+    # Job-level, not workflow-level. Only this job touches a shared ref, and a
+    # workflow-level group with cancel-in-progress:false would queue every
+    # build+test run repo-wide behind every other one — so a PR pushed three times
+    # would sit waiting on its own earlier runs for no reason.
+    concurrency:
+      group: publish-widget-wasm
+      cancel-in-progress: false
+    steps:
+      # Credentials are persisted here, unlike the jobs above: this is the one job
+      # that pushes, and `git push origin` needs the token checkout leaves in the
+      # local git config.
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            egress/testdata/legacy-consumer/go.sum
+
+      # Real output path this time, unlike build-wasm above. Same flags as
+      # cmd/build_web.sh so what ships matches what a local build produces.
+      - name: Build widget.wasm
+        env:
+          GOOS: js
+          GOARCH: wasm
+        run: go build -ldflags "-s -w" -o "$RUNNER_TEMP/widget.wasm" ./cmd
+
+      # Sanity-check the artifact before it can replace a live one. A zero-byte or
+      # truncated file would still "build" if the toolchain failed strangely, and
+      # publishing one takes every donor offline until the next merge.
+      - name: Verify the artifact looks like a wasm module
+        run: |
+          set -euo pipefail
+          f="$RUNNER_TEMP/widget.wasm"
+          size=$(stat -c%s "$f")
+          echo "size=$size"
+          # The live binary is ~12MB. Anything under 1MB is not a broflake widget.
+          if [ "$size" -lt 1000000 ]; then
+            echo "artifact implausibly small: $size bytes" >&2
+            exit 1
+          fi
+          # Wasm magic number: 0x00 'a' 's' 'm'
+          magic=$(head -c 4 "$f" | od -An -tx1 | tr -d ' \n')
+          echo "magic=$magic"
+          if [ "$magic" != "0061736d" ]; then
+            echo "artifact is not a wasm module (magic $magic)" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          # Not the newest: react-scripts 5 is unmaintained and its webpack/openssl
+          # assumptions get less reliable the further ahead of it Node runs.
+          node-version: '20'
+          cache: yarn
+          cache-dependency-path: ui/yarn.lock
+
+      # ui/.env.production is gitignored, but ui/.env.production.example is tracked
+      # and byte-identical to it, so the tracked file is the source of truth here.
+      # Copying rather than duplicating the values into this workflow keeps one place
+      # to change them and no chance of CI and a local build drifting apart.
+      - name: Build the widget page
+        working-directory: ui
+        run: |
+          set -euo pipefail
+          cp .env.production.example .env.production
+          yarn install --frozen-lockfile
+          # Stamp the bundle with the commit it was built from. CRA lets a shell
+          # REACT_APP_* override .env.production, so this wins over the placeholder
+          # in the tracked example file without editing it.
+          #
+          # It matters because donor pages are long-lived: they keep running whatever
+          # bundle they loaded with, so for days after a widget fix the fleet runs
+          # several versions at once. Freeze reports carry this value, which is what
+          # makes "an old client is still reporting" distinguishable from "the new code
+          # is broken" — previously that took 48 hours of watching a decay curve.
+          REACT_APP_BUILD="${{ github.sha }}" yarn build:web
+
+      # Same reasoning as the wasm check: a page build can "succeed" and still emit
+      # something that would break every embedder, and publishing it takes the widget
+      # down until the next merge.
+      - name: Verify the page build
+        run: |
+          set -euo pipefail
+          b=ui/build
+
+          # CNAME is the one file whose absence breaks DNS for embed.lantern.io
+          # rather than merely breaking the page. It reaches the branch only because
+          # it sits in ui/public/, which is easy to disturb without noticing.
+          # Read once, capturing either the contents or cat's error as the value, so
+          # the comparison below is the only guard. || true because a bare
+          # cname=$(cat missing) aborts under set -e before the friendlier message.
+          cname=$(cat "$b/CNAME" 2>&1 || true)
+          if [ "$cname" != "embed.lantern.io" ]; then
+            echo "CNAME missing or wrong: $cname" >&2
+            exit 1
+          fi
+
+          # The entry point unbounded.lantern.io loads by absolute URL. Its name is
+          # pinned by ui/scripts/build.js (static/js/[name].js, no content hash), so
+          # the path is stable and worth asserting rather than globbing.
+          js=$b/static/js/main.js
+          size=$(stat -c%s "$js")
+          echo "main.js=$size bytes"
+          # A real bundle is ~800KB. Anything this far under is a broken build.
+          if [ "$size" -lt 300000 ]; then
+            echo "main.js implausibly small: $size bytes" >&2
+            exit 1
+          fi
+
+          for f in index.html storage.html popup.html offscreen.html asset-manifest.json; do
+            [ -s "$b/$f" ] || { echo "missing or empty: $f" >&2; exit 1; }
+          done
+
+      # Separate worktree rather than a branch switch, so the built artifact in
+      # RUNNER_TEMP is untouched and the checked-out source stays available.
+      - name: Publish to gh-pages
+        env:
+          # Only ever the resolved SHA of the pushed commit — never a ref name,
+          # branch, or message — so nothing attacker-controlled reaches the shell.
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Name the destination ref explicitly. `git fetch origin gh-pages` alone
+          # lands in FETCH_HEAD, and the opportunistic remote-tracking update only
+          # fires for refs matching the configured remote.origin.fetch refspec —
+          # which actions/checkout narrows to the branch it checked out. So
+          # refs/remotes/origin/gh-pages would never exist and the worktree add
+          # below would fail with "invalid reference".
+          git fetch --depth=1 origin gh-pages:refs/remotes/origin/gh-pages
+          # --detach so HEAD is a bare commit rather than a new local gh-pages
+          # branch: `git worktree add <path> <name>` treats a name that exists only
+          # as a remote-tracking ref as --track -b, which would make the push below
+          # depend on branch tracking config rather than the explicit refspec.
+          git worktree add --detach /tmp/ghp origin/gh-pages
+
+          # --delete so renamed or dropped assets do not accumulate forever; the
+          # branch should mirror the build, which is what `gh-pages -d build` did.
+          # ui/build/ holds exactly the branch's file set, CNAME included, so this
+          # does not strand anything the page needs.
+          rsync -a --delete --exclude '.git' ui/build/ /tmp/ghp/
+
+          # AFTER the page copy, deliberately. ui/build/widget.wasm is whatever
+          # ui/public/ happened to contain — a committed binary that has been months
+          # stale before — so the freshly built one always wins. This is what makes
+          # the two artifacts unable to disagree.
+          cp "$RUNNER_TEMP/widget.wasm" /tmp/ghp/widget.wasm
+
+          cd /tmp/ghp
+          git add -A
+
+          # Most merges do not change either artifact. Committing regardless would add
+          # a ~12MB blob per merge and grow the repo without bound.
+          if git diff --cached --quiet; then
+            echo "no change to widget.wasm or the page; nothing to publish"
+            exit 0
+          fi
+
+          echo "publishing:"
+          git diff --cached --stat | tail -20
+          git commit -m "widget: build from $COMMIT_SHA"
+          # Push to the ref explicitly. The worktree is on a detached HEAD from
+          # origin/gh-pages, so HEAD:gh-pages is what advances the branch.
+          git push origin HEAD:gh-pages
+          echo "published widget + page from $COMMIT_SHA"

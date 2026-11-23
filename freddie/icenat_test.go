@@ -1,0 +1,216 @@
+package freddie
+
+import (
+	"encoding/json"
+	"testing"
+
+	"github.com/pion/ice/v4"
+	"github.com/pion/webrtc/v4"
+
+	"github.com/getlantern/broflake/common"
+)
+
+func sdpJSON(t *testing.T, lines ...string) string {
+	t.Helper()
+	sdp := "v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\n"
+	for _, l := range lines {
+		sdp += l + "\r\n"
+	}
+	b, err := json.Marshal(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: sdp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestClassifyNAT_VolunteerSymmetricWithHiddenBase(t *testing.T) {
+	// Chrome reports srflx with raddr 0.0.0.0 rport 0; two STUN servers mapped the one socket to
+	// different public ports.
+	data := sdpJSON(t,
+		"a=candidate:1 1 udp 2122260223 abc.local 51000 typ host generation 0",
+		"a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 0.0.0.0 rport 0 generation 0",
+		"a=candidate:3 1 udp 1686052607 203.0.113.7 40002 typ srflx raddr 0.0.0.0 rport 0 generation 0",
+	)
+	cands, ok := sdpCandidates(data)
+	if !ok || len(cands) != 3 {
+		t.Fatalf("want 3 candidates, got %d (ok=%v)", len(cands), ok)
+	}
+	got := classifyNAT(cands)
+	want := natClass{nat: natSymmetric, baseHidden: true}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyNAT_VolunteerSingleMapping(t *testing.T) {
+	data := sdpJSON(t,
+		"a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 0.0.0.0 rport 0 generation 0",
+	)
+	cands, _ := sdpCandidates(data)
+	if got := classifyNAT(cands).nat; got != natUndetermined {
+		t.Fatalf("got %q, want %q", got, natUndetermined)
+	}
+}
+
+func TestClassifyNAT_HostOnly(t *testing.T) {
+	data := sdpJSON(t, "a=candidate:1 1 udp 2122260223 192.168.1.5 51000 typ host generation 0")
+	cands, _ := sdpCandidates(data)
+	if got := classifyNAT(cands); got != (natClass{nat: natNoSrflx}) {
+		t.Fatalf("got %+v, want no_srflx", got)
+	}
+}
+
+func TestClassifyNAT_TCPSrflxIgnored(t *testing.T) {
+	cands := []iceCandidate{
+		{typ: "srflx", protocol: "tcp", address: "203.0.113.7", port: 1, relAddr: "10.0.0.2", relPort: 9},
+	}
+	if got := classifyNAT(cands).nat; got != natNoSrflx {
+		t.Fatalf("got %q, want %q", got, natNoSrflx)
+	}
+}
+
+func TestClassifyNAT_ConsumerPortPreserving(t *testing.T) {
+	// pion opens one socket per STUN server, so each srflx has its own known base.
+	msg := common.ICEMsg{Candidates: []webrtc.ICECandidate{
+		{Typ: webrtc.ICECandidateTypeHost, Protocol: webrtc.ICEProtocolUDP, Address: "192.168.4.78", Port: 61621},
+		{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: "97.118.36.142", Port: 61621, RelatedAddress: "0.0.0.0", RelatedPort: 61621},
+		{Typ: webrtc.ICECandidateTypeSrflx, Protocol: webrtc.ICEProtocolUDP, Address: "97.118.36.142", Port: 55077, RelatedAddress: "0.0.0.0", RelatedPort: 55077},
+	}}
+	b, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cands, ok := iceMsgCandidates(string(b))
+	if !ok || len(cands) != 3 {
+		t.Fatalf("want 3 candidates, got %d (ok=%v)", len(cands), ok)
+	}
+	got := classifyNAT(cands)
+	want := natClass{nat: natUndetermined, portPreserved: true}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyNAT_ConsumerPortTranslatedAndSymmetric(t *testing.T) {
+	cands := []iceCandidate{
+		{typ: "srflx", protocol: "udp", address: "198.51.100.9", port: 30001, relAddr: "0.0.0.0", relPort: 50000},
+		{typ: "srflx", protocol: "udp", address: "198.51.100.9", port: 30002, relAddr: "0.0.0.0", relPort: 50000},
+	}
+	got := classifyNAT(cands)
+	want := natClass{nat: natSymmetric}
+	if got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+}
+
+func TestClassifyMessage_SkipsPayloadsWithoutCandidates(t *testing.T) {
+	for _, tc := range []struct {
+		msgType common.SignalMsgType
+		data    string
+	}{
+		{common.SignalMsgICE, "{}"},
+		{common.SignalMsgAnswer, "{}"},
+		{common.SignalMsgAnswer, sdpJSON(t)},
+		// An offer carries no candidates freddie classifies.
+		{common.SignalMsgOffer, sdpJSON(t, "a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 40001 generation 0")},
+	} {
+		if n, ok := classifyMessage(tc.msgType, tc.data); ok {
+			t.Errorf("%v %q: got %+v, want no classification", tc.msgType, tc.data, n)
+		}
+	}
+
+	n, ok := classifyMessage(common.SignalMsgAnswer, sdpJSON(t,
+		"a=candidate:2 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 40001 generation 0",
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 1}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+}
+
+func TestSDPCandidates_RejectsNonJSON(t *testing.T) {
+	if _, ok := sdpCandidates("not json"); ok {
+		t.Fatal("want ok=false for a payload that isn't a session description")
+	}
+}
+
+func iceAnswerJSON(t *testing.T, candidates ...string) string {
+	t.Helper()
+	b, err := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+		Ufrag: "u", Pwd: "p", Candidates: candidates, CertPin: "pin", Password: "pw",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// A volunteer's answer to a direct exit offer carries its candidates as a bare ICE session writes
+// them, not in an SDP, and is classified from those.
+func TestClassifyMessage_ICEAnswer(t *testing.T) {
+	n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		"1 1 udp 2130706431 10.0.2.2 5000 typ host",
+		"2 1 udp 1694498815 198.51.100.7 40001 typ srflx raddr 10.0.2.2 rport 5000",
+		"3 1 udp 1694498815 198.51.100.7 40002 typ srflx raddr 10.0.2.2 rport 5000",
+		"4 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.7 rport 40001",
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natSymmetric}, candidates: 4, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+	if got := n.relayLabel(); got != "yes" {
+		t.Fatalf("relay label %q, want yes", got)
+	}
+
+	n, ok = classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		"2 1 udp 1694498815 198.51.100.7 5000 typ srflx raddr 10.0.2.2 rport 5000",
+		"not a candidate",
+	))
+	want = peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 1}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+
+	if n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t)); ok {
+		t.Fatalf("an ICE answer without candidates: got %+v, want no classification", n)
+	}
+}
+
+// A consumer's ICE message for a direct exit carries its candidates in ICECandidates, and is
+// classified from those.
+func TestClassifyMessage_ICEMsgICECandidates(t *testing.T) {
+	b, err := json.Marshal(common.ICEMsg{ConsumerSessionID: "s", ICECandidates: []string{
+		"2 1 udp 1694498815 198.51.100.9 30001 typ srflx raddr 10.0.1.2 rport 50000",
+		"4 1 udp 16777215 203.0.113.1 7001 typ relay raddr 198.51.100.9 rport 30001",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, ok := classifyMessage(common.SignalMsgICE, string(b))
+	want := peerNAT{role: "consumer", class: natClass{nat: natUndetermined}, candidates: 2, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+}
+
+// Candidates as pion's ice.Candidate.Marshal writes them, the form a bare ICE session sends, so a
+// change to pion's format shows up here.
+func TestClassifyMessage_PionMarshaledCandidates(t *testing.T) {
+	marshal := func(line string) string {
+		t.Helper()
+		c, err := ice.UnmarshalCandidate(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Marshal()
+	}
+	n, ok := classifyMessage(common.SignalMsgAnswer, iceAnswerJSON(t,
+		marshal("candidate:1 1 udp 2130706431 10.0.2.2 5000 typ host"),
+		marshal("candidate:2 1 udp 1694498815 198.51.100.7 5000 typ srflx raddr 10.0.2.2 rport 5000"),
+		marshal("candidate:3 1 udp 16777215 203.0.113.1 7000 typ relay raddr 198.51.100.7 rport 5000"),
+	))
+	want := peerNAT{role: "volunteer", class: natClass{nat: natUndetermined, portPreserved: true}, candidates: 3, relay: true}
+	if !ok || n != want {
+		t.Fatalf("got %+v (ok=%v), want %+v", n, ok, want)
+	}
+}

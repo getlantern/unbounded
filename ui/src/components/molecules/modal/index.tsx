@@ -15,8 +15,11 @@ const Modal = ({ onIgnore, isCensored }: {onIgnore: () => void, isCensored: bool
 	const canRenderModal = !collapse || layout === Layouts.PANEL || layout === Layouts.SIMPLE;
 
 	useEffect(() => {
-		// if the modal can't be rendered, we to auto ignore the censored state otherwise the user will be stuck
-		if (!canRenderModal) {
+		// A censored visitor whose layout can't show this modal would otherwise be
+		// stuck, so proceed for them. Only for them: onIgnore() starts sharing, and
+		// without the isCensored check this fired on mount for every visitor of a
+		// collapsed banner or floating embed -- proxying with no one having opted in.
+		if (isCensored && !canRenderModal) {
 			onIgnore();
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps

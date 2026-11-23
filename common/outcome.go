@@ -1,0 +1,327 @@
+package common
+
+import (
+	"strconv"
+	"strings"
+	"time"
+)
+
+// A producer reports how its previous connection attempt ended on its next genesis message, so
+// Freddie can count where volunteer handshakes fail without any client telemetry pipeline. The
+// fields carry only these enumerations, the Freddie-minted ID of the offer the attempt answered,
+// and how long the attempt took: no addresses or consumer session IDs. A producer that
+// predates them sends nothing, and a Freddie that predates them ignores them.
+const (
+	PrevOutcomeField  = "prev-outcome"
+	PrevICEStateField = "prev-ice-state"
+	PrevPCStateField  = "prev-pc-state"
+	// PrevNATTimeoutField is the NAT fail window, in whole seconds, the producer ran the attempt
+	// with: its NATFailTimeout, or the longer window a room attempt with TURN servers gets, so
+	// outcomes can be compared across timeout settings while clients roll over. Compare room
+	// and pool attempts separately, since a room attempt's window isn't the worker's setting.
+	PrevNATTimeoutField = "prev-nat-timeout"
+	// PrevOfferIDField is the ReplyTo of the offer the attempt answered: the ID Freddie gave the
+	// consumer's offer request. Freddie already knows it, so it reveals nothing new, and it lets
+	// Freddie label the outcome with the country it derived for that consumer.
+	PrevOfferIDField = "prev-offer-id"
+	// PrevPathField says whether a connected attempt's selected candidate pair went through a TURN
+	// relay: PathRelay or PathDirect. Only sent with OutcomeConnected.
+	PrevPathField = "prev-path"
+	// PrevVPNField is the embedding app's VPN state when the attempt began, one of the values
+	// NormalizeVPNState knows. With the VPN up, a volunteer's WebRTC sockets can follow the tunnel,
+	// so this tells whether outcomes, and the NAT Freddie sees, differ with it. Producers without a
+	// VPN state to report, such as the browser's, send nothing.
+	PrevVPNField = "prev-vpn"
+	// PrevAttemptMsField is how long the attempt ran, in whole milliseconds, from the producer
+	// taking the offer to its outcome. Freddie sees only the signaling, so this is its one measure
+	// of the ICE, DTLS and SCTP time after it.
+	PrevAttemptMsField = "prev-attempt-ms"
+	// PrevTURNField says whether the attempt's TURN servers gave the producer a relay candidate:
+	// one of the TURN* values. Only a room attempt gets TURN servers.
+	PrevTURNField = "prev-turn"
+	// PrevGatherCutField says the producer answered before its ICE gathering completed, with the
+	// candidates it had: GatherCut when it stopped waiting at its limit, which happens when a TURN
+	// server is slow or blocked and none gave it a relay candidate in time, or GatherAfterRelay
+	// when it went on shortly after its first relay candidate while another TURN server had yet to
+	// answer. Absent when gathering completed.
+	PrevGatherCutField = "prev-gather-cut"
+	// PrevPairField is the selected candidate pair of a connected attempt, as the producer's
+	// candidate type and the consumer's, joined by "-": "srflx-relay", say. Only sent with
+	// OutcomeConnected.
+	PrevPairField = "prev-pair"
+)
+
+// Values of PrevTURNField.
+const (
+	// TURNNone: the producer had no TURN servers for the attempt.
+	TURNNone = "none"
+	// TURNOK: its TURN servers gave it a relay candidate.
+	TURNOK = "ok"
+	// TURNMissing: it had TURN servers, but none gave it a relay candidate before it answered.
+	TURNMissing = "missing"
+)
+
+// Values of PrevGatherCutField. Both are cuts, in that gathering hadn't completed, but they are
+// kept apart: going on after a relay is the usual, healthy end of a room attempt's gathering,
+// while a cut at the limit means its TURN servers held it for the whole wait, and counting them
+// together would hide those.
+const (
+	// GatherCut: the producer stopped waiting at its limit.
+	GatherCut = "1"
+	// GatherAfterRelay: the producer went on shortly after its first relay candidate.
+	GatherAfterRelay = "relay"
+)
+
+var turnResults = map[string]bool{TURNNone: true, TURNOK: true, TURNMissing: true}
+
+// NormalizeTURN maps a reported TURN result onto the TURN* values, "unreported" when the producer
+// predates the field, or "invalid".
+func NormalizeTURN(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	return normalizeEnum(s, turnResults)
+}
+
+// NormalizeGatherCut maps a reported PrevGatherCutField onto "cut" (GatherCut), "after_relay"
+// (GatherAfterRelay), "invalid" for any other value, "complete" for a producer that reported the
+// attempt's TURN result without one, or "unreported".
+func NormalizeGatherCut(cut, turn string) string {
+	switch {
+	case cut == GatherCut:
+		return "cut"
+	case cut == GatherAfterRelay:
+		return "after_relay"
+	case cut != "":
+		return "invalid"
+	case turn == "":
+		return "unreported"
+	default:
+		return "complete"
+	}
+}
+
+// candidateTypes are the ICE candidate types a selected pair's ends can have.
+var candidateTypes = map[string]bool{"host": true, "srflx": true, "prflx": true, "relay": true}
+
+// PairTypes joins a selected pair's producer and consumer candidate types for PrevPairField.
+func PairTypes(producer, consumer string) string {
+	return producer + "-" + consumer
+}
+
+// NormalizePair maps a reported PrevPairField onto one of the 16 type pairs, "unreported", or
+// "invalid".
+func NormalizePair(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	producer, consumer, ok := strings.Cut(s, "-")
+	if !ok || !candidateTypes[producer] || !candidateTypes[consumer] {
+		return "invalid"
+	}
+	return s
+}
+
+// Producer attempt outcomes, in the order a handshake can fail.
+const (
+	// OutcomeNoLocalSrflx: the producer's own STUN servers all failed, so it aborted before
+	// answering.
+	OutcomeNoLocalSrflx = "no_local_srflx"
+	// OutcomePartnerHungUp: the consumer was gone by the time the producer's answer arrived.
+	OutcomePartnerHungUp = "partner_hung_up"
+	// OutcomeNoConsumerICE: the consumer took the answer but never sent its candidates.
+	OutcomeNoConsumerICE = "no_consumer_ice"
+	// OutcomeBadConsumerICE: the consumer's candidates couldn't be decoded or added.
+	OutcomeBadConsumerICE = "bad_consumer_ice"
+	// OutcomeConsumerHostOnly: the consumer sent only host candidates.
+	OutcomeConsumerHostOnly = "consumer_host_only"
+	// OutcomeNATTimeout: signaling completed but no data channel opened within NATFailTimeout.
+	// The ICE and peer-connection states then say whether ICE never connected or DTLS/SCTP stalled.
+	OutcomeNATTimeout = "nat_timeout"
+	// OutcomeConnected: the data channel opened.
+	OutcomeConnected = "connected"
+)
+
+// Values of PrevPathField.
+const (
+	PathRelay  = "relay"
+	PathDirect = "direct"
+)
+
+// OutcomePath maps a reported path onto the path label: relay, direct, or unreported when the
+// producer sent nothing (an attempt that didn't connect, or a producer that predates the field)
+// or something unknown.
+func OutcomePath(s string) string {
+	switch s {
+	case PathRelay, PathDirect:
+		return s
+	default:
+		return "unreported"
+	}
+}
+
+var producerOutcomes = map[string]bool{
+	OutcomeNoLocalSrflx:     true,
+	OutcomePartnerHungUp:    true,
+	OutcomeNoConsumerICE:    true,
+	OutcomeBadConsumerICE:   true,
+	OutcomeConsumerHostOnly: true,
+	OutcomeNATTimeout:       true,
+	OutcomeConnected:        true,
+}
+
+// webrtc.ICEConnectionState and webrtc.PeerConnectionState String() values.
+var iceStates = map[string]bool{
+	"new": true, "checking": true, "connected": true, "completed": true,
+	"disconnected": true, "failed": true, "closed": true,
+}
+
+var pcStates = map[string]bool{
+	"new": true, "connecting": true, "connected": true,
+	"disconnected": true, "failed": true, "closed": true,
+}
+
+// NormalizeProducerOutcome maps a reported outcome onto the known set, so a malformed or
+// malicious report can't mint new metric label values. Empty stays empty (nothing reported).
+func NormalizeProducerOutcome(s string) string {
+	return normalizeEnum(s, producerOutcomes)
+}
+
+// NormalizeICEState does the same for a reported ICE connection state.
+func NormalizeICEState(s string) string {
+	return normalizeEnum(s, iceStates)
+}
+
+// NormalizePCState does the same for a reported peer connection state.
+func NormalizePCState(s string) string {
+	return normalizeEnum(s, pcStates)
+}
+
+// maxReportedNATTimeoutSeconds bounds the reported timeout, so the label has at most this many
+// values plus "invalid" and "unreported".
+const maxReportedNATTimeoutSeconds = 60
+
+// NormalizeNATTimeout maps a reported timeout onto "1".."60", "unreported" when the producer
+// predates the field, or "invalid".
+func NormalizeNATTimeout(s string) string {
+	if s == "" {
+		return "unreported"
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > maxReportedNATTimeoutSeconds || strconv.Itoa(n) != s {
+		return "invalid"
+	}
+	return s
+}
+
+// maxReportedAttempt bounds a reported attempt duration, so a malformed report can't skew the
+// histogram. An attempt is its signaling, which Freddie holds to remoteICEGatheringTTL (15s) a
+// step, then up to NATFailTimeout plus ConnectGrace. clientcore doesn't bound those two, but the
+// apps that set NATFailTimeout cap it (radiance at 30s) and leave ConnectGrace at 10s, so real
+// attempts stay near a minute. An embedder that sets them far higher has its longer attempts
+// dropped rather than recorded.
+const maxReportedAttempt = 3 * time.Minute
+
+// ParseAttemptDuration reads a PrevAttemptMsField value, reporting false for a missing, malformed
+// or out of range one.
+func ParseAttemptDuration(s string) (time.Duration, bool) {
+	ms, err := strconv.ParseInt(s, 10, 64)
+	// Bounded before converting: a large value would overflow time.Duration and wrap into range.
+	if err != nil || ms < 0 || ms > maxReportedAttempt.Milliseconds() || strconv.FormatInt(ms, 10) != s {
+		return 0, false
+	}
+	return time.Duration(ms) * time.Millisecond, true
+}
+
+// outcomeCountries are the consumer countries freddie.producer.outcomes labels individually; any
+// other known country is "other", so the label has a handful of values.
+var outcomeCountries = map[string]bool{"CN": true, "IR": true, "RU": true, "US": true}
+
+// OutcomeConsumerCountry maps the country Freddie derived for an attempt's consumer onto the
+// consumer_country label: one of outcomeCountries, "other", "unknown" when Freddie has no country
+// for the offer, or "unreported" when the producer predates PrevOfferIDField.
+func OutcomeConsumerCountry(offerIDReported bool, country string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case country == "":
+		return "unknown"
+	case outcomeCountries[country]:
+		return country
+	default:
+		return "other"
+	}
+}
+
+// NormalizeConsumerVersion labels within this many patch versions behind and ahead of Freddie's
+// own Version stay exact, so the consumer_version label has at most 42 values however a
+// consumer sets its VersionHeader.
+const (
+	consumerVersionPatchesBehind = 31
+	consumerVersionPatchesAhead  = 8
+)
+
+// NormalizeConsumerVersion maps the VersionHeader a consumer sent with its offer onto the
+// consumer_version label, relative to current, the Version Freddie was built with: the version
+// itself when it has current's major and minor and a patch within the window above; "older" or
+// "newer" for any other version with current's major; "not_sent" when the header was empty; or
+// "invalid". The result never shares memory with s, so caching it doesn't keep the header alive.
+func NormalizeConsumerVersion(s, current string) string {
+	if s == "" {
+		return "not_sent"
+	}
+	major, minor, patch, ok := parseVersion(s)
+	curMajor, curMinor, curPatch, curOK := parseVersion(current)
+	if !ok || !curOK || major != curMajor {
+		return "invalid"
+	}
+	switch {
+	case minor < curMinor || minor == curMinor && patch < curPatch-consumerVersionPatchesBehind:
+		return "older"
+	case minor > curMinor || patch > curPatch+consumerVersionPatchesAhead:
+		return "newer"
+	}
+	return "v" + strconv.Itoa(major) + "." + strconv.Itoa(minor) + "." + strconv.Itoa(patch)
+}
+
+// parseVersion parses a canonical "vMAJOR.MINOR.PATCH" with no pre-release or build suffix.
+func parseVersion(s string) (major, minor, patch int, ok bool) {
+	rest, ok := strings.CutPrefix(s, "v")
+	if !ok {
+		return 0, 0, 0, false
+	}
+	parts := strings.SplitN(rest, ".", 4)
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var n [3]int
+	for i, part := range parts {
+		v, err := strconv.Atoi(part)
+		if err != nil || v < 0 || strconv.Itoa(v) != part {
+			return 0, 0, 0, false
+		}
+		n[i] = v
+	}
+	return n[0], n[1], n[2], true
+}
+
+// OutcomeConsumerVersion maps the NormalizeConsumerVersion value Freddie cached for an attempt's
+// offer onto the consumer_version label, with "unknown" when Freddie has no entry for the offer
+// and "unreported" when the producer predates PrevOfferIDField.
+func OutcomeConsumerVersion(offerIDReported bool, version string) string {
+	switch {
+	case !offerIDReported:
+		return "unreported"
+	case version == "":
+		return "unknown"
+	default:
+		return version
+	}
+}
+
+func normalizeEnum(s string, known map[string]bool) string {
+	if s == "" || known[s] {
+		return s
+	}
+	return "invalid"
+}

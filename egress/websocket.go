@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -29,9 +30,57 @@ type errorlessWebSocketPacketConn struct {
 	keepalive time.Duration
 	tcpAddr   *net.TCPAddr
 	readError chan error
+
+	// stats accumulates this connection's bytes against its donor country. It is
+	// a pointer so the read path does a single atomic add against memory it
+	// already holds, rather than hashing a map key per packet. Methods on this
+	// type use value receivers, so mutable per-session state must be behind a
+	// pointer to be shared with the handler.
+	stats *countryStats
+	// sessionBytes is the handler's per-session byte counter, reported on the
+	// session span. Separate from stats.ingressBytes, which the otel callback
+	// resets every interval.
+	sessionBytes *int64
+	// keepaliveFailed is set when a keepalive ping goes unanswered, which is the
+	// signature of a wedged peer rather than one that disconnected. The handler
+	// reports it as the session's teardown reason.
+	keepaliveFailed *atomic.Bool
+	// ioSets holds this connection's pre-built proxy.io attribute sets.
+	// nil when the conn is constructed outside handleWebsocket (tests),
+	// in which case no proxy.io measurements are recorded — the same
+	// convention as stats and sessionBytes above.
+	ioSets *proxyIOSets
+	// frameV1 is set once the consumer on the far end of this WebSocket has said, in a control
+	// frame, that it reads FrameV1 packet frames; until then packets go as JSON, which every
+	// consumer reads. nil, as in tests that construct this type directly, means JSON.
+	frameV1 *atomic.Bool
 }
 
+// frameBufs holds buffers for FrameV1 packet frames, which a WebSocket write has finished with
+// by the time it returns.
+var frameBufs = sync.Pool{New: func() any { b := make([]byte, 0, 2048); return &b }}
+
 func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
+	for {
+		b := q.readMessage()
+		// A consumer's control frame says what it reads; it isn't a QUIC packet.
+		c, isControl, err := common.ParseControlFrame(b)
+		if !isControl {
+			return q.deliver(p, b)
+		}
+		if err != nil {
+			slog.Debug("Unreadable control frame", "addr", q.addr, "error", err)
+			continue
+		}
+		if c.Capabilities&common.CapFrameV1 != 0 && q.frameV1 != nil && !q.frameV1.Swap(true) {
+			slog.Debug("Consumer reads binary packet frames", "addr", q.addr)
+		}
+	}
+}
+
+// readMessage reads the next WebSocket message, keeping the WebSocket alive while it waits. A
+// read error ends the calling goroutine (see below).
+func (q errorlessWebSocketPacketConn) readMessage() []byte {
 	// TODO: The channel and goroutine we fire off here are used to implement serverside keepalive.
 	// For as long as we're reading from this WebSocket, if we haven't received any readable data for
 	// a while, we send a ping. Keepalive is only desirable to prevent lots of disconnections
@@ -46,7 +95,25 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 			select {
 			case <-time.After(q.keepalive):
 				slog.Debug("PING", "addr", q.addr)
-				q.w.Ping(context.Background())
+				// Bound the ping and record its failure. coder/websocket's Ping
+				// waits for the matching pong, so with the previous
+				// context.Background() a peer that stops answering — the exact
+				// signature of a frozen browser widget — wedged this goroutine
+				// forever and discarded the error, making a freeze invisible.
+				// A timed-out ping is a *positive* freeze signal, as opposed to
+				// the mere absence of traffic, which is indistinguishable from a
+				// user closing the tab.
+				pingCtx, cancel := context.WithTimeout(context.Background(), q.keepalive)
+				err := q.w.Ping(pingCtx)
+				cancel()
+				if err != nil {
+					if q.keepaliveFailed != nil {
+						q.keepaliveFailed.Store(true)
+					}
+					slog.Debug("PING failed", "addr", q.addr, "error", err)
+					// The read below will fail once the peer is gone; leave
+					// teardown to it rather than racing it from here.
+				}
 			case <-readDone:
 				return
 			}
@@ -83,20 +150,41 @@ func (q errorlessWebSocketPacketConn) ReadFrom(p []byte) (n int, addr net.Addr, 
 		// infinite calls to ReadFrom, it looks like runtime.Goexit was implicated, and thus:
 		runtime.Goexit()
 	}
+	return b
+}
 
+// deliver copies the QUIC packet b into p and accounts for it.
+func (q errorlessWebSocketPacketConn) deliver(p, b []byte) (int, net.Addr, error) {
 	copy(p, b)
-	atomic.AddUint64(&nIngressBytes, uint64(len(b)))
-	return len(b), q.tcpAddr, err
+	// Attribute bytes to this connection's donor country and to its session.
+	// Both are nil-checked because migration_test and other callers construct
+	// this type directly without the instrumentation fields.
+	//
+	// The former global nIngressBytes add is gone: ingress-bytes is now observed
+	// from the per-country blocks, so incrementing a global nothing reads would
+	// be a pointless atomic on the hot read path.
+	if q.stats != nil {
+		atomic.AddInt64(&q.stats.ingressBytes, int64(len(b)))
+	}
+	if q.sessionBytes != nil {
+		atomic.AddInt64(q.sessionBytes, int64(len(b)))
+	}
+	if q.ioSets != nil {
+		addProxyIO(int64(len(b)), q.ioSets.rx)
+	}
+	return len(b), q.tcpAddr, nil
 }
 
 func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	// TODO https://github.com/getlantern/engineering/issues/2437
-	unboundedPacket := common.UnboundedPacket{
-		SourceAddr: q.addr.String(),
-		Payload:    p,
+	var b []byte
+	if q.frameV1 != nil && q.frameV1.Load() {
+		buf := frameBufs.Get().(*[]byte)
+		defer frameBufs.Put(buf)
+		*buf = common.AppendPacketFrame((*buf)[:0], q.addr.String(), p)
+		b = *buf
+	} else {
+		b, err = json.Marshal(common.UnboundedPacket{SourceAddr: q.addr.String(), Payload: p})
 	}
-
-	b, err := json.Marshal(unboundedPacket)
 	if err != nil {
 		// XXX: it's not clear what the desired behavior is here. Sure, this is an "errorless" PacketConn,
 		// but we really only intended to hide errors related to *transport failure* from the caller...
@@ -108,6 +196,14 @@ func (q errorlessWebSocketPacketConn) WriteTo(p []byte, addr net.Addr) (n int, e
 	}
 
 	err = q.w.Write(context.Background(), websocket.MessageBinary, b)
+
+	// Counted only on a successful write, and counted post-marshal: the
+	// number reporting wants is bytes actually pushed through a donor,
+	// which is the envelope on the wire, not the payload the caller
+	// handed us.
+	if err == nil && q.ioSets != nil {
+		addProxyIO(int64(len(b)), q.ioSets.tx)
+	}
 
 	// Intercept and hide errors from the caller
 	// TODO: be more specific about which error(s) to hide?

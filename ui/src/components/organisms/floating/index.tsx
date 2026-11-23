@@ -1,11 +1,13 @@
 import {Container, Body, BodyWrapper, Header, Item, HeaderRight, CtaWrapper} from './styles'
-import React, {useContext, useState, lazy, Suspense, useEffect} from 'react'
+import React, {useContext, useState, useEffect} from 'react'
 import {AppContext} from '../../../context'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Stats, {Connections} from '../../molecules/stats'
 // import Footer from '../../molecules/footer'
 import ExpandCollapse from '../../atoms/expandCollapse'
@@ -15,9 +17,6 @@ import About from '../../molecules/about'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import VpnCta from '../../molecules/vpnCta'
-import Love from '../../molecules/love'
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 const Floating = () => {
 	const {width, settings} = useContext(AppContext)
@@ -41,14 +40,12 @@ const Floating = () => {
 					mobile={width < BREAKPOINT}
 				>
 					<Header
+						$menu={!!menu}
 						style={{
 							paddingBottom: !expanded ? 8 : 0
 						}}
 					>
-						<div
-							style={{height: 48}} // this is a hack to create real estate for the logo which is positioned absolute because it overlaps the header right
-						/>
-						{ settings.branding && <LogoLink style={{position: 'absolute'}} /> }
+						{ settings.branding && <LogoLink stackBelow={340} /> }
 						<HeaderRight>
 							{
 								settings.collapse && (
@@ -74,16 +71,13 @@ const Floating = () => {
 										info
 									/>
 								</Item>
+								<UnsupportedNote/>
 							</Col>
 						)
 					}
 					{
 						settings.globe && expanded && (
-							<Col>
-								<Suspense fallback={<GlobeSuspense/>}>
-									<Globe target={settings.target}/>
-								</Suspense>
-							</Col>
+							<SafeGlobe target={settings.target}/>
 						)
 					}
 					{
@@ -101,6 +95,8 @@ const Floating = () => {
 										onToggle={onToggle}
 									/>
 								</Row>
+								<UnsupportedNote/>
+								<SupportCountry/>
 								{
 									expanded && (
 										<>
@@ -115,9 +111,6 @@ const Floating = () => {
 										</CtaWrapper>
 									)
 								}
-								<div style={{marginTop: 16}}>
-									<Love/>
-								</div>
 							</Col>
 						)
 					}

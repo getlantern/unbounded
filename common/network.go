@@ -72,5 +72,10 @@ type UnboundedPacket struct {
 // Validate the protocol version header. If the header isn't present, you're invalid. NB that a
 // "valid" version must match only the *major* version.
 func IsValidProtocolVersion(h *http.Header) bool {
-	return semver.Major(h.Get(VersionHeader)) == semver.Major(Version)
+	return IsValidVersion(h.Get(VersionHeader))
+}
+
+// IsValidVersion reports whether version, as sent in VersionHeader, is compatible with Version.
+func IsValidVersion(version string) bool {
+	return semver.Major(version) == semver.Major(Version)
 }

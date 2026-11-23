@@ -1,11 +1,16 @@
 package egress
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/getlantern/broflake/common"
 )
 
 // TestNewListener_CleanShutdownDoesNotPanic is a regression test for the
@@ -52,4 +57,54 @@ func TestNewListener_CleanShutdownDoesNotPanic(t *testing.T) {
 	// a scheduler tick to run the error-handling branch on any reasonable
 	// machine and doesn't meaningfully slow down the test suite.
 	time.Sleep(100 * time.Millisecond)
+}
+
+// The startup version line is the only thing that says which build is running:
+// the spans carry no service.version, so before this the answer lived on the
+// host. Asserted through the real initMetrics path — the metrics tests stub
+// initMetricsFn and the OTLP tests call enableOTELLogs directly, so neither
+// would notice this line disappearing.
+func TestNewListener_LogsTheRunningVersion(t *testing.T) {
+	// No collector configured, so enableOTELLogs no-ops and this exercises the
+	// version line alone rather than standing up an exporter.
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "")
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = tcpL.Close() })
+
+	ll, err := NewListener(context.Background(), tcpL, &tls.Config{
+		NextProtos:         []string{"broflake"},
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("NewListener: %v", err)
+	}
+	t.Cleanup(func() { _ = ll.Close() })
+
+	// Find the startup record and assert the version is on *that* line. Two
+	// independent Contains calls over the whole buffer would pass if some other
+	// record happened to carry the version.
+	var startup string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		if strings.Contains(line, "Egress telemetry initialized") {
+			startup = line
+			break
+		}
+	}
+	if startup == "" {
+		t.Fatalf("no startup line naming the build: %q", buf.String())
+	}
+	if !strings.Contains(startup, common.Version) {
+		t.Errorf("the startup line does not carry %s, so a deploy stays unverifiable: %q",
+			common.Version, startup)
+	}
 }

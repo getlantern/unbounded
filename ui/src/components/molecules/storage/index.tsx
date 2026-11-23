@@ -1,9 +1,19 @@
-import React, {useCallback, useContext, useEffect, useRef} from 'react'
-import {Chunk, lifetimeChunksEmitter, lifetimeConnectionsEmitter, sharingEmitter} from '../../../utils/wasmInterface'
+import React, {useCallback, useEffect, useRef, useState} from 'react'
+import {
+	addLifetimeChunks,
+	Chunk,
+	CountryStat,
+	countryStatsEmitter,
+	lifetimeChunksEmitter,
+	lifetimeConnectionsEmitter,
+	lifetimeUploadBytesEmitter,
+	mergeCountryStats,
+	servedConnectionsEmitter,
+	sharingEmitter
+} from '../../../utils/wasmInterface'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {SIGNATURE, MessageTypes, Settings} from '../../../constants'
 import {messageCheck} from '../../../utils/messages'
-import {AppContext} from '../../../context'
 
 /***
 	Since the widget can be embeded in any website, this iframe is used to
@@ -14,46 +24,102 @@ import {AppContext} from '../../../context'
 enum StorageKeys {
 	LIFETIME_CONNECTIONS = 'lifetimeConnections',
 	LIFETIME_CHUNKS = 'lifetimeChunks',
+	LIFETIME_UPLOAD_BYTES = 'lifetimeUploadBytes',
+	COUNTRY_STATS = 'countryStats',
 }
+
+let reportedConnections = 0
+// The emitters are shared by every embed on the page, so stored totals are added once per page
+// load, not once per embed; each embed still marks its own key synced so it can persist updates.
+const hydrated = new Set<StorageKeys>()
+const hydrateOnce = (key: StorageKeys, apply: () => void) => {
+	if (hydrated.has(key)) return
+	hydrated.add(key)
+	apply()
+}
+export const resetStorageHydration = () => hydrated.clear()
 
 const Storage = ({settings}: {settings: Settings}) => {
 	const {target} = settings
-	const {wasmInterface} = useContext(AppContext)
-	const synced = useRef({[StorageKeys.LIFETIME_CONNECTIONS]: false, [StorageKeys.LIFETIME_CHUNKS]: false})
+	const site = window.location.hostname
+	const synced = useRef({
+		[StorageKeys.LIFETIME_CONNECTIONS]: false,
+		[StorageKeys.LIFETIME_CHUNKS]: false,
+		[StorageKeys.LIFETIME_UPLOAD_BYTES]: false,
+		[StorageKeys.COUNTRY_STATS]: false,
+	})
+	const [ready, setReady] = useState(false)
+	const loaded = useRef(false)
+	const reportedSharing = useRef(sharingEmitter.state)
+	const servedConnections = useEmitterState(servedConnectionsEmitter)
 	const iframe = useRef<HTMLIFrameElement>(null)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
 	const lifetimeChunks = useEmitterState(lifetimeChunksEmitter)
+	const lifetimeUploadBytes = useEmitterState(lifetimeUploadBytesEmitter)
+	const countryStats = useEmitterState(countryStatsEmitter)
 	const sharing = useEmitterState(sharingEmitter)
+
+	// a hydration that adds nothing leaves the emitter unchanged, so its persist effect never reruns;
+	// write the current total once the key is synced so bytes counted before the reply are saved
+	const persist = (key: StorageKeys, value: number | string) => iframe.current?.contentWindow?.postMessage({
+		type: MessageTypes.STORAGE_SET,
+		[SIGNATURE]: true,
+		data: {key, value}
+	}, '*')
 
 	const onMessage = useCallback((event: MessageEvent) => {
 		const message = event.data
-		if (!messageCheck(message)) return
+		if (event.source !== iframe.current?.contentWindow || !messageCheck(message)) return
 		switch (message.type) {
 			case MessageTypes.STORAGE_GET:
 				const keys = Object.keys(message.data)
 				// handle lifetime connections messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CONNECTIONS)) {
 					const value = parseInt(message.data[StorageKeys.LIFETIME_CONNECTIONS]) || 0
-					lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value)
+					if (synced.current[StorageKeys.LIFETIME_CONNECTIONS]) return
 					synced.current[StorageKeys.LIFETIME_CONNECTIONS] = true
+					hydrateOnce(StorageKeys.LIFETIME_CONNECTIONS, () => lifetimeConnectionsEmitter.update(lifetimeConnectionsEmitter.state + value))
+					persist(StorageKeys.LIFETIME_CONNECTIONS, lifetimeConnectionsEmitter.state)
 				}
 				// handle lifetime chunks messages from the iframe local storage
 				if (keys.includes(StorageKeys.LIFETIME_CHUNKS)) {
+					if (synced.current[StorageKeys.LIFETIME_CHUNKS]) return
 					let value = []
 					try {
 						value = JSON.parse(message.data[StorageKeys.LIFETIME_CHUNKS]) || []
 					} catch (e) {
 						console.error(e)
 					}
-					value.forEach((chunk: Chunk) => wasmInterface && wasmInterface.handleChunk({detail: chunk}))
 					synced.current[StorageKeys.LIFETIME_CHUNKS] = true
+					hydrateOnce(StorageKeys.LIFETIME_CHUNKS, () => addLifetimeChunks(value as Chunk[]))
+					persist(StorageKeys.LIFETIME_CHUNKS, JSON.stringify(lifetimeChunksEmitter.state))
+				}
+				if (keys.includes(StorageKeys.LIFETIME_UPLOAD_BYTES)) {
+					if (synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
+					const value = parseInt(message.data[StorageKeys.LIFETIME_UPLOAD_BYTES]) || 0
+					synced.current[StorageKeys.LIFETIME_UPLOAD_BYTES] = true
+					hydrateOnce(StorageKeys.LIFETIME_UPLOAD_BYTES, () => lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + value))
+					persist(StorageKeys.LIFETIME_UPLOAD_BYTES, lifetimeUploadBytesEmitter.state)
+				}
+				if (keys.includes(StorageKeys.COUNTRY_STATS)) {
+					if (synced.current[StorageKeys.COUNTRY_STATS]) return
+					let value: CountryStat[] = []
+					try {
+						value = JSON.parse(message.data[StorageKeys.COUNTRY_STATS]) || []
+					} catch (e) {
+						console.error(e)
+					}
+					synced.current[StorageKeys.COUNTRY_STATS] = true
+					hydrateOnce(StorageKeys.COUNTRY_STATS, () => countryStatsEmitter.update(mergeCountryStats(countryStatsEmitter.state, value)))
+					persist(StorageKeys.COUNTRY_STATS, JSON.stringify(countryStatsEmitter.state))
 				}
 				break
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [!!wasmInterface])
+	}, [])
 
 	const onLoad = useCallback(() => {
+		setReady(true)
 		iframe.current?.contentWindow?.postMessage({
 			type: MessageTypes.STORAGE_GET,
 			[SIGNATURE]: true,
@@ -68,16 +134,27 @@ const Storage = ({settings}: {settings: Settings}) => {
 				key: StorageKeys.LIFETIME_CONNECTIONS
 			}
 		}, '*')
+		iframe.current?.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_GET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.LIFETIME_UPLOAD_BYTES
+			}
+		}, '*')
+		iframe.current?.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_GET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.COUNTRY_STATS
+			}
+		}, '*')
 	}, [iframe])
 
 	useEffect(() => {
 		if (!iframe.current) return
-		const iframeRef = iframe.current
 		window.addEventListener('message', onMessage)
-		iframeRef.addEventListener('load', onLoad)
 
 		return () => {
-			if (iframeRef) iframeRef.removeEventListener('load', onLoad)
 			window.removeEventListener('message', onMessage)
 		}
 	}, [onLoad, onMessage, iframe])
@@ -107,26 +184,48 @@ const Storage = ({settings}: {settings: Settings}) => {
 	}, [lifetimeChunks])
 
 	useEffect(() => {
-		// this timeout is dumb but needed to make sure the iframe plausible js is loaded
-		// before we send the event. Ideally we should use a callback from the iframe
-		// leaving like this for now because this may be refactored in the future to sandbox
-		// the entire widget in the same iframe
-		setTimeout(() => {
-			if (!iframe.current) return;
-			iframe.current.contentWindow?.postMessage({
-				type: MessageTypes.EVENT,
-				[SIGNATURE]: true,
-				data: {
-					eventName: 'load',
-					eventProperties: {target}
-				}
-			}, '*')
-		}, 1000)
-	}, [target, iframe])
+		if (!iframe.current || !synced.current?.[StorageKeys.LIFETIME_UPLOAD_BYTES]) return
+		iframe.current.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_SET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.LIFETIME_UPLOAD_BYTES,
+				value: lifetimeUploadBytes
+			}
+		}, '*')
+	}, [lifetimeUploadBytes])
 
 	useEffect(() => {
-		if (!iframe.current) return;
+		if (!iframe.current || !synced.current?.[StorageKeys.COUNTRY_STATS]) return
 		iframe.current.contentWindow?.postMessage({
+			type: MessageTypes.STORAGE_SET,
+			[SIGNATURE]: true,
+			data: {
+				key: StorageKeys.COUNTRY_STATS,
+				value: JSON.stringify(countryStats)
+			}
+		}, '*')
+	}, [countryStats])
+
+	useEffect(() => {
+		if (!ready || !iframe.current?.contentWindow) return
+		if (!loaded.current) {
+			iframe.current.contentWindow.postMessage({type: MessageTypes.EVENT, [SIGNATURE]: true,
+				data: {eventName: 'load', eventProperties: {target, site}}}, '*')
+			loaded.current = true
+		}
+		// All embeds share the live counter and cursor; stored totals never enter it.
+		while (reportedConnections < servedConnections) {
+			iframe.current.contentWindow.postMessage({type: MessageTypes.EVENT, [SIGNATURE]: true,
+				data: {eventName: 'helped', eventProperties: {site}}}, '*')
+			reportedConnections++
+		}
+	}, [ready, servedConnections, target, site])
+
+	useEffect(() => {
+		// only report changes; the mount-time value is not a toggle
+		if (!ready || !iframe.current?.contentWindow || sharing === reportedSharing.current) return
+		iframe.current.contentWindow.postMessage({
 			type: MessageTypes.EVENT,
 			[SIGNATURE]: true,
 			data: {
@@ -134,11 +233,13 @@ const Storage = ({settings}: {settings: Settings}) => {
 				eventProperties: {on: sharing}
 			}
 		}, '*')
-	}, [sharing, iframe])
+		reportedSharing.current = sharing
+	}, [ready, sharing, iframe])
 
 	return (
 		<iframe
 			src={process.env.REACT_APP_STORAGE_URL}
+			onLoad={onLoad}
 			style={{display: 'none'}}
 			title={`${SIGNATURE} iframe`}
 			ref={iframe}

@@ -2,17 +2,23 @@ package freddie
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
+	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion/webrtc/v4"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -20,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/getlantern/broflake/common"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 // About these TTL values: Freddie models each segment of the signaling handshake as a request and
@@ -42,8 +49,14 @@ const (
 	remoteICEGatheringTTL = 15
 )
 
+// genesisReofferInterval is how long a capped pool genesis waits for an offer before Freddie offers
+// it to another sample of waiting consumers (see Freddie.SetGenesisFanout). A consumer offers about
+// half a second after it takes a genesis, so a sample that would answer usually has by then, and a
+// volunteer's genesis reaches a fresh sample each interval until one does or defaultMsgTTL ends.
+const genesisReofferInterval = time.Second
+
 var (
-	consumerTable = userTable{Data: make(map[string]chan string), BufferSz: 0}
+	consumerTable = newConsumerIndex(0)
 	signalTable   = userTable{Data: make(map[string]chan string), BufferSz: 1}
 )
 
@@ -108,8 +121,324 @@ func (t *userTable) Size() int {
 	return len(t.Data)
 }
 
+// Outcomes of a genesis broadcast, recorded as the "targeting" attribute on
+// freddie.genesis.broadcasts. A fixed set, so the attribute's cardinality is bounded no matter
+// which countries producers target.
+const (
+	genesisUntargeted = "untargeted" // producer expressed no country preference
+	genesisMatched    = "matched"    // delivered only to waiting consumers from a target country
+	genesisFallback   = "fallback"   // no waiting consumer from a target country took it, so sent to all
+)
+
+// spanTargeting is the genesis.targeting span attribute for a genesis message whose pool step had
+// outcome, "" when it did not run (a room consumer took the message, or the producer serves only
+// its rooms). Every genesis span carries the attribute, and one that skipped the pool step gets
+// a value an ordinary genesis with the same targets also gets: untargeted without targets, matched
+// with them. So the attribute never singles out a paired producer. The metric
+// freddie.genesis.broadcasts is not affected: it counts only real pool steps.
+func spanTargeting(outcome string, targets []string) string {
+	switch {
+	case outcome != "":
+		return outcome
+	case len(targets) == 0:
+		return genesisUntargeted
+	default:
+		return genesisMatched
+	}
+}
+
+// A consumerIndex is a userTable which also indexes its users by server-derived country, so that
+// genesis messages can be steered toward consumers from the countries a producer wants to serve,
+// and by helper pairing room, so that a producer's genesis messages reach the consumers it is
+// paired with first. Users whose country is unknown, or who are in no room, are still in the
+// table and still receive untargeted and fallback broadcasts.
+//
+// Rooms are opaque pairing IDs from verified tickets. They are never logged, traced or counted.
+type consumerIndex struct {
+	userTable
+	country   map[string]string              // userID -> country, only for users whose country is known
+	byCountry map[string]map[string]struct{} // country -> set of userIDs
+	rooms     map[string][]string            // userID -> rooms, only for users in at least one
+	byRoom    map[string]map[string]struct{} // room -> set of userIDs
+	// roomTickets is userID -> room -> the verified inviter ticket that admitted the user to the
+	// room, for the users added with them, so a room genesis's delivery can be checked again
+	// when its consumer offers (see roomGenesis.deliver).
+	roomTickets map[string]map[string]string
+	// fanout, when positive, is how many waiting consumers a pool genesis goes to, at most (see
+	// BroadcastGenesis). Zero sends it to all of them.
+	fanout atomic.Int64
+}
+
+func newConsumerIndex(bufferSz int) *consumerIndex {
+	return &consumerIndex{
+		userTable:   userTable{Data: make(map[string]chan string), BufferSz: bufferSz},
+		country:     make(map[string]string),
+		byCountry:   make(map[string]map[string]struct{}),
+		rooms:       make(map[string][]string),
+		byRoom:      make(map[string]map[string]struct{}),
+		roomTickets: make(map[string]map[string]string),
+	}
+}
+
+// AddWithCountry is AddConsumer in no room.
+func (t *consumerIndex) AddWithCountry(userID, country string) chan string {
+	return t.AddConsumer(userID, country, nil)
+}
+
+// AddConsumer is Add, plus indexing userID under country and under each of rooms. country must
+// already be normalized; "" means the user's country is unknown and it is not indexed. rooms must
+// come from verified tickets. The index keeps its own copy of rooms.
+func (t *consumerIndex) AddConsumer(userID, country string, rooms []string) chan string {
+	return t.AddRoomConsumer(userID, country, rooms, nil)
+}
+
+// AddRoomConsumer is AddConsumer, also remembering ticketOf, the verified inviter ticket that
+// admitted the user to each of rooms. The index keeps its own copy.
+func (t *consumerIndex) AddRoomConsumer(userID, country string, rooms []string, ticketOf map[string]string) chan string {
+	t.Lock()
+	defer t.Unlock()
+	if len(ticketOf) > 0 {
+		t.roomTickets[userID] = maps.Clone(ticketOf)
+	}
+	t.Data[userID] = make(chan string, t.BufferSz)
+	if country != "" {
+		t.country[userID] = country
+		users, ok := t.byCountry[country]
+		if !ok {
+			users = make(map[string]struct{})
+			t.byCountry[country] = users
+		}
+		users[userID] = struct{}{}
+	}
+	if len(rooms) > 0 {
+		rooms = slices.Clone(rooms)
+		t.rooms[userID] = rooms
+		for _, room := range rooms {
+			users, ok := t.byRoom[room]
+			if !ok {
+				users = make(map[string]struct{})
+				t.byRoom[room] = users
+			}
+			users[userID] = struct{}{}
+		}
+	}
+	return t.Data[userID]
+}
+
+func (t *consumerIndex) Delete(userID string) {
+	t.Lock()
+	defer t.Unlock()
+	delete(t.Data, userID)
+	if country, ok := t.country[userID]; ok {
+		delete(t.country, userID)
+		delete(t.byCountry[country], userID)
+		if len(t.byCountry[country]) == 0 {
+			delete(t.byCountry, country)
+		}
+	}
+	for _, room := range t.rooms[userID] {
+		delete(t.byRoom[room], userID)
+		if len(t.byRoom[room]) == 0 {
+			delete(t.byRoom, room)
+		}
+	}
+	delete(t.rooms, userID)
+	delete(t.roomTickets, userID)
+}
+
+// broadcastToCountries sends msg, with Broadcast's unreliable delivery semantics, to the users
+// indexed under one of countries, stopping once limit have taken it if limit is positive. It
+// returns the number of users the message was delivered to. A capped message starts at a random
+// one of countries, so a producer's later targets aren't starved by its first.
+func (t *consumerIndex) broadcastToCountries(msg string, countries []string, limit int) int {
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	start := 0
+	if limit > 0 && len(countries) > 1 {
+		start = rand.IntN(len(countries))
+	}
+	for i := range countries {
+		for userID := range t.byCountry[countries[(start+i)%len(countries)]] {
+			select {
+			case t.Data[userID] <- msg:
+				delivered++
+				if delivered == limit {
+					return delivered
+				}
+			default:
+			}
+		}
+	}
+	return delivered
+}
+
+// broadcastUpTo is Broadcast, stopping once limit users have taken msg if limit is positive.
+// Each range over a map starts at a random point, so a capped message goes to the waiting users
+// after a different one each time.
+func (t *consumerIndex) broadcastUpTo(msg string, limit int) {
+	if limit <= 0 {
+		t.Broadcast(msg)
+		return
+	}
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	for _, userChan := range t.Data {
+		select {
+		case userChan <- msg:
+			delivered++
+			if delivered == limit {
+				return
+			}
+		default:
+		}
+	}
+}
+
+// BroadcastGenesis broadcasts a genesis message, preferring consumers from targets. If any waiting
+// consumer from a target country takes the message, nobody else gets it; otherwise it falls back to
+// everyone. Targeting is a preference, not a filter: a producer who targets a
+// country with no waiting consumers must keep receiving offers rather than sit idle. Returns which
+// of the genesis* outcomes occurred.
+//
+// With a fanout set, each step stops once that many waiting consumers have taken the message. A
+// consumer answers one genesis and the first answer wins, so the rest only cost Freddie a write
+// each and the consumers a refused offer, which uncapped is hundreds per answered genesis.
+func (t *consumerIndex) BroadcastGenesis(msg string, targets []string) string {
+	return t.broadcastGenesis(msg, targets, int(t.fanout.Load()))
+}
+
+// broadcastGenesis is BroadcastGenesis with the fanout limit given.
+func (t *consumerIndex) broadcastGenesis(msg string, targets []string, limit int) string {
+	if len(targets) == 0 {
+		t.broadcastUpTo(msg, limit)
+		return genesisUntargeted
+	}
+	if t.broadcastToCountries(msg, targets, limit) > 0 {
+		return genesisMatched
+	}
+	t.broadcastUpTo(msg, limit)
+	return genesisFallback
+}
+
+// roomGenesis is a genesis message as it is delivered through one room: stamped with that room's
+// pairing (see common.SignalMsg.Pairing).
+type roomGenesis struct {
+	room string
+	msg  string
+	// deliver, if set, returns the message for one consumer admitted to room by ticket ("" if
+	// unknown) in place of msg, and undo, if non-nil, to call should the consumer not take it.
+	deliver func(ticket string) (msg string, undo func())
+}
+
+// messageFor is rg's message for a consumer admitted to its room by ticket, and what to undo if
+// the consumer doesn't take it.
+func (rg roomGenesis) messageFor(ticket string) (string, func()) {
+	if rg.deliver == nil {
+		return rg.msg, nil
+	}
+	return rg.deliver(ticket)
+}
+
+// broadcastToRooms sends each room's message, with Broadcast's unreliable delivery semantics, to
+// every user indexed under that room, at most once per user: a user in several of the rooms gets
+// the message of the first of them it is in. It returns the number of users a message was
+// delivered to.
+func (t *consumerIndex) broadcastToRooms(rooms []roomGenesis) int {
+	t.RLock()
+	defer t.RUnlock()
+	delivered := 0
+	seen := make(map[string]struct{})
+	for _, rg := range rooms {
+		for userID := range t.byRoom[rg.room] {
+			if _, dup := seen[userID]; dup {
+				continue
+			}
+			seen[userID] = struct{}{}
+			msg, undo := rg.messageFor(t.roomTickets[userID][rg.room])
+			select {
+			case t.Data[userID] <- msg:
+				delivered++
+			default:
+				if undo != nil {
+					undo()
+				}
+			}
+		}
+	}
+	return delivered
+}
+
+// DeliverGenesis delivers a genesis message from a producer in rooms. A waiting consumer in one of
+// rooms comes first: if any takes its room's message, nobody else gets the genesis. Otherwise, if
+// servePool, it goes on to BroadcastGenesis(msg, targets), the country-then-everyone step. Without
+// servePool it goes nowhere: the producer waits out its TTL and its slot loops, so a waiting room
+// consumer gets the next free slot of a producer before any pool consumer does. roomMatched reports
+// whether a room consumer took it; outcome is BroadcastGenesis's, or "" when the pool step did not
+// run.
+//
+// The room step and the pool step take the read lock separately, on purpose. Precedence is per
+// message, not atomic across the table: a consumer that joins between the two steps may get the
+// message from either. Holding the read lock across both would mean nesting read locks, which
+// deadlocks once a writer is waiting between them.
+func (t *consumerIndex) DeliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string) (roomMatched bool, outcome string) {
+	return t.deliverGenesis(msg, rooms, servePool, targets, int(t.fanout.Load()))
+}
+
+// deliverGenesis is DeliverGenesis with the pool step's fanout limit given.
+func (t *consumerIndex) deliverGenesis(msg string, rooms []roomGenesis, servePool bool, targets []string, limit int) (roomMatched bool, outcome string) {
+	if len(rooms) > 0 && t.broadcastToRooms(rooms) > 0 {
+		return true, ""
+	}
+	if !servePool {
+		return false, ""
+	}
+	return false, t.broadcastGenesis(msg, targets, limit)
+}
+
 type Freddie struct {
 	TLSConfig *tls.Config
+
+	// ConsumerCountry, if non-nil, returns the ISO 3166-1 alpha-2 country of the consumer making
+	// r, a GET /v1/signal, or "" when it is unknown. Freddie indexes the consumer under the
+	// (normalized) result so producers who target that country can prefer it. It must derive the
+	// country server-side and must not trust client-controlled input: a consumer who could claim
+	// a country would absorb every genesis message targeted at it. nil, or a "" result, leaves the
+	// consumer untargeted: it still receives untargeted and fallback broadcasts, but is never
+	// selected by country. Set it after New and before ListenAndServe or ListenAndServeTLS; it
+	// is read without synchronization by concurrent request handlers.
+	//
+	// Freddie also calls it on each offer POST, so freddie.producer.outcomes can say
+	// which country the consumer behind each attempt was in.
+	ConsumerCountry func(r *http.Request) string
+
+	// RoomTicket, if non-nil, verifies a helper pairing ticket presented for role and returns the
+	// room it admits to, the pairing's opaque ID, or ok=false. A consumer's inviter tickets, in
+	// common.RoomTicketsHeader, put it in their rooms; a producer's volunteer tickets, in
+	// common.RoomTicketField, send its genesis messages to those rooms' consumers first. It must
+	// check the signature, the key, the expiry and the role, and must not log, trace or count the
+	// ticket or the room. helperticket.RoomFunc is one. nil disables rooms: tickets are ignored, so
+	// a producer that serves only its rooms is offered to nobody. Set it after New and before
+	// serving; it is read without synchronization by concurrent request handlers.
+	//
+	// Freddie caches each ticket it accepts until the ticket's own expiry, so RoomTicket runs once
+	// per distinct valid ticket rather than at every subscribe and genesis. See KnownKeyID.
+	RoomTicket func(ticket string, role helperticket.Role) (room string, ok bool)
+
+	// KnownKeyID reports whether kid names a key RoomTicket currently trusts. Freddie asks it on
+	// every cache hit, and a ticket whose key is no longer trusted is dropped and refused, so a
+	// key that leaves RoomTicket's set stops admitting anyone at once. nil disables the cache:
+	// every ticket is verified by RoomTicket every time. helperticket.KnownKeyFunc is one. Set it
+	// with RoomTicket, after New and before serving.
+	KnownKeyID func(kid string) bool
+
+	// RoomICEServers, if non-nil, returns ICE servers (TURN relays) for room pairings. Freddie
+	// calls it once per genesis that carries a verified room ticket and stamps the result on the
+	// genesis each room's consumers receive and, when a room consumer took the genesis, on the
+	// offer it returns to the producer. It must not block: signaling waits on it. Nil, or an empty
+	// result, leaves every message unchanged.
+	RoomICEServers func(ctx context.Context) []webrtc.ICEServer
 
 	ctx context.Context
 	srv *http.Server
@@ -121,8 +450,26 @@ type Freddie struct {
 	meter             metric.Meter
 	nConcurrentReqs   metric.Int64ObservableUpDownCounter
 	totalRequests     metric.Int64Counter
+	signalReplies     metric.Int64Counter
 	consumerTableSize metric.Int64ObservableUpDownCounter
 	signalTableSize   metric.Int64ObservableUpDownCounter
+	genesisBroadcasts metric.Int64Counter
+	genesisReoffers   metric.Int64Counter
+	genesisAnswered   metric.Int64Counter
+	consumerSubs      metric.Int64Counter
+	roomMatches       metric.Int64Counter
+	roomsDisabled     metric.Int64Counter
+	iceNAT            metric.Int64Counter
+	producerOutcomes  metric.Int64Counter
+	stunPreflights    metric.Int64Counter
+	handshakeTimes    metric.Float64Histogram
+	volunteerSockets  metric.Int64UpDownCounter
+
+	tickets        *ticketCache
+	offerConsumers *offerConsumerCache
+	roomGeneses    *roomGenesisSet
+	heldGeneses    *heldGeneses
+	deliveries     *deliveryTokens
 }
 
 func New(ctx context.Context, listenAddr string) (*Freddie, error) {
@@ -136,11 +483,17 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 			Addr:         listenAddr,
 			Handler:      mux,
 		},
-		currentGets:  atomic.Int64{},
-		currentPosts: atomic.Int64{},
-		tracer:       otel.Tracer("github.com/getlantern/broflake/freddie"),
-		meter:        otel.Meter("github.com/getlantern/broflake/freddie"),
+		currentGets:    atomic.Int64{},
+		currentPosts:   atomic.Int64{},
+		tracer:         otel.Tracer("github.com/getlantern/broflake/freddie"),
+		meter:          otel.Meter("github.com/getlantern/broflake/freddie"),
+		tickets:        newTicketCache(maxCachedTickets, time.Now),
+		offerConsumers: newOfferConsumerCache(time.Now),
+		roomGeneses:    newRoomGenesisSet(time.Now),
+		heldGeneses:    newHeldGeneses(),
+		deliveries:     newDeliveryTokens(time.Now),
 	}
+	go f.deliveries.sweepEvery(ctx, deliveryTokenTTL)
 
 	var err error
 
@@ -166,11 +519,29 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		return nil, err
 	}
 
+	f.signalReplies, err = f.meter.Int64Counter("freddie.signal.replies",
+		metric.WithDescription("signaling replies, by message type and whether the reply was delivered"),
+		metric.WithUnit("reply"))
+	if err != nil {
+		return nil, err
+	}
+
 	f.consumerTableSize, err = f.meter.Int64ObservableUpDownCounter("freddie.consumertable.size",
 		metric.WithDescription("total number of users in the consumers table"),
 		metric.WithUnit("user"),
 		metric.WithInt64Callback(func(ctx context.Context, m metric.Int64Observer) error {
 			m.Observe(int64(consumerTable.Size()))
+			return nil
+		}))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = f.meter.Int64ObservableUpDownCounter("freddie.genesis.held",
+		metric.WithDescription("rooms-only geneses held for their rooms' next consumer"),
+		metric.WithUnit("{genesis}"),
+		metric.WithInt64Callback(func(ctx context.Context, m metric.Int64Observer) error {
+			m.Observe(int64(f.heldGeneses.size()))
 			return nil
 		}))
 	if err != nil {
@@ -188,6 +559,84 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		return nil, err
 	}
 
+	f.genesisBroadcasts, err = f.meter.Int64Counter("freddie.genesis.broadcasts",
+		metric.WithDescription("genesis messages broadcast, by country targeting outcome"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisReoffers, err = f.meter.Int64Counter("freddie.genesis.reoffers",
+		metric.WithDescription("capped pool genesis messages offered again to another sample of waiting consumers (see genesisReofferInterval), by the re-offer's country targeting outcome"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.genesisAnswered, err = f.meter.Int64Counter("freddie.genesis.answered",
+		metric.WithDescription("capped pool genesis messages answered with an offer, by how many times each was re-offered first (0, 1, 2 or 3+)"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.consumerSubs, err = f.meter.Int64Counter("freddie.consumer.subscribes",
+		metric.WithDescription("consumers subscribed to the genesis stream, by country (\"unknown\" when it isn't known) and consumer version"),
+		metric.WithUnit("subscription"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.roomMatches, err = f.meter.Int64Counter("freddie.genesis.room_match",
+		metric.WithDescription("genesis messages from producers with valid room tickets, by whether a consumer in one of their rooms took it"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.roomsDisabled, err = f.meter.Int64Counter("freddie.rooms.disabled",
+		metric.WithDescription("signaling requests served with helper pairing rooms disabled, because no room ticket verifier is configured"),
+		metric.WithUnit("request"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.iceNAT, err = f.meter.Int64Counter("freddie.ice.nat",
+		metric.WithDescription("ICE candidate sets received, by role, by how the peer's NAT mapped its sockets (see icenat.go), and by whether freddie delivered them"),
+		metric.WithUnit("message"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.producerOutcomes, err = f.meter.Int64Counter("freddie.producer.outcomes",
+		metric.WithDescription("how producers' previous connection attempts ended, as reported on their next genesis message, with the ICE and peer connection states at that moment (see common/outcome.go), and with how the attempt's genesis was delivered: to a consumer in one of the producer's rooms or to the pool (delivery)"),
+		metric.WithUnit("attempt"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.stunPreflights, err = f.meter.Int64Counter("freddie.producer.stun_preflights",
+		metric.WithDescription("producers' STUN preflights, as reported on the genesis after one passes: passes as result=ok and earlier failures by how the last failed, each with the producer's VPN state (see common/preflight.go)"),
+		metric.WithUnit("preflight"))
+	if err != nil {
+		return nil, err
+	}
+
+	f.handshakeTimes, err = f.meter.Float64Histogram("freddie.handshake.duration",
+		metric.WithDescription("how long each phase of a connection attempt took, by phase (see handshakePhase*) and by how the attempt's genesis was delivered (delivery), with the outcome for the volunteer-reported whole attempt"),
+		metric.WithUnit("s"),
+		metric.WithExplicitBucketBoundaries(handshakeBuckets...))
+	if err != nil {
+		return nil, err
+	}
+
+	f.volunteerSockets, err = f.meter.Int64UpDownCounter("freddie.volunteer.sockets",
+		metric.WithDescription("volunteer sockets open (see common.VolunteerSocketEndpoint)"),
+		metric.WithUnit("{socket}"))
+	if err != nil {
+		return nil, err
+	}
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "freddie (%v)\n", common.Version)
@@ -195,8 +644,16 @@ func New(ctx context.Context, listenAddr string) (*Freddie, error) {
 		fmt.Fprintf(w, "current POST requests: %d\n", f.currentPosts.Load())
 	})
 	mux.HandleFunc("/v1/signal", f.handleSignal)
+	mux.HandleFunc("GET "+common.VolunteerSocketEndpoint, f.handleVolunteerSocket)
 
 	return &f, nil
+}
+
+// SetGenesisFanout caps how many waiting consumers each pool genesis goes to, both among its
+// target countries and in the fallback to everyone. Zero, the default, sends it to all of them. A
+// room genesis isn't capped: it goes only to its room's consumers. Safe to call while serving.
+func (f *Freddie) SetGenesisFanout(n int) {
+	consumerTable.fanout.Store(int64(max(n, 0)))
 }
 
 func (f *Freddie) ListenAndServe() error {
@@ -239,7 +696,8 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
 			"Access-Control-Allow-Headers, Origin, Accept, X-Requested-With, Content-Type, "+
-				"Access-Control-Request-Method, Access-Control-Request-Headers, "+common.VersionHeader,
+				"Access-Control-Request-Method, Access-Control-Request-Headers, "+common.VersionHeader+", "+
+				common.RoomTicketsHeader,
 		)
 
 		w.WriteHeader(http.StatusOK)
@@ -253,6 +711,9 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.totalRequests.Add(ctx, 1, metric.WithAttributes(attribute.String("method", r.Method)))
+	if f.RoomTicket == nil {
+		f.roomsDisabled.Add(ctx, 1)
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -260,6 +721,167 @@ func (f *Freddie) handleSignal(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		f.handleSignalPost(ctx, w, r)
 	}
+}
+
+// verifyRoomTickets returns the distinct rooms that tickets, already normalized, admit a client in
+// role to. Invalid tickets are dropped: neither they nor the rooms are logged or traced, and every
+// kind of failure looks the same. Only how many were refused is logged, by the callers.
+func (f *Freddie) verifyRoomTickets(tickets []string, role helperticket.Role) []string {
+	rooms, _, _ := f.verifyRoomTicketsBy(tickets, role)
+	return rooms
+}
+
+// verifyRoomTicketsBy is verifyRoomTickets, also returning the first ticket that admits to each
+// room, and how many tickets were refused.
+func (f *Freddie) verifyRoomTicketsBy(tickets []string, role helperticket.Role) (rooms []string, ticketOf map[string]string, refused int) {
+	if f.RoomTicket == nil {
+		// Rooms are off, so no ticket admits anyone anywhere.
+		return nil, nil, len(tickets)
+	}
+	for _, tk := range tickets {
+		room, ok := f.tickets.room(tk, role, f.RoomTicket, f.KnownKeyID)
+		if !ok || room == "" {
+			refused++
+			continue
+		}
+		if !slices.Contains(rooms, room) {
+			rooms = append(rooms, room)
+			if ticketOf == nil {
+				ticketOf = make(map[string]string)
+			}
+			// Its own copy: tk shares the whole header's memory, which the delivery store would
+			// otherwise keep alive after the subscription ends.
+			ticketOf[room] = strings.Clone(tk)
+		}
+	}
+	return rooms, ticketOf, refused
+}
+
+const (
+	// maxCachedTickets bounds the verified ticket cache. An entry is under 200 bytes, and a
+	// ticket lives 15 minutes, so this is room for far more pairings than one Freddie serves.
+	maxCachedTickets = 1 << 16
+
+	// ticketCacheSweep is how often the cache drops expired entries nobody has looked up again.
+	ticketCacheSweep = time.Minute
+
+	// ticketCacheFullSweep is the least time between sweeps of a full cache. A full cache of live
+	// entries would otherwise be swept, under the lock, by every new ticket that misses it.
+	ticketCacheFullSweep = time.Second
+)
+
+// A ticketCache remembers the tickets Freddie's verifier accepted, keyed by the ticket's SHA-256,
+// until each ticket's own expiry. A consumer re-subscribes every consumerTTL with the same tickets,
+// and each request can carry common.MaxRoomTickets of them, so without it every subscribe would
+// cost that many signature checks. A ticket has exactly one accepted encoding, so its hash names
+// it.
+//
+// Only accepted tickets are cached, so a client cannot fill the cache, or push good entries out
+// of it, without tickets lantern-cloud signed. When the cache is full it sweeps out expired
+// entries, at most once per ticketCacheFullSweep, and, failing that, leaves the new ticket
+// uncached: it never evicts a live entry.
+type ticketCache struct {
+	mu        sync.Mutex
+	entries   map[[sha256.Size]byte]cachedTicket
+	max       int
+	now       func() time.Time
+	lastSweep time.Time
+	sweeps    int // for tests
+}
+
+type cachedTicket struct {
+	room    string
+	role    helperticket.Role
+	kid     string
+	expires time.Time
+}
+
+func newTicketCache(max int, now func() time.Time) *ticketCache {
+	return &ticketCache{
+		entries:   make(map[[sha256.Size]byte]cachedTicket),
+		max:       max,
+		now:       now,
+		lastSweep: now(),
+	}
+}
+
+func ticketCacheKey(ticket string) [sha256.Size]byte {
+	return sha256.Sum256([]byte(ticket))
+}
+
+// room returns the room ticket admits role to, from the cache while the ticket is unexpired and
+// known still names its key, else from verify. A cached ticket presented for another role is
+// refused without asking verify, and so is one whose key known no longer trusts: its entry is
+// dropped, so it is verified afresh, against the current keys, if presented again. With a nil
+// known nothing is cached.
+func (c *ticketCache) room(ticket string, role helperticket.Role, verify func(string, helperticket.Role) (string, bool), known func(string) bool) (string, bool) {
+	key := ticketCacheKey(ticket)
+	now := c.now()
+	if known != nil {
+		c.mu.Lock()
+		e, hit := c.entries[key]
+		if hit && !now.Before(e.expires) {
+			delete(c.entries, key)
+			hit = false
+		}
+		c.mu.Unlock()
+		if hit {
+			if !known(e.kid) {
+				c.drop(key)
+				return "", false
+			}
+			if e.role != role {
+				return "", false
+			}
+			return e.room, true
+		}
+	}
+
+	room, ok := verify(ticket, role)
+	if !ok {
+		return "", false
+	}
+	// The verifier has accepted ticket, so what it claims is genuine.
+	if claims, ok := helperticket.Claims(ticket); ok && known != nil && known(claims.KeyID) && now.Before(claims.Expires) {
+		c.add(key, cachedTicket{room: room, role: role, kid: claims.KeyID, expires: claims.Expires}, now)
+	}
+	return room, true
+}
+
+func (c *ticketCache) drop(key [sha256.Size]byte) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+func (c *ticketCache) flush() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	clear(c.entries)
+}
+
+func (c *ticketCache) add(key [sha256.Size]byte, e cachedTicket, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sinceSweep := now.Sub(c.lastSweep)
+	if sinceSweep >= ticketCacheSweep || (len(c.entries) >= c.max && sinceSweep >= ticketCacheFullSweep) {
+		for k, old := range c.entries {
+			if !now.Before(old.expires) {
+				delete(c.entries, k)
+			}
+		}
+		c.lastSweep = now
+		c.sweeps++
+	}
+	if len(c.entries) < c.max {
+		c.entries[key] = e
+	}
+}
+
+// FlushRoomTicketCache forgets every verified room ticket, so each is verified afresh the next
+// time it is presented. Call it when the set of trusted ticket keys changes.
+func (f *Freddie) FlushRoomTicketCache() {
+	f.tickets.flush()
 }
 
 // GET /v1/signal is the producer advertisement stream
@@ -271,23 +893,79 @@ func (f *Freddie) handleSignalGet(ctx context.Context, w http.ResponseWriter, r 
 	defer f.currentGets.Add(-1)
 
 	consumerID := uuid.NewString()
-	span.SetAttributes(attribute.String("consumer.id", consumerID))
+	// Never taken from the request's own claims: see Freddie.ConsumerCountry.
+	var country string
+	if f.ConsumerCountry != nil {
+		country = common.NormalizeCountry(f.ConsumerCountry(r))
+	}
+	// Both are normalized onto fixed sets, so a request can't mint label values.
+	countryLabel := country
+	if countryLabel == "" {
+		countryLabel = "unknown"
+	}
+	f.consumerSubs.Add(ctx, 1, metric.WithAttributes(
+		attribute.Bool("country_known", country != ""),
+		attribute.String("country", countryLabel),
+		attribute.String("consumer_version", common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version)),
+	))
+	span.SetAttributes(
+		attribute.String("consumer.id", consumerID),
+		attribute.String("consumer.country", country),
+	)
 
-	consumerChan := consumerTable.Add(consumerID)
+	// Verified at every subscribe, so an ended pairing's consumer leaves its room within one
+	// ticket lifetime plus one consumerTTL. Rooms are never put on the span.
+	tickets := common.ParseRoomTicketsHeader(r.Header.Values(common.RoomTicketsHeader))
+	rooms, ticketOf, refused := f.verifyRoomTicketsBy(tickets, helperticket.RoleInviter)
+	logRefusedConsumerTickets(len(tickets), refused, len(rooms))
+	consumerChan := consumerTable.AddRoomConsumer(consumerID, country, rooms, ticketOf)
 	defer consumerTable.Delete(consumerID)
 
-	// TODO: Matchmaking would happen here. (Just be selective about which consumers you broadcast
-	// to, and you've implemented matchmaking!) If consumerTable was an indexed datastore, we could
-	// select slices of consumers in O(1) based on some deterministic function
+	// Matchmaking is country preference only, applied when genesis messages are broadcast: see
+	// consumerIndex.BroadcastGenesis.
 	w.WriteHeader(http.StatusOK)
 	timeoutChan := time.After(consumerTTL * time.Second)
+
+	// A room consumer gets a genesis its volunteer left held for it at once, rather than waiting
+	// for the volunteer's next. It's written here, not sent on consumerChan, which is unbuffered
+	// and read only below. A genesis delivered while the consumer wasn't receiving, before the
+	// loop or during a write, is held instead, so it looks again every heldRecheck until it has a
+	// room genesis: a consumer answers one per subscribe, and a second it took would be stranded
+	// for defaultMsgTTL when another of its inviter's workers could have answered it. A pool
+	// genesis doesn't stop it, since a rooms-only consumer, or one that needs its room's TURN
+	// servers, ignores those.
+	var recheck <-chan time.Time
+	takeHeld := func() {
+		if _, rg, ok := f.heldGeneses.take(rooms); ok {
+			msg, _ := rg.messageFor(ticketOf[rg.room])
+			fmt.Fprintf(w, "%v\n", msg)
+			w.(http.Flusher).Flush()
+			recheck = nil
+		}
+	}
+	if len(rooms) > 0 {
+		ticker := time.NewTicker(heldRecheck)
+		defer ticker.Stop()
+		recheck = ticker.C
+		takeHeld()
+	}
 
 	for {
 		select {
 		case msg := <-consumerChan:
 			fmt.Fprintf(w, "%v\n", msg)
 			w.(http.Flusher).Flush()
+			if recheck != nil && common.IsRoomGenesis([]byte(msg)) {
+				recheck = nil
+			}
+		case <-recheck:
+			takeHeld()
 		case <-timeoutChan:
+			return
+		case <-ctx.Done():
+			// The consumer hung up. Leave the table now rather than at consumerTTL: a departed
+			// consumer still accepts broadcasts, and under country targeting it would count as a
+			// match and swallow genesis messages that should have fallen back to everyone else.
 			return
 		}
 	}
@@ -301,31 +979,86 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 	f.currentPosts.Add(1)
 	defer f.currentPosts.Add(-1)
 
-	reqID := uuid.NewString()
-	span.SetAttributes(attribute.String("request.id", reqID))
-
-	reqChan := signalTable.Add(reqID)
-	defer signalTable.Delete(reqID)
-
 	if err := r.ParseForm(); err != nil {
 		span.SetStatus(codes.Error, "failed to parse form")
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte("400\n"))
 		return
 	}
+	reply := f.postSignal(ctx, span, r, false)
+	w.WriteHeader(reply.status)
+	if reply.await == nil {
+		w.Write([]byte(reply.body))
+		return
+	}
+	// A producer that hangs up stops waiting, so a genesis it left isn't offered again.
+	if res := reply.await(ctx.Done()); res != "" {
+		fmt.Fprintf(w, "%v\n", res)
+		return
+	}
+	w.Write(nil)
+}
+
+// signalReply is how Freddie answers a signaling message, whichever transport carried it: a status,
+// and then either a body at once or, for a message whose partner will reply, await.
+type signalReply struct {
+	status int
+	body   string
+	// await blocks until the partner replies, the message's TTL ends or done closes, and returns
+	// the reply, or "" for none. It must be called exactly once when set.
+	await func(done <-chan struct{}) string
+	// held says await may wait on a held genesis, longer than any other message waits. The
+	// caller ends its span by defaultMsgTTL, so the span's length doesn't single out a paired
+	// volunteer.
+	held bool
+}
+
+// refused is the signalReply for a message Freddie won't take.
+func refused(status int) signalReply {
+	return signalReply{status: status, body: fmt.Sprintf("%d\n", status)}
+}
+
+// postSignal handles one signaling message, whose fields r.Form holds, as POST /v1/signal
+// describes. r also gives the sender's headers, for its version and country. viaSocket says it
+// came over a volunteer socket, the one transport that may hold a genesis (see common.HoldField).
+func (f *Freddie) postSignal(ctx context.Context, span trace.Span, r *http.Request, viaSocket bool) (reply signalReply) {
+	// Set for a genesis posted with room tickets, which is logged once it ends.
+	var roomLog *roomGenesisLog
+	defer func() {
+		if roomLog != nil && reply.await != nil {
+			reply.await = roomLog.wrap(reply.await)
+		}
+	}()
+	reqID := uuid.NewString()
+	span.SetAttributes(attribute.String("request.id", reqID))
+
+	reqChan := signalTable.Add(reqID)
+	// Kept until await has run, for a message that waits on a reply.
+	waiting := false
+	defer func() {
+		if !waiting {
+			signalTable.Delete(reqID)
+		}
+	}()
+
 	sendTo := r.Form.Get("send-to")
 	data := r.Form.Get("data")
 	msgType, err := strconv.ParseInt(r.Form.Get("type"), 10, 32)
 	if err != nil {
 		span.SetStatus(codes.Error, "invalid message type")
 		span.RecordError(fmt.Errorf("invalid message type: %w", err))
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400\n"))
-		return
+		return refused(http.StatusBadRequest)
 	}
 
+	isGenesis := sendTo == common.SignalSendToGenesis || sendTo == common.SignalSendToGenesisRooms
+	// A rooms-only genesis is traced as an ordinary one, so the span doesn't mark the producer as
+	// paired.
+	recipient := sendTo
+	if isGenesis {
+		recipient = common.SignalSendToGenesis
+	}
 	span.SetAttributes(
-		attribute.String("recipient.id", sendTo),
+		attribute.String("recipient.id", recipient),
 		attribute.String("msg_type", common.SignalMsgType(msgType).String()),
 	)
 
@@ -337,29 +1070,187 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// Malformed request
 		span.SetStatus(codes.Error, "malformed request")
 		span.RecordError(fmt.Errorf("malformed request: %w", err))
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("400\n"))
-		return
+		return refused(http.StatusBadRequest)
 	}
 
-	if sendTo == "genesis" {
-		// It's a genesis message, so let's broadcast it to all consumers
-		consumerTable.Broadcast(string(msg))
+	var offerICE []webrtc.ICEServer
+	// held is the genesis Freddie holds for its rooms' next consumer, if it does.
+	var held *heldGenesis
+	var heldICE []webrtc.ICEServer
+	// reoffer, if set, offers a capped pool genesis to another sample of waiting consumers.
+	var reoffer func() string
+	if isGenesis {
+		// It's a genesis message. Producers' rooms come first; then, unless the producer serves only
+		// its rooms, its target countries; then everyone. See consumerIndex.DeliverGenesis. A
+		// producer serves only its rooms when it posts to SignalSendToGenesisRooms, or, as the
+		// first room-aware clients did, to SignalSendToGenesis with pool=0.
+		f.recordProducerOutcome(ctx, span, r)
+		f.recordSTUNPreflights(ctx, r)
+		tickets := common.NormalizeRoomTickets(r.Form[common.RoomTicketField])
+		rooms, _, refusedTickets := f.verifyRoomTicketsBy(tickets, helperticket.RoleVolunteer)
+		servePool := sendTo == common.SignalSendToGenesis && r.Form.Get(common.PoolField) != "0"
+		targets := common.NormalizeCountries(r.Form[common.TargetCountryField])
+		var roomICE []webrtc.ICEServer
+		if len(rooms) > 0 && f.RoomICEServers != nil {
+			roomICE = f.RoomICEServers(ctx)
+		}
+		// Each room's message carries that room's pairing, so the consumer can tell its volunteer
+		// which pairing it came through. One marshal per room, not per consumer. Rooms are pairing
+		// IDs (see RoomTicket), and a consumer only ever receives the message of a room it is in.
+		// Neither the rooms nor these messages go on the span.
+		roomMsgs := make([]roomGenesis, 0, len(rooms))
+		// Each consumer's copy also carries its own delivery token (see roomDelivery).
+		for _, room := range rooms {
+			base := common.SignalMsg{
+				ReplyTo:    reqID,
+				Type:       common.SignalMsgType(msgType),
+				Payload:    data,
+				Room:       true,
+				Pairing:    room,
+				ICEServers: roomICE,
+			}
+			roomMsg, err := json.Marshal(base)
+			if err != nil {
+				span.SetStatus(codes.Error, "malformed request")
+				return refused(http.StatusBadRequest)
+			}
+			roomMsgs = append(roomMsgs, roomGenesis{room: room, msg: string(roomMsg), deliver: f.roomDelivery(reqID, room, base)})
+		}
+		var matched bool
+		var outcome string
+		// Read once, so a re-offer goes through the table the genesis was first offered through.
+		table := consumerTable
+		// Over a socket, a rooms-only genesis no room consumer is waiting for is held for the next
+		// to subscribe rather than dropped after defaultMsgTTL. A POST can't wait that long behind
+		// the server's and CDNs' timeouts. The pool never sees a held genesis, so only rooms-only
+		// ones are held.
+		if viaSocket && !servePool && len(roomMsgs) > 0 && r.Form.Get(common.HoldField) == "1" {
+			g := &heldGenesis{id: reqID, rooms: roomMsgs, taken: make(chan struct{})}
+			matched = f.heldGeneses.deliverOrHold(g, func() bool {
+				m, _ := table.DeliverGenesis(string(msg), roomMsgs, false, nil)
+				return m
+			})
+			if !matched {
+				held, heldICE = g, roomICE
+			}
+		} else {
+			limit := int(table.fanout.Load())
+			matched, outcome = table.deliverGenesis(string(msg), roomMsgs, servePool, targets, limit)
+			// Only a pool genesis is capped, and only it is offered again. A room consumer that took
+			// one keeps it to itself, as outcome is then "".
+			// It's offered with the limit it was first offered with, so turning the cap off doesn't
+			// turn the re-offers of geneses already waiting into broadcasts to everyone. A consumer
+			// in the genesis's rooms that subscribes later gets the pool message, as any other.
+			if outcome != "" && limit > 0 {
+				genesis := string(msg)
+				reoffer = func() string { return table.broadcastGenesis(genesis, targets, limit) }
+			}
+		}
+		if matched {
+			f.roomGeneses.add(reqID)
+			offerICE = roomICE
+		}
+		if len(tickets) > 0 {
+			roomLog = &roomGenesisLog{
+				tickets: len(tickets),
+				refused: refusedTickets,
+				rooms:   len(rooms),
+				matched: matched,
+				held:    held != nil,
+				pool:    servePool,
+				socket:  viaSocket,
+				started: time.Now(),
+			}
+		}
+		// A held genesis is counted once its hold ends, taken or not.
+		if len(rooms) > 0 && held == nil {
+			f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched), attribute.Bool("held", false)))
+		}
+		if outcome != "" {
+			f.genesisBroadcasts.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
+		}
+		span.SetAttributes(
+			attribute.StringSlice("genesis.target_countries", targets),
+			attribute.String("genesis.targeting", spanTargeting(outcome, targets)),
+		)
 	} else {
 		// It's a regular message, so let's signal it to its recipient (or return a 404 if the
 		// recipient is no longer available)
+		// An offer's consumer is cached before the offer is published, so the producer can't
+		// report the attempt before Freddie can label it.
+		isOffer := common.SignalMsgType(msgType) == common.SignalMsgOffer
+		if isOffer {
+			oc := offerConsumer{
+				version:        common.NormalizeConsumerVersion(r.Header.Get(common.VersionHeader), common.Version),
+				volunteerNAT:   outcomeNATNone,
+				consumerNAT:    outcomeNATNone,
+				genesisID:      sendTo,
+				volunteerRelay: outcomeNATNone,
+				consumerRelay:  outcomeNATNone,
+			}
+			if f.ConsumerCountry != nil {
+				oc.country = common.NormalizeCountry(f.ConsumerCountry(r))
+			}
+			f.offerConsumers.add(reqID, oc)
+			if pairing := f.offerPairing(sendTo, r.Form.Get(common.DeliveryTokenField)); pairing != "" {
+				stamped, err := json.Marshal(common.SignalMsg{
+					ReplyTo: reqID, Type: common.SignalMsgType(msgType), Payload: data, Pairing: pairing,
+				})
+				if err != nil {
+					f.offerConsumers.take(reqID)
+					return refused(http.StatusBadRequest)
+				}
+				msg = stamped
+			}
+		}
+		// Likewise each peer's NAT is linked to the offer before the message is published: the
+		// recipient can act on it at once, so the consumer's ICE message, and then the producer's
+		// outcome report, could otherwise overtake the link. A volunteer's answer is sent to the
+		// offer's ID, and the consumer's ICE message to the answer's.
+		peer, hasCandidates := classifyMessage(common.SignalMsgType(msgType), data)
+		var nat, relay string
+		if hasCandidates {
+			nat, relay = peer.class.outcomeLabel(), peer.relayLabel()
+		}
+		// The phase it ends is timed here too, but recorded only once the message is delivered: a
+		// late one can still find its offer cached after the recipient has gone.
+		var phase, phaseGenesis string
+		var phaseTook time.Duration
+		switch common.SignalMsgType(msgType) {
+		case common.SignalMsgAnswer:
+			if took, genesisID, ok := f.offerConsumers.answered(sendTo, reqID, nat, relay); ok {
+				phase, phaseTook, phaseGenesis = handshakePhaseAnswer, took, genesisID
+			}
+		case common.SignalMsgICE:
+			if took, genesisID, ok := f.offerConsumers.consumerICE(sendTo, nat, relay); ok {
+				phase, phaseTook, phaseGenesis = handshakePhaseConsumerICE, took, genesisID
+			}
+		}
 		ok := signalTable.SendOnce(sendTo, string(msg))
+		if isOffer && !ok {
+			f.offerConsumers.take(reqID)
+		}
+		if ok && phase != "" {
+			f.recordHandshakePhase(ctx, phase, phaseTook, f.deliveryOf(phaseGenesis))
+		}
+		delivered := attribute.Bool("reply.delivered", ok)
+		span.SetAttributes(delivered)
+		f.signalReplies.Add(ctx, 1, metric.WithAttributes(
+			delivered,
+			attribute.String("msg_type", common.SignalMsgType(msgType).String()),
+		))
+		if hasCandidates {
+			f.recordICENAT(ctx, span, peer, delivered)
+		}
 		if !ok {
-			span.SetStatus(codes.Error, "recipient not found")
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("404\n"))
-			return
+			// Only the first reply to a request is delivered, and none after its TTL,
+			// so a late reply (e.g. an offer that lost the genesis race) is not an error.
+			return refused(http.StatusNotFound)
 		}
 	}
 
-	// Send 200 OK to indicate that signaling partner accepts the message, stream back their
-	// response or a nil body if they failed to respond
-	w.WriteHeader(http.StatusOK)
+	// 200 OK says the signaling partner accepts the message; their response, or nothing if they
+	// failed to respond, follows.
 	span.SetStatus(codes.Ok, "")
 
 	// XXX: below, Freddie becomes interested in the content of the signaling message so as to
@@ -379,19 +1270,189 @@ func (f *Freddie) handleSignalPost(ctx context.Context, w http.ResponseWriter, r
 		// We previously implemented this short circuit behavior on the client side, but it required a
 		// Flush() here to push the status header to the client. The Flush() confuses the browser and
 		// breaks Golang context contracts in Wasm build targets, so we live with this for now.
-		w.Write(nil)
-		return
+		return signalReply{status: http.StatusOK}
 	default:
 		optimizedTTL = defaultMsgTTL * time.Second
 	}
 
-	select {
-	case res := <-reqChan:
-		fmt.Fprintf(w, "%v\n", res)
-	case <-time.After(optimizedTTL):
-		span.AddEvent("timeout waiting for response")
-		w.Write(nil)
+	waiting = true
+	if held != nil {
+		return signalReply{status: http.StatusOK, held: true, await: func(done <-chan struct{}) string {
+			defer signalTable.Delete(reqID)
+			// Logged as matched if a consumer took it, checked once the hold is released and no
+			// consumer can take it any more: one can take it just as a timeout or hang-up ends the
+			// wait, which then never sees it taken.
+			defer func() {
+				select {
+				case <-held.taken:
+					if roomLog != nil {
+						roomLog.matched = true
+					}
+				default:
+				}
+			}()
+			defer f.heldGeneses.release(held)
+			taken := held.taken
+			timeout := time.NewTimer(heldGenesisTTL)
+			defer timeout.Stop()
+			matched := false
+			defer func() {
+				f.roomMatches.Add(ctx, 1, metric.WithAttributes(attribute.Bool("matched", matched), attribute.Bool("held", true)))
+			}()
+			// Like a delivered room genesis's, a taken one's offer carries the room's ICE servers and
+			// its attempt is a room attempt. Nothing goes on the span, which would single out a
+			// paired volunteer.
+			markTaken := func() {
+				taken, matched = nil, true
+				f.roomGeneses.add(reqID)
+				offerICE = heldICE
+			}
+			for {
+				select {
+				case <-taken:
+					// Its offer has the time a delivered genesis's has.
+					markTaken()
+					timeout.Reset(optimizedTTL)
+				case res := <-reqChan:
+					// An offer can only answer a genesis that was taken, which take closed taken
+					// for first, but the offer may win the select.
+					if taken != nil {
+						select {
+						case <-taken:
+							markTaken()
+						default:
+						}
+					}
+					return withICEServers(res, offerICE)
+				case <-timeout.C:
+					span.AddEvent("timeout waiting for response")
+					return ""
+				case <-done:
+					roomLog.producerLeft()
+					return ""
+				}
+			}
+		}}
 	}
+	return signalReply{status: http.StatusOK, await: func(done <-chan struct{}) string {
+		defer signalTable.Delete(reqID)
+		// No re-offer in the TTL's last interval: its consumers' offers would come too late. Taken
+		// before the ticker starts, so the tick that ends that interval is always past it.
+		lastReoffer := time.Now().Add(optimizedTTL - genesisReofferInterval)
+		var again <-chan time.Time
+		reoffers := 0
+		if reoffer != nil {
+			ticker := time.NewTicker(genesisReofferInterval)
+			defer ticker.Stop()
+			again = ticker.C
+		}
+		timeout := time.NewTimer(optimizedTTL)
+		defer timeout.Stop()
+		for {
+			select {
+			case res := <-reqChan:
+				if reoffer != nil {
+					f.recordGenesisAnswered(ctx, reoffers)
+				}
+				return withICEServers(res, offerICE)
+			case now := <-again:
+				if now.Before(lastReoffer) {
+					reoffers++
+					f.recordGenesisReoffer(ctx, reoffer())
+				}
+			case <-timeout.C:
+				span.AddEvent("timeout waiting for response")
+				return ""
+			case <-done:
+				roomLog.producerLeft()
+				return ""
+			}
+		}
+	}}
+}
+
+// offerPairing returns the pairing to stamp on an offer that answers genesisID and echoes token:
+// the room Freddie delivered that genesis through to the consumer it issued token to, if token is
+// unused and unexpired, was issued for genesisID, and the inviter ticket that admitted the
+// consumer to the room is still valid now. The ticket goes through the same cache, expiry and key
+// check as at subscribe, so an expired ticket, or one whose key Freddie no longer trusts, stamps
+// nothing. A token is redeemed once, whatever the outcome. Only Freddie writes the stamp, on the
+// envelope it builds: the consumer supplies only the offer's payload. "" stamps nothing, as for
+// every pool genesis, which carries no token.
+func (f *Freddie) offerPairing(genesisID, token string) string {
+	d, ok := f.deliveries.take(token)
+	if !ok || d.genesisID != genesisID || d.ticket == "" || f.RoomTicket == nil {
+		return ""
+	}
+	if room, ok := f.tickets.room(d.ticket, helperticket.RoleInviter, f.RoomTicket, f.KnownKeyID); !ok || room != d.room {
+		return ""
+	}
+	return d.room
+}
+
+// roomDelivery returns the roomGenesis.deliver of genesis message base, delivered through room as
+// the genesis genesisID: it issues each consumer admitted by a known ticket its own delivery token.
+// A consumer without one gets base as it is, and its offer is never stamped.
+func (f *Freddie) roomDelivery(genesisID, room string, base common.SignalMsg) func(ticket string) (string, func()) {
+	return func(ticket string) (string, func()) {
+		var token string
+		if ticket != "" {
+			token = f.deliveries.issue(delivery{genesisID: genesisID, room: room, ticket: ticket})
+		}
+		msg := base
+		msg.DeliveryToken = token
+		b, err := json.Marshal(msg)
+		if err != nil {
+			if token != "" {
+				f.deliveries.revoke(token)
+			}
+			return "", nil
+		}
+		if token == "" {
+			return string(b), nil
+		}
+		return string(b), func() { f.deliveries.revoke(token) }
+	}
+}
+
+// recordGenesisReoffer counts a capped pool genesis's re-offer, by its targeting outcome. Only the
+// counter records it: a room genesis is never re-offered, so a span without re-offers would single
+// out a paired volunteer.
+func (f *Freddie) recordGenesisReoffer(ctx context.Context, outcome string) {
+	f.genesisReoffers.Add(ctx, 1, metric.WithAttributes(attribute.String("targeting", outcome)))
+}
+
+// recordGenesisAnswered counts a capped pool genesis answered after it was re-offered reoffers
+// times.
+func (f *Freddie) recordGenesisAnswered(ctx context.Context, reoffers int) {
+	f.genesisAnswered.Add(ctx, 1, metric.WithAttributes(attribute.String("reoffers", reofferBucket(reoffers))))
+}
+
+// reofferBucket bounds freddie.genesis.answered's reoffers label.
+func reofferBucket(n int) string {
+	if n >= 3 {
+		return "3+"
+	}
+	return strconv.Itoa(n)
+}
+
+// withICEServers returns the signaling message raw with ICEServers set to servers, or raw unchanged
+// when servers is empty or raw isn't a SignalMsg. Only a room consumer can answer a genesis a room
+// consumer took (DeliverGenesis skips the pool then), so the offer it stamps is a room pairing's.
+func withICEServers(raw string, servers []webrtc.ICEServer) string {
+	if len(servers) == 0 {
+		return raw
+	}
+	var msg common.SignalMsg
+	if err := json.Unmarshal([]byte(raw), &msg); err != nil {
+		return raw
+	}
+	msg.ICEServers = servers
+	out, err := json.Marshal(msg)
+	if err != nil {
+		return raw
+	}
+	return string(out)
 }
 
 // TODO: delete me and replace with a real CORS strategy!

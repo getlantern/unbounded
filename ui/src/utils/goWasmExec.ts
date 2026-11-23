@@ -1,5 +1,14 @@
 // @ts-nocheck @todo add types
-// eslint-disable-file
+/* eslint-disable */
+// ^ was `// eslint-disable-file`, which is not a real ESLint directive and so did
+// nothing. The intent was always to exempt this file — it is vendored from Go's
+// wasm_exec.js (see the copyright below) and its style is upstream's business, not
+// ours. Fixing it in place rather than adding an .eslintignore keeps the exemption
+// visible to anyone re-vendoring the file.
+//
+// This was invisible until CI built the page: react-scripts turns ESLint warnings
+// into errors when CI=true, so four upstream style nits that had been merely noisy
+// locally failed the publish build outright.
 
 // Copyright 2018 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style

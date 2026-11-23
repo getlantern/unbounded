@@ -1,9 +1,11 @@
 import {Body, BodyWrapper, Container, Header, HeaderRight, HeaderWrapper, Item} from './styles'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Menu from '../../molecules/menu'
-import React, {lazy, Suspense, useContext, useEffect, useState} from 'react'
+import React, {useContext, useEffect, useState} from 'react'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Stats, {Connections} from '../../molecules/stats'
@@ -15,10 +17,7 @@ import ExpandCollapse from '../../atoms/expandCollapse'
 import LogoLink from '../../atoms/logoLink'
 import Title from '../../molecules/title'
 import VpnCta from '../../molecules/vpnCta'
-import Love from '../../molecules/love'
 // import Tutorial from '../../atoms/tutorial' // removing this at request of nelson
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 
 const Banner = () => {
@@ -37,10 +36,11 @@ const Banner = () => {
 					padding: width > BREAKPOINT ? '8px 32px' : '8px 16px'
 				}}
 			>
+				{ settings.branding && target !== Targets.WEB && <LogoLink /> }
 				<Header
 					collapse={collapse}
 				>
-					{ settings.branding ? <LogoLink /> : <div /> }
+					{ settings.branding && target === Targets.WEB ? <LogoLink align={'left'} /> : <div /> }
 					{
 						!expanded && width > 650 && (
 							<Item
@@ -88,6 +88,7 @@ const Banner = () => {
 						</Item>
 					)
 				}
+				{ !expanded && <UnsupportedNote style={{padding: '0 8px'}}/> }
 			</HeaderWrapper>
 			{
 				expanded && (
@@ -101,11 +102,7 @@ const Banner = () => {
 						>
 							{
 								settings.globe && (
-									<Col>
-										<Suspense fallback={<GlobeSuspense />}>
-											<Globe target={settings.target}/>
-										</Suspense>
-									</Col>
+									<SafeGlobe target={settings.target}/>
 								)
 							}
 							<Col>
@@ -142,15 +139,14 @@ const Banner = () => {
 										{/*)}*/}
 									</>
 								</Row>
+								<UnsupportedNote/>
+								<SupportCountry/>
 								<Stats/>
 								{
 									!menu && (target === Targets.WEB) && (
 										<VpnCta/>
 									)
 								}
-								<div style={{marginTop: 16}}>
-									<Love/>
-								</div>
 								<div
 									style={{width: '100%', height: !title && width > BREAKPOINT ? 80 : 24}}
 								/>

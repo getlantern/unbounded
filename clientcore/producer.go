@@ -6,26 +6,64 @@ package clientcore
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"math"
 	"net"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/ice/v4"
+	"github.com/pion/transport/v5"
 	"github.com/pion/webrtc/v4"
 
 	"github.com/getlantern/broflake/common"
 	"github.com/getlantern/broflake/common/covertdtls"
+	"github.com/getlantern/broflake/common/helperticket"
 )
 
 func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
+	return newProducerWebRTC(options, wg, false, newVolunteerSignaler(options))
+}
+
+// newProducerWebRTC builds a producer worker. A room slot offers itself only to its rooms
+// whenever it has room tickets, even while the producer serves the pool. Freddie offers a genesis
+// to a room only if one of its consumers is waiting at that moment, and otherwise to the pool,
+// so a producer whose every slot serves the pool can be busy with strangers whenever its own
+// inviter looks for it. The room slot stays free for the inviter instead. A producer's workers
+// share signaler, and with it their socket to Freddie.
+func newProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup, roomSlot bool, signaler *volunteerSignaler) *WorkerFSM {
 	var scache STUNCache
+	var preflight preflightState
+	var preflightRep preflightReport
+	// stunPausedUntil is when a producer with a mapped address next tries STUN after a failed
+	// STUN check, and listPausedUntil when it next fetches the STUN list after a failed fetch.
+	var stunPausedUntil, listPausedUntil time.Time
+	var listBackoff retryBackoff
+	// cohortDropped is set once the current attempt has dropped its STUN cohort, or when it used
+	// none, so it never drops one it didn't try: at most its own, not also the next, untried.
+	var cohortDropped bool
+	// roomsWithoutSTUN is set when the current attempt went without STUN only because it serves
+	// its rooms alone, so state 2 sends it back to state 0 if it no longer does, or once STUN is
+	// due to be tried again.
+	var roomsWithoutSTUN bool
+	// stunRetryDue reports whether state 0 would try STUN again, after the pause that followed a
+	// failed STUN check and the one that followed a failed STUN list fetch, if it needs the list.
+	stunRetryDue := func() bool {
+		now := preflightNow()
+		return !now.Before(stunPausedUntil) && (scache.size() > 0 || !now.Before(listPausedUntil))
+	}
+	// last is how this worker's previous attempt ended, reported on its next genesis message.
+	// A worker's states run on one goroutine, so it needs no lock.
+	var last attemptOutcome
+	// turnPC is the peer connection state 3 last added an offer's TURN servers to, so state 4
+	// waits natFailWindow's longer window for it.
+	var turnPC *webrtc.PeerConnection
 
 	return NewWorkerFSM(wg, []FSMstate{
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
@@ -33,36 +71,102 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// (no input data)
 			slog.Debug("Producer state 0, constructing RTCPeerConnection...")
 
-			// Populate the STUN cache if necessary
-			if scache.size() == 0 {
-				allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
-				if err != nil {
-					slog.Debug("Error creating STUN batch", "error", err)
-					return 0, []interface{}{}
+			// A producer with a mapped address is reached on it whatever STUN does, so for it STUN
+			// is best-effort: its server-reflexive candidates are another way in, but if the STUN
+			// list can't be fetched or the STUN check fails, it takes offers on its mapped address
+			// alone. After a failed check it skips STUN until the check's backoff ends, rather
+			// than wait out a failing check before every offer. STUN is best-effort in the same way
+			// for an attempt that serves rooms alone and has room tickets, since Freddie may hand it
+			// TURN servers with its room's offer: one that gets none gathers only host candidates and gives up in
+			// state 3 rather than here.
+			mapped := iceNetOf(options).mapped()
+			stunOptional := mapped || servesTicketedRoomsOnly(options, roomSlot)
+			config := webrtc.Configuration{}
+			useSTUN := false
+			cohortDropped = false
+			if !stunOptional || !preflightNow().Before(stunPausedUntil) {
+				// Populate the STUN cache if necessary
+				if scache.size() == 0 && (!stunOptional || !preflightNow().Before(listPausedUntil)) {
+					allSTUNSrvs, err := options.STUNBatch(math.MaxInt32)
+					if err != nil {
+						if !stunOptional {
+							slog.Debug("Error creating STUN batch", "error", err)
+							return 0, []interface{}{}
+						}
+						wait := listBackoff.failed()
+						listPausedUntil = preflightNow().Add(wait)
+						slog.Debug("Error creating STUN batch, going on without STUN", "error", err, "retry_in", wait, "mapped", mapped)
+					} else if len(allSTUNSrvs) == 0 && stunOptional && !mapped {
+						// A room attempt going without STUN would otherwise come straight back here for an
+						// empty list, so it waits as for a failed fetch.
+						wait := listBackoff.failed()
+						listPausedUntil = preflightNow().Add(wait)
+						slog.Debug("Empty STUN batch, going on without STUN", "retry_in", wait)
+					} else {
+						listBackoff.reset()
+						scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
+						slog.Debug("Populated the STUN cache", "servers", scache.size())
+					}
 				}
 
-				scache = newSTUNCache(allSTUNSrvs, float64(options.STUNBatchSize))
-				slog.Debug("Populated the STUN cache", "servers", scache.size())
-			}
+				STUNSrvs := scache.cohort()
+				slog.Debug("Using STUN servers", "count", len(STUNSrvs), "total", options.STUNBatchSize, "servers", STUNSrvs)
+				slog.Debug("STUN cache size", "size", scache.size())
 
-			STUNSrvs := scache.cohort()
-			slog.Debug("Using STUN servers", "count", len(STUNSrvs), "total", options.STUNBatchSize, "servers", STUNSrvs)
-			slog.Debug("STUN cache size", "size", scache.size())
+				// Confirm the cohort answers before asking for an offer, rather than after taking one.
+				useSTUN = !stunOptional || len(STUNSrvs) > 0
+				if useSTUN && preflight.due(preflightNow(), STUNSrvs) {
+					res := stunPreflight(ctx, options.Net, STUNSrvs, stunPreflightTimeout)
+					if options.OnSTUNPreflight != nil {
+						options.OnSTUNPreflight(res)
+					}
+					if res.Outcome != STUNPreflightOK {
+						if ctx.Err() != nil {
+							return 0, []interface{}{}
+						}
+						preflightRep.record(res.Outcome, res.Cause, vpnStatus(options))
+						scache.drop()
+						wait := preflight.failed()
+						slog.Debug("STUN preflight failed, dropped the current STUN cohort", "outcome", res.Outcome, "servers", res.Servers, "retry_in", wait, "mapped", mapped)
+						if !stunOptional {
+							sleepOrDone(ctx, wait)
+							return 0, []interface{}{}
+						}
+						stunPausedUntil = preflightNow().Add(wait)
+						useSTUN = false
+					} else {
+						preflight.passed(preflightNow(), STUNSrvs)
+						preflightRep.record(res.Outcome, res.Cause, vpnStatus(options))
+					}
+				}
 
-			config := webrtc.Configuration{
-				ICEServers: []webrtc.ICEServer{
-					{
-						URLs: STUNSrvs,
-					},
-				},
+				if useSTUN {
+					config.ICEServers = []webrtc.ICEServer{{URLs: STUNSrvs}}
+				}
 			}
+			if !useSTUN {
+				// An attempt without STUN has no pass to expire, so a pass left from an earlier
+				// attempt mustn't send it back here from state 2.
+				preflight.invalidate()
+				cohortDropped = true
+			}
+			roomsWithoutSTUN = !useSTUN && !mapped
 
 			// Producers are the answerers, which makes them the active peer in
 			// the DTLS handshake per RFC 5763 — they send the ClientHello. The
 			// default pion fingerprint is DPI-filtered in Russia (see
 			// net4people/bbs#603), so we route through a SettingEngine with a
 			// covert-dtls hook when enabled.
-			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS)
+			//
+			// pion sizes its checks when it creates the ICE agent, from the setting engine given
+			// here, before state 2 knows whether the offer comes with a room pairing's TURN servers
+			// and state 4 waits natFailWindow's longer window. Only a producer with room tickets can
+			// be given them, so one that has some checks for the longer window on every attempt. On
+			// a pool attempt the extra checks cost nothing (see checkingFor).
+			turnPC = nil
+			mayGetRoomTURN := len(options.CurrentRoomTickets()) > 0
+			tuning := options.Tuning.checkingFor(natFailWindow(options.NATFailTimeout, mayGetRoomTURN))
+			peerConnection, err := newProducerPeerConnection(config, options.CovertDTLS, tuning, iceNetOf(options))
 			if err != nil {
 				slog.Debug("Error creating RTCPeerConnection", "error", err)
 				return 0, []interface{}{}
@@ -132,7 +236,9 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// We find out by sending an ConnectivityCheckIPC message, which asks the process responsible
 			// for path assertions to send a message reflecting the current state of our path assertion.
 			// If yes, we can proceed right now! If no, just wait for the next non-nil path assertion message...
-			com.tx <- IPCMsg{IpcType: ConnectivityCheckIPC}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConnectivityCheckIPC}) {
+				return 0, input
+			}
 
 			for {
 				select {
@@ -166,57 +272,72 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			connectionClosed := input[4].(chan struct{})
 			slog.Debug("Producer state 2...")
 
-			// Construct a genesis message
-			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa})
+			// A worker can loop through states 1 and 2 for longer than a preflight pass lasts, so
+			// go back to state 0 to check again rather than take an offer on an expired pass.
+			if preflight.expired(preflightNow()) {
+				if peerConnection != nil {
+					peerConnection.Close()
+				}
+				return 0, []interface{}{}
+			}
+			// Likewise an attempt that went without STUN only because it served its rooms alone goes
+			// back to state 0 for STUN once it no longer does, rather than offer itself without it,
+			// or once STUN is due to be tried again, rather than go without it for as long as its
+			// rooms keep it here.
+			if roomsWithoutSTUN && (!servesTicketedRoomsOnly(options, roomSlot) || stunRetryDue()) {
+				if peerConnection != nil {
+					peerConnection.Close()
+				}
+				return 0, []interface{}{}
+			}
+
+			// Where the genesis goes, read once, though the tickets and pool setting can change
+			// before an offer arrives.
+			route := routeGenesis(options, roomSlot)
+
+			// Construct a genesis message. While the producer can exit some session a consumer
+			// reaching this genesis could get, it offers an obfuscated direct exit, which a consumer
+			// that can take one answers with an ICE offer. It never sets the legacy DirectExit, so
+			// old consumers relay.
+			g, err := json.Marshal(common.GenesisMsg{PathAssertion: pa, DirectExitObfs: genesisOffersExit(options, route)})
 			if err != nil {
 				slog.Debug("Error marshaling JSON", "error", err)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
 			// Signal the genesis message
-			form := url.Values{
-				"data":    {string(g)},
-				"send-to": {options.GenesisAddr},
-				"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
-			}
+			form := genesisForm(options, g, route)
+			last.addTo(form, options.NATFailTimeout)
+			preflightRep.addTo(form)
 
-			req, err := http.NewRequestWithContext(
-				ctx,
-				"POST",
-				options.DiscoverySrv+options.Endpoint,
-				strings.NewReader(form.Encode()),
-			)
+			statusCode, offerBytes, err := signaler.signal(ctx, form)
 			if err != nil {
-				slog.Debug("Error constructing request", "error", err)
-				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
-			}
-
-			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Add(common.VersionHeader, common.Version)
-
-			res, err := options.HTTPClient.Do(req)
-			if err != nil {
+				// Freddie took the genesis and counted the report, but its reply was lost.
+				if statusCode == http.StatusOK {
+					preflightRep.delivered()
+				}
 				slog.Debug("Couldn't signal genesis message", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-			defer res.Body.Close()
-
-			// Freddie never returns 404s for genesis messages, so we're not catching that case here
 
 			// Handle bad protocol version
-			if res.StatusCode == http.StatusTeapot {
+			if statusCode == http.StatusTeapot {
 				slog.Debug("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
-
-			// The HTTP request is complete
-			offerBytes, err := io.ReadAll(res.Body)
-			if err != nil {
-				slog.Debug("Error reading body", "error", err)
+			// A Freddie that predates rooms answers a rooms-only genesis (see
+			// common.SignalSendToGenesisRooms) with a 404, having offered it to nobody. Back off and
+			// try again, as for any other refusal, rather than decode the error body as an offer.
+			if statusCode != http.StatusOK {
+				slog.Debug("Genesis message refused", "status_code", statusCode)
+				sleepOrDone(ctx, options.ErrorBackoff)
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
+			// Only Freddie taking the genesis says it counted the report. Any refusal, which may
+			// come from a proxy in front of it, leaves the report for the next genesis.
+			preflightRep.delivered()
 
 			// TODO: Freddie sends back a 0-length body when nobody replied to our message. Is that the
 			// smartest way to handle this case systemwide?
@@ -226,14 +347,26 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			}
 
 			// Looks like we got some kind of response. It ought to be an offer SDP wrapped in a SignalMsg
-			replyTo, offer, err := common.DecodeSignalMsg(offerBytes)
+			offerMsg, offer, err := common.DecodeSignal(offerBytes)
+			replyTo := offerMsg.ReplyTo
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "msg", string(offerBytes))
+				// Not the raw message: an offer may carry its consumer's pairing, and Freddie's TURN
+				// servers.
+				slog.Debug("Error decoding signal message", "bytes", len(offerBytes))
 				return 1, []interface{}{peerConnection, connectionEstablished, connectionChange, connectionClosed}
 			}
 
+			// An ICE offer takes a direct exit, which needs no peer connection. The session gets the
+			// peer connection's STUN servers, from state 0, and Freddie's TURN servers for a room.
+			// Its kind comes from the pairing Freddie stamped on the offer's envelope (see state 6).
+			if o, ok := offer.(common.OfferMsg); ok && o.ICE != nil {
+				servers := append(peerConnection.GetConfiguration().ICEServers, offerMsg.ICEServers...)
+				_ = peerConnection.Close()
+				return 6, []interface{}{replyTo, o, servers, len(offerMsg.ICEServers) > 0, offerMsg.Pairing}
+			}
+
 			// TODO: here we assume we've received a valid offer SDP, we also need to handle invalid case
-			return 3, []interface{}{peerConnection, replyTo, offer, connectionEstablished, connectionChange, connectionClosed}
+			return 3, []interface{}{peerConnection, replyTo, offer, connectionEstablished, connectionChange, connectionClosed, offerMsg.ICEServers}
 		}),
 		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
 			// State 3
@@ -243,13 +376,16 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// input[3]: chan *webrtc.DataChannel
 			// input[4]: chan webrtc.PeerConnectionState
 			// input[5]: chan struct{}
+			// input[6]: []webrtc.ICEServer (TURN relays for a room pairing, or nil)
 			peerConnection := input[0].(*webrtc.PeerConnection)
 			replyTo := input[1].(string)
 			offer := input[2].(common.OfferMsg)
 			connectionEstablished := input[3].(chan *webrtc.DataChannel)
 			connectionChange := input[4].(chan webrtc.PeerConnectionState)
 			connectionClosed := input[5].(chan struct{})
+			iceServers, _ := input[6].([]webrtc.ICEServer)
 			slog.Debug("Producer state 3...")
+			last.begin(replyTo, vpnStatus(options))
 
 			// Create a channel that's blocked until ICE gathering is complete
 			gatherComplete := webrtc.GatheringCompletePromise(peerConnection)
@@ -260,14 +396,25 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// we create this slice of candidates is to evaluate whether STUN worked, which happens below.
 			// Believe it or not, this post facto examination of ICE candidates is the idiomatic way to
 			// determine whether any of your STUN type ICE agents worked...
-			localCandidates := []webrtc.ICECandidate{}
-			peerConnection.OnICECandidate(func(c *webrtc.ICECandidate) {
-				// Interestingly, the null candidate is a nil pointer so we cause a nil ptr dereference
-				// if we try to append it to the list... so let's just not include it?
-				if c != nil {
-					localCandidates = append(localCandidates, *c)
-				}
-			})
+			var gathered candidateLog
+			peerConnection.OnICECandidate(gathered.add)
+
+			// A room pairing's TURN servers must be in place before SetLocalDescription starts
+			// gathering. State 3 is entered once per peer connection (every way out of it goes to
+			// state 0 or forward), so they are never added twice. A blocked one could hold gathering
+			// past Freddie's window, so with them gathering is bounded, and goes on shortly after the
+			// first relay candidate (see turnGatherWait and turnRelayGrace). They also give the
+			// attempt natFailWindow's longer window in state 4, which the outcome reports.
+			var gatherLimit time.Duration
+			var firstRelay <-chan struct{}
+			if err := addICEServers(peerConnection, iceServers); err != nil {
+				slog.Debug("Error adding the room's ICE servers, going on without them", "error", err)
+			} else if len(iceServers) > 0 {
+				gatherLimit = turnGatherWait
+				firstRelay = gathered.firstRelay()
+				turnPC = peerConnection
+			}
+			last.natFail = natFailWindow(options.NATFailTimeout, peerConnection == turnPC)
 
 			// Assign the offer to our connection
 			err := peerConnection.SetRemoteDescription(offer.SDP)
@@ -296,32 +443,44 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			}
 
-			<-gatherComplete
-			slog.Debug("ICE gathering complete!")
-			slog.Debug("Local candidates", "candidates", localCandidates)
+			gatherStart := time.Now()
+			end := awaitGathering(gatherComplete, firstRelay, turnRelayGrace, gatherLimit)
+			logGatherEnd(end, time.Since(gatherStart))
+			localCandidates := gathered.snapshot()
+			slog.Debug("Local candidates", "counts", candidateCounts(localCandidates))
+			last.gathered(len(iceServers) > 0, localCandidates, end)
 
 			// If the STUN server(s) we used for this signaling attempt were blocked or unresponsive,
 			// we probably wound up with a slice of valid ICE candidates, but of only the 'host' type.
-			// We don't want to bother signaling those, so here's our escape hatch.
-			var hasNonHostCandidate bool
-			for _, c := range localCandidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					hasNonHostCandidate = true
+			// We drop that cohort either way. Unless we have a mapped address to offer instead, we
+			// don't want to bother signaling those, so here's our escape hatch. A relay candidate
+			// counts as non-host, so a room attempt whose TURN server answered keeps a dead STUN
+			// cohort until the next pool attempt finds it.
+			if !hasNonHostCandidate(localCandidates) {
+				if !cohortDropped {
+					scache.drop()
+					preflight.invalidate()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
 				}
+				if !reachableCandidates(localCandidates, iceNetOf(options)) {
+					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+					last.record(common.OutcomeNoLocalSrflx, peerConnection)
+
+					// Borked!
+					peerConnection.Close() // TODO: there's an err we should handle here
+					return 0, []interface{}{}
+				}
+				slog.Debug("ICE gathered no non-host candidates, offering the mapped address alone")
 			}
 
-			if !hasNonHostCandidate {
-				slog.Debug("ICE failed to gather any non-host candidates, aborting!")
-				scache.drop()
-				slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
-
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
-			// Our answer SDP with ICE candidates attached
+			// Our answer SDP with ICE candidates attached: those gathered so far, if the wait gave up
 			finalAnswer := peerConnection.LocalDescription()
+			// After a bounded wait, a relay can arrive between the snapshot above and this answer;
+			// the TURN result describes what the consumer actually gets.
+			if finalAnswer != nil && sdpHasRelay(finalAnswer.SDP) {
+				last.turn = common.TURNOK
+			}
 
 			a, err := json.Marshal(finalAnswer)
 			if err != nil {
@@ -338,23 +497,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				"type":    {strconv.Itoa(int(common.SignalMsgAnswer))},
 			}
 
-			req, err := http.NewRequestWithContext(
-				ctx,
-				"POST",
-				options.DiscoverySrv+options.Endpoint,
-				strings.NewReader(form.Encode()),
-			)
-			if err != nil {
-				slog.Debug("Error constructing request", "error", err)
-				// Borked!
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
-			req.Header.Add("Content-Type", "application/x-www-form-urlencoded")
-			req.Header.Add(common.VersionHeader, common.Version)
-
-			res, err := options.HTTPClient.Do(req)
+			statusCode, iceBytes, err := signaler.signal(ctx, form)
 			if err != nil {
 				slog.Debug("Couldn't signal answer SDP", "url", options.DiscoverySrv+options.Endpoint, "error", err)
 				<-time.After(options.ErrorBackoff)
@@ -362,9 +505,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
-			defer res.Body.Close()
 
-			switch res.StatusCode {
+			switch statusCode {
 			case http.StatusTeapot:
 				slog.Debug("Received 'bad protocol version' response")
 				<-time.After(options.ErrorBackoff)
@@ -373,6 +515,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				return 0, []interface{}{}
 			case http.StatusNotFound:
 				slog.Debug("Signaling partner hung up, aborting!")
+				last.record(common.OutcomePartnerHungUp, peerConnection)
 
 				// XXX: if our signaling partner hung up while we were gathering ICE candidates, we
 				// interpret that signal to mean that our current STUN cohort is too slow, and we should
@@ -384,8 +527,10 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// functioning coherently, nobody should be hanging up so hastily while their signaling partner
 				// is performing the ICE gathering step. Thus, dropping the cohort here is basically just
 				// voodoo, but it's probably harmless voodoo.
-				scache.drop()
-				slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				if !cohortDropped {
+					scache.drop()
+					slog.Debug("Dropped the current STUN cohort (reason: signaling partner hung up)")
+				}
 
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
@@ -393,17 +538,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			case http.StatusOK:
 				// Our signaling message was delivered, proceed
 			default:
-				slog.Debug("Unexpected http status code", "status_code", res.StatusCode)
+				slog.Debug("Unexpected http status code", "status_code", statusCode)
 				<-time.After(options.ErrorBackoff)
-				peerConnection.Close() // TODO: there's an err we should handle here
-				return 0, []interface{}{}
-			}
-
-			// The HTTP request is complete
-			iceBytes, err := io.ReadAll(res.Body)
-			if err != nil {
-				slog.Debug("Error reading body", "error", err)
-				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
@@ -416,6 +552,7 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// to complete ICE gathering and send a list of candidates, or B) took so long to perform
 				// ICE gathering that Freddie's TTL for this step expired.
 				slog.Debug("No ICE candidates from signaling partner!")
+				last.record(common.OutcomeNoConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -424,7 +561,8 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			// Looks like we got some kind of response. Should be an ICEMsg in a SignalMsg
 			replyTo, iceMsg, err := common.DecodeSignalMsg(iceBytes)
 			if err != nil {
-				slog.Debug("Error decoding signal message", "error", err, "msg", string(iceBytes))
+				slog.Debug("Error decoding signal message", "bytes", len(iceBytes))
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -432,24 +570,22 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 
 			if iceMsg.(common.ICEMsg).ConsumerSessionID == "" {
 				slog.Debug("Missing session ID from signaling partner, aborting!")
+				last.record(common.OutcomeBadConsumerICE, peerConnection)
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
 			}
 
 			var remoteAddr net.IP
-			var remoteHasNonHostCandidate bool
 
 			// TODO: here we assume valid candidates, but we need to handle the invalid case too
 			for _, c := range iceMsg.(common.ICEMsg).Candidates {
-				if c.Typ != webrtc.ICECandidateTypeHost {
-					remoteHasNonHostCandidate = true
-				}
 
 				// XXX: webrtc.AddICECandidate accepts ICECandidateInit types, which are apparently
 				// just serialized ICECandidates?
 				err := peerConnection.AddICECandidate(c.ToJSON())
 				if err != nil {
-					slog.Debug("Error adding ICE candidate", "error", err)
+					slog.Debug("Error adding ICE candidate")
+					last.record(common.OutcomeBadConsumerICE, peerConnection)
 					// Borked!
 					peerConnection.Close() // TODO: there's an err we should handle here
 					return 0, []interface{}{}
@@ -458,17 +594,17 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				// We extract an address from the remote ICE candidates just to send it to the UI for
 				// geolocation purposes. Under the assumption that any public address will suffice, we
 				// arbitrarily select the last public address found in the list of candidates
-				parsedIP := net.ParseIP(c.Address)
-				if parsedIP != nil && common.IsPublicAddr(parsedIP) {
-					remoteAddr = parsedIP
+				if isPublicIP(c.Address) {
+					remoteAddr = net.ParseIP(c.Address)
 				}
 			}
 
 			// As of 003c9ef0fe25677ee832e1351fb1474057a3e4c9, our signaling partner should not have sent
-			// us ICE candidates unless they contained at least one non-host type candidate. However, we
+			// us ICE candidates unless they contained at least one reachable candidate. However, we
 			// perform this check on the producer side because some consumers may still on an old version.
-			if !remoteHasNonHostCandidate {
+			if !remoteCandidatesReachable(iceMsg.(common.ICEMsg).Candidates) {
 				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
+				last.record(common.OutcomeConsumerHostOnly, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
@@ -502,26 +638,32 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			consumerSessionID := input[6].(string)
 			slog.Debug("Producer state 4, signaling complete!")
 
-			select {
-			case <-ctx.Done():
-				peerConnection.Close()
-				return 0, []interface{}{}
-			case d := <-connectionEstablished:
-				slog.Debug("A WebRTC connection has been established!")
-				return 5, []interface{}{
-					peerConnection,
-					d,
-					connectionChange,
-					connectionClosed,
-					remoteAddr,
-					offer,
-					consumerSessionID,
+			natFail := natFailWindow(options.NATFailTimeout, peerConnection == turnPC)
+			d, ok := awaitDataChannel(ctx, peerConnection, connectionEstablished, natFail, options.ConnectGrace)
+			if !ok {
+				if ctx.Err() != nil {
+					peerConnection.Close()
+					return 0, []interface{}{}
 				}
-			case <-time.After(options.NATFailTimeout):
-				slog.Debug("NAT traversal timeout, aborting!")
+				slog.Debug("NAT traversal timeout, aborting!", "nat_fail_window", natFail)
+				last.record(common.OutcomeNATTimeout, peerConnection)
 				// Borked!
 				peerConnection.Close() // TODO: there's an err we should handle here
 				return 0, []interface{}{}
+			}
+			slog.Debug("A WebRTC connection has been established!")
+			logPath(peerConnection, "Connected, selected candidate pair")
+			last.record(common.OutcomeConnected, peerConnection)
+			last.path = selectedPath(peerConnection)
+			last.pair = selectedPairTypes(peerConnection)
+			return 5, []interface{}{
+				peerConnection,
+				d,
+				connectionChange,
+				connectionClosed,
+				remoteAddr,
+				offer,
+				consumerSessionID,
 			}
 
 			// XXX: This loop represents an alternate strategy for detecting NAT traversal success or
@@ -574,10 +716,20 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			slog.Debug("Producer state 5...")
 
 			// Announce the new connectivity situation for this slot
-			com.tx <- IPCMsg{
+			if !sendCtx(ctx, com.tx, IPCMsg{
 				IpcType: ConsumerInfoIPC,
-				Data:    common.ConsumerInfo{Addr: remoteAddr, Tag: offer.Tag, SessionID: consumerSessionID},
+				Data: common.ConsumerInfo{
+					Addr:      remoteAddr,
+					Tag:       offer.Tag,
+					SessionID: consumerSessionID,
+					Country:   offer.Country,
+					Pairing:   offerPairing(options, offer.Pairing),
+				},
+			}) {
+				return 0, input
 			}
+			// An exit-capable producer counts the sessions that still relay to the egress server.
+			observeSession(options, false)
 
 			// Inbound from datachannel (consumer → widget) and outbound
 			// (widget → consumer) counters + 1s summary. Mirrors the
@@ -626,6 +778,14 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				defer close(pdcStatsDone)
 			}
 
+			// One gate per data channel: its drain rate and round trip are this channel's.
+			gate := newSendGate(options.Tuning.DataChannelQueueTarget)
+			gate.setRTT(sctpRTT(peerConnection))
+			rttTicker := time.NewTicker(gateRTTEvery)
+			defer rttTicker.Stop()
+			pathTicker := time.NewTicker(pathLogEvery)
+			defer pathTicker.Stop()
+
 		proxyloop:
 			for {
 				select {
@@ -643,11 +803,18 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 				case _ = <-connectionClosed:
 					slog.Debug("Connection closed, resetting!")
 					break proxyloop
+				case <-rttTicker.C:
+					gate.setRTT(sctpRTT(peerConnection))
+				case <-pathTicker.C:
+					logPath(peerConnection, "Selected candidate pair stats")
 				// Handle messages from the router
 				case msg := <-com.rx:
 					switch msg.IpcType {
 					case ChunkIPC:
 						payload := msg.Data.([]byte)
+						if !gate.allow(len(payload), d.BufferedAmount(), time.Now()) {
+							continue
+						}
 						if err := d.Send(payload); err != nil {
 							slog.Debug("Error sending to datachannel, resetting", "bytes", len(payload), "error", err)
 							break proxyloop
@@ -674,19 +841,624 @@ func NewProducerWebRTC(options *WebRTCOptions, wg *sync.WaitGroup) *WorkerFSM {
 			peerConnection.Close() // TODO: there's an err we should handle here
 
 			// We've reset this slot, so announce the nil connectivity situation
-			com.tx <- IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}) {
+				return 0, input
+			}
+			return 0, []interface{}{}
+		}),
+		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
+			// State 6: a direct exit's ICE handshake
+			// input[0]: string (replyTo)
+			// input[1]: common.OfferMsg (with ICE)
+			// input[2]: []webrtc.ICEServer (the STUN cohort, and a room pairing's TURN relays)
+			// input[3]: bool (whether input[2] has a room pairing's TURN relays)
+			// input[4]: string (the pairing Freddie stamped on the offer's envelope, or "")
+			replyTo := input[0].(string)
+			offer := input[1].(common.OfferMsg)
+			servers := input[2].([]webrtc.ICEServer)
+			roomTURN := input[3].(bool)
+			// The session's kind is decided by the offer, not by where the genesis went, since a
+			// pool slot's genesis carrying room tickets reaches both the producer's rooms and the
+			// pool (see sessionPersonal).
+			personal := sessionPersonal(options, input[4].(string))
+			slog.Debug("Producer state 6, direct exit handshake...")
+			last.begin(replyTo, vpnStatus(options))
+			last.natFail = natFailWindow(options.NATFailTimeout, roomTURN)
+
+			if offer.ICE.Ufrag == "" || offer.ICE.Pwd == "" {
+				slog.Debug("Direct exit offer has no ICE credentials, dropping it")
+				last.record(common.OutcomeBadConsumerICE, nil)
+				return 0, []interface{}{}
+			}
+
+			// The producer may have stopped being able to exit since its genesis, or it may never
+			// have been able to exit this offer's kind: a genesis that reaches both the producer's
+			// rooms and the pool offers a direct exit while it can serve either kind. The offer then
+			// goes unanswered, and the consumer moves on once Freddie gives up on the answer.
+			certPin, password, ok := exitParams(options, personal)
+			if !ok {
+				slog.Info("Direct exit offer dropped: this volunteer can't serve a direct exit of the offered kind right now", "personal", personal)
+				return 0, []interface{}{}
+			}
+
+			s, err := newICESession(options, false, servers, last.natFail)
+			if err != nil {
+				slog.Debug("Error creating ICE session", "error", err)
+				return 0, []interface{}{}
+			}
+			ufrag, pwd, err := s.credentials()
+			if err != nil {
+				slog.Debug("Error reading ICE credentials", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			var gatherLimit time.Duration
+			if roomTURN {
+				gatherLimit = turnGatherWait
+			}
+			gatherStart := time.Now()
+			candidates, end, err := s.gather(ctx, gatherLimit)
+			if err != nil {
+				slog.Debug("Error gathering ICE candidates", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			logGatherEnd(end, time.Since(gatherStart))
+			tally := tallyICECandidates(candidates)
+			slog.Debug("Local candidates", "counts", tally.String())
+			last.gatheredICE(roomTURN, tally, end)
+
+			// As in state 3: a cohort that gave only host candidates is dropped, and without a
+			// mapped address there is nothing to offer.
+			if nonHost, _ := summarizeICECandidates(candidates); !nonHost {
+				if !cohortDropped {
+					scache.drop()
+					preflight.invalidate()
+					cohortDropped = true
+					slog.Debug("Dropped the current STUN cohort (reason: ICE failed)")
+				}
+				if !iceNetOf(options).mapped() {
+					slog.Debug("ICE failed to gather any non-host candidates, aborting!")
+					last.record(common.OutcomeNoLocalSrflx, nil)
+					_ = s.Close()
+					return 0, []interface{}{}
+				}
+			}
+
+			a, err := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+				Ufrag:      ufrag,
+				Pwd:        pwd,
+				Candidates: candidates,
+				CertPin:    certPin,
+				Password:   password,
+				Personal:   personal,
+			}})
+			if err != nil {
+				slog.Debug("Error marshaling JSON", "error", err)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			form := url.Values{
+				"data":    {string(a)},
+				"send-to": {replyTo},
+				"type":    {strconv.Itoa(int(common.SignalMsgAnswer))},
+			}
+			statusCode, iceBytes, err := signaler.signal(ctx, form)
+			if err != nil {
+				slog.Debug("Couldn't signal the direct exit answer", "error", err)
+				sleepOrDone(ctx, options.ErrorBackoff)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			switch statusCode {
+			case http.StatusOK:
+			case http.StatusNotFound:
+				slog.Debug("Signaling partner hung up, aborting!")
+				last.record(common.OutcomePartnerHungUp, nil)
+				_ = s.Close()
+				return 0, []interface{}{}
+			default:
+				slog.Debug("Unexpected http status code", "status_code", statusCode)
+				sleepOrDone(ctx, options.ErrorBackoff)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if len(iceBytes) == 0 {
+				slog.Debug("No ICE candidates from signaling partner!")
+				last.record(common.OutcomeNoConsumerICE, nil)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			// Never logged: the message carries the consumer's addresses.
+			_, msg, err := common.DecodeSignalMsg(iceBytes)
+			iceMsg, ok := msg.(common.ICEMsg)
+			if err != nil || !ok || iceMsg.ConsumerSessionID == "" || len(iceMsg.ICECandidates) == 0 ||
+				len(iceMsg.ICECandidates) > maxRemoteCandidates {
+				slog.Debug("Bad ICE message from signaling partner, aborting!")
+				last.record(common.OutcomeBadConsumerICE, nil)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			remoteNonHost, remoteAddr := summarizeICECandidates(iceMsg.ICECandidates)
+			if !remoteNonHost && remoteAddr == nil {
+				slog.Debug("Signaling partner sent only host type ICE candidates, aborting!")
+				last.record(common.OutcomeConsumerHostOnly, nil)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+			if err := s.addRemote(iceMsg.ICECandidates); err != nil {
+				slog.Debug("Error adding ICE candidates", "error", err)
+				last.record(common.OutcomeBadConsumerICE, nil)
+				_ = s.Close()
+				return 0, []interface{}{}
+			}
+
+			connectCtx, cancel := context.WithTimeout(ctx, last.natFail)
+			err = s.connect(connectCtx, offer.ICE.Ufrag, offer.ICE.Pwd)
+			cancel()
+			if err != nil {
+				_ = s.Close()
+				if ctx.Err() != nil {
+					return 0, []interface{}{}
+				}
+				slog.Info("Direct exit failed: couldn't connect to the consumer, ICE checks failed or the NAT traversal window ran out", "nat_fail_window", last.natFail, "personal", personal)
+				last.record(common.OutcomeNATTimeout, nil)
+				return 0, []interface{}{}
+			}
+			pair := s.pairTypes()
+			last.record(common.OutcomeConnected, nil)
+			last.path = common.PathDirect
+			if s.relayed() {
+				last.path = common.PathRelay
+			}
+			last.pair = pair
+			return 7, []interface{}{s, offer, iceMsg.ConsumerSessionID, remoteAddr, password, personal}
+		}),
+		FSMstate(func(ctx context.Context, com *ipcChan, input []interface{}) (int, []interface{}) {
+			// State 7: a direct exit session, served until it ends
+			// input[0]: *iceSession
+			// input[1]: common.OfferMsg
+			// input[2]: string (consumer session ID)
+			// input[3]: net.IP
+			// input[4]: string (the session's password)
+			// input[5]: bool (whether the session is personal)
+			s := input[0].(*iceSession)
+			offer := input[1].(common.OfferMsg)
+			consumerSessionID := input[2].(string)
+			remoteAddr := input[3].(net.IP)
+			password := input[4].(string)
+			personal := input[5].(bool)
+			relayed := s.relayed()
+			slog.Debug("Producer state 7...")
+
+			// Exit marks the session as one the egress never serves (see jit_egress_consumer.go).
+			if !sendCtx(ctx, com.tx, IPCMsg{
+				IpcType: ConsumerInfoIPC,
+				Data: common.ConsumerInfo{
+					Addr:      remoteAddr,
+					Tag:       offer.Tag,
+					SessionID: consumerSessionID,
+					Country:   offer.Country,
+					Pairing:   offerPairing(options, offer.Pairing),
+					Exit:      true,
+				},
+			}) {
+				return 0, input
+			}
+			// Logged here rather than in state 6, so every session logged as established also logs
+			// its end below.
+			slog.Info("Direct exit session established: serving a consumer's traffic directly", "relayed_via_turn", relayed, "personal", personal, "candidate_types", s.pairTypes())
+			observeSession(options, true)
+
+			// The session's bytes bypass the bus, so they're counted here and reported to the UI
+			// on the slot's own channel, ahead of its disconnect.
+			conn := &countingPacketConn{PacketConn: s.packetConn()}
+			serveCtx, cancel := context.WithCancel(ctx)
+			served := make(chan struct{})
+			go func() {
+				defer close(served)
+				options.Exit.Serve(serveCtx, conn, password, personal)
+			}()
+			report := time.NewTicker(time.Second / uiRefreshHz)
+			defer report.Stop()
+
+		serveloop:
+			for {
+				select {
+				case <-report.C:
+					tryReportExitBytes(com, conn)
+				case <-s.done():
+					break serveloop
+				case <-served:
+					break serveloop
+				case <-com.rx:
+					// Nothing upstream serves this slot while it exits itself, so whatever reaches
+					// it is dropped.
+				case <-ctx.Done():
+					break serveloop
+				}
+			}
+			// One message for every way out: a shutdown or an ICE disconnect also ends Serve, so
+			// which case the select took doesn't say why the session ended.
+			slog.Info("Direct exit session ended", "relayed_via_turn", relayed, "personal", personal)
+			cancel()
+			_ = s.Close()
+			<-served
+
+			// We've reset this slot, so report the session's last bytes and then announce the
+			// nil connectivity situation
+			if !reportExitBytes(ctx, com, conn) {
+				return 0, []interface{}{}
+			}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: ConsumerInfoIPC, Data: common.ConsumerInfo{}}) {
+				return 0, []interface{}{}
+			}
 			return 0, []interface{}{}
 		}),
 	})
 }
 
-func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config) (*webrtc.PeerConnection, error) {
-	if !dtls.Enabled() {
+// hasNonHostCandidate reports whether any of cands is a server-reflexive or relay candidate,
+// which only a STUN or TURN server that answered could have given us.
+func hasNonHostCandidate(cands []webrtc.ICECandidate) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost {
+			return true
+		}
+	}
+	return false
+}
+
+// reachableCandidates reports whether a peer outside our LAN could reach any
+// of cands: a server-reflexive or relay candidate, or a host candidate on our
+// mapped address.
+func reachableCandidates(cands []webrtc.ICECandidate, pn iceNet) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost || (pn.mapped() && c.Address == pn.externalIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteCandidatesReachable reports whether a producer could reach a consumer
+// at any of cands: a server-reflexive or relay candidate, or a host candidate
+// on a public address, which is how a consumer advertises a port mapped on its
+// router.
+func remoteCandidatesReachable(cands []webrtc.ICECandidate) bool {
+	for _, c := range cands {
+		if c.Typ != webrtc.ICECandidateTypeHost || isPublicIP(c.Address) {
+			return true
+		}
+	}
+	return false
+}
+
+// isPublicIP reports whether addr is a public IP address.
+func isPublicIP(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && common.IsPublicAddr(ip)
+}
+
+// iceNet is how a native peer's connections reach the network;
+// see WebRTCOptions.Net, ICEUDPMux and ICEUDPMuxExternalIP. The zero value is
+// pion's default.
+type iceNet struct {
+	net        transport.Net
+	mux        ice.UDPMux
+	externalIP string
+}
+
+// mapped reports whether the peer advertises a mapped address of its own,
+// which the other side can reach whatever its STUN servers say.
+func (pn iceNet) mapped() bool {
+	return pn.mux != nil && pn.externalIP != ""
+}
+
+// newProducerPeerConnection builds a producer's peer connection. pn, on a
+// native build, is the transport, UDP mux and mapped address pion uses, so a
+// host can rate-limit, route or port-map a widget's WebRTC traffic.
+func newProducerPeerConnection(config webrtc.Configuration, dtls covertdtls.Config, tuning WebRTCTuning, pn iceNet) (*webrtc.PeerConnection, error) {
+	se := webrtc.SettingEngine{}
+	tuned := tuning.apply(&se)
+	netSet, err := applyICENet(&se, pn)
+	if err != nil {
+		return nil, err
+	}
+	if !dtls.Enabled() && !tuned && !netSet {
 		return webrtc.NewPeerConnection(config)
 	}
-	se := webrtc.SettingEngine{}
 	if err := covertdtls.Apply(dtls, &se); err != nil {
 		return nil, err
 	}
 	return webrtc.NewAPI(webrtc.WithSettingEngine(se)).NewPeerConnection(config)
+}
+
+// attemptOutcome is how a producer worker's previous connection attempt ended (see
+// common/outcome.go).
+type attemptOutcome struct {
+	outcome  string
+	iceState string
+	pcState  string
+	offerID  string
+	vpn      string
+	// path is common.PathRelay or common.PathDirect for a connected attempt, if known.
+	path string
+	// began is when the attempt took its offer, and took how long it ran until its outcome.
+	began time.Time
+	took  time.Duration
+	// turn is one of the common.TURN* values, and gatherCut how the attempt stopped waiting on ICE
+	// gathering before it completed: common.GatherCut at its limit, common.GatherAfterRelay after
+	// its first relay candidate, or "" when it completed. Both are set once gathering ends, or stay
+	// "" for an attempt that didn't get that far.
+	turn      string
+	gatherCut string
+	// natFail is how long the attempt waits for its data channel (see natFailWindow), set when it
+	// takes its offer. Zero for an attempt that didn't get that far, which addTo reports with the
+	// worker's NATFailTimeout.
+	natFail time.Duration
+	// pair is the selected candidate pair's types (see common.PairTypes) for a connected attempt.
+	pair string
+}
+
+// begin notes the ReplyTo of the offer an attempt is answering, the VPN state it began under, and
+// when. record keeps all three, and what gathered noted.
+func (o *attemptOutcome) begin(offerID, vpn string) {
+	*o = attemptOutcome{offerID: offerID, vpn: vpn, began: time.Now()}
+}
+
+// record notes the attempt's outcome, how long it took, and the peer connection's states at that
+// moment. Call it before the peer connection is closed.
+func (o *attemptOutcome) record(outcome string, pc *webrtc.PeerConnection) {
+	*o = attemptOutcome{outcome: outcome, offerID: o.offerID, vpn: o.vpn, began: o.began,
+		turn: o.turn, gatherCut: o.gatherCut, natFail: o.natFail}
+	if !o.began.IsZero() {
+		o.took = time.Since(o.began)
+	}
+	if pc != nil {
+		o.iceState = pc.ICEConnectionState().String()
+		o.pcState = pc.ConnectionState().String()
+	}
+}
+
+// addTo puts the recorded outcome on a genesis form, once: each outcome is reported with the
+// genesis message that follows it and then cleared. natFailTimeout is the worker's, reported for
+// an attempt that didn't note its own window.
+func (o *attemptOutcome) addTo(form url.Values, natFailTimeout time.Duration) {
+	if o.outcome == "" {
+		return
+	}
+	form.Set(common.PrevOutcomeField, o.outcome)
+	form.Set(common.PrevICEStateField, o.iceState)
+	form.Set(common.PrevPCStateField, o.pcState)
+	if o.natFail > 0 {
+		natFailTimeout = o.natFail
+	}
+	form.Set(common.PrevNATTimeoutField, strconv.Itoa(int(natFailTimeout/time.Second)))
+	if o.offerID != "" {
+		form.Set(common.PrevOfferIDField, o.offerID)
+	}
+	if o.vpn != "" {
+		form.Set(common.PrevVPNField, o.vpn)
+	}
+	if o.path != "" {
+		form.Set(common.PrevPathField, o.path)
+	}
+	if !o.began.IsZero() {
+		form.Set(common.PrevAttemptMsField, strconv.FormatInt(o.took.Milliseconds(), 10))
+	}
+	if o.turn != "" {
+		form.Set(common.PrevTURNField, o.turn)
+	}
+	if o.gatherCut != "" {
+		form.Set(common.PrevGatherCutField, o.gatherCut)
+	}
+	if o.pair != "" {
+		form.Set(common.PrevPairField, o.pair)
+	}
+	*o = attemptOutcome{}
+}
+
+// gathered notes how the attempt's ICE gathering ended: whether Freddie gave it TURN servers and
+// it got a relay candidate from them (turnResult), and how the wait for it ended (gatherCutValue).
+// Servers that couldn't even be configured count as had, so their failure shows as missing.
+func (o *attemptOutcome) gathered(hadTURN bool, cands []webrtc.ICECandidate, end gatherEnd) {
+	o.turn = turnResult(hadTURN, cands)
+	o.gatherCut = gatherCutValue(end)
+}
+
+// gatheredICE is gathered for a direct exit session, whose candidates are counted in tally.
+func (o *attemptOutcome) gatheredICE(hadTURN bool, tally candidateTally, end gatherEnd) {
+	o.turn = turnOutcome(hadTURN, tally.relay > 0)
+	o.gatherCut = gatherCutValue(end)
+}
+
+// gatherCutValue is the common.PrevGatherCutField value for a wait that ended with end. A wait
+// that went on after the first relay is a cut too, since gathering hadn't completed, but it is
+// reported apart from one that ran to its limit (see common.GatherAfterRelay).
+func gatherCutValue(end gatherEnd) string {
+	switch end {
+	case gatherAfterRelay:
+		return common.GatherAfterRelay
+	case gatherCapped:
+		return common.GatherCut
+	default:
+		return ""
+	}
+}
+
+// sdpHasRelay reports whether an SDP carries a relay candidate.
+func sdpHasRelay(sdp string) bool {
+	for _, line := range strings.Split(sdp, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "a=candidate:") && strings.Contains(line, " typ relay") {
+			return true
+		}
+	}
+	return false
+}
+
+// turnResult is the common.TURN* value for an attempt that gathered cands.
+func turnResult(hadTURN bool, cands []webrtc.ICECandidate) string {
+	return turnOutcome(hadTURN, slices.ContainsFunc(cands, func(c webrtc.ICECandidate) bool {
+		return c.Typ == webrtc.ICECandidateTypeRelay
+	}))
+}
+
+// turnOutcome is the common.TURN* value for an attempt that had TURN servers or not, and gathered
+// a relay candidate or not.
+func turnOutcome(hadTURN, gotRelay bool) string {
+	switch {
+	case !hadTURN:
+		return common.TURNNone
+	case gotRelay:
+		return common.TURNOK
+	default:
+		return common.TURNMissing
+	}
+}
+
+// sendsToRoomsOnly reports whether a genesis message from a worker with the given tickets goes to
+// its rooms alone (see newProducerWebRTC).
+func sendsToRoomsOnly(options *WebRTCOptions, roomSlot bool, tickets []string) bool {
+	return !options.ServesPool() || (roomSlot && len(tickets) > 0)
+}
+
+// genesisRoute is where one genesis message goes: the room tickets it carries, and whether it goes
+// to those rooms alone. It is read once per genesis, since the tickets and pool setting it is read
+// from can change at any time.
+type genesisRoute struct {
+	tickets   []string
+	roomsOnly bool
+}
+
+// routeGenesis reads where a worker's next genesis message goes.
+func routeGenesis(options *WebRTCOptions, roomSlot bool) genesisRoute {
+	tickets := options.CurrentRoomTickets()
+	return genesisRoute{tickets: tickets, roomsOnly: sendsToRoomsOnly(options, roomSlot, tickets)}
+}
+
+// genesisOffersExit reports whether a genesis going by route offers a direct exit: whether the
+// producer can serve at least one kind of session that a consumer reaching it could get (see
+// sessionPersonal). A rooms-only genesis with tickets reaches only the producer's rooms, whose
+// consumers' offers claim their pairing, so its sessions are personal. A genesis that reaches the
+// pool may be answered by a stranger, whose session is pool, or, while it carries tickets, by a
+// consumer in one of the producer's rooms, whose session is personal. A rooms-only genesis without
+// tickets reaches nobody, and is counted as pool, the stricter kind.
+func genesisOffersExit(options *WebRTCOptions, r genesisRoute) bool {
+	hasTickets := len(r.tickets) > 0
+	if r.roomsOnly && hasTickets {
+		return exitReady(options, true)
+	}
+	return exitReady(options, false) || (hasTickets && exitReady(options, true))
+}
+
+// sessionPersonal reports whether a direct exit session is personal, given stamped, the pairing
+// Freddie stamped on its offer's envelope (see common.SignalMsg.Pairing): whether stamped names the
+// pairing of one of the producer's own unexpired volunteer tickets (see personalPairing).
+//
+// Freddie stamps an offer only for the consumer it delivered the genesis to through that
+// pairing's room, which echoes that one delivery's single-use token, and only while the ticket
+// that admitted it to the room is still valid. So a personal session goes only to a consumer
+// Freddie currently admits to one of the producer's rooms: the trust the producer already extends
+// to its room consumers. The consumer can't write the stamp, and the pairing the consumer writes
+// in its offer (OfferMsg.Pairing) doesn't count, as it proves only that the consumer once learned
+// the pairing ID, from its own ticket, say, which outlives its admission. The window that remains
+// is Freddie's room admission's: a consumer whose pairing ended still gets personal sessions until
+// the ticket that admitted it expires, unless Freddie stops trusting the ticket's key first. A
+// Freddie that predates stamping stamps nothing, and every session is then pool, the stricter
+// kind: Freddie must be deployed before a volunteer serving both its rooms and the pool serves its
+// friends personal exits.
+func sessionPersonal(options *WebRTCOptions, stamped string) bool {
+	return personalPairing(options, stamped, time.Now())
+}
+
+// personalPairing reports whether stamped is the pairing of one of the producer's own volunteer
+// tickets that hasn't expired at now. It is stricter than offerPairing, which also accepts a
+// ticket that has expired but is still held, because it grants an unrestricted session rather
+// than a label: the producer serves a pairing personal sessions only while it is itself still
+// admitted to that pairing's room. Freddie checks the consumer's side (see sessionPersonal). The
+// tickets are only read locally, never fetched.
+func personalPairing(options *WebRTCOptions, stamped string, now time.Time) bool {
+	if stamped == "" {
+		return false
+	}
+	for _, tk := range options.CurrentRoomTickets() {
+		t, ok := helperticket.Claims(tk)
+		if ok && t.Role == helperticket.RoleVolunteer && t.PairingID == stamped && now.Before(t.Expires) {
+			return true
+		}
+	}
+	return false
+}
+
+// servesTicketedRoomsOnly reports whether a worker's genesis messages go to its rooms alone and
+// it has room tickets, so Freddie may give it TURN servers with an offer.
+func servesTicketedRoomsOnly(options *WebRTCOptions, roomSlot bool) bool {
+	tickets := options.CurrentRoomTickets()
+	return len(tickets) > 0 && sendsToRoomsOnly(options, roomSlot, tickets)
+}
+
+// genesisForm is a genesis POST's form: the genesis message g, plus the
+// producer's target countries and room tickets. Each of those is omitted when
+// it says nothing, so a producer that uses none of them sends exactly what
+// releases before them did. They are form fields rather than part of the
+// payload so Freddie needn't parse signaling messages to honor them.
+//
+// A producer that serves only its rooms posts to
+// common.SignalSendToGenesisRooms rather than GenesisAddr, so that a Freddie
+// that predates rooms refuses the genesis instead of broadcasting it.
+// So does a room slot (see newProducerWebRTC) while it has room tickets.
+func genesisForm(options *WebRTCOptions, g []byte, route genesisRoute) url.Values {
+	tickets := route.tickets
+	sendTo := options.GenesisAddr
+	if route.roomsOnly {
+		sendTo = common.SignalSendToGenesisRooms
+	}
+	form := url.Values{
+		"data":    {string(g)},
+		"send-to": {sendTo},
+		"type":    {strconv.Itoa(int(common.SignalMsgGenesis))},
+	}
+	// A rooms-only genesis waits on Freddie for its rooms' next consumer rather than expire every
+	// few seconds (see common.HoldField). Only the volunteer socket can carry one that long, so a
+	// producer without it sends what it always has.
+	if sendTo == common.SignalSendToGenesisRooms && options.VolunteerSocket {
+		form.Set(common.HoldField, "1")
+	}
+	for _, c := range options.targetCountries() {
+		form.Add(common.TargetCountryField, c)
+	}
+	for _, tk := range tickets {
+		form.Add(common.RoomTicketField, tk)
+	}
+	if options.VolunteerKind != "" {
+		form.Set(common.VolunteerKindField, options.VolunteerKind)
+		mapped := "0"
+		if options.VolunteerMapped {
+			mapped = "1"
+		}
+		form.Set(common.VolunteerMappedField, mapped)
+	}
+	return form
+}
+
+// offerPairing returns claimed, the pairing an offer claims, if it is the
+// pairing of one of the producer's own current volunteer tickets, and ""
+// otherwise. The claim is the consumer's echo of what Freddie stamped on the
+// room genesis it answered, so an honest consumer's claim always matches. A
+// consumer that lies can at worst name another of this producer's pairings,
+// which it would have to know. The tickets were verified by whoever issued
+// them to this producer, so they are only peeked at here.
+func offerPairing(options *WebRTCOptions, claimed string) string {
+	if claimed == "" {
+		return ""
+	}
+	for _, tk := range options.CurrentRoomTickets() {
+		if role, pairing := helperticket.Peek(tk); role == helperticket.RoleVolunteer && pairing == claimed {
+			return claimed
+		}
+	}
+	return ""
 }

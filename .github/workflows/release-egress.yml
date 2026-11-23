@@ -3,8 +3,8 @@ name: Release egress binary
 # Every merge to main that changes egress-relevant code auto-bumps the
 # semver patch in common/version.go, tags the commit, and publishes a
 # GitHub Release with linux/amd64 + linux/arm64 egress binaries and
-# their sha256 sums. The lantern-cloud egress provisioner (cmd/api/vps/
-# cloudinit_egress.go) then fetches these at VM boot.
+# their sha256 sums. The deploy job then uploads them to lantern-cloud's
+# egress-artifacts buckets, and the egress hosts install them within 5 minutes.
 #
 # Path filter: we deliberately DON'T trigger on freddie-, clientcore-, UI-,
 # netstate-, or docs-only changes. Those have no effect on the egress binary.
@@ -24,6 +24,18 @@ on:
       - 'go.sum'
       - '.github/workflows/release-egress.yml'
 
+  # Manual trigger. The push trigger above is the normal path, but it leaves no
+  # way to retry: on 2026-08-03 it silently did not fire on a merge that touched
+  # this very file, and with no dispatch there was no way to re-run it or to cut a
+  # release on demand. It also means the bump-PR path added in #377 cannot be
+  # exercised without manufacturing a qualifying merge.
+  #
+  # Dispatch runs ignore the path filter, so this always runs the version job. It
+  # is safe to run repeatedly: if version.go already matches the latest release it
+  # opens (or refreshes) the bump PR and releases nothing, and if version.go is
+  # ahead it publishes that version. Neither path force-pushes to main.
+  workflow_dispatch:
+
 # Serialize so two back-to-back merges can't race on the version bump.
 # cancel-in-progress: false — we want every merge to produce a release,
 # not to let a later merge skip the earlier one's artifacts.
@@ -32,7 +44,8 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write # create tags, push bump commit, publish releases
+  contents: write       # create tags, push the bump branch, publish releases
+  pull-requests: write  # open the version-bump PR (main is protected)
 
 jobs:
   version:
@@ -40,9 +53,10 @@ jobs:
     outputs:
       version:    ${{ steps.pick.outputs.version }}
       bumped:     ${{ steps.pick.outputs.bumped }}
+      release:    ${{ steps.pick.outputs.release }}
       target_sha: ${{ steps.pick.outputs.target_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           # Use a token that can push back to main. GITHUB_TOKEN works
@@ -104,9 +118,36 @@ jobs:
             git config user.name  'github-actions[bot]'
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add common/version.go
-            # [skip ci] prevents this commit from re-triggering the same workflow.
-            git commit -m "chore: bump egress version to $next [skip ci]"
-            git push origin HEAD:main
+
+            # main is a protected branch ("Changes must be made through a pull
+            # request"), so pushing the bump directly fails with GH006 and takes
+            # the whole release down with it. That is exactly what happened on
+            # every egress-relevant merge until this change: the workflow bumped
+            # v2.3.3 -> v2.3.4, got rejected, and no release was ever published.
+            #
+            # So open a PR instead. Deliberately NO [skip ci] here: merging this
+            # PR must re-trigger the workflow, and on that run version.go will
+            # differ from the latest release tag, so the "manual bump detected"
+            # branch above takes over and publishes without needing to push
+            # anything. One human click per release, and the tag always points at
+            # a commit that is genuinely on main.
+            branch="chore/egress-release-$next"
+            git commit -m "chore: bump egress version to $next"
+
+            # --force so a re-run of a failed release refreshes the branch rather
+            # than dying on "already exists".
+            git push --force origin "HEAD:refs/heads/$branch"
+
+            # Reuse an open PR if one is already out for this version; gh pr
+            # create would otherwise fail the job on a re-run.
+            if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // ""')" ]; then
+              gh pr create \
+                --base main --head "$branch" \
+                --title "chore: bump egress version to $next" \
+                --body "Automated egress version bump opened by release-egress.yml. main is protected, so the workflow cannot push this commit directly. Merging this PR re-triggers the release workflow, which will then see version.go ahead of the latest release tag and publish $next."
+            fi
+
+            echo "opened/updated bump PR on $branch; release will publish when it merges"
             bumped=true
           fi
 
@@ -116,12 +157,21 @@ jobs:
           # any commit that lands on main after us. concurrency serializes
           # OUR workflow runs, but doesn't block direct pushes from humans.
           target_sha=$(git rev-parse HEAD)
+          # release=false when this run only opened a bump PR: version.go is not
+          # on main yet, so tagging target_sha would tag a commit off-main and
+          # publish a binary whose common.Version disagrees with the tag.
+          if [ "$bumped" = "true" ]; then release=false; else release=true; fi
+
           echo "version=$next"       >> "$GITHUB_OUTPUT"
           echo "bumped=$bumped"      >> "$GITHUB_OUTPUT"
+          echo "release=$release"    >> "$GITHUB_OUTPUT"
           echo "target_sha=$target_sha" >> "$GITHUB_OUTPUT"
 
   build:
     needs: version
+    # Skipped on runs that only opened a bump PR; the merge of that PR triggers
+    # the run that actually builds and releases.
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: true
@@ -129,7 +179,7 @@ jobs:
         goos: [linux]
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Pin to the exact SHA the version job operated on. Using
           # `ref: main` would pick up any commits landed after our
@@ -137,7 +187,7 @@ jobs:
           # than we just tagged.
           ref: ${{ needs.version.outputs.target_sha }}
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
 
@@ -155,7 +205,7 @@ jobs:
           sha256sum "$out" > "${out}.sha256"
           ls -lh "$out" "${out}.sha256"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: egress-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -166,16 +216,17 @@ jobs:
 
   release:
     needs: [version, build]
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           # Same pinning rationale as build: check out the exact SHA
           # we're about to release, not wherever main happens to be now.
           ref: ${{ needs.version.outputs.target_sha }}
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -203,3 +254,57 @@ jobs:
             dist/egress-linux-amd64.sha256 \
             dist/egress-linux-arm64 \
             dist/egress-linux-arm64.sha256
+
+  # Ships the release to the egress hosts the way lantern-box ships its image:
+  # upload it straight into lantern-cloud's egress-artifacts buckets, where each
+  # host's lantern-autoupdate installs it within 5 minutes. The tarball layout
+  # matches lantern-cloud's deploy-egress.yml, which stays for manual rollbacks.
+  # gha-unbounded-egress can write only those buckets, and only from main
+  # (lantern-cloud tf/_modules/foundation/lanternet/cicd.tf).
+  deploy:
+    needs: [version, release]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, prod]
+        arch: [amd64, arm64]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: egress-linux-${{ matrix.arch }}
+          path: release
+
+      - name: Package tarball
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          (cd release && sha256sum -c "egress-linux-$ARCH.sha256")
+          working=$(mktemp -d)
+          install -D -m 0755 "release/egress-linux-$ARCH" "$working/$VERSION/bin/egress"
+          echo "$VERSION" > "$working/$VERSION/REVISION"
+          (cd "$working" && ln -s "$VERSION" latest)
+          mkdir -p build
+          (cd "$working" && tar czvf "$GITHUB_WORKSPACE/build/$VERSION.tar.gz" "$VERSION" latest)
+          sha256sum "$GITHUB_WORKSPACE/build/$VERSION.tar.gz" > "build/$VERSION.tar.gz.sha256"
+          ln "build/$VERSION.tar.gz" "build/latest.tar.gz"
+          ln "build/$VERSION.tar.gz.sha256" "build/latest.tar.gz.sha256"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          token_format: access_token
+          workload_identity_provider: projects/${{ matrix.environment == 'staging' && '203041302207' || '472305719257' }}/locations/global/workloadIdentityPools/github-actions/providers/ghactions-provider
+          service_account: ${{ matrix.environment == 'staging' && 'gha-unbounded-egress@lantern-cloud-staging.iam.gserviceaccount.com' || 'gha-unbounded-egress@lantern-cloud.iam.gserviceaccount.com' }}
+
+      - uses: google-github-actions/upload-cloud-storage@v2
+        with:
+          path: build/
+          destination: ${{ matrix.environment == 'staging' && 'lantern-cloud-staging' || 'lantern-cloud' }}-egress-artifacts/egress/linux-${{ matrix.arch }}/
+          parent: false

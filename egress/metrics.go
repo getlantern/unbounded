@@ -1,0 +1,417 @@
+package egress
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/getlantern/semconv"
+	"github.com/getlantern/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
+	"go.opentelemetry.io/otel/metric"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/getlantern/broflake/common"
+)
+
+// OTel setup for the egress, scoped to the process rather than to a listener.
+//
+// It used to live inline in NewListener, which meant every listener built its own
+// copy of everything. That was raised in review three separate times before this
+// fixed it, and by then the pattern had accreted seven instruments — so what began
+// as a tidiness point had become the shape of a real outage.
+//
+// Nothing it touches is per-listener. The tallies the callback reads (refusals,
+// teardowns, freezeReports, statsByCC) are package globals, the instrument handles
+// are package variables, and telemetry.EnableOTELMetrics installs a *global* meter
+// provider via otel.SetMeterProvider. Calling it twice therefore did not produce two
+// independent setups; it produced one broken one, in three distinct ways:
+//
+//   - Duplicate series. Both callbacks observe the same process-global tallies, so
+//     every attribute set is reported twice per collection cycle. Exactly the
+//     double-counting #375 fixed for donor_country, reintroduced by a second listener.
+//   - Silently dropped observations. The callback closure captures nothing — it reads
+//     nClientsCounter and friends as globals when it runs. A second NewListener
+//     overwrites those variables with instruments belonging to the *new* provider,
+//     so the first provider's callback then observes instruments it never registered,
+//     and the SDK discards them. The #399 failure mode, arrived at from the other end.
+//   - A live orphan. SetMeterProvider replaces the global but does not stop the old
+//     provider, whose periodic reader keeps exporting on its own schedule. The first
+//     provider is unreachable and still talking.
+//
+// Shutdown had the mirror-image problem. closeMetrics was per-listener while the
+// provider was not, so the first listener to close shut down telemetry for every
+// listener still serving — and, because it held a closure over its *own* provider,
+// it might shut down the orphan while the global one kept running. Reference
+// counting is the honest model: the last listener out turns off the lights, and a
+// listener created afterwards gets a fresh setup rather than a dead one.
+//
+// None of this is reachable from cmd/, which builds exactly one listener. It is
+// reachable from tests, and NewListener was deliberately made safe to call twice
+// (see the per-listener ServeMux in egresslib.go) — which is precisely the
+// invitation that makes leaving it broken a bad trade.
+
+// The instrument handles. Package-scoped because the otel callback is registered
+// once and reads them when it runs; see the callback for why that matters.
+var nClientsCounter metric.Int64ObservableUpDownCounter
+var nQUICStreamsCounter metric.Int64ObservableUpDownCounter
+var nQUICConnectionsCounter metric.Int64ObservableUpDownCounter
+
+// quicDialedCounter is the cumulative count behind nQUICConnectionsDialed.
+var quicDialedCounter metric.Int64ObservableCounter
+var nIngressBytesCounter metric.Int64ObservableUpDownCounter
+
+// refusedCounter tallies connections turned away before a session span exists.
+// A monotonic Counter, not an UpDownCounter: it is a cumulative tally meant to be
+// rate()'d, unlike the concurrency gauges above.
+var refusedCounter metric.Int64ObservableCounter
+
+// teardownCounter tallies ended sessions by reason. Monotonic, and deliberately a
+// metric rather than only a span attribute: session spans are sampled at 1%, which
+// is fine for inspecting one session and useless for counting rare ones.
+var teardownCounter metric.Int64ObservableCounter
+
+// freezeReportCounter tallies freeze reports beaconed by the page-side watchdog,
+// labelled by diagnosis. The counterpart to session-teardowns: that one says a donor
+// stopped answering, this one says why.
+var freezeReportCounter metric.Int64ObservableCounter
+
+var migrationCounter metric.Int64ObservableCounter
+
+// handshakeFailureCounter tallies consumers rejecting the egress's client
+// certificate, by TLS alert. See handshakes.go.
+var handshakeFailureCounter metric.Int64ObservableCounter
+
+// clientCertExpiryGauge is the seconds until the egress's CA-issued client
+// certificate expires. Absent when the egress runs the unverifiable self-signed
+// fallback. See clientcert.go.
+var clientCertExpiryGauge metric.Int64ObservableGauge
+
+// clientCertVerifiableGauge is 1 when the egress offers a CA-issued clientAuth
+// certificate and 0 for the self-signed fallback, labelled by source. Unlike the
+// expiry gauge it is reported in both modes, so a fallback reads as 0, not a gap.
+var clientCertVerifiableGauge metric.Int64ObservableGauge
+
+type migrationOutcome string
+
+const (
+	migrationAttempt      migrationOutcome = "attempt"
+	migrationSuccess      migrationOutcome = "success"
+	migrationAddPathError migrationOutcome = "add_path_error"
+	migrationProbeError   migrationOutcome = "probe_error"
+	migrationSwitchError  migrationOutcome = "switch_error"
+)
+
+var migrations = newLabeledTally()
+var migrationAttemptsCounter metric.Int64ObservableCounter
+
+func recordMigration(outcome migrationOutcome) { migrations.add(string(outcome)) }
+
+func eachMigration(f func(migrationOutcome, int64)) {
+	migrations.each(func(label string, count int64) { f(migrationOutcome(label), count) })
+}
+
+var (
+	// metricsMu guards both fields below. A plain mutex rather than sync.Once
+	// because the setup has to be repeatable: refcount reaching zero shuts the
+	// provider down, and a listener created after that must get a working one
+	// rather than inherit the corpse. sync.Once cannot express that.
+	metricsMu       sync.Mutex
+	metricsRefs     int
+	metricsShutdown func(context.Context) error
+)
+
+// startMetrics installs the process-wide metric and tracing setup if it is not
+// already running, and returns this caller's release function.
+//
+// The returned function is idempotent — proxyListener.Close is not guaranteed to be
+// called exactly once — and only performs the real shutdown when it drops the last
+// reference.
+func startMetrics(ctx context.Context) (func(context.Context) error, error) {
+	metricsMu.Lock()
+	defer metricsMu.Unlock()
+
+	if metricsRefs == 0 {
+		shutdown, err := initMetricsFn(ctx)
+		if err != nil {
+			// Deliberately before the increment. Counting a failed setup as a live
+			// reference would make the next caller skip initialization and run with
+			// no instruments at all — a silent version of the failure that just
+			// announced itself.
+			return nil, err
+		}
+		metricsShutdown = shutdown
+	}
+	metricsRefs++
+
+	var (
+		once sync.Once
+		// Held outside the closure so every call returns the same answer. Declaring
+		// it inside would mean the first call reports a failed flush and every
+		// later one reports success, which is a worse contract than either.
+		err error
+	)
+	return func(ctx context.Context) error {
+		once.Do(func() {
+			metricsMu.Lock()
+			defer metricsMu.Unlock()
+			metricsRefs--
+			if metricsRefs == 0 && metricsShutdown != nil {
+				err = metricsShutdown(ctx)
+				metricsShutdown = nil
+			}
+		})
+		return err
+	}, nil
+}
+
+// initMetricsFn is the setup entry point, indirected so the lifecycle tests can
+// exercise refcounting without standing up an OTLP exporter and a real meter
+// provider. Production always runs initMetrics.
+var initMetricsFn = initMetrics
+
+// initMetrics creates the exporters, instruments and callback. Callers must hold
+// metricsMu.
+func initMetrics(ctx context.Context) (func(context.Context) error, error) {
+	closeFuncMetrics := enableOTELMetrics(ctx)
+
+	// Tracing powers the per-session spans in handleWebsocket. Enabled alongside
+	// metrics rather than instead of them: the counters answer "is the fleet
+	// carrying traffic", the spans answer "did this particular consumer session
+	// get served", and neither substitutes for the other.
+	closeFuncTracing := telemetry.EnableOTELTracing(ctx)
+
+	// Logs complete the set. The counters say how often something happened;
+	// the log lines carry the peer-supplied detail that says which page or
+	// which client, and until now that detail reached one host's journal and
+	// nowhere queryable. Exported at Info and above only — see otellogs.go.
+	closeFuncLogs := enableOTELLogs(ctx)
+
+	// Shut all three down together. Dropping any one would leak its provider
+	// and discard whatever was still buffered, which on a low-traffic egress
+	// could be most of it.
+	shutdown := func(ctx context.Context) error {
+		return errors.Join(closeFuncMetrics(ctx), closeFuncTracing(ctx), closeFuncLogs(ctx))
+	}
+
+	m := otel.Meter("github.com/getlantern/broflake/egress")
+
+	var err error
+	if nClientsCounter, err = m.Int64ObservableUpDownCounter("concurrent-websockets"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if nQUICConnectionsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-connections"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if nQUICStreamsCounter, err = m.Int64ObservableUpDownCounter("concurrent-quic-streams"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if nIngressBytesCounter, err = m.Int64ObservableUpDownCounter("ingress-bytes"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if refusedCounter, err = m.Int64ObservableCounter("refused-websockets"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if teardownCounter, err = m.Int64ObservableCounter("session-teardowns"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if freezeReportCounter, err = m.Int64ObservableCounter("freeze-reports"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if migrationAttemptsCounter, err = m.Int64ObservableCounter("quic-migration-attempts"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if migrationCounter, err = m.Int64ObservableCounter("quic-migrations"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if handshakeFailureCounter, err = m.Int64ObservableCounter("quic-handshake-failures"); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if quicDialedCounter, err = m.Int64ObservableCounter("quic-connections-dialed",
+		metric.WithDescription("QUIC connections the egress dialed, each a consumer whose volunteer hop came up")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if clientCertExpiryGauge, err = m.Int64ObservableGauge("client-cert-expiry-seconds",
+		metric.WithUnit("s"),
+		metric.WithDescription("seconds until the egress's CA-issued QUIC client certificate expires")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	if clientCertVerifiableGauge, err = m.Int64ObservableGauge("client-cert-verifiable",
+		metric.WithDescription("1 if the egress offers a CA-issued clientAuth QUIC certificate, 0 for the self-signed fallback")); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+
+	// proxy.io and proxy.activations are synchronous — their measurements
+	// arrive from the packet and session paths, via addProxyIO and
+	// recordActivation, not via the callback — so neither may be added
+	// to the RegisterCallback list below. The list's rule ("every
+	// instrument the callback observes must be declared") applies to
+	// observables only; a synchronous counter in that list is an error.
+	proxyIO, err := m.Int64Counter(semconv.ProxyMetricIO, metric.WithUnit("bytes"))
+	if err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	proxyIOCounter.Store(&proxyIOHandle{proxyIO})
+
+	proxyActivations, err := m.Int64Counter(semconv.ProxyMetricActivations,
+		metric.WithUnit("activation"),
+		metric.WithDescription("times proxy mode was turned on and proxied traffic"))
+	if err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+	proxyActivationCounter.Store(&proxyActivationHandle{proxyActivations})
+
+	if _, err = m.RegisterCallback(
+		observeMetrics,
+		nClientsCounter,
+		nQUICConnectionsCounter,
+		quicDialedCounter,
+		nQUICStreamsCounter,
+		nIngressBytesCounter,
+		refusedCounter,
+		// Every instrument the callback observes must be declared here. The SDK
+		// ignores observations for anything absent from this list, so omitting one
+		// produces a metric that is registered, incremented, observed — and never
+		// exported. Silent, and indistinguishable from "the event never happened".
+		teardownCounter,
+		freezeReportCounter,
+		migrationCounter,
+		migrationAttemptsCounter,
+		handshakeFailureCounter,
+		clientCertExpiryGauge,
+		clientCertVerifiableGauge,
+	); err != nil {
+		return nil, shutdownAfter(ctx, shutdown, err)
+	}
+
+	// Last, so it cannot announce success for setup that then fails — every
+	// step above returns through shutdownAfter. Placed after enableOTELLogs so
+	// that when export is on, this is exported too — when it is off, or the
+	// exporter could not be built, enableOTELLogs is a no-op and this stays
+	// stderr-only, which is the same place the line explaining why lives.
+	// Nothing else says which build is running: the spans carry no
+	// service.version, so until now the only way to know what was deployed was
+	// to ask the host, which is how a stale binary went unnoticed for days
+	// while newer releases were assumed live.
+	slog.Info("Egress telemetry initialized", "egress_version", common.Version)
+
+	return shutdown, nil
+}
+
+// enableOTELMetrics stands in for telemetry.EnableOTELMetrics with two
+// deliberate differences. First, the exporter carries a temporality
+// selector: the fleet-wide proxy.io contract requires delta (see
+// counterTemporality), and getlantern/telemetry exposes no way to set
+// one. Second, a failed exporter build is logged rather than swallowed
+// without a trace: telemetry is observability, never a gate on serving
+// traffic (the same rule proxyListener.Close and enableOTELLogs follow),
+// so the fallback is a no-op — the global meter provider is left at its
+// no-op default and every instrument built on it degrades to nothing —
+// but the log line means a malformed OTEL_* env var is at least visible
+// in the journal instead of silently costing all metrics. Env-var
+// configuration (endpoint, headers) is unchanged: otlpmetrichttp reads
+// the same OTEL_EXPORTER_OTLP_* vars.
+func enableOTELMetrics(ctx context.Context) func(context.Context) error {
+	exp, err := otlpmetrichttp.New(ctx,
+		otlpmetrichttp.WithTemporalitySelector(counterTemporality))
+	if err != nil {
+		slog.Error("OTEL metrics disabled: creating OTLP metric exporter failed",
+			"error", err)
+		return func(context.Context) error { return nil }
+	}
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+	)
+	otel.SetMeterProvider(mp)
+	return mp.Shutdown
+}
+
+// counterTemporality maps synchronous counters — proxy.io and
+// proxy.activations — to delta, and leaves every other kind cumulative so
+// the Observable* instruments above keep the temporality their
+// dashboard queries were written against. Do not widen the delta case
+// without checking every saved query on the affected instruments.
+func counterTemporality(kind sdkmetric.InstrumentKind) metricdata.Temporality {
+	if kind == sdkmetric.InstrumentKindCounter {
+		return metricdata.DeltaTemporality
+	}
+	return metricdata.CumulativeTemporality
+}
+
+// shutdownAfter tears down the half-built provider and returns the original error,
+// so a failure partway through setup does not leave an exporter running with no
+// instruments attached to it.
+func shutdownAfter(ctx context.Context, shutdown func(context.Context) error, err error) error {
+	return errors.Join(err, shutdown(ctx))
+}
+
+// observeMetrics is the single otel callback. Registered once per process, so it
+// must read only process-global state — which is all it does.
+func observeMetrics(ctx context.Context, o metric.Observer) error {
+	eachMigration(func(outcome migrationOutcome, count int64) {
+		if outcome == migrationAttempt {
+			o.ObserveInt64(migrationAttemptsCounter, count)
+			return
+		}
+		o.ObserveInt64(migrationCounter, count, metric.WithAttributes(attribute.String("outcome", string(outcome))))
+	})
+	eachHandshakeFailure(func(alert handshakeAlert, count int64) {
+		o.ObserveInt64(handshakeFailureCounter, count, metric.WithAttributes(attribute.String("alert", string(alert))))
+	})
+	if secs, ok := egressCertSecondsToExpiry(time.Now()); ok {
+		o.ObserveInt64(clientCertExpiryGauge, secs)
+	}
+	if value, source, ok := clientCertVerifiable(); ok {
+		o.ObserveInt64(clientCertVerifiableGauge, value, metric.WithAttributes(attribute.String("source", source)))
+	}
+	o.ObserveInt64(nQUICConnectionsCounter, int64(atomic.LoadUint64(&nQUICConnections)))
+	o.ObserveInt64(quicDialedCounter, int64(atomic.LoadUint64(&nQUICConnectionsDialed)))
+	o.ObserveInt64(nQUICStreamsCounter, int64(atomic.LoadUint64(&nQUICStreams)))
+
+	// concurrent-websockets and ingress-bytes are reported per donor country
+	// rather than as a single unlabelled series. Totals are preserved: summing
+	// across the country dimension gives the same number the unlabelled series
+	// carried, so queries that don't group by country are unaffected. Anything
+	// that reduced with max/latest instead of sum needs a spaceAggregation of sum
+	// to stay correct.
+	//
+	// CAUTION when summing: these datapoints also carry a `via` resource attribute
+	// identifying the telemetry collector that forwarded them (ops-0/1/2), and the
+	// same datapoint arrives once per collector. The egress is a single instance —
+	// instance.id has exactly one value, unbounded-us-linode-nj.iantem.io — so
+	// summing across `via` triples the real figure. Sum across donor_country, but
+	// filter or average across `via`.
+	//
+	// Note these counts come from per-session counters incremented and decremented
+	// exactly once around the handler, whereas the legacy global nClients decrements
+	// in the conn's Close(). nClients is now only used for the log lines.
+	eachRefusal(func(reason refusalReason, count int64) {
+		o.ObserveInt64(refusedCounter, count,
+			metric.WithAttributes(attribute.String("reason", string(reason))))
+	})
+
+	eachTeardown(func(reason teardownReason, count int64) {
+		o.ObserveInt64(teardownCounter, count,
+			metric.WithAttributes(attribute.String("reason", string(reason))))
+	})
+
+	// kind only. url, userAgent and longestTaskName are peer-chosen and unbounded;
+	// any of them here would be unbounded cardinality controlled by a stranger.
+	eachFreezeReport(func(kind freezeKind, count int64) {
+		o.ObserveInt64(freezeReportCounter, count,
+			metric.WithAttributes(attribute.String("kind", string(kind))))
+	})
+
+	eachCountryStats(func(cc string, clients, ingressBytes int64) {
+		attrs := metric.WithAttributes(attribute.String(attrDonorCountry, cc))
+		o.ObserveInt64(nClientsCounter, clients, attrs)
+		o.ObserveInt64(nIngressBytesCounter, ingressBytes, attrs)
+	})
+	return nil
+}

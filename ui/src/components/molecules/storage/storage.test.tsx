@@ -1,0 +1,116 @@
+import React from 'react'
+import {act, render, cleanup, fireEvent, screen} from '@testing-library/react'
+import Storage, {resetStorageHydration} from './index'
+import {defaultSettings, SIGNATURE, MessageTypes} from '../../../constants'
+import {servedConnectionsEmitter, lifetimeChunksEmitter, lifetimeConnectionsEmitter, lifetimeUploadBytesEmitter, sharingEmitter} from '../../../utils/wasmInterface'
+jest.mock('../../../utils/wasmInterface', () => {
+ const {StateEmitter} = jest.requireActual('../../../hooks/useStateEmitter')
+ const lifetimeChunksEmitter=new StateEmitter([])
+ const addLifetimeChunks=(added: any[])=>{
+  const chunks=lifetimeChunksEmitter.state.map((c: any)=>({...c}))
+  added.forEach(a=>{const f=chunks.find((c: any)=>c.workerIdx===a.workerIdx); if(f) f.size+=a.size; else chunks.push({...a})})
+  lifetimeChunksEmitter.update(chunks)
+ }
+ return {WasmInterface: class {}, servedConnectionsEmitter:new StateEmitter(0), lifetimeConnectionsEmitter:new StateEmitter(0), lifetimeChunksEmitter, addLifetimeChunks, lifetimeUploadBytesEmitter:new StateEmitter(0), countryStatsEmitter:new StateEmitter([]), mergeCountryStats:(a: any[], b: any[])=>[...a, ...b], sharingEmitter:new StateEmitter(false)}
+})
+beforeEach(()=> { process.env.REACT_APP_STORAGE_URL = 'https://storage.example.org/storage.html' })
+afterEach(()=>{cleanup();resetStorageHydration();act(()=>sharingEmitter.update(false))})
+const connect = () => act(()=>servedConnectionsEmitter.update(servedConnectionsEmitter.state + 1))
+const helped = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='helped')
+const sharing = (spy: jest.SpyInstance) => spy.mock.calls.filter(c=>c[0]?.data?.eventName==='sharing').map(c=>c[0].data.eventProperties.on)
+const share = (on: boolean) => act(()=>sharingEmitter.update(on))
+test('two ready embeds report one live event exactly once',()=>{
+ render(<><Storage settings={defaultSettings}/><Storage settings={defaultSettings}/></>)
+ const frames=screen.getAllByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement[]
+ const spies=frames.map(f=>jest.spyOn(f.contentWindow!, 'postMessage'))
+ frames.forEach(f=>fireEvent.load(f))
+ connect()
+ expect(spies.flatMap(s=>helped(s))).toHaveLength(1)
+})
+test('buffers early activity until iframe load, excluding restored totals',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ connect()
+ expect(helped(spy)).toHaveLength(0)
+ fireEvent.load(frame)
+ expect(helped(spy)).toHaveLength(1)
+ act(()=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,data:{[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeConnections:'10'}}})))
+ expect(helped(spy)).toHaveLength(1)
+ connect()
+ expect(helped(spy)).toHaveLength(2)
+})
+test('reporting transfers to another loaded embed after unmount without replay',()=>{
+ const {unmount}=render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ fireEvent.load(frame);connect();expect(helped(spy)).toHaveLength(1)
+ unmount()
+ render(<Storage settings={defaultSettings}/>)
+ const other=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const otherSpy=jest.spyOn(other.contentWindow!, 'postMessage')
+ fireEvent.load(other);expect(helped(otherSpy)).toHaveLength(0)
+ connect();expect(helped(otherSpy)).toHaveLength(1)
+})
+test('restoration replies from other frames are ignored and own replies apply once',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ fireEvent.load(frame)
+ const before=lifetimeConnectionsEmitter.state
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeConnections:'12'}}
+ act(()=>window.dispatchEvent(new MessageEvent('message',{source:window,data})))
+ expect(lifetimeConnectionsEmitter.state).toBe(before)
+ for(let i=0;i<2;i++) act(()=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,data})))
+ expect(lifetimeConnectionsEmitter.state).toBe(before+12)
+})
+test('sharing is reported only when it changes, never for the mount-time value',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ fireEvent.load(frame)
+ expect(sharing(spy)).toEqual([])
+ share(true);share(false)
+ expect(sharing(spy)).toEqual([true,false])
+})
+test('a toggle before iframe load is reported once it is ready',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ share(true)
+ expect(sharing(spy)).toEqual([])
+ fireEvent.load(frame)
+ expect(sharing(spy)).toEqual([true])
+})
+test('stored totals are added once per page, not once per embed',()=>{
+ render(<><Storage settings={defaultSettings}/><Storage settings={defaultSettings}/></>)
+ const frames=screen.getAllByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement[]
+ frames.forEach(f=>fireEvent.load(f))
+ const before=lifetimeUploadBytesEmitter.state
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeUploadBytes:'500'}}
+ frames.forEach(f=>act(()=>window.dispatchEvent(new MessageEvent('message',{source:f.contentWindow,data}))))
+ expect(lifetimeUploadBytesEmitter.state).toBe(before+500)
+})
+test('a total counted before the stored reply is persisted even when the stored value adds nothing',()=>{
+ render(<Storage settings={defaultSettings}/>)
+ const frame=screen.getByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement
+ const spy=jest.spyOn(frame.contentWindow!, 'postMessage')
+ fireEvent.load(frame)
+ act(()=>lifetimeUploadBytesEmitter.update(lifetimeUploadBytesEmitter.state + 42))
+ const total=lifetimeUploadBytesEmitter.state
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeUploadBytes:''}}
+ act(()=>window.dispatchEvent(new MessageEvent('message',{source:frame.contentWindow,data})))
+ const sets=spy.mock.calls.filter(c=>c[0]?.type===MessageTypes.STORAGE_SET&&c[0]?.data?.key==='lifetimeUploadBytes')
+ expect(sets.map(c=>c[0].data.value)).toEqual([total])
+})
+test('stored download history is restored once per page and persisted without an embed wasm interface',()=>{
+ act(()=>lifetimeChunksEmitter.update([{workerIdx:0,size:7}]))
+ render(<><Storage settings={defaultSettings}/><Storage settings={defaultSettings}/></>)
+ const frames=screen.getAllByTitle(`${SIGNATURE} iframe`) as HTMLIFrameElement[]
+ const spy=jest.spyOn(frames[0].contentWindow!, 'postMessage')
+ frames.forEach(f=>fireEvent.load(f))
+ const data={[SIGNATURE]:true,type:MessageTypes.STORAGE_GET,data:{lifetimeChunks:JSON.stringify([{workerIdx:0,size:100},{workerIdx:1,size:5}])}}
+ frames.forEach(f=>act(()=>window.dispatchEvent(new MessageEvent('message',{source:f.contentWindow,data}))))
+ expect(lifetimeChunksEmitter.state).toEqual([{workerIdx:0,size:107},{workerIdx:1,size:5}])
+ const sets=spy.mock.calls.filter(c=>c[0]?.type===MessageTypes.STORAGE_SET&&c[0]?.data?.key==='lifetimeChunks')
+ expect(JSON.parse(sets[0][0].data.value)).toEqual([{workerIdx:0,size:107},{workerIdx:1,size:5}])
+})

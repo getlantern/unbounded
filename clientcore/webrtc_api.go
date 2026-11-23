@@ -3,20 +3,16 @@
 package clientcore
 
 import (
-	"github.com/pion/transport/v4"
-	"github.com/pion/transport/v4/stdnet"
 	"github.com/pion/webrtc/v4"
 )
 
-func newWebRTCAPI(net transport.Net) (*webrtc.API, error) {
-	if net == nil {
-		var err error
-		net, err = stdnet.NewNet()
-		if err != nil {
-			return nil, err
-		}
-	}
+// newWebRTCAPI builds the consumer's WebRTC API on pn's transport, UDP mux and
+// mapped address.
+func newWebRTCAPI(pn iceNet, tuning WebRTCTuning) (*webrtc.API, error) {
 	se := &webrtc.SettingEngine{}
-	se.SetNet(net)
+	if _, err := applyICENet(se, pn); err != nil {
+		return nil, err
+	}
+	tuning.apply(se)
 	return webrtc.NewAPI(webrtc.WithSettingEngine(*se)), nil
 }

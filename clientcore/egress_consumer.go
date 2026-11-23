@@ -24,7 +24,9 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 				Debug("Egress consumer state 0, opening WebSocket connection...")
 
 			// We're resetting this slot, so send a nil path assertion IPC message
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{}}) {
+				return 0, input
+			}
 
 			// TODO: interesting quirk here: if the table router which manages this WorkerFSM implements
 			// non-multiplexed just-in-time strategy wherein it creates a new websocket connection for
@@ -66,7 +68,9 @@ func NewEgressConsumerWebSocket(options *EgressOptions, wg *sync.WaitGroup) *Wor
 			// Send a path assertion IPC message representing the connectivity now provided by this slot
 			// TODO: post-MVP we shouldn't be hardcoding (*, 1) here...
 			allowAll := []common.Endpoint{{Host: "*", Distance: 1}}
-			com.tx <- IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}
+			if !sendCtx(ctx, com.tx, IPCMsg{IpcType: PathAssertionIPC, Data: common.PathAssertion{Allow: allowAll}}) {
+				return 0, input
+			}
 
 			// WebSocket read loop:
 			readStatus := make(chan error)

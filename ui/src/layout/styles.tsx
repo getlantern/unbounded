@@ -34,7 +34,7 @@ const AppWrapper = styled.section`
   background-color: ${({theme, $menu}: Props) => theme === Themes.DARK ? COLORS.grey5 : $menu ? COLORS.grey1 : COLORS.white };
   box-sizing: content-box;
   position: ${({layout}: Props) => layout !== Layouts.FLOATING ? 'relative' : 'fixed'};
-  ${({layout}: Props) => layout === Layouts.FLOATING ? 'bottom: 0;\n  right: 10px;\n z-index: 2147483646;' : ''} // 2147483647 is largest positive value of a signed integer on a 32 bit system
+  ${({layout}: Props) => layout === Layouts.FLOATING ? 'bottom: 0;\n  right: 10px;\n z-index: 2147483646;\n  max-height: 100vh;\n  overflow-y: auto;' : ''} // 2147483647 is largest positive value of a signed integer on a 32 bit system
   margin: 0 auto;
   box-shadow: ${({layout}: Props) => layout === Layouts.FLOATING ? SHADOWS.light : ''};
   * {

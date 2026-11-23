@@ -1,11 +1,13 @@
 import {Container, Body, BodyWrapper, ExpandWrapper, Header, CtaWrapper} from './styles'
-import React, {useContext, useState, lazy, Suspense, useEffect} from 'react'
+import React, {useContext, useState, useEffect} from 'react'
 import {AppContext} from '../../../context'
 import {BREAKPOINT, COLORS, Targets, Themes} from '../../../constants'
 import Col from '../../atoms/col'
-import GlobeSuspense from '../../molecules/globe/suspense'
+import SafeGlobe from '../../molecules/globe/safe'
 import Row from '../../atoms/row'
 import Control from '../../molecules/control'
+import UnsupportedNote from '../../molecules/unsupportedNote'
+import SupportCountry from '../../molecules/supportCountry'
 import Stats from '../../molecules/stats'
 import About from '../../molecules/about'
 // import Footer from '../../molecules/footer'
@@ -14,9 +16,6 @@ import {useLatch} from '../../../hooks/useLatch'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
 import VpnCta from '../../molecules/vpnCta'
-import Love from '../../molecules/love'
-
-const Globe = lazy(() => import('../../molecules/globe'))
 
 const Panel = () => {
 	const {width, settings} = useContext(AppContext)
@@ -38,18 +37,15 @@ const Panel = () => {
 				<Body
 					mobile={width < BREAKPOINT}
 				>
+					{ branding && <LogoLink /> }
 					<Header>
-						{ branding ? <LogoLink /> : <div /> }
+						<div />
 						{ menu && <Menu /> }
 					</Header>
 					{ !expanded && <About style={{padding: '24px 0 16px 0', fontSize: 12, lineHeight: '20px'}} /> }
 					{
 						settings.globe && expanded && (
-							<Col>
-								<Suspense fallback={<GlobeSuspense/>}>
-									<Globe target={settings.target}/>
-								</Suspense>
-							</Col>
+							<SafeGlobe target={settings.target}/>
 						)
 					}
 					{ expanded && <About style={{padding: '24px 0 16px 0', fontSize: 12, lineHeight: '20px'}} /> }
@@ -63,6 +59,8 @@ const Panel = () => {
 								onToggle={onToggle}
 							/>
 						</Row>
+						<UnsupportedNote/>
+						<SupportCountry/>
 						<Stats/>
 						{
 							!menu && (target === Targets.WEB) && (
@@ -71,9 +69,6 @@ const Panel = () => {
 								</CtaWrapper>
 							)
 						}
-						<div style={{marginTop: 16}}>
-							<Love/>
-						</div>
 						{
 							settings.collapse && settings.globe && (
 								<ExpandWrapper

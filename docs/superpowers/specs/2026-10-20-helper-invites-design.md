@@ -1,0 +1,357 @@
+# Helper invites: dedicated volunteers for users in Iran
+
+Status: design approved in discussion, 2026-10-20. Implemented and merged in
+lantern-cloud, radiance, lantern and unbounded; this is the design record, and
+where it and the shipped code differ, the code wins. Later UI changes are in
+`2026-10-29-personal-proxies-ui-design.md`, and lantern#9246 added the
+volunteer's live Connected status.
+
+## Goal
+
+Let a Lantern user in a censored country (Iran first) invite someone they know
+abroad to become a proxy volunteer **for them specifically**, over Telegram,
+WhatsApp, email or any other channel. A volunteer can serve several people and
+can also help the general pool. The invite flow doubles as a Western
+acquisition channel for Lantern and Lantern Pro.
+
+Security is a primary requirement: a dedicated pairing must not become a way
+for an adversary to identify Lantern users, and a breach of Lantern's servers
+must not reveal anyone's name or the invite secrets.
+
+## Terms
+
+- **Inviter**: the user in the censored country (called Sara below).
+- **Volunteer**: the person abroad who proxies for her.
+- **Pairing**: an approved inviter–volunteer relationship.
+- **Direct mode** (SmC): the volunteer's own IP is the exit, via a forwarded port.
+- **Unbounded**: WebRTC relay; the volunteer forwards to Lantern's egress.
+
+## Decisions
+
+| Topic | Decision |
+|---|---|
+| Volunteer surface | The Lantern app first; a browser page running Unbounded as a fallback |
+| What a pairing binds to | The inviter's device. Binding to the inviter's account is deferred to a later plan (user-approved 2026-10-23) |
+| Invite security | Single-use link, matching-code comparison, inviter approval, expiry, revocation |
+| Serving | A volunteer serves their paired people first; "help others too" is on by default and uses spare capacity |
+| Volunteer mode | Automatic: direct mode whenever it works, otherwise Unbounded. No picker in v1 |
+| Multiple pairings | A volunteer can accept many invites; an inviter can have many volunteers |
+| Links | Branded (`lantern.io/help/…`), shared through any channel or as a QR code |
+| Server knowledge | Blind: the server stores opaque pairing IDs and device IDs, never names or the invite secret |
+| Allowlist | The existing residential-peer allowlist applies to paired and pool traffic alike. Paired users never bypass it |
+| Pro rewards | Earned by helping, not by signing up: a welcome week, then a week per 30 active days, capped. An account is needed only to claim |
+| Rollout | Production pilot behind a feature flag; no staging phase |
+
+## Threat model
+
+A volunteer always sees the client IP of whoever they serve: Unbounded is
+peer-to-peer WebRTC, and in direct mode the client connects to the
+volunteer's IP. With anonymous volunteers that IP is one of thousands. With a
+pairing, the volunteer knows it belongs to a specific person. The main risk
+is therefore an adversary obtaining an invite (forwarded, a seized phone, a
+monitored chat), claiming it, and learning that the inviter uses Lantern and
+what her IP is.
+
+The design defends against that with a single-use secret the server never
+sees, a matching code both people compare, inviter approval before any
+traffic flows, and visible "already claimed" warnings. It also keeps names
+and invite secrets off the server. The server does keep which device is
+paired with which, so a breach or legal demand can reveal that device-level
+graph, though not the names behind it.
+
+Out of scope: an adversary with full read-and-modify control of the channel
+the invite is sent over. The app recommends comparing codes on a voice call or
+a different app; that defeats it, but v1 does not enforce it.
+
+## Section 1: Invite and pairing flow
+
+### Creating an invite
+
+1. Sara taps "Invite someone to help me". Her app generates a 32-byte random
+   secret `s`.
+2. The app registers `H(s)` (SHA-256) with lantern-cloud, authenticated by
+   its device ID, with an expiry of 48 hours. It also registers the public
+   half of an **approval keypair** derived from `s`
+   (`Ed25519(seed = HKDF(s, "lantern-helper-invite-v1/approve"))`), so the
+   server can later verify an approval without ever learning `s`.
+3. The link is `https://lantern.io/help/#<base64url(s)>`. The secret is in the
+   URL fragment, so browsers and link-preview fetchers never send it to any
+   server.
+4. Sara shares it through the OS share sheet (Telegram, WhatsApp, Signal,
+   email, SMS) or shows it as a QR code. Every channel gets the same preview:
+   "Sara wants your help staying online."
+
+### Claiming
+
+The volunteer opens the link:
+
+- **Lantern installed:** the link opens the app at "A friend asked for your help". The link carries only `s`, and Sara's name reaches the volunteer only after approval (below), so the app shows her name from then on. The share message that travels with the link already names her.
+- **Not installed:** the landing page keeps `s` in the browser, offers the
+  install, and after install a "Continue" button reopens the link in the app.
+  It does not use third-party deferred deep-link services, which would receive
+  the secret. The page also offers "help from this browser now" (see Section 3).
+- **In person:** the volunteer's app scans Sara's QR code.
+
+The volunteer's app:
+
+1. Creates a device keypair (Ed25519) if it has none.
+2. Derives the name key `K_v` from `s` with HKDF-SHA256 (the plan 1 wire-format
+   table and `testdata/vectors.json` are normative for every derivation).
+3. Encrypts the volunteer's display name with `K_v` (AEAD).
+4. Sends lantern-cloud a claim: `H(s)`, its public key, its device ID and the
+   encrypted name.
+
+lantern-cloud records a **pending claim** if the invite exists, is unexpired
+and unclaimed. It cannot read the name. A second claim on the same invite is
+refused with "already claimed", and the claiming app shows that prominently.
+
+### Matching code and approval
+
+1. Sara's app fetches the pending claim and decrypts the volunteer's name with `K_v`.
+2. Both apps compute the matching code locally:
+   `code = truncate(HMAC-SHA256(K, "code" || volunteer_public_key))`, rendered
+   as four digits or four emoji. The server cannot compute it, because it
+   never has `s`.
+3. Sara and the volunteer compare codes. The app suggests a call or a
+   different app where possible.
+4. Sara taps **Approve** or **Reject**. Approval carries a signature by the
+   approval key over `"approve" || H(s) || volunteer_public_key`, which
+   lantern-cloud checks against the registered public key. Only a device
+   holding `s` can produce it, and Sara's device must also be the one that
+   created the invite.
+5. On approval, lantern-cloud creates a random 128-bit **pairing ID**, marks the
+   invite used, and stores `pairing ID → (inviter device or account, volunteer device)`.
+   No names are stored.
+6. Sara's display name reaches the volunteer the same way: encrypted with `K_i`,
+   relayed once as an opaque blob, then deleted from the server.
+
+### When a link leaks
+
+An adversary who claims first produces a code Sara's real friend never saw.
+The friend's app says "this invite was already claimed". Sara rejects the
+pending claim, the invite is burned, and she sends a new one.
+
+### Lifecycle
+
+- Unclaimed invites expire after 48 hours. Rejected and expired invites cannot
+  be reused.
+- Either side can end a pairing at any time. That deletes its server record and
+  revokes access (Section 2).
+- A pairing binds to the inviter's device. Binding it to her Lantern account, so
+  it works on every device signed in to it, is deferred to a later plan
+  (user-approved 2026-10-23): the helper API has no verified account identity,
+  and names live only on the device that made the invite.
+- Display names are stored only on the two devices, encrypted with the OS keystore.
+
+### Limits
+
+| Who | Limit |
+|---|---|
+| Inviter | 20 pending invites, 20 active pairings, 20 new invites per device per day |
+| Volunteer | 20 pairings; at most 10 pool clients (`MaxClientsPerPeer`). Paired clients skip that reservation, so the total can briefly exceed 10 (see Section 2) |
+| Claims | Rate-limited per source IP (per /64 for IPv6, one shared bucket for Lantern egresses). No per-device rate, since clients choose their device IDs; the 20-pairing cap applies per device |
+
+All limits are configuration and are expected to change after the pilot.
+
+## Section 2: Routing
+
+### Pairing tickets
+
+lantern-cloud issues short-lived signed **pairing tickets**: "the bearer may use
+pairing P, in role R, until T". Lifetime is 15 minutes. Tickets carry no device
+ID: verifiers see them, and a device ID is the credential the HelperService API
+accepts, so putting it in a ticket would let a verifier act as that device. freddie and the volunteer's proxy
+verify tickets with lantern-cloud's public key and need no database. Revocation
+means lantern-cloud stops issuing tickets for the pairing and pushes a
+revocation notice where it can.
+
+### Direct mode
+
+- A volunteer's peer route gets an **audience**: the set of its pairing IDs,
+  plus `everyone` if "help others too" is on.
+- When Sara's app fetches config (`/v1/config-new`), lantern-cloud always
+  includes her paired volunteers' online routes. They are added separately from
+  the bandit's selections, so her helpers do not depend on exploration weights.
+- A route whose audience does not include `everyone` is left out of the bandit
+  catalog. A route that includes it enters the pool as today.
+- Paired users always get their helpers' routes. They skip the per-peer slot
+  reservation but count toward the volunteer's reported clients, so they push
+  pool clients out, never the other way round. A volunteer's total can briefly
+  exceed the pool cap. Holding it strictly would mean telling paired from pool
+  clients before the samizdat handshake, which the protocol can't do.
+- Paired clients authenticate to the volunteer's samizdat inbound with
+  **per-pairing credentials**: a samizdat short ID derived per pairing and per
+  24-hour epoch, issued to both sides. Each rotation ends the paired sessions
+  still using the old ID, so the epoch is long. Revocation doesn't depend on it:
+  the volunteer drops an ended pairing's IDs at its next heartbeat. This needs
+  no change to the samizdat protocol.
+
+### Unbounded
+
+freddie gains **rooms**:
+
+- A volunteer's widget announces into each of its pairing rooms, presenting a
+  ticket for each.
+- Sara's client subscribes to her pairing rooms (with tickets) as well as to
+  the general pool.
+- Genesis messages addressed to a room go only to that room's consumers. A
+  volunteer that helps others too also broadcasts as today.
+- The volunteer gives a waiting room consumer the next free slot before any
+  pool consumer.
+- freddie verifies tickets with the public key and learns only opaque pairing IDs.
+
+### Client behavior
+
+Sara's client treats a paired volunteer like any other route: measured, ranked
+and failed over. If the volunteer is offline or blocked, she falls back to
+normal Lantern. A pairing adds capacity and is never a single point of failure.
+
+### Revocation
+
+lantern-cloud stops issuing tickets for the pairing. In direct mode the route
+drops from Sara's config at the next fetch, and the volunteer's inbound drops
+her pairing credentials at its next heartbeat (150 s), ending her open sessions.
+In Unbounded, freddie drops the room membership, so no new match starts more
+than one ticket lifetime (15 minutes) after the end. An established Unbounded
+session outlives its tickets: in the app it ends when the volunteer's widget
+restarts at its next successful ticket fetch, and a volunteer that can't reach
+lantern-cloud keeps it open until then. Plan 4's browser volunteer
+(not yet live on lantern.io) only swaps in the new tickets and does not restart,
+so its established session lasts until the session drops or the page closes. Revocation within seconds needs a push channel, which
+is deferred. One exception in direct mode: a volunteer that can't reach lantern-cloud
+(or keeps getting failed heartbeats) keeps its last authoritative set, so a
+revoked pairing's IDs stay accepted until the volunteer's 48-hour
+unconfirmed-set expiry.
+
+## Section 3: Volunteer experience and marketing
+
+### Mode
+
+The volunteer's app uses direct mode whenever it can open a port, and falls
+back to Unbounded otherwise. This is the same automatic fallback Action Mode
+already has. There is no mode picker in v1; Advanced stats shows which mode is
+active.
+
+### Helping
+
+- One "You're helping" row per paired person, by name (decrypted on-device),
+  with daily totals: data relayed and time active.
+- No live "Sara is online now" indicator. It would expose her activity
+  patterns to anyone holding the volunteer's phone.
+- "Help others too" is shown alongside, on by default, with one sentence on
+  what it does and how the allowlist protects the volunteer.
+- Advanced stats works as today, counting paired and pool traffic together.
+
+### Browser fallback
+
+The landing page can run Unbounded in the browser immediately, scoped to the
+pairing's room once approved, for as long as the tab is open. It prompts to
+install the app for always-on help. The browser cannot do direct mode.
+
+### Inviter side
+
+Sara sees her helpers with online or offline status, can revoke any of them,
+and can invite another. The app nudges her toward a second helper, since one
+friend's computer is a single point of failure.
+
+### Marketing hooks
+
+1. **The invite is the ad.** The landing page tells the human story and leads
+   to an install with a reason to keep the app running.
+2. **Volunteering earns Pro** (see "Pro rewards" below).
+3. **A share card** for social media ("I'm keeping someone in Iran online with
+   Lantern") that links to general volunteering. It never includes the paired
+   person's name or anything that identifies her.
+4. **Pro offers at natural moments,** such as an earned trial ending, never
+   during onboarding.
+
+### Pro rewards
+
+Rewards are earned by helping, not by creating an account, so pairing with a
+second phone of one's own earns nothing.
+
+1. **Welcome week.** One week of Pro once the volunteer has an approved
+   pairing, has been helping for 24 hours, and the paired person has connected
+   through them from a censored country.
+2. **Ongoing.** One more week for every 30 active days. A day counts when the
+   volunteer was online for at least 6 hours. Capped at 12 weeks a year.
+3. **Claiming.** Volunteering needs no account. Claiming a reward does: the app
+   shows "you've earned a free week — create an account to claim it". This is
+   where volunteers are asked for an account (and an email for marketing), and
+   it lets the Pro survive a reinstall. Unclaimed weeks wait on the device.
+4. **Abuse guard.** Only pairings whose paired person connects from a censored
+   country count, and at most 3 pairings per volunteer count toward rewards. A
+   volunteer can still help up to 20 people.
+
+lantern-cloud checks eligibility without learning identities: the pairing
+exists, the volunteer's heartbeats report its uptime, and the paired client's
+country comes from its IP at config fetch. Only the outcome ("eligible for a
+week") is stored against the volunteer, not which pairing or country earned it.
+Rewards are granted through the existing referral-reward mechanism.
+
+## Section 4: Abuse, privacy and testing
+
+### Threats
+
+| Threat | Mitigation |
+|---|---|
+| Leaked or forwarded invite | Matching code, inviter approval, "already claimed" warnings, single use, expiry |
+| Guessing or enumerating invites | 256-bit secret; the server sees only its hash; rate limits |
+| Adversary as volunteer collecting IPs | Can only pair through an invite the inviter approves. Pool volunteers already see client IPs; that is unchanged |
+| Adversary as inviter harvesting volunteer IPs to block | Invite and pairing caps. Direct-mode IPs are already discoverable by any client they serve |
+| Paired user abusing the volunteer's connection | The existing allowlist applies, with no bypass for paired users; the volunteer can revoke |
+| Farming Pro rewards with self-pairings | Rewards require the paired person to connect from a censored country; at most 3 pairings count; yearly cap |
+| Inviter's phone seized | Helper names encrypted at rest; a "remove all helpers" action |
+| lantern-cloud breach | Only opaque pairing IDs and device IDs; rotate the ticket key |
+| Ticket key compromise | An attacker could join rooms or use routes, but learns no identities; rotate the key and reissue |
+| Leaked volunteer ticket (bearer) | Its holder could post a pairings-only genesis for that room and receive the inviter's offer, learning her IP, for up to one ticket lifetime (15 min). Accepted for v1: the same exposure class as device-ID bearer auth, and tickets travel only over TLS to lantern-cloud and freddie. Follow-up: bind tickets to a key held by the volunteer and require proof of possession at genesis |
+| Leaked inviter ticket (bearer) | Its holder could subscribe with it for up to one ticket lifetime (15 min) and receive that room's volunteer genesis, learning the volunteer's IP, which a pairings-only volunteer otherwise keeps from strangers. Accepted for v1 on the same grounds as the volunteer row, with the same proof-of-possession follow-up. Tickets ride in the `X-BF-Room-Tickets` header and the genesis form body, so no fronting CDN, proxy or lantern-cloud request middleware may log either |
+| Client-side outbound tags | An inviter's config carries `helper-` outbound tags: per-device HMACs, stable until a ticket-key rotation, carrying no IDs. On the device they mark it as a paired inviter, and they let anything that records outbound tags (session history, client telemetry) link that device's sessions. The server records nothing. Clients must not export `helper-` tags in telemetry or reports |
+| Helper presence visible to the inviter | The inviter's helper list shows whether each volunteer is running, refreshed at most every 5 minutes, so the inviter, or whoever holds her phone, can chart a volunteer's on and off pattern at about 5-minute resolution. Accepted, since the inviter side shows online status. The server keeps one timestamp per volunteer device, never per pairing, sweeps it after 48 hours, and never logs it (plan 4, Task 2) |
+| Flag-free volunteer access | A claim needs only a live invite, and a device holding a claim or pairing can list and end its pairings and fetch tickets, all without the `helper_invites` flag, so volunteers abroad need no flag and their countries never see the inviter UI. A flag-off client can try claims with guessed hashes; the 256-bit secret makes that hopeless, and flag-off requests use their own rate-limit buckets so they cannot drain the inviters' shared egress bucket. Inviting still needs the flag (plan 4, Task 1) |
+
+### Telemetry
+
+No logs or traces may tie a pairing ID to an IP address, a display name or an
+account. Spans for invite, claim and approval record outcomes and timings only.
+
+### Testing
+
+- **Crypto:** shared test vectors so the server (lantern-cloud) and the one
+  device-side implementation, Go in broflake's `common/helperinvite`, which the
+  app's Go core and the browser's wasm both use, derive identical keys, matching
+  codes, approval signatures and name blobs. There is no separate Dart
+  implementation.
+- **State machine:** invite → claim → approve / reject / expire → revoke,
+  including two claims racing for one invite.
+- **Tickets and credentials:** ticket issuance, expiry and verification in
+  freddie; per-pairing credential issuance, rotation and rejection after
+  revocation at the volunteer's inbound.
+- **Routing:** paired routes always included in the inviter's config; routes
+  without `everyone` absent from the bandit catalog; paired users get slots first.
+- **Rewards:** welcome-week and 30-day eligibility, the 6-hour active-day rule,
+  the censored-country and 3-pairing conditions, the yearly cap, and claiming
+  an unclaimed week after creating an account.
+- **Production pilot checks:** a deliberately leaked link claimed first is
+  caught by the code comparison; revocation time is measured.
+
+### Rollout
+
+1. Implement behind a feature flag in production.
+2. Pilot with Iranian users who already have friends abroad.
+3. Start the volunteer marketing push once the pilot shows people pair and stay paired.
+
+## Components to change
+
+| Component | Change |
+|---|---|
+| lantern-cloud | Invite, claim, approve, revoke and pairing APIs; pairing tickets and per-pairing credentials; route audiences; config-new includes paired routes; reward eligibility and grants |
+| freddie | Rooms keyed by pairing ID; ticket verification; scoped genesis delivery |
+| radiance | Volunteer: pairings, tickets, room announcements, paired-first slots, per-pairing credentials on the samizdat inbound. Client: room subscription and paired routes |
+| lantern (app) | Invite creation and sharing, QR, claim and approval UI with matching codes, helper lists, browser-to-app handoff, earned-reward prompts and claiming |
+| Web | `lantern.io/help` landing page with the browser fallback |
+
+## Open questions
+
+- Whether to add a "discreet" link style without Lantern branding, if pilot
+  partners say branded links put senders at risk.

@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lantern Action Mode for WordPress: Volunteer Proxy Plugin Demo</title>
+<meta name="description" content="Try Lantern Action Mode for WordPress in your browser. The free plugin adds a switch that lets visitors volunteer bandwidth to help people beat censorship.">
+<link rel="canonical" href="https://unbounded-wp.lantern.io/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta name="theme-color" content="#04100f">
+<meta name="color-scheme" content="dark">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Lantern Action Mode for WordPress">
+<meta property="og:url" content="https://unbounded-wp.lantern.io/">
+<meta property="og:title" content="Lantern Action Mode for WordPress: live plugin demo">
+<meta property="og:description" content="Turn any WordPress site into a volunteer proxy. Boot a real WordPress with the plugin in your browser, nothing installed.">
+<meta property="og:image" content="https://unbounded-wp.lantern.io/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Lantern Action Mode for WordPress: turn any WordPress site into a volunteer proxy">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Lantern Action Mode for WordPress: live plugin demo">
+<meta name="twitter:description" content="Turn any WordPress site into a volunteer proxy. Boot a real WordPress with the plugin in your browser, nothing installed.">
+<meta name="twitter:image" content="https://unbounded-wp.lantern.io/og.png">
+<script type="application/ld+json">
+{
+ "@context": "https://schema.org",
+ "@graph": [
+  {
+   "@type": "Organization",
+   "@id": "https://lantern.io/#organization",
+   "name": "Lantern",
+   "legalName": "Brave New Software Project, Inc.",
+   "url": "https://lantern.io",
+   "sameAs": [
+    "https://github.com/getlantern"
+   ]
+  },
+  {
+   "@type": "WebSite",
+   "@id": "https://unbounded-wp.lantern.io/#website",
+   "url": "https://unbounded-wp.lantern.io/",
+   "name": "Lantern Action Mode for WordPress",
+   "publisher": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "inLanguage": "en"
+  },
+  {
+   "@type": "WebPage",
+   "@id": "https://unbounded-wp.lantern.io/#webpage",
+   "url": "https://unbounded-wp.lantern.io/",
+   "name": "Lantern Action Mode for WordPress: live plugin demo",
+   "isPartOf": {
+    "@id": "https://unbounded-wp.lantern.io/#website"
+   },
+   "about": {
+    "@id": "https://unbounded-wp.lantern.io/#software"
+   },
+   "primaryImageOfPage": "https://unbounded-wp.lantern.io/og.png",
+   "inLanguage": "en"
+  },
+  {
+   "@type": "SoftwareApplication",
+   "@id": "https://unbounded-wp.lantern.io/#software",
+   "name": "Lantern Action Mode",
+   "description": "A free WordPress plugin from Lantern that adds the Action Mode widget to your site. The widget is a switch: a visitor who turns it on lends a small amount of their bandwidth to relay traffic for someone whose government blocks the open internet. Visitors install nothing, and no proxy traffic passes through your server.",
+   "applicationCategory": "WebApplication",
+   "applicationSubCategory": "WordPress plugin",
+   "operatingSystem": "WordPress 5.0 or later, PHP 7.4 or later",
+   "downloadUrl": "https://wordpress.org/plugins/unbounded-by-lantern/",
+   "installUrl": "https://wordpress.org/plugins/unbounded-by-lantern/",
+   "sameAs": [
+    "https://wordpress.org/plugins/unbounded-by-lantern/"
+   ],
+   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+   "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+   },
+   "url": "https://unbounded-wp.lantern.io/",
+   "author": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "publisher": {
+    "@id": "https://lantern.io/#organization"
+   },
+   "keywords": "WordPress plugin, censorship circumvention, volunteer proxy, peer-to-peer proxy, WebRTC, Unbounded, Browsers Unbounded"
+  },
+  {
+   "@type": "FAQPage",
+   "@id": "https://unbounded-wp.lantern.io/#faq",
+   "isPartOf": {
+    "@id": "https://unbounded-wp.lantern.io/#webpage"
+   },
+   "mainEntity": [
+    {
+     "@type": "Question",
+     "name": "What is Lantern Action Mode for WordPress?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "A free WordPress plugin from Lantern that adds the Action Mode widget to your site. The widget is a switch: a visitor who turns it on lends a small amount of their bandwidth to relay traffic for someone whose government blocks the open internet. Visitors install nothing, and no proxy traffic passes through your server."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How does this live demo work?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "The launch button opens WordPress Playground, which runs WordPress compiled to WebAssembly inside your browser. It installs and activates the plugin zip built from the current source, and lands on a page with the widget already embedded. Nothing is installed on a server, and closing the tab throws the whole site away."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How do I install the plugin on my WordPress site?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Install Lantern Action Mode from the WordPress Plugin Directory and activate it. Then open Action Mode in the admin sidebar to pick a layout, theme and location, and choose where the widget appears: tick Display on Homepage or Display on Posts, or edit a page and tick Enable Action Mode on this page. It needs WordPress 5.0 or later and PHP 7.4 or later."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "What can I configure?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "The layout (banner, panel, floating or simple), the theme (light, dark, or the visitor's system preference), whether it sits at the top or bottom of the page, and where it appears: on chosen pages, on all posts, or on the homepage. Version 1.4.0 adds a \"Country to support\" setting that preselects a censored country for visitors to help; it takes effect only once Lantern switches that feature on for the network."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "What happens in a visitor's browser when they turn it on?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Their browser downloads the WebAssembly proxy engine, around 12 MB, from embed.lantern.io, finds people to help through Lantern's signaling server, and relays their traffic to Lantern's exit servers. Relayed traffic is end-to-end encrypted between the person being helped and their destination, so the volunteering browser cannot read it. Turning the switch off, navigating away or closing the tab stops it."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Does it use my visitors' bandwidth without asking?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "No. The switch is off when the page loads, and the proxy engine is not downloaded until a visitor turns it on."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Does Action Mode slow down my site?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "The widget bundle is deferred, so it does not block rendering. The proxy engine is only downloaded for visitors who turn the switch on."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Can my visitors get in trouble for volunteering?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Volunteers relay encrypted traffic and are not the exit point, so the traffic does not appear to come from their connection. The widget also warns visitors who appear to be in a censored region that volunteering may not be appropriate for them."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "What data does the plugin collect?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Action Mode does not track visitors, set advertising identifiers or collect personal data. The widget sends cookieless usage counts to Plausible, tagged with the hostname of your site, and those counts rank sites on the Action Mode leaderboard. The External services section of the plugin's readme lists each service the widget contacts and when. See Lantern's privacy policy."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Can I host the widget bundle myself?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Yes, with the browsers_unbounded_script_url filter. A self-hosted copy is pinned to whatever build you copied and will eventually fall out of step with the network, so the bundle on embed.lantern.io is the default."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "What is the relationship between Action Mode and Unbounded?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Unbounded is Lantern's engine for censorship circumvention through browser-based peer-to-peer proxies. The volunteer product built on it, including this plugin, ships as Lantern Action Mode. The product was called Browsers Unbounded, then Unbounded, and is now Lantern Action Mode."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "How is Action Mode different from Tor's Snowflake?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Both descend from the flash proxy idea that Fifield et al. described in 2012: volunteers' browsers act as short-lived proxies for people in censored regions. Snowflake is part of the Tor Project. Action Mode is built on Lantern's Unbounded, and one volunteer can proxy for several users at the same time."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Is the plugin open source?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Yes. It is licensed under the GPL, version 3 or later, and developed in the open in getlantern/unbounded. The plugin is in ui/wp-plugin and the widget it loads is in ui/."
+     }
+    },
+    {
+     "@type": "Question",
+     "name": "Who makes Lantern Action Mode?",
+     "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "Lantern, run by Brave New Software Project, Inc. If you need to get around censorship yourself, get Lantern."
+     }
+    }
+   ]
+  }
+ ]
+}
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Urbanist:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#04100f; --ink2:#071a19; --line:rgba(0,188,212,.18);
+    --fg:#dff2f0; --fg-dim:#7fa5a4; --brand:#00BCD4; --brand2:#00A83E; --glow:rgba(0,188,212,.35);
+  }
+  *{box-sizing:border-box}
+  /* paint the canvas on html: a fixed background on body alone only covers
+     the viewport, leaving the rest of a tall page on the white default */
+  html{
+    background:
+      radial-gradient(900px 600px at 12% -10%, rgba(0,188,212,.14), transparent 60%),
+      radial-gradient(700px 500px at 100% 0%, rgba(0,168,62,.10), transparent 55%),
+      linear-gradient(180deg,var(--ink) 0%, var(--ink2) 100%);
+    background-color:var(--ink2);
+    background-attachment:fixed;
+  }
+  body{
+    margin:0; min-height:100vh; color:var(--fg); background:transparent;
+    font-family:Urbanist,system-ui,sans-serif; font-size:16px; line-height:1.6;
+  }
+  /* faint mesh: the volunteer network motif */
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; opacity:.5;
+    background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);
+    background-size:64px 64px; mask-image:radial-gradient(ellipse at 50% 0%,#000 30%,transparent 75%);
+  }
+  main{position:relative; max-width:760px; margin:0 auto; padding:9vh 24px 12vh}
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); display:flex; align-items:center; gap:10px; margin-bottom:22px;
+  }
+  .eyebrow::after{content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),transparent)}
+  h1{
+    font-family:Fraunces,Georgia,serif; font-weight:900; font-size:clamp(2.4rem,6vw,4rem);
+    line-height:1.02; letter-spacing:-.02em; margin:0 0 18px;
+  }
+  h1 em{font-style:italic; font-weight:400; color:var(--brand)}
+  .lede{font-size:clamp(1.02rem,2.2vw,1.18rem); color:var(--fg-dim); max-width:56ch; margin:0 0 34px}
+  .cta{
+    display:inline-flex; align-items:center; gap:12px; text-decoration:none;
+    background:linear-gradient(135deg,var(--brand),var(--brand2)); color:#02120f; font-weight:600;
+    padding:15px 26px; border-radius:999px; font-size:1.03rem;
+    box-shadow:0 8px 30px var(--glow); transition:transform .18s ease, box-shadow .18s ease;
+  }
+  .cta:hover{transform:translateY(-2px); box-shadow:0 14px 42px var(--glow)}
+  .cta .arrow{transition:transform .18s ease}
+  .cta:hover .arrow{transform:translateX(4px)}
+  .note{font-family:"IBM Plex Mono",monospace; font-size:12.5px; color:var(--fg-dim); margin-top:16px}
+  .grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin:52px 0 0}
+  .card{
+    border:1px solid var(--line); border-radius:14px; padding:18px 20px;
+    background:rgba(255,255,255,.022); backdrop-filter:blur(6px);
+  }
+  .card h3{
+    margin:0 0 6px; font-family:"IBM Plex Mono",monospace; font-size:11px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--brand); font-weight:500;
+  }
+  .card p{margin:0; font-size:14.5px; color:var(--fg-dim)}
+  ol{counter-reset:s; list-style:none; padding:0; margin:44px 0 0}
+  ol li{position:relative; padding-left:44px; margin-bottom:16px; color:var(--fg-dim); font-size:15px}
+  ol li::before{
+    counter-increment:s; content:counter(s,decimal-leading-zero);
+    position:absolute; left:0; top:1px; font-family:"IBM Plex Mono",monospace; font-size:12px;
+    color:var(--brand); border:1px solid var(--line); border-radius:7px; padding:3px 7px;
+  }
+  ol li b{color:var(--fg); font-weight:600}
+  .eyebrow::after{order:1}
+  .eyebrow .from{order:2; color:var(--fg-dim); text-decoration:none; transition:color .18s ease}
+  .eyebrow .from b{color:var(--brand); font-weight:500}
+  .eyebrow .from:hover{color:var(--fg)}
+  .eyebrow .nw, .eyebrow .from{white-space:nowrap}
+  @media (max-width:480px){.eyebrow{flex-wrap:wrap; row-gap:4px} .eyebrow::after{display:none}}
+  .faq{margin-top:72px}
+  .faq h2, .more h2{
+    font-family:"IBM Plex Mono",monospace; font-size:12px; letter-spacing:.22em; text-transform:uppercase;
+    color:var(--brand); font-weight:500; display:flex; align-items:center; gap:10px; margin:0 0 8px;
+  }
+  .faq h2::after, .more h2::after{content:""; height:1px; flex:1; background:linear-gradient(90deg,var(--line),transparent)}
+  .faq .title{
+    font-family:Fraunces,Georgia,serif; font-weight:600; font-size:clamp(1.6rem,4vw,2.2rem);
+    line-height:1.1; letter-spacing:-.01em; margin:0 0 20px;
+  }
+  .qa{border-top:1px solid var(--line); padding:18px 0 4px}
+  .qa h3{margin:0 0 6px; font-size:1.06rem; font-weight:600; color:var(--fg); line-height:1.35}
+  .qa p{margin:0 0 12px; font-size:15px; color:var(--fg-dim)}
+  .qa a{color:var(--brand); text-decoration:none; border-bottom:1px solid var(--line)}
+  .qa a:hover{border-bottom-color:var(--brand)}
+  .qa code{font-family:"IBM Plex Mono",monospace; font-size:.88em; color:var(--fg); overflow-wrap:anywhere}
+  .qa b{color:var(--fg); font-weight:600}
+  .more{margin-top:56px}
+  .sisters{list-style:none; padding:0; margin:14px 0 0; display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:14px 28px}
+  .sisters li{font-size:14px; line-height:1.4; color:var(--fg-dim)}
+  .sisters a{display:block; color:var(--fg); font-weight:600; text-decoration:none; margin-bottom:2px}
+  .sisters a:hover{color:var(--brand)}
+  footer{margin-top:56px; padding-top:22px; border-top:1px solid var(--line); font-size:13px; color:var(--fg-dim)}
+  footer p{margin:0 0 6px}
+  a.link{color:var(--brand); text-decoration:none; border-bottom:1px solid var(--line)}
+  a.link:hover{border-bottom-color:var(--brand)}
+  /* staggered reveal */
+  .r{opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards}
+  .r:nth-child(1){animation-delay:.05s} .r:nth-child(2){animation-delay:.13s}
+  .r:nth-child(3){animation-delay:.21s} .r:nth-child(4){animation-delay:.29s}
+  .r:nth-child(5){animation-delay:.37s} .r:nth-child(6){animation-delay:.45s}
+  .r:nth-child(7){animation-delay:.53s} .r:nth-child(8){animation-delay:.61s}
+  @keyframes rise{to{opacity:1; transform:none}}
+  @media (prefers-reduced-motion:reduce){.r{animation:none; opacity:1; transform:none}}
+</style>
+</head>
+<body>
+<main>
+  <div class="eyebrow r"><span class="nw">Action Mode × WordPress</span> <a class="from" href="https://lantern.io">from <b>Lantern</b></a></div>
+
+  <h1 class="r">Turn any WordPress site into <em>a volunteer proxy.</em></h1>
+
+  <p class="lede r">
+    Lantern's Action Mode plugin drops a single widget onto your site. Visitors who switch it on
+    lend a sliver of their connection to someone behind a firewall — no account, no install,
+    nothing to run on your server.
+  </p>
+
+  <a class="cta r" id="launch" href="#">
+    Launch the live demo <span class="arrow">→</span>
+  </a>
+  <div class="note r" id="note">Boots a real WordPress in your browser · nothing installed · ~20s</div>
+
+  <div class="grid r">
+    <div class="card">
+      <h3>No server</h3>
+      <p>WordPress compiled to WebAssembly, running entirely client-side.</p>
+    </div>
+    <div class="card">
+      <h3>Real plugin</h3>
+      <p>The actual plugin zip, installed and activated on boot.</p>
+    </div>
+    <div class="card">
+      <h3>Disposable</h3>
+      <p>Lives in your tab. Close it and it's gone — break anything you like.</p>
+    </div>
+  </div>
+
+  <ol class="r">
+    <li><b>Launch</b> — a fresh WordPress boots and the plugin activates itself.</li>
+    <li><b>Look</b> — the widget is already embedded on the front page.</li>
+    <li><b>Configure</b> — open <span style="font-family:'IBM Plex Mono',monospace">Action Mode</span> in the admin sidebar to change layout, theme, and placement.</li>
+    <li><b>Toggle</b> — flip the switch to start relaying traffic for real.</li>
+  </ol>
+
+  <section class="faq" id="faq">
+    <h2>Questions</h2>
+    <p class="title">Frequently asked</p>
+    <!-- faq:start -->
+    <div class="qa" id="what-is-lantern-action-mode-for-wordpress">
+      <h3>What is Lantern Action Mode for WordPress?</h3>
+      <p>A free WordPress plugin from <a href="https://lantern.io">Lantern</a> that adds the Action Mode widget to your site. The widget is a switch: a visitor who turns it on lends a small amount of their bandwidth to relay traffic for someone whose government blocks the open internet. Visitors install nothing, and no proxy traffic passes through your server.</p>
+    </div>
+    <div class="qa" id="how-does-this-live-demo-work">
+      <h3>How does this live demo work?</h3>
+      <p>The launch button opens <a href="https://playground.wordpress.net">WordPress Playground</a>, which runs WordPress compiled to WebAssembly inside your browser. It installs and activates the plugin zip built from the current source, and lands on a page with the widget already embedded. Nothing is installed on a server, and closing the tab throws the whole site away.</p>
+    </div>
+    <div class="qa" id="how-do-i-install-the-plugin-on-my-wordpress-site">
+      <h3>How do I install the plugin on my WordPress site?</h3>
+      <p>Install <a href="https://wordpress.org/plugins/unbounded-by-lantern/">Lantern Action Mode</a> from the WordPress Plugin Directory and activate it. Then open <b>Action Mode</b> in the admin sidebar to pick a layout, theme and location, and choose where the widget appears: tick <b>Display on Homepage</b> or <b>Display on Posts</b>, or edit a page and tick <b>Enable Action Mode on this page</b>. It needs WordPress 5.0 or later and PHP&nbsp;7.4 or later.</p>
+    </div>
+    <div class="qa" id="what-can-i-configure">
+      <h3>What can I configure?</h3>
+      <p>The layout (banner, panel, floating or simple), the theme (light, dark, or the visitor's system preference), whether it sits at the top or bottom of the page, and where it appears: on chosen pages, on all posts, or on the homepage. Version 1.4.0 adds a "Country to support" setting that preselects a censored country for visitors to help; it takes effect only once Lantern switches that feature on for the network.</p>
+    </div>
+    <div class="qa" id="what-happens-in-a-visitor-s-browser-when-they-turn-it-on">
+      <h3>What happens in a visitor&#x27;s browser when they turn it on?</h3>
+      <p>Their browser downloads the WebAssembly proxy engine, around 12&nbsp;MB, from embed.lantern.io, finds people to help through Lantern's signaling server, and relays their traffic to Lantern's exit servers. Relayed traffic is end-to-end encrypted between the person being helped and their destination, so the volunteering browser cannot read it. Turning the switch off, navigating away or closing the tab stops it.</p>
+    </div>
+    <div class="qa" id="does-it-use-my-visitors-bandwidth-without-asking">
+      <h3>Does it use my visitors&#x27; bandwidth without asking?</h3>
+      <p>No. The switch is off when the page loads, and the proxy engine is not downloaded until a visitor turns it on.</p>
+    </div>
+    <div class="qa" id="does-action-mode-slow-down-my-site">
+      <h3>Does Action Mode slow down my site?</h3>
+      <p>The widget bundle is deferred, so it does not block rendering. The proxy engine is only downloaded for visitors who turn the switch on.</p>
+    </div>
+    <div class="qa" id="can-my-visitors-get-in-trouble-for-volunteering">
+      <h3>Can my visitors get in trouble for volunteering?</h3>
+      <p>Volunteers relay encrypted traffic and are not the exit point, so the traffic does not appear to come from their connection. The widget also warns visitors who appear to be in a censored region that volunteering may not be appropriate for them.</p>
+    </div>
+    <div class="qa" id="what-data-does-the-plugin-collect">
+      <h3>What data does the plugin collect?</h3>
+      <p>Action Mode does not track visitors, set advertising identifiers or collect personal data. The widget sends cookieless usage counts to Plausible, tagged with the hostname of your site, and those counts rank sites on the <a href="https://actionmode.lantern.io/leaderboard">Action Mode leaderboard</a>. The External services section of the plugin's <a href="https://github.com/getlantern/unbounded/blob/main/ui/wp-plugin/readme.txt">readme</a> lists each service the widget contacts and when. See Lantern's <a href="https://lantern.io/privacy">privacy policy</a>.</p>
+    </div>
+    <div class="qa" id="can-i-host-the-widget-bundle-myself">
+      <h3>Can I host the widget bundle myself?</h3>
+      <p>Yes, with the <code>browsers_unbounded_script_url</code> filter. A self-hosted copy is pinned to whatever build you copied and will eventually fall out of step with the network, so the bundle on embed.lantern.io is the default.</p>
+    </div>
+    <div class="qa" id="what-is-the-relationship-between-action-mode-and-unbounded">
+      <h3>What is the relationship between Action Mode and Unbounded?</h3>
+      <p><a href="https://github.com/getlantern/unbounded">Unbounded</a> is Lantern's engine for censorship circumvention through browser-based peer-to-peer proxies. The volunteer product built on it, including this plugin, ships as Lantern Action Mode. The product was called Browsers Unbounded, then Unbounded, and is now Lantern Action Mode.</p>
+    </div>
+    <div class="qa" id="how-is-action-mode-different-from-tor-s-snowflake">
+      <h3>How is Action Mode different from Tor&#x27;s Snowflake?</h3>
+      <p>Both descend from the flash proxy idea that Fifield et al. described in 2012: volunteers' browsers act as short-lived proxies for people in censored regions. <a href="https://snowflake.torproject.org/">Snowflake</a> is part of the Tor Project. Action Mode is built on Lantern's Unbounded, and one volunteer can proxy for several users at the same time.</p>
+    </div>
+    <div class="qa" id="is-the-plugin-open-source">
+      <h3>Is the plugin open source?</h3>
+      <p>Yes. It is licensed under the GPL, version 3 or later, and developed in the open in <a href="https://github.com/getlantern/unbounded/tree/main/ui/wp-plugin">getlantern/unbounded</a>. The plugin is in <code>ui/wp-plugin</code> and the widget it loads is in <code>ui/</code>.</p>
+    </div>
+    <div class="qa" id="who-makes-lantern-action-mode">
+      <h3>Who makes Lantern Action Mode?</h3>
+      <p><a href="https://lantern.io">Lantern</a>, run by Brave New Software Project, Inc. If you need to get around censorship yourself, <a href="https://lantern.io/download">get Lantern</a>.</p>
+    </div>
+    <!-- faq:end -->
+  </section>
+
+  <section class="more" aria-labelledby="more-h">
+    <h2 id="more-h">More from Lantern</h2>
+    <ul class="sisters">
+      <li><a href="https://lantern.io">Lantern</a>free VPN and censorship-circumvention app</li>
+      <li><a href="https://samizdat.lantern.io">Samizdat</a>censorship-circumvention protocol shaped like real TLS</li>
+      <li><a href="https://soar.lantern.io">Soar</a>DNS tunnel for networks that censor everything but DNS</li>
+      <li><a href="https://kindling.lantern.io">Kindling</a>gets an app's first requests through censoring firewalls</li>
+      <li><a href="https://twiddle.lantern.io">twiddle</a>a TLS ClientHello, byte by byte</li>
+      <li><a href="https://lamplighter.lantern.io">Lamplighter</a>run a Lantern node</li>
+      <li><a href="https://corpus.lantern.io">Circumvention corpus</a>structured index of censorship-circumvention research</li>
+      <li><a href="https://geedge.lantern.io">Geedge leak index</a>what the Geedge/MESA leak reveals about censor capabilities</li>
+      <li><a href="https://ietf.lantern.io">IETF corpus</a>LLM-callable corpus of IETF RFCs and drafts</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>Lantern Action Mode is open source, from <a class="link" href="https://lantern.io">Lantern</a>. Need to get around censorship yourself? <a class="link" href="https://lantern.io/download">Get Lantern</a>.</p>
+    Powered by <a class="link" href="https://playground.wordpress.net" target="_blank" rel="noopener">WordPress Playground</a>.
+    Plugin source lives in <a class="link" href="https://github.com/getlantern/unbounded/tree/main/ui/wp-plugin" target="_blank" rel="noopener">getlantern/unbounded</a>;
+    install it from the <a class="link" href="https://wordpress.org/plugins/unbounded-by-lantern/">WordPress Plugin Directory</a>.
+    <span id="zipline"></span>
+  </footer>
+</main>
+
+<script>
+// Build the Playground link at runtime so this works on whatever domain it's deployed to.
+(function () {
+  var origin = location.origin + location.pathname.replace(/\/[^\/]*$/, '/');
+  var zipUrl = origin + 'unbounded-by-lantern.zip';
+  var launch = document.getElementById('launch');
+
+  fetch('blueprint.json')
+    .then(function (r) { return r.json(); })
+    .then(function (bp) {
+      var json = JSON.stringify(bp).replace('PLUGIN_ZIP_URL', zipUrl);
+      launch.href = 'https://playground.wordpress.net/#' + encodeURIComponent(json);
+
+      var zipline = document.getElementById('zipline');
+      var link = document.createElement('a');
+      link.className = 'link';
+      link.href = zipUrl;
+      link.textContent = 'unbounded-by-lantern.zip';
+      zipline.appendChild(document.createElement('br'));
+      zipline.appendChild(document.createTextNode('Plugin zip: '));
+      zipline.appendChild(link);
+    })
+    .catch(function () {
+      document.getElementById('note').textContent =
+        'Could not load blueprint.json — check that it deployed alongside this page.';
+    });
+})();
+</script>
+</body>
+</html>

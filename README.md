@@ -14,17 +14,18 @@
 * [System components](#floppy_disk-system-components)
 * [Quickstart for devs](#arrow_forward-quickstart-for-devs)
 * [Observing networks with netstate](#spider_web)
+* [QUIC migration telemetry](#quic-migration-telemetry)
 * [UI](#art-ui)
 
 ### :question: What is Unbounded?
 Unbounded is a next-gen technology stack for circumventing internet censorship using browser-based 
-P2P proxies. It organizes an ephemeral swarm of short-lived residential IP addresses, provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
+P2P proxies. The volunteer product built on it (the website, the browser extension, the embeddable widget and the WordPress plugin) ships as **Lantern Action Mode**; "Unbounded" is the name of the engine and this repo. It organizes an ephemeral swarm of short-lived residential IP addresses, provided by volunteers in less censored regions, which create censorship resistant routes for network requests originating from users in heavily censored regions.
 
 **Here are just a few of the things you can do:**
 
 * Turn your friends into a private swarm to unblock a loved one in a censored region ([tutorial](https://github.com/getlantern/unbounded/blob/main/examples/private-swarm)) :fire:
 * Add a P2P transport to your circumvention app (tutorial coming soon)
-* Volunteer on the Lantern network with just one click ([link](https://unbounded.lantern.io))
+* Volunteer on the Lantern network with just one click ([link](https://actionmode.lantern.io))
 * Add the Lantern volunteer widget to your website (tutorial coming soon)
 * Deploy a permanent volunteer node on a Raspberry Pi (tutorial coming soon)
 
@@ -122,6 +123,106 @@ TAG=Bob FREDDIE=http://localhost:9000 EGRESS=http://localhost:8000 ./desktop`
 signaling process and establish connection(s) to one another, you should see the network you have
 created. You must refresh the page to update the visualization.
 
+### QUIC migration telemetry
+
+Building this revision requires **Go 1.26 or newer**, including downstream modules
+that import `github.com/getlantern/broflake`: quic-go v0.62.0 requires it.
+Before updating a downstream dependency, upgrade its build/CI toolchain and run
+`go mod tidy` plus its native/mobile builds. Existing compiled v0.59 clients do
+not need a simultaneous upgrade for the tested egress-only rollout.
+
+The egress exports the monotonic `quic-migrations` counter with an `outcome` label:
+`success`, `add_path_error`, `probe_error`, or `switch_error`.
+The separate `quic-migration-attempts` counter includes in-flight attempts.
+Initial QUIC dials are excluded. A success means the replacement path passed
+validation and QUIC accepted the switch request; it does not prove application bytes resumed.
+
+In SigNoz, filter to `service.name = unbounded-egress`, use the counter's rate,
+and group by `outcome`. Compare completed outcomes against `quic-migration-attempts`.
+An in-flight attempt may finish in a later collection interval. If the same
+instance arrives through multiple collectors (`via`), select one collector to
+avoid counting duplicate exports. These counters do not depend on trace sampling
+or DEBUG log export and become available after deploying the updated egress.
+Migration failures also produce `session-teardowns{reason="create_or_migrate_failed"}`;
+that teardown reason includes initial dial failures too. Do not sum these two metrics.
+
+Run `go test -race ./egress -run TestConnectionManager_Migration` to exercise path
+validation, probe timeout accounting, connection-ID reclamation after repeated
+failed probes, and upload/download continuation on the
+original stream after donor loss, including eight successive donor replacements.
+The donor-loss tests use the production WebSocket adapter with a loopback relay;
+WebRTC discovery and re-pairing are outside their scope.
+
+`TestConnectionManager_Migration_MixedVersion` builds a separate consumer process
+from `egress/testdata/legacy-consumer`, pinned to the unmodified
+`v0.59.0-unbounded` fork. It verifies the helper's compiled dependency version and
+checks uploads and downloads across eight donor replacements on the original
+stream against the current egress dependency. It runs in the normal native test
+suite; `-short` skips it, and its first build may download the legacy module dependencies.
+The helper does not require cgo; the parent egress still runs under `-race` in CI. This tests
+QUIC interoperability, not an installed Lantern binary or every historical client.
+
+### Egress QUIC client certificate
+
+On the inner QUIC layer the egress is the TLS **client**: it dials the consumer,
+and the consumer (lantern-box's `unbounded` outbound) verifies the egress's
+certificate as a client certificate. In secure mode the consumer requires the
+certificate to chain to its `egress_ca`, to carry the `clientAuth` extended key
+usage, and to have a DNS or IP SAN exactly equal to `egress_server_name`.
+
+Every egress command (`egress/cmd/sing-box`, the released one, plus `http` and
+`socks5`) takes its certificate from the first of these that is configured:
+
+1. `EGRESS_TLS_CERT_FILE` and `EGRESS_TLS_KEY_FILE`, an explicit override. Set both.
+2. systemd credentials: if `$CREDENTIALS_DIRECTORY` holds `egress-tls.crt` or
+   `egress-tls.key`, both must be present. Deliver them with
+   `LoadCredential=egress-tls.crt:/etc/egress/egress-tls.crt` and
+   `LoadCredential=egress-tls.key:/etc/egress/egress-tls.key`.
+3. Neither: a throwaway self-signed certificate, with a DANGER banner. No consumer
+   can verify it, and consumers that require verification reject it.
+
+The certificate file holds the PEM leaf first, followed by any intermediates
+(full-chain PEM). The egress sends the whole chain, so if the leaf comes from an
+intermediate, consumers' `egress_ca` only needs the root. If the intermediate is
+missing from the file, Go sends no certificate at all and consumers reject the
+egress with `certificate_required`. The key may be PKCS#8, PKCS#1 or SEC 1 PEM.
+The egress logs the reason and **exits with status 1** when a source is configured
+but unusable: a file cannot be read or stat'ed, the key does not match, or the leaf
+has no `clientAuth` EKU or no SAN. A file named by `EGRESS_TLS_CERT_FILE` or
+`EGRESS_TLS_KEY_FILE` that is missing is fatal. For systemd credentials, a missing
+pair means "not configured", but any other error, such as a permission error, is
+fatal. It never falls back to the self-signed certificate in that case. An
+expired or not-yet-valid leaf still starts, with an ERROR log line, so that
+consumers that do not verify keep working. A leaf without the fleet SAN
+`egress.unbounded.lantern` starts with a WARN.
+
+At startup the egress logs `Egress QUIC client certificate` with the leaf's
+`sha256` fingerprint, `not_after`, `sans` and `client_auth` (no key material). It
+exports three metrics:
+
+- `client-cert-verifiable`: a gauge that is 1 for a CA-issued `clientAuth`
+  certificate and 0 for the self-signed fallback, labelled `source` (`env`,
+  `systemd-credentials` or `self-signed`). It is always reported, so alert on it
+  being 0. It only says a `clientAuth` leaf is loaded, not that consumers accept
+  it: an expired leaf or one from the wrong CA still reads 1, so pair it with
+  `client-cert-expiry-seconds` and `quic-handshake-failures`.
+  In a process with several listeners it reports the minimum across open
+  listeners, with that listener's `source`, and `client-cert-expiry-seconds`
+  reports the soonest expiry. A closed listener stops counting.
+- `client-cert-expiry-seconds`: a gauge of seconds until the CA-issued
+  certificate expires. It is absent while the egress runs the self-signed fallback.
+- `quic-handshake-failures`: a monotonic counter of TLS alerts consumers sent when
+  rejecting the egress, labelled only by `alert` (`certificate_required`,
+  `bad_certificate`, `certificate_expired`, `unknown_ca`, ..., `other`). Only
+  alerts sent by the consumer are counted.
+  `certificate_required` usually means the egress's issuer is not in the consumer's
+  `egress_ca`: Go clients send no certificate at all in that case.
+  `bad_certificate` means a certificate was sent and failed verification (wrong
+  SAN, missing `clientAuth`). Rejections also log a throttled WARN.
+
+`go test -race ./egress -run 'TestEgressClientCert'` runs real QUIC handshakes
+against a consumer configured like lantern-box's secure mode.
+
 ### :art: UI
 
 ![ui system](https://user-images.githubusercontent.com/24487544/220998573-0b1f3bd2-66d1-41eb-b256-4da1aa69da76.png)
@@ -130,7 +231,7 @@ created. You must refresh the page to update the visualization.
 
 The UI is bootstrapped with [Create React App](https://github.com/facebook/create-react-app). Then "re-wired" to build one single js bundle entry using [rewire](https://www.npmjs.com/package/rewire). 
 The React app will bind to a custom `<browsers-unbounded>` DOM el and render based on settings passed to the [dataset](https://developer.mozilla.org/en-US/docs/Web/API/HTMLElement/dataset). 
-In development, this html can be found in `ui/public/index.html`. In production, the html is supplied by the "embedder" via https://unbounded.lantern.io/embed.
+In development, this html can be found in `ui/public/index.html`. In production, the html is supplied by the "embedder" via https://actionmode.lantern.io/embed.
 
 Example production embed:
 
@@ -161,6 +262,7 @@ The "default" column shows the default value if the attribute is not set.
 | branding  | boolean to include logos                                  | true    |
 | mock      | boolean to use the mock wasm client data                  | false   |
 | target    | string "web", "extension-offscreen" or "extension-popup"  | web     |
+| support-country | ISO code of a censored country (see `censoredCountryCodes` in `ui/src/utils/countries.ts`) volunteers prefer to help; a visitor's own choice in the widget overrides it | "" (anywhere) |
 
 In development, these settings can be customized using the `REACT_APP_*` environment variables in the `.env` or in your terminal.
 For example, to run the widget in "panel" layout, you can run `REACT_APP_LAYOUT=panel yarn start`. To run the widget with mock data,
@@ -176,7 +278,7 @@ Links:
 
 [Github pages sandbox](https://embed.lantern.io)
 
-[Unbounded website](https://unbounded.lantern.io)
+[Action Mode website](https://actionmode.lantern.io)
 
 #### UI quickstart for devs
 
@@ -187,9 +289,32 @@ Development:
 1. Copy the example env: `cp .env.development.example .env.development`
 2. Start the dev server: `yarn dev:web` and open [http://localhost:3000](http://localhost:3000) to view it in the browser.
 
-Production:
-1. Copy the example env: `cp .env.production.example .env.production`
-2. Build and deploy prod bundle to Github page: `yarn deploy`
+Production: **you don't deploy by hand.** Merging to `main` publishes both `widget.wasm`
+and the page bundle to the `gh-pages` branch (and from there to embed.lantern.io) via
+`.github/workflows/build-widget-wasm.yml`, gated on the js/wasm build and the Go unit
+tests. That covers actionmode.lantern.io and every third-party embedder at once, since
+they all load `https://embed.lantern.io/static/js/main.js` by absolute URL.
+
+> [!WARNING]
+> **Do not run `yarn deploy`.** Its `predeploy` runs `build:web`, which does *not*
+> run `cmd/build_web.sh` — so it publishes the committed `ui/public/widget.wasm`,
+> which is a prebuilt binary that goes stale as soon as any Go code changes. Running
+> it silently reverts the automatically published wasm to whatever that file holds
+> while the page JS moves forward, leaving the two halves mismatched. If you need a
+> one-off manual publish, build the wasm first (`cd cmd && ./build_web.sh`) so
+> `ui/public/widget.wasm` is current.
+
+Before pushing UI changes, build the way CI does:
+
+```bash
+CI=true yarn build:web
+```
+
+`react-scripts` turns ESLint **warnings into errors** when `CI` is set, and GitHub
+Actions sets it automatically — so a plain `yarn build:web` can print warnings,
+succeed locally, and still fail the publish. Note the failure is safe: the publish
+job verifies the build before it touches `gh-pages`, so a broken build stops rather
+than shipping.
 
 #### UI deep dive for devs
 
@@ -215,7 +340,9 @@ Production:
    1. Install a simple server e.g. `npm install -g serve` (or your lightweight http server of choice)
    2. Serve the build dir e.g. `cd build && serve -s -l 3000` and visit [http://localhost:3000](http://localhost:3000)
 
-7. To deploy to Github pages: `yarn deploy`
+7. To deploy to GitHub Pages: nothing to do — merging to `main` publishes. See the
+   warning under [UI quickstart for devs](#ui-quickstart-for-devs) before reaching for
+   `yarn deploy`, which regresses the published `widget.wasm`.
 
 8. Coming soon to a repo near you: `yarn test`
 
@@ -255,3 +382,24 @@ The copy and translations are bootstrapped with [Strapi](https://strapi.io/) as 
 The translations are queried at build time and the UI uses the `i18next` library to manage the translations and the `react-i18next` library to bind the translations to the UI components.
 
 To re-query the translations from the CMS, run `yarn translate`. This will fetch the latest translations from the CMS and update the `src/translations.json` file.
+
+## Site leaderboard
+
+Every site that embeds the widget is listed automatically on
+[actionmode.lantern.io/leaderboard](https://actionmode.lantern.io/leaderboard).
+There is nothing to configure and no account to create.
+
+The widget reports two things to Plausible through the storage iframe: a `load`
+event when it renders and a `helped` event each time it starts helping a new
+person, both tagged with the hostname of the embedding page (`site`). The
+leaderboard ranks sites by `helped` events over the selected period and shows
+unique volunteers alongside. This is the same Plausible reporting the widget has
+always done, with the hostname made explicit so it survives the embedding site's
+referrer policy; Plausible is cookieless and stores no visitor identifiers.
+
+Sites are removed, renamed or given a logo on the website side, in
+`apps/frontend/data/leaderboardSites.json` of
+[getlantern/lantern-website](https://github.com/getlantern/lantern-website).
+`listed: false` removes a site regardless of traffic. A site that must not be
+publicly associated with Action Mode can ask for that by opening an issue on
+[getlantern/unbounded](https://github.com/getlantern/unbounded/issues).

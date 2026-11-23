@@ -1,0 +1,218 @@
+package clientcore
+
+import (
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/pion/webrtc/v4"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/getlantern/broflake/common"
+)
+
+func TestAttemptOutcome_ReportedOnceThenCleared(t *testing.T) {
+	var last attemptOutcome
+	last.record(common.OutcomeNATTimeout, nil)
+
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	if got := form.Get(common.PrevOutcomeField); got != common.OutcomeNATTimeout {
+		t.Fatalf("first genesis should carry the outcome, got %q", got)
+	}
+	if got := form.Get(common.PrevNATTimeoutField); got != "15" {
+		t.Fatalf("the report should carry the timeout in seconds, got %q", got)
+	}
+
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	if len(next) != 0 {
+		t.Fatalf("an outcome must be reported once, but the next genesis carried %v", next)
+	}
+}
+
+func TestAttemptOutcome_NothingRecordedAddsNothing(t *testing.T) {
+	var last attemptOutcome
+	form := url.Values{"data": {"x"}}
+	last.addTo(form, 15*time.Second)
+	if len(form) != 1 {
+		t.Fatalf("no outcome must leave the genesis form untouched, got %v", form)
+	}
+}
+
+func TestAttemptOutcome_ReportsDurationOfBegunAttempt(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.record(common.OutcomeNATTimeout, nil)
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	if _, ok := common.ParseAttemptDuration(form.Get(common.PrevAttemptMsField)); !ok {
+		t.Fatalf("a begun attempt should report its duration, got %q", form.Get(common.PrevAttemptMsField))
+	}
+
+	// An attempt that never took an offer has nothing to time.
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	if _, ok := next[common.PrevAttemptMsField]; ok {
+		t.Fatalf("an attempt with no offer must not carry a duration, got %v", next)
+	}
+}
+
+func TestAttemptOutcome_CarriesOfferID(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.record(common.OutcomeConnected, nil)
+
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	if got := form.Get(common.PrevOfferIDField); got != "offer-1" {
+		t.Fatalf("the report should carry the answered offer's ID, got %q", got)
+	}
+
+	// The next attempt's report must not inherit it.
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	if _, ok := next[common.PrevOfferIDField]; ok {
+		t.Fatalf("an attempt with no offer must not carry an offer ID, got %v", next)
+	}
+}
+
+func TestAttemptOutcome_ReportsPath(t *testing.T) {
+	var o attemptOutcome
+	o.begin("offer", "")
+	o.record(common.OutcomeConnected, nil)
+	o.path = common.PathRelay
+	form := url.Values{}
+	o.addTo(form, 5*time.Second)
+	if got := form.Get(common.PrevPathField); got != common.PathRelay {
+		t.Fatalf("prev-path = %q, want relay", got)
+	}
+
+	o.begin("offer2", "")
+	o.record(common.OutcomeNATTimeout, nil)
+	form = url.Values{}
+	o.addTo(form, 5*time.Second)
+	if _, ok := form[common.PrevPathField]; ok {
+		t.Fatal("an attempt with no path must not send prev-path")
+	}
+}
+
+// The VPN state an attempt began under rides with its outcome, once, and an attempt begun without
+// one reports none.
+func TestAttemptOutcome_CarriesVPNState(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "connected")
+	last.record(common.OutcomeNATTimeout, nil)
+
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	if got := form.Get(common.PrevVPNField); got != "connected" {
+		t.Fatalf("the report should carry the VPN state the attempt began under, got %q", got)
+	}
+
+	last.begin("offer-2", "")
+	last.record(common.OutcomeConnected, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	if _, ok := next[common.PrevVPNField]; ok {
+		t.Fatalf("an attempt begun with no VPN state must not report one, got %v", next)
+	}
+}
+
+// A direct exit session's gathering is reported as a peer connection's is: whether its TURN
+// servers gave it a relay candidate, and how the wait for them ended.
+func TestAttemptOutcome_ReportsICEGathering(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hadTURN bool
+		tally   candidateTally
+		end     gatherEnd
+		turn    string
+		cut     string
+	}{
+		{"pool", false, candidateTally{host: 1, srflx: 1}, gatherCompleted, common.TURNNone, ""},
+		{"relayed", true, candidateTally{srflx: 1, relay: 1}, gatherAfterRelay, common.TURNOK, common.GatherAfterRelay},
+		{"no relay", true, candidateTally{srflx: 1}, gatherCapped, common.TURNMissing, common.GatherCut},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var last attemptOutcome
+			last.begin("offer-1", "")
+			last.gatheredICE(tc.hadTURN, tc.tally, tc.end)
+			last.record(common.OutcomeConnected, nil)
+			form := url.Values{}
+			last.addTo(form, 15*time.Second)
+			assert.Equal(t, tc.turn, form.Get(common.PrevTURNField))
+			assert.Equal(t, tc.cut, form.Get(common.PrevGatherCutField))
+		})
+	}
+}
+
+// How gathering ended is kept through the outcome and reported once with it.
+func TestAttemptOutcome_ReportsTURNAndGatherCut(t *testing.T) {
+	relay := []webrtc.ICECandidate{{Typ: webrtc.ICECandidateTypeSrflx}, {Typ: webrtc.ICECandidateTypeRelay}}
+	srflx := []webrtc.ICECandidate{{Typ: webrtc.ICECandidateTypeSrflx}}
+	assert.Equal(t, common.TURNNone, turnResult(false, relay))
+	assert.Equal(t, common.TURNOK, turnResult(true, relay))
+	assert.Equal(t, common.TURNMissing, turnResult(true, srflx))
+
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.gathered(true, srflx, gatherCapped)
+	last.record(common.OutcomeConnected, nil)
+	last.pair = common.PairTypes("srflx", "relay")
+	form := url.Values{}
+	last.addTo(form, 15*time.Second)
+	assert.Equal(t, common.TURNMissing, form.Get(common.PrevTURNField))
+	assert.Equal(t, common.GatherCut, form.Get(common.PrevGatherCutField))
+	assert.Equal(t, "srflx-relay", form.Get(common.PrevPairField))
+
+	last.begin("offer-2", "")
+	last.gathered(false, srflx, gatherCompleted)
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 15*time.Second)
+	assert.Equal(t, common.TURNNone, next.Get(common.PrevTURNField))
+	assert.NotContains(t, next, common.PrevGatherCutField)
+	assert.NotContains(t, next, common.PrevPairField)
+
+	// Going on after the first relay is reported apart from a cut at the limit.
+	last.begin("offer-3", "")
+	last.gathered(true, relay, gatherAfterRelay)
+	last.record(common.OutcomeConnected, nil)
+	third := url.Values{}
+	last.addTo(third, 15*time.Second)
+	assert.Equal(t, common.TURNOK, third.Get(common.PrevTURNField))
+	assert.Equal(t, common.GatherAfterRelay, third.Get(common.PrevGatherCutField))
+}
+
+// An attempt reports the NAT fail window it ran with: a room attempt's longer one, and the
+// worker's NATFailTimeout for an attempt that noted none, such as one that never took an offer.
+func TestAttemptOutcome_ReportsItsNATFailWindow(t *testing.T) {
+	var last attemptOutcome
+	last.begin("offer-1", "")
+	last.natFail = natFailWindow(5*time.Second, true)
+	last.record(common.OutcomeNATTimeout, nil)
+	form := url.Values{}
+	last.addTo(form, 5*time.Second)
+	assert.Equal(t, "10", form.Get(common.PrevNATTimeoutField))
+
+	last.begin("offer-2", "")
+	last.natFail = natFailWindow(5*time.Second, false)
+	last.record(common.OutcomeNATTimeout, nil)
+	next := url.Values{}
+	last.addTo(next, 5*time.Second)
+	assert.Equal(t, "5", next.Get(common.PrevNATTimeoutField))
+
+	last.record(common.OutcomeNATTimeout, nil)
+	none := url.Values{}
+	last.addTo(none, 7*time.Second)
+	assert.Equal(t, "7", none.Get(common.PrevNATTimeoutField))
+}
+
+func TestSDPHasRelay(t *testing.T) {
+	assert.True(t, sdpHasRelay("v=0\r\na=candidate:2 1 udp 41885439 198.51.100.9 61000 typ relay raddr 203.0.113.7 rport 40001\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=candidate:1 1 udp 1686052607 203.0.113.7 40001 typ srflx raddr 10.0.0.2 rport 50000\r\n"))
+	assert.False(t, sdpHasRelay("v=0\r\na=x-note: typ relay\r\n"), "only candidate lines count")
+}

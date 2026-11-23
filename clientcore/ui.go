@@ -3,7 +3,7 @@ package clientcore
 
 import (
 	"context"
-	"log/slog"
+	"math"
 	"net"
 	"strconv"
 	"sync"
@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/getlantern/broflake/common"
-	netstatecl "github.com/getlantern/broflake/netstate/client"
 )
 
 const (
@@ -72,11 +71,36 @@ type UI interface {
 
 	OnDownstreamThroughput(bytesPerSec int)
 
+	OnUpstreamChunk(size int, workerIdx int)
+
 	OnConsumerConnectionChange(state int, workerIdx int, addr net.IP)
 }
 
-func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
-	var bytesPerSec int64
+// onConsumerConnectionChangeInfo calls OnConnectionChangeInfoFunc, if set. It is
+// not on the UI interface, and not fired to JavaScript on wasm: it carries the
+// consumer's pairing, which stays in Go.
+func (ui UIImpl) onConsumerConnectionChangeInfo(state int, workerIdx int, info common.ConsumerInfo) {
+	if ui.OnConnectionChangeInfoFunc != nil {
+		ui.OnConnectionChangeInfoFunc(state, workerIdx, info)
+	}
+}
+
+// uiHandlers are the bus's upstream and downstream UI handlers, sharing one downstream
+// throughput meter so that a direct exit session's downstream bytes, which reach the upstream
+// handler, count toward it.
+func uiHandlers(ctx context.Context, ui UIImpl, netstated, tag string) (onTx, onRx func(IPCMsg)) {
+	down := newDownstreamMeter(ctx, ui)
+	return upstreamUIHandler(ctx, ui, netstated, tag, down), down.handle
+}
+
+// downstreamMeter reports downstream chunks, and their throughput at uiRefreshHz.
+type downstreamMeter struct {
+	ui          UIImpl
+	bytesPerSec atomic.Int64
+}
+
+func newDownstreamMeter(ctx context.Context, ui UIImpl) *downstreamMeter {
+	m := &downstreamMeter{ui: ui}
 	var tick uint
 	tickInterval := time.Second / uiRefreshHz
 
@@ -88,30 +112,129 @@ func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ui.OnDownstreamThroughput(int(atomic.LoadInt64(&bytesPerSec)))
+				ui.OnDownstreamThroughput(int(m.bytesPerSec.Load()))
 				tick++
 				if tick == uiRefreshHz {
-					atomic.SwapInt64(&bytesPerSec, 0)
+					m.bytesPerSec.Store(0)
 					tick = 0
 				}
 			}
 		}
 	}()
 
-	return func(msg IPCMsg) {
-		switch msg.IpcType {
-		case ChunkIPC:
-			size := len(msg.Data.([]byte))
-			atomic.AddInt64(&bytesPerSec, int64(size))
-			ui.OnDownstreamChunk(size, int(msg.Wid))
-		}
+	return m
+}
+
+func (m *downstreamMeter) chunk(size int, wid workerID) {
+	m.bytesPerSec.Add(int64(size))
+	m.ui.OnDownstreamChunk(size, int(wid))
+}
+
+func (m *downstreamMeter) handle(msg IPCMsg) {
+	switch msg.IpcType {
+	case ChunkIPC:
+		m.chunk(len(msg.Data.([]byte)), msg.Wid)
 	}
 }
 
-func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+// inInts calls f with n in parts that fit an int, which is 32 bits on some platforms.
+func inInts(n int64, f func(int)) {
+	for n > 0 {
+		part := min(n, math.MaxInt)
+		f(int(part))
+		n -= part
+	}
+}
+
+func DownstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+	return newDownstreamMeter(ctx, ui).handle
+}
+
+// UpstreamUIHandler handles the bus's upstream traffic. A direct exit session's downstream bytes
+// reach it too, and go to OnDownstreamChunk without counting toward a DownstreamUIHandler's
+// throughput: uiHandlers pairs the two so that they do.
+func UpstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string) func(msg IPCMsg) {
+	return upstreamUIHandler(ctx, ui, netstated, tag, nil)
+}
+
+func upstreamUIHandler(ctx context.Context, ui UIImpl, netstated, tag string, down *downstreamMeter) func(msg IPCMsg) {
+	// Upstream bytes are batched per worker and flushed at uiRefreshHz rather than firing a UI
+	// event per chunk, since every event crosses the JS boundary on wasm
+	var mu sync.Mutex
+	pending := make(map[workerID]int64)
+	// deliverMu orders batch delivery against connection changes, so bytes relayed for a
+	// worker slot are never delivered after that slot's next consumer has connected
+	var deliverMu sync.Mutex
+	// This handler runs on the forwarding path, so netstated is reported to from elsewhere.
+	var reporter *netstateReporter
+	if netstated != "" {
+		reporter = newNetstateReporter(ctx, netstated, tag)
+	}
+
+	flush := func() {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		mu.Lock()
+		batch := pending
+		pending = make(map[workerID]int64, len(batch))
+		mu.Unlock()
+		for wid, size := range batch {
+			inInts(size, func(n int) { ui.OnUpstreamChunk(n, int(wid)) })
+		}
+	}
+
+	go func() {
+		ticker := time.NewTicker(time.Second / uiRefreshHz)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				// deliver bytes already relayed since the last tick so they aren't lost on stop
+				flush()
+				return
+			case <-ticker.C:
+				flush()
+			}
+		}
+	}()
+
+	addPending := func(wid workerID, size int64) {
+		mu.Lock()
+		pending[wid] += size
+		mu.Unlock()
+		// the bus can deliver a chunk it picked up before cancellation after the batching
+		// goroutine's final flush, which would otherwise strand it in pending
+		if ctx.Err() != nil {
+			flush()
+		}
+	}
+
 	return func(msg IPCMsg) {
 		switch msg.IpcType {
+		case ChunkIPC:
+			addPending(msg.Wid, int64(len(msg.Data.([]byte))))
+		case ExitBytesIPC:
+			// A direct exit session's bytes, which bypass the bus. They arrive in order with the
+			// slot's ConsumerInfoIPC, so they are delivered before its next connection change.
+			b := msg.Data.(exitBytes)
+			inInts(b.down, func(n int) {
+				if down != nil {
+					down.chunk(n, msg.Wid)
+				} else {
+					ui.OnDownstreamChunk(n, int(msg.Wid))
+				}
+			})
+			if b.up > 0 {
+				addPending(msg.Wid, b.up)
+			}
 		case ConsumerInfoIPC:
+			deliverMu.Lock()
+			mu.Lock()
+			size := pending[msg.Wid]
+			delete(pending, msg.Wid)
+			mu.Unlock()
+			inInts(size, func(n int) { ui.OnUpstreamChunk(n, int(msg.Wid)) })
+
 			ci := msg.Data.(common.ConsumerInfo)
 
 			// Fire a UI event for the consumer delta
@@ -121,29 +244,14 @@ func UpstreamUIHandler(ui UIImpl, netstated, tag string) func(msg IPCMsg) {
 			}
 
 			ui.OnConsumerConnectionChange(state, int(msg.Wid), ci.Addr)
+			ui.onConsumerConnectionChangeInfo(state, int(msg.Wid), ci)
+			deliverMu.Unlock()
 
 			// Update our cumulative local state for all connected consumers
 			connectedConsumers.set(msg.Wid, ci)
 
-			if netstated != "" {
-				// Encode our cumulative local state as a netstate instruction
-				args := connectedConsumers.slice()
-
-				inst := &netstatecl.Instruction{
-					Op:   netstatecl.OpConsumerState,
-					Args: netstatecl.EncodeArgsOpConsumerState(args),
-					Tag:  tag,
-				}
-
-				// Send it to netstated!
-				err := netstatecl.Exec(
-					netstated,
-					inst,
-				)
-
-				if err != nil {
-					slog.Debug("Netstate client Exec error", "error", err)
-				}
+			if reporter != nil {
+				reporter.report(connectedConsumers.slice())
 			}
 		}
 	}

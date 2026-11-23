@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -23,6 +24,167 @@ type BroflakeEngine struct {
 	netstateStop      chan struct{}
 	ctx               context.Context
 	cancel            context.CancelFunc
+	// stopGrace bounds how long stop() waits for workers before cancelling the
+	// engine ctx anyway. Per-engine rather than a package var so tests can shorten
+	// it without racing a concurrent stop().
+	stopGrace time.Duration
+	// activation is shared with the egress slots, which read its ID on
+	// every dial. nil for engines built without them.
+	activation *activation
+	// rtcOpt is shared with the WebRTC workers; kept so the UI can retarget a live instance.
+	rtcOpt *WebRTCOptions
+	// consumerSlots are a consumer's WebRTC slots. nil for a widget.
+	consumerSlots *consumerSlots
+}
+
+// ConsumerSlot is one of a consumer's WebRTC connection slots.
+type ConsumerSlot struct {
+	WorkerIdx int
+	Connected bool
+	// Pairing is the helper pairing of the room genesis a connected slot
+	// answered, or "" for a pool producer, or when Freddie predates pairing
+	// attribution. Never log it.
+	Pairing string
+	// DirectExit is whether a connected slot is a direct exit session, which carries no QUIC
+	// traffic (see WebRTCOptions.OnExitPath).
+	DirectExit bool
+}
+
+// consumerSlots tracks a consumer's WebRTC slots for ConsumerSlots,
+// ConsumerConnected, ConsumerSlotChangeFunc and the QUIC layer's no-path
+// guard.
+type consumerSlots struct {
+	mu       sync.Mutex
+	slots    []ConsumerSlot
+	onChange ConsumerSlotChangeFunc
+	// anyConnected is whether any slot is connected, and since is when it
+	// last became so or stopped being so, or zero until a slot first
+	// connects.
+	anyConnected bool
+	since        time.Time
+	// pathConnected and pathSince are anyConnected and since over the slots that carry QUIC
+	// traffic, leaving out direct exits: the no-path guard's view.
+	pathConnected bool
+	pathSince     time.Time
+	// watchers are signalled, without blocking, after every report.
+	watchers map[chan struct{}]struct{}
+}
+
+func newConsumerSlots(n int, onChange ConsumerSlotChangeFunc) *consumerSlots {
+	s := &consumerSlots{
+		slots:    make([]ConsumerSlot, n),
+		onChange: onChange,
+		watchers: make(map[chan struct{}]struct{}),
+	}
+	for i := range s.slots {
+		s.slots[i].WorkerIdx = i
+	}
+	return s
+}
+
+// reporter returns the function slot idx's worker reports through.
+func (s *consumerSlots) reporter(idx int) func(connected bool, pairing string, directExit bool) {
+	return func(connected bool, pairing string, directExit bool) {
+		if !connected {
+			pairing = ""
+			directExit = false
+		}
+		s.mu.Lock()
+		s.slots[idx] = ConsumerSlot{WorkerIdx: idx, Connected: connected, Pairing: pairing, DirectExit: directExit}
+		now := time.Now()
+		anyConnected := slices.ContainsFunc(s.slots, func(slot ConsumerSlot) bool { return slot.Connected })
+		if anyConnected != s.anyConnected {
+			s.anyConnected = anyConnected
+			s.since = now
+		}
+		pathConnected := slices.ContainsFunc(s.slots, func(slot ConsumerSlot) bool { return slot.Connected && !slot.DirectExit })
+		if pathConnected != s.pathConnected {
+			s.pathConnected = pathConnected
+			s.pathSince = now
+		}
+		for w := range s.watchers {
+			select {
+			case w <- struct{}{}:
+			default:
+			}
+		}
+		s.mu.Unlock()
+		if s.onChange != nil {
+			state := -1
+			if connected {
+				state = 1
+			}
+			s.onChange(state, idx, pairing)
+		}
+	}
+}
+
+func (s *consumerSlots) snapshot() []ConsumerSlot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.slots)
+}
+
+// connected reports whether any slot is connected, and since when that has
+// been so (see consumerSlots.since).
+func (s *consumerSlots) connected() (bool, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.anyConnected, s.since
+}
+
+// pathConnectedSince is connected over the slots that carry QUIC traffic (see
+// consumerSlots.pathConnected).
+func (s *consumerSlots) pathConnectedSince() (bool, time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pathConnected, s.pathSince
+}
+
+// watch returns a channel signalled after every slot report, coalescing the
+// reports its reader hasn't caught up with, and a function that stops it.
+func (s *consumerSlots) watch() (<-chan struct{}, func()) {
+	w := make(chan struct{}, 1)
+	s.mu.Lock()
+	s.watchers[w] = struct{}{}
+	s.mu.Unlock()
+	return w, func() {
+		s.mu.Lock()
+		delete(s.watchers, w)
+		s.mu.Unlock()
+	}
+}
+
+// ConsumerSlots returns a consumer's (ClientType "desktop") WebRTC slots: for
+// each, whether it is connected and, if so, the helper pairing it came
+// through. nil for a widget.
+func (b *BroflakeEngine) ConsumerSlots() []ConsumerSlot {
+	if b == nil || b.consumerSlots == nil {
+		return nil
+	}
+	return b.consumerSlots.snapshot()
+}
+
+// ConsumerConnected reports whether any of a consumer's (ClientType
+// "desktop") WebRTC slots is connected, and since when that has been so: the
+// time the first slot connected or the last one disconnected. Until a slot
+// has first connected, since is zero, so a caller can tell a consumer still
+// making its first connection from one that has lost its helper. A widget
+// reports false and the zero time.
+//
+// Connected means a slot's WebRTC data channel to a volunteer, or its direct
+// exit session (see ConsumerSlot.DirectExit), is open, not that the QUIC
+// connection over it, or the egress behind the volunteer, is reachable.
+//
+// A rooms-only consumer's QUICLayer fails its streams and dials once it has
+// gone WebRTCOptions.ConsumerNoPathGrace with no WebRTC data channel open
+// (see ErrNoConnectedPath). A direct exit doesn't count there, since it
+// carries no QUIC traffic.
+func (b *BroflakeEngine) ConsumerConnected() (connected bool, since time.Time) {
+	if b == nil || b.consumerSlots == nil {
+		return false, time.Time{}
+	}
+	return b.consumerSlots.connected()
 }
 
 func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, netstated, tag string) *BroflakeEngine {
@@ -36,12 +198,14 @@ func NewBroflakeEngine(cTable, pTable *WorkerTable, ui UI, wg *sync.WaitGroup, n
 		tag:               tag,
 		netstateHeartbeat: time.Minute,
 		netstateStop:      make(chan struct{}),
+		stopGrace:         defaultStopGrace,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
 }
 
 func (b *BroflakeEngine) start() {
+	b.activation.begin()
 	b.cTable.Start()
 	b.pTable.Start()
 	slog.Debug("▶ Broflake started!")
@@ -77,16 +241,36 @@ func (b *BroflakeEngine) start() {
 	}
 }
 
+// defaultStopGrace bounds how long stop() waits for workers to exit before
+// cancelling the engine ctx regardless. Generous enough for a worker to finish a
+// state. Both peers' waits on NATFailTimeout and ConnectGrace return as soon as
+// their worker is stopped, so they needn't fit inside this.
+const defaultStopGrace = 10 * time.Second
+
 func (b *BroflakeEngine) stop() {
+	b.activation.end()
 	b.cTable.Stop()
 	b.pTable.Stop()
 
 	go func() {
-		b.wg.Wait()
+		// Prefer cancelling the engine ctx only after workers exit: some worker states
+		// block on com.tx sends, and stopping the routers earlier can strand a worker on
+		// a full buffer. But that wait must be bounded — a worker parked in an unguarded
+		// com.tx send never returns, and without a deadline wg.Wait() would hold the
+		// engine ctx, and therefore the bus, both routers and every other worker, for the
+		// lifetime of the process. Every re-create then leaks a whole stack.
+		waited := make(chan struct{})
+		go func() {
+			b.wg.Wait()
+			close(waited)
+		}()
+		select {
+		case <-waited:
+		case <-time.After(b.stopGrace):
+			slog.Debug("Broflake stop: workers did not exit before deadline, cancelling anyway",
+				"grace", b.stopGrace)
+		}
 
-		// Cancel the engine ctx only after workers exit. Some worker states block on com.tx
-		// sends, and stopping routers earlier can strand a worker on a full buffer and hang
-		// wg.Wait.
 		b.cancel()
 
 		if b.netstated != "" {
@@ -95,6 +279,33 @@ func (b *BroflakeEngine) stop() {
 		slog.Debug("■ Broflake stopped.")
 		b.ui.OnReady()
 	}()
+}
+
+func (b *BroflakeEngine) setTargetCountries(countries []string) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetTargetCountries(countries)
+	slog.Debug("Target countries set", "countries", b.rtcOpt.targetCountries())
+}
+
+// setRoomTickets gives the widget the volunteer tickets of its helper
+// pairings. Each worker reads them at its next genesis message. It logs
+// nothing: tickets are credentials.
+func (b *BroflakeEngine) setRoomTickets(tickets []string) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetRoomTickets(tickets)
+}
+
+// setServePool sets whether the widget also serves the general pool ("help
+// others too") or only its pairings' rooms.
+func (b *BroflakeEngine) setServePool(serve bool) {
+	if b.rtcOpt == nil {
+		return
+	}
+	b.rtcOpt.SetServePool(serve)
 }
 
 func (b *BroflakeEngine) debug() {
@@ -133,6 +344,9 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	// call onStartup and onReady. This dependency graph currently requires us to implement two
 	// switches on clientType during the boot process, which can probably be improved upon.
 
+	act := &activation{}
+	var slots *consumerSlots
+
 	// Step 1: Build consumer table and producer table
 	switch bfOpt.ClientType {
 	case "desktop":
@@ -150,28 +364,37 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 		// inflicted by cardinality relationships as we implement connection migration. See:
 		// https://github.com/getlantern/unbounded/pull/301
 		var pfsms []WorkerFSM
-		for i := 0; i < 1; i++ { // i < bfOpt.PTableSize
-			pfsms = append(pfsms, *NewConsumerWebRTC(rtcOpt, &wgReady))
+		nConsumers := 1 // bfOpt.PTableSize
+		slots = newConsumerSlots(nConsumers, bfOpt.OnConsumerSlotChangeFunc)
+		for i := 0; i < nConsumers; i++ {
+			pfsms = append(pfsms, *newConsumerWebRTCExitSlot(rtcOpt, &wgReady, newRoomPreference(time.Now), slots.reporter(i), slotExitsFor(i, nConsumers)))
 		}
 		pTable = NewWorkerTable(pfsms)
+		if rtcOpt.ConsumerRoomsOnly {
+			bfconn.noPath = newNoPathGuard(slots, rtcOpt.ConsumerNoPathGrace)
+		}
 	case "widget":
 		// Widget peers share connectivity over WebRTC
 		var cfsms []WorkerFSM
+		signaler := newVolunteerSignaler(rtcOpt)
 		for i := 0; i < bfOpt.CTableSize; i++ {
-			cfsms = append(cfsms, *NewProducerWebRTC(rtcOpt, &wgReady))
+			cfsms = append(cfsms, *newProducerWebRTC(rtcOpt, &wgReady, isRoomSlot(i, bfOpt.CTableSize), signaler))
 		}
 		cTable = NewWorkerTable(cfsms)
 
 		// Widget peers consume connectivity from an egress server over WebSocket
 		var pfsms []WorkerFSM
 		for i := 0; i < bfOpt.PTableSize; i++ {
-			pfsms = append(pfsms, *NewJITEgressConsumer(egOpt, &wgReady))
+			pfsms = append(pfsms, *NewJITEgressConsumer(egOpt, act, &wgReady))
 		}
 		pTable = NewWorkerTable(pfsms)
 	}
 
 	// Step 2: Build Broflake
 	broflake := NewBroflakeEngine(cTable, pTable, ui, &wgReady, bfOpt.Netstated, rtcOpt.Tag)
+	broflake.activation = act
+	broflake.rtcOpt = rtcOpt
+	broflake.consumerSlots = slots
 
 	// Step 3: Init the UI (this constructs and exposes the JavaScript API as required)
 	ui.Init(broflake)
@@ -180,12 +403,16 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	if bfOpt.OnConnectionChangeFunc != nil {
 		ui.OnConnectionChangeFunc = bfOpt.OnConnectionChangeFunc
 	}
+	ui.OnConnectionChangeInfoFunc = bfOpt.OnConnectionChangeInfoFunc
+	ui.OnDownstreamChunkFunc = bfOpt.OnDownstreamChunkFunc
+	ui.OnUpstreamChunkFunc = bfOpt.OnUpstreamChunkFunc
 
 	// Step 4: Set up the bus, bind upstream and downstream UI handlers
+	onTx, onRx := uiHandlers(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag)
 	var bus = NewIpcObserver(
 		bfOpt.BusBufferSz,
-		UpstreamUIHandler(*ui, bfOpt.Netstated, rtcOpt.Tag),
-		DownstreamUIHandler(broflake.ctx, *ui, bfOpt.Netstated, rtcOpt.Tag),
+		onTx,
+		onRx,
 	)
 
 	// Step 5: Build consumer router and producer router
@@ -205,4 +432,20 @@ func NewBroflake(bfOpt *BroflakeOptions, rtcOpt *WebRTCOptions, egOpt *EgressOpt
 	ui.OnReady()
 	ui.OnStartup()
 	return bfconn, ui, nil
+}
+
+// isRelaySlot reports whether slot i of a consumer's size slots never takes a direct exit. With
+// more than one slot, the last doesn't, so the consumer always has a relayed path for what a pool
+// direct exit won't carry: the embedder sends a pool exit only what the pool's policy admits (see
+// ExitPath.Personal) and falls back to the relay for the rest, which it couldn't if every slot
+// were on a direct exit. A consumer with only one slot has no slot to spare (see slotExitsFor).
+func isRelaySlot(i, size int) bool {
+	return size > 1 && i == size-1
+}
+
+// isRoomSlot reports whether slot i of a widget's size producer slots is a room slot (see
+// newProducerWebRTC). With more than one slot, the first is. A producer with only one keeps serving
+// the pool with it.
+func isRoomSlot(i, size int) bool {
+	return i == 0 && size > 1
 }

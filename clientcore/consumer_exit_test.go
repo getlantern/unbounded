@@ -1,0 +1,435 @@
+//go:build !wasm
+
+package clientcore
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/pion/ice/v4"
+	"github.com/pion/transport/v5/vnet"
+	"github.com/pion/webrtc/v4"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/getlantern/broflake/common"
+)
+
+func genesisSignal(t *testing.T, replyTo string, directExit bool) common.SignalMsg {
+	t.Helper()
+	return genesisSignalOf(t, replyTo, common.GenesisMsg{DirectExitObfs: directExit})
+}
+
+func genesisSignalOf(t *testing.T, replyTo string, g common.GenesisMsg) common.SignalMsg {
+	t.Helper()
+	p, err := json.Marshal(g)
+	require.NoError(t, err)
+	return common.SignalMsg{ReplyTo: replyTo, Type: common.SignalMsgGenesis, Payload: string(p)}
+}
+
+func TestConsumerAnswersDirectExitGenesisWithICE(t *testing.T) {
+	o := streamingFreddie(t, genesisSignal(t, "g", true))
+	o.OnExitPath = func(ExitPath) {}
+	pc, _ := newTestPeerConnection(t)
+	next, input := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+	require.Equal(t, 6, next)
+	assert.Equal(t, "g", input[0])
+	assert.Equal(t, false, input[2], "a pool genesis has no TURN servers")
+	assert.Equal(t, webrtc.PeerConnectionStateClosed, pc.ConnectionState())
+}
+
+func TestConsumerWithoutExitPathOffersSDP(t *testing.T) {
+	o := streamingFreddie(t, genesisSignal(t, "g", true))
+	pc, _ := newTestPeerConnection(t)
+	next, _ := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+	assert.Equal(t, 2, next, "an embedder that can't take a direct exit gets today's path")
+}
+
+// While TakeExit reports false, a direct exit genesis gets an SDP offer, so the embedder can fall
+// back to today's path after direct exits keep failing.
+func TestConsumerTakeExitGatesDirectExit(t *testing.T) {
+	for _, take := range []bool{false, true} {
+		o := streamingFreddie(t, genesisSignal(t, "g", true))
+		o.OnExitPath = func(ExitPath) {}
+		o.TakeExit = func() bool { return take }
+		pc, _ := newTestPeerConnection(t)
+		next, _ := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+		if take {
+			assert.Equal(t, 6, next)
+		} else {
+			assert.Equal(t, 2, next)
+		}
+	}
+}
+
+// An old producer's genesis offers an unobfuscated exit, which a new consumer can't use: it gets an
+// SDP offer, as from a producer without an exit.
+func TestConsumerOffersSDPToLegacyDirectExit(t *testing.T) {
+	o := streamingFreddie(t, genesisSignalOf(t, "g", common.GenesisMsg{DirectExit: true}))
+	o.OnExitPath = func(ExitPath) {}
+	pc, _ := newTestPeerConnection(t)
+	next, _ := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+	assert.Equal(t, 2, next)
+}
+
+func TestConsumerOffersSDPToOldProducers(t *testing.T) {
+	o := streamingFreddie(t, genesisSignal(t, "g", false))
+	o.OnExitPath = func(ExitPath) {}
+	pc, _ := newTestPeerConnection(t)
+	next, _ := consumerState1(t, newConsumerWebRTC(o, nil, newRoomPreference(time.Now)), pc)
+	assert.Equal(t, 2, next)
+}
+
+// State 6 offers the consumer's ICE credentials as an OfferMsg with ICE set and no SDP, keeping the
+// consumer's tag and country. A Freddie that refuses it sends the worker back to state 0.
+func TestConsumerICEOffer(t *testing.T) {
+	forms := make(chan url.Values, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parsing the offer POST: %v", err)
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		select {
+		case forms <- r.Form:
+		default:
+			t.Error("more than one offer")
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Tag = "tag"
+	o.ConsumerCountry = "IR"
+	o.OnExitPath = func(ExitPath) {}
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{"g", []webrtc.ICEServer(nil), false})
+	assert.Equal(t, 0, next)
+	var form url.Values
+	select {
+	case form = <-forms:
+	default:
+		t.Fatal("state 6 posted no offer")
+	}
+	assert.Equal(t, "g", form["send-to"][0])
+	assert.Equal(t, "1", form["type"][0], "SignalMsgOffer")
+	// Read as the producer reads it: an ICE offer's zero SDP doesn't survive a plain Unmarshal.
+	raw, err := json.Marshal(common.SignalMsg{ReplyTo: "c", Type: common.SignalMsgOffer, Payload: form["data"][0]})
+	require.NoError(t, err)
+	_, decoded, err := common.DecodeSignalMsg(raw)
+	require.NoError(t, err)
+	offer := decoded.(common.OfferMsg)
+	// The decoder drops an ICE offer's SDP, so check the wire form for it too.
+	var wire struct {
+		SDP *struct {
+			SDP string `json:"sdp"`
+		} `json:"sdp"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(form["data"][0]), &wire))
+	assert.True(t, wire.SDP == nil || wire.SDP.SDP == "", "an ICE offer carries no SDP")
+	require.NotNil(t, offer.ICE)
+	assert.NotEmpty(t, offer.ICE.Ufrag)
+	assert.NotEmpty(t, offer.ICE.Pwd)
+	assert.Empty(t, offer.SDP.SDP)
+	assert.Equal(t, "tag", offer.Tag)
+	assert.Equal(t, "IR", offer.Country)
+}
+
+// An answer missing any of its credentials, or with no candidates, ends the session before the
+// consumer sends its own candidates.
+func TestConsumerRejectsIncompleteAnswer(t *testing.T) {
+	cn, _, stunURL, _ := newVNetICE(t, vnet.EndpointIndependent)
+	var iceMsgs, answered atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("parsing a POST: %v", err)
+			http.Error(w, "bad form", http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("type") != strconv.Itoa(int(common.SignalMsgOffer)) {
+			iceMsgs.Add(1)
+			return
+		}
+		answered.Add(1)
+		p, _ := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+			Ufrag: "u", Pwd: "p", Password: "pw",
+			Candidates: []string{"2 1 udp 1694498815 1.2.3.20 6000 typ srflx raddr 10.0.2.2 rport 5000"},
+		}})
+		b, _ := json.Marshal(common.SignalMsg{ReplyTo: "answer-id", Type: common.SignalMsgAnswer, Payload: string(p)})
+		_, _ = w.Write(b)
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Net = cn
+	o.NATFailTimeout = time.Second
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.OnExitPath = func(ExitPath) {}
+	fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+	next, _ := fsm.state[6](context.Background(), fsm.com, []interface{}{"g", []webrtc.ICEServer{{URLs: []string{stunURL}}}, false})
+	assert.Equal(t, 0, next)
+	require.Equal(t, int32(1), answered.Load(), "the incomplete answer was served")
+	assert.Zero(t, iceMsgs.Load(), "no ICE message is sent")
+}
+
+// State 7 tells the embedder the session's kind, from the producer's answer, so it sends a pool
+// session only what the pool's policy admits.
+func TestConsumerExitPathCarriesKind(t *testing.T) {
+	for _, personal := range []bool{false, true} {
+		o := NewDefaultWebRTCOptions()
+		paths := make(chan ExitPath, 1)
+		o.OnExitPath = func(p ExitPath) { paths <- p }
+		s, err := newICESession(o, true, nil, time.Second)
+		require.NoError(t, err)
+		fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+		// The session never connects, so it is served until ctx ends.
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		next, _ := fsm.state[7](ctx, fsm.com, []interface{}{s, "pin", "pw", personal})
+		cancel()
+		assert.Equal(t, 0, next)
+		select {
+		case p := <-paths:
+			assert.Equal(t, personal, p.Personal)
+			assert.Equal(t, "pin", p.CertPin)
+			assert.Equal(t, "pw", p.Password)
+		default:
+			t.Fatal("no exit path")
+		}
+	}
+}
+
+// A consumer answering a room genesis with a direct exit offer echoes its delivery token to
+// Freddie, in the form rather than the payload the producer sees. Answering a pool genesis, it
+// echoes none.
+func TestConsumerICEOfferEchoesDeliveryToken(t *testing.T) {
+	const token = "00112233445566778899aabbccddeeff"
+	for _, room := range []bool{false, true} {
+		g := genesisSignal(t, "g", true)
+		if room {
+			g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, token
+		}
+		raw, err := json.Marshal(g)
+		require.NoError(t, err)
+		forms := make(chan url.Values, 4)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				_, _ = w.Write(append(raw, '\n'))
+				return
+			}
+			if r.ParseForm() == nil {
+				forms <- r.PostForm
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		o := NewDefaultWebRTCOptions()
+		o.DiscoverySrv = srv.URL
+		o.Patience = 50 * time.Millisecond
+		o.OnExitPath = func(ExitPath) {}
+		fsm := newConsumerWebRTC(o, nil, newRoomPreference(time.Now))
+		pc, _ := newTestPeerConnection(t)
+		next, input := consumerState1(t, fsm, pc)
+		require.Equal(t, 6, next)
+		next, _ = fsm.state[6](context.Background(), fsm.com, input)
+		assert.Equal(t, 0, next)
+		select {
+		case form := <-forms:
+			if room {
+				assert.Equal(t, token, form.Get(common.DeliveryTokenField))
+			} else {
+				assert.Empty(t, form.Get(common.DeliveryTokenField), "no token for a pool genesis")
+			}
+			assert.NotContains(t, form.Get("data"), token, "the producer never sees the token")
+		default:
+			t.Fatal("no offer was posted")
+		}
+	}
+}
+
+func TestIsRelaySlot(t *testing.T) {
+	for _, c := range []struct {
+		i, size int
+		want    bool
+	}{
+		{0, 1, false},
+		{0, 2, false},
+		{1, 2, true},
+		{0, 5, false},
+		{3, 5, false},
+		{4, 5, true},
+	} {
+		assert.Equal(t, c.want, isRelaySlot(c.i, c.size), "isRelaySlot(%d, %d)", c.i, c.size)
+	}
+}
+
+func TestSlotExitsFor(t *testing.T) {
+	assert.Equal(t, exitRoomOnly, slotExitsFor(0, 1), "a single slot")
+	assert.Equal(t, exitAny, slotExitsFor(0, 2))
+	assert.Equal(t, exitNever, slotExitsFor(1, 2), "the relay slot")
+	assert.Equal(t, exitAny, slotExitsFor(3, 5))
+	assert.Equal(t, exitNever, slotExitsFor(4, 5))
+}
+
+// Which genesis messages offering a direct exit a slot answers with an ICE offer (state 6) rather
+// than an SDP offer (state 2): a single slot takes only a room genesis's, whose exit is personal; the
+// relay slot of several takes none; any other takes every one.
+func TestSlotTakesDirectExits(t *testing.T) {
+	pool := genesisSignal(t, "g", true)
+	room := genesisSignal(t, "g", true)
+	room.Room, room.Pairing, room.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	// A room genesis from a Freddie that predates pairing, or delivery tokens, can't get a stamp,
+	// so it is a pool exit.
+	unstamped := genesisSignal(t, "g", true)
+	unstamped.Room = true
+	untokened := genesisSignal(t, "g", true)
+	untokened.Room, untokened.Pairing = true, testPairingP
+	for _, tc := range []struct {
+		name    string
+		exits   slotExits
+		genesis common.SignalMsg
+		want    int
+	}{
+		{"single slot, pool genesis", exitRoomOnly, pool, 2},
+		{"single slot, room genesis", exitRoomOnly, room, 6},
+		{"single slot, room genesis without a pairing", exitRoomOnly, unstamped, 2},
+		{"single slot, room genesis without a delivery token", exitRoomOnly, untokened, 2},
+		{"relay slot, pool genesis", exitNever, pool, 2},
+		{"relay slot, room genesis", exitNever, room, 2},
+		{"other slot, pool genesis", exitAny, pool, 6},
+		{"other slot, room genesis", exitAny, room, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := streamingFreddie(t, tc.genesis)
+			o.OnExitPath = func(ExitPath) {}
+			fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, tc.exits)
+			pc, _ := newTestPeerConnection(t)
+			next, _ := consumerState1(t, fsm, pc)
+			assert.Equal(t, tc.want, next)
+		})
+	}
+}
+
+// A lone slot whose room direct exit is answered as pool drops the session before connecting, and
+// its next attempt relays, even through the same room genesis; the one after may take a room exit
+// again.
+func TestSingleSlotDropsPoolAnswerAndRelays(t *testing.T) {
+	g := genesisSignal(t, "g", true)
+	g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	raw, err := json.Marshal(g)
+	require.NoError(t, err)
+	answer, err := json.Marshal(common.ICEAnswerMsg{ICE: &common.ICEAnswer{
+		Ufrag: "u", Pwd: "p", CertPin: "pin", Password: "pw",
+		Candidates: []string{"2 1 udp 1694498815 1.2.3.20 6000 typ srflx raddr 10.0.2.2 rport 5000"},
+	}})
+	require.NoError(t, err)
+	reply, err := json.Marshal(common.SignalMsg{ReplyTo: "answer-id", Type: common.SignalMsgAnswer, Payload: string(answer)})
+	require.NoError(t, err)
+	var iceMsgs atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(append(raw, '\n'))
+			return
+		}
+		if r.ParseForm() == nil && r.Form.Get("type") != strconv.Itoa(int(common.SignalMsgOffer)) {
+			iceMsgs.Add(1)
+			return
+		}
+		_, _ = w.Write(reply)
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Patience = 50 * time.Millisecond
+	o.ErrorBackoff = 10 * time.Millisecond
+	var paths atomic.Int32
+	o.OnExitPath = func(ExitPath) { paths.Add(1) }
+	fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, exitRoomOnly)
+
+	pc, _ := newTestPeerConnection(t)
+	next, input := consumerState1(t, fsm, pc)
+	require.Equal(t, 6, next, "a lone slot takes a room exit")
+	next, _ = fsm.state[6](context.Background(), fsm.com, input)
+	assert.Equal(t, 0, next, "the pool answer ends the attempt")
+	assert.Zero(t, iceMsgs.Load(), "the session is dropped before the consumer sends its candidates")
+	assert.Zero(t, paths.Load(), "no exit path is handed to the embedder")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 2, next, "the next attempt relays")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 6, next, "the one after may take a room exit again")
+}
+
+// A lone slot whose room direct exit offer goes unanswered, as when the producer can't serve the
+// session's kind and drops the offer, relays on its next attempt rather than pick the same exit
+// again.
+func TestSingleSlotRelaysAfterUnansweredRoomExit(t *testing.T) {
+	g := genesisSignal(t, "g", true)
+	g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	raw, err := json.Marshal(g)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(append(raw, '\n'))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Patience = 50 * time.Millisecond
+	o.ErrorBackoff = 10 * time.Millisecond
+	o.OnExitPath = func(ExitPath) {}
+	fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, exitRoomOnly)
+
+	pc, _ := newTestPeerConnection(t)
+	next, input := consumerState1(t, fsm, pc)
+	require.Equal(t, 6, next, "a lone slot takes a room exit")
+	next, _ = fsm.state[6](context.Background(), fsm.com, input)
+	assert.Equal(t, 0, next, "the unanswered offer ends the attempt")
+
+	pc, _ = newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 2, next, "the next attempt relays")
+}
+
+// A lone slot whose room direct exit session ends between the handshake and its handoff relays
+// on its next attempt, as after any other failed room exit.
+func TestSingleSlotRelaysAfterSessionEndsBeforeHandoff(t *testing.T) {
+	g := genesisSignal(t, "g", true)
+	g.Room, g.Pairing, g.DeliveryToken = true, testPairingP, "00112233445566778899aabbccddeeff"
+	raw, err := json.Marshal(g)
+	require.NoError(t, err)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			_, _ = w.Write(append(raw, '\n'))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	o := NewDefaultWebRTCOptions()
+	o.DiscoverySrv = srv.URL
+	o.Patience = 50 * time.Millisecond
+	var paths atomic.Int32
+	o.OnExitPath = func(ExitPath) { paths.Add(1) }
+	fsm := newConsumerWebRTCExitSlot(o, nil, newRoomPreference(time.Now), nil, exitRoomOnly)
+
+	s, err := newICESession(o, true, nil, time.Second)
+	require.NoError(t, err)
+	s.onState(ice.ConnectionStateFailed)
+	next, _ := fsm.state[7](context.Background(), fsm.com, []interface{}{s, "pin", "pw", true})
+	assert.Equal(t, 0, next)
+	assert.Zero(t, paths.Load(), "an ended session isn't handed off")
+
+	pc, _ := newTestPeerConnection(t)
+	next, _ = consumerState1(t, fsm, pc)
+	assert.Equal(t, 2, next, "the next attempt relays")
+}
