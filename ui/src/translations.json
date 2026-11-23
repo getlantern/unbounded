@@ -31,7 +31,11 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "vpnCtaBtn": "Get Lantern VPN",
+      "vpnCtaTitle": "Keep helping even when this page is closed.",
+      "vpnCtaBody": "Download Lantern VPN to keep helping people in the background while you surf.",
+      "vpnCtaNote": "Keep helping even after you close this page."
     }
   },
   "zh-Hans": {
@@ -63,7 +67,11 @@
       "censoredMsg2": "下载 Lantern 以访问被封锁的网站和应用程序。",
       "censoredBtn": "下载 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 制作，充满了 {{love}}"
+      "love": "由 {{lantern}} 制作，充满了 {{love}}",
+      "vpnCtaBtn": "获取 Lantern VPN",
+      "vpnCtaTitle": "即使关闭此页面，也能继续提供帮助。",
+      "vpnCtaBody": "下载 Lantern VPN，在您上网时于后台持续帮助他人。",
+      "vpnCtaNote": "关闭此页面后，也能继续提供帮助。"
     }
   },
   "ar": {
@@ -95,7 +103,11 @@
       "censoredMsg2": "قم بتنزيل Lantern للوصول إلى المواقع والتطبيقات المحجوبة.",
       "censoredBtn": "تحميل Lantern",
       "censoredIgnore": "تجاهل",
-      "love": "صُنع بحب {{love}} من قِبل {{lantern}}"
+      "love": "صُنع بحب {{love}} من قِبل {{lantern}}",
+      "vpnCtaBtn": "احصل على Lantern VPN",
+      "vpnCtaTitle": "واصل المساعدة حتى عند إغلاق هذه الصفحة.",
+      "vpnCtaBody": "نزّل Lantern VPN لمواصلة مساعدة الآخرين في الخلفية أثناء تصفحك للإنترنت.",
+      "vpnCtaNote": "واصل المساعدة حتى بعد إغلاق هذه الصفحة."
     }
   },
   "ru": {
@@ -127,7 +139,11 @@
       "censoredMsg2": "Скачайте Lantern, чтобы получить доступ к заблокированным сайтам и приложениям.",
       "censoredBtn": "Скачать Lantern",
       "censoredIgnore": "Игнорировать",
-      "love": "Сделано с {{love}} компанией {{lantern}}"
+      "love": "Сделано с {{love}} компанией {{lantern}}",
+      "vpnCtaBtn": "Получить Lantern VPN",
+      "vpnCtaTitle": "Продолжайте помогать, даже когда эта страница закрыта.",
+      "vpnCtaBody": "Скачайте Lantern VPN, чтобы продолжать помогать людям в фоновом режиме, пока вы пользуетесь интернетом.",
+      "vpnCtaNote": "Продолжайте помогать даже после закрытия этой страницы."
     }
   },
   "fa": {
@@ -159,7 +175,11 @@
       "censoredMsg2": "لانترن را دانلود کنید تا به سایت‌ها و برنامه‌های مسدود شده دسترسی پیدا کنید.",
       "censoredBtn": "دانلود لنترن",
       "censoredIgnore": "نادیده گرفتن",
-      "love": "ساخته‌شده با {{love}} توسط {{lantern}}"
+      "love": "ساخته‌شده با {{love}} توسط {{lantern}}",
+      "vpnCtaBtn": "دریافت Lantern VPN",
+      "vpnCtaTitle": "حتی وقتی این صفحه بسته است، به کمک کردن ادامه دهید.",
+      "vpnCtaBody": "Lantern VPN را دانلود کنید تا هنگام وب‌گردی، در پس‌زمینه به دیگران کمک کنید.",
+      "vpnCtaNote": "حتی پس از بستن این صفحه، به کمک کردن ادامه دهید."
     }
   },
   "zh-Hant-TW": {
@@ -191,7 +211,11 @@
       "censoredMsg2": "下載 Lantern 以訪問被封鎖的網站和應用程式。",
       "censoredBtn": "下載 Lantern",
       "censoredIgnore": "忽略",
-      "love": "由 {{lantern}} 製作，充滿了 {{love}}"
+      "love": "由 {{lantern}} 製作，充滿了 {{love}}",
+      "vpnCtaBtn": "取得 Lantern VPN",
+      "vpnCtaTitle": "即使關閉此頁面，也能繼續提供協助。",
+      "vpnCtaBody": "下載 Lantern VPN，在您上網時於背景持續幫助他人。",
+      "vpnCtaNote": "關閉此頁面後，也能繼續提供協助。"
     }
   },
   "es-419": {
@@ -223,7 +247,11 @@
       "censoredMsg2": "Descarga Lantern para acceder a sitios y aplicaciones bloqueadas.",
       "censoredBtn": "Descargar Lantern",
       "censoredIgnore": "Ignorar",
-      "love": "Hecho con {{love}} por {{lantern}}"
+      "love": "Hecho con {{love}} por {{lantern}}",
+      "vpnCtaBtn": "Obtener Lantern VPN",
+      "vpnCtaTitle": "Sigue ayudando incluso cuando esta página esté cerrada.",
+      "vpnCtaBody": "Descarga Lantern VPN para seguir ayudando a otras personas en segundo plano mientras navegas.",
+      "vpnCtaNote": "Sigue ayudando incluso después de cerrar esta página."
     }
   },
   "zh": {
@@ -255,7 +283,11 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "vpnCtaBtn": "获取 Lantern VPN",
+      "vpnCtaTitle": "即使关闭此页面，也能继续提供帮助。",
+      "vpnCtaBody": "下载 Lantern VPN，在您上网时于后台持续帮助他人。",
+      "vpnCtaNote": "关闭此页面后，也能继续提供帮助。"
     }
   },
   "en-US": {
@@ -287,7 +319,11 @@
       "censoredMsg2": "Download Lantern to access blocked sites and apps.",
       "censoredBtn": "Download Lantern",
       "censoredIgnore": "Ignore",
-      "love": "Made with {{love}} by {{lantern}}"
+      "love": "Made with {{love}} by {{lantern}}",
+      "vpnCtaBtn": "Get Lantern VPN",
+      "vpnCtaTitle": "Keep helping even when this page is closed.",
+      "vpnCtaBody": "Download Lantern VPN to keep helping people in the background while you surf.",
+      "vpnCtaNote": "Keep helping even after you close this page."
     }
   }
 }

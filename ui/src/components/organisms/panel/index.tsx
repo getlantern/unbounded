@@ -13,7 +13,7 @@ import {ExpandCollapsePanel} from '../../atoms/expandCollapse'
 import {useLatch} from '../../../hooks/useLatch'
 import Menu from '../../molecules/menu'
 import LogoLink from '../../atoms/logoLink'
-import ExtensionCta from '../../molecules/extensionCta'
+import VpnCta from '../../molecules/vpnCta'
 import Love from '../../molecules/love'
 
 const Globe = lazy(() => import('../../molecules/globe'))
@@ -67,7 +67,7 @@ const Panel = () => {
 						{
 							!menu && (target === Targets.WEB) && (
 								<CtaWrapper>
-									<ExtensionCta isSmall={true}/>
+									<VpnCta isSmall={true}/>
 								</CtaWrapper>
 							)
 						}

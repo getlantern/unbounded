@@ -145,17 +145,6 @@ const Editor = ({embed}: Props) => {
 				<div>
 					<input
 						type="checkbox"
-						id="keepText"
-						name="keepText"
-						checked={state.keepText}
-						onChange={e => setState({...state, keepText: e.target.checked})}
-					/>
-					<label htmlFor="keepText">Keep text</label>
-				</div>
-
-				<div>
-					<input
-						type="checkbox"
 						id="menu"
 						name="menu"
 						checked={state.menu}

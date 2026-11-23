@@ -10,7 +10,7 @@ interface Props {
 
 const About = ({style = {}}: Props) => {
 	const { t } = useTranslation();
-	const {theme, keepText, infoLink} = useContext(AppContext).settings
+	const {theme, infoLink} = useContext(AppContext).settings
 	const color = theme === Themes.DARK ? COLORS.grey2 : COLORS.blue5
 	return(
 		<Text
@@ -18,7 +18,6 @@ const About = ({style = {}}: Props) => {
 		>
 			{t('intro')}
 			{/*<a style={{color: brand}} href={'https://lantern.io'} target={'_blank'} rel={'noreferrer'}>Lantern</a>.*/}
-			{ keepText && ` ${t('keep')}` }
 			{ !!infoLink.length && <span dangerouslySetInnerHTML={{__html: infoLink}} />}
 		</Text>
 	)

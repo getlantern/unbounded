@@ -1,10 +1,9 @@
-import {Chrome, Firefox, Heart, Menu as MenuIcon, More} from '../../atoms/icons'
+import {Heart, Menu as MenuIcon, More} from '../../atoms/icons'
 import {MenuItem, MenuWrapper, StyledButton} from './styles'
 import {Dispatch, SetStateAction, useContext, useEffect, useRef, useState} from 'react'
 import useClickOutside from '../../../hooks/useClickOutside'
 import {AppContext} from '../../../context'
-import {APP_STORE_LINKS, COLORS, Layouts, Targets, Themes} from '../../../constants'
-import {isFirefox} from '../../../utils/userAgent'
+import {COLORS, Layouts, Themes} from '../../../constants'
 // import {connectedTwitterLink} from '../../../utils/share'
 import {useEmitterState} from '../../../hooks/useStateEmitter'
 import {lifetimeConnectionsEmitter} from '../../../utils/wasmInterface'
@@ -12,18 +11,6 @@ import {humanizeCount} from '../../../utils/humanize'
 import {useTranslation} from 'react-i18next'
 
 const menuItems = (connected: number | string) => [
-	{
-		key: 'firefox',
-		label: 'installFirefox',
-		href: APP_STORE_LINKS.firefox,
-		icon: <Firefox/>
-	},
-	{
-		key: 'chrome',
-		label: 'installChrome',
-		href: APP_STORE_LINKS.chrome,
-		icon: <Chrome/>
-	},
 	// { // @todo re-enable this when we determine the better ux see https://github.com/getlantern/engineering/issues/207
 	// 	key: 'twitter',
 	// 	label: 'Share',
@@ -51,7 +38,7 @@ const Menu = ({setExpanded} : MenuProps) => {
 	const {t} = useTranslation()
 	const {settings, width} = useContext(AppContext)
 	const lifetimeConnections = useEmitterState(lifetimeConnectionsEmitter)
-	const {theme, layout, target, collapse} = settings
+	const {theme, layout, collapse} = settings
 	const [expanded, _setExpanded] = useState(false)
 	const triggerRef = useRef<HTMLElement>(null)
 	const ref = useRef<HTMLElement>(null)
@@ -61,11 +48,7 @@ const Menu = ({setExpanded} : MenuProps) => {
 	// unique case when collapse button is missing we have to compensate for margin
 	const compensateMargin = !collapse || layout === Layouts.PANEL
 
-	const _menuItems = menuItems(humanizeCount(lifetimeConnections)).filter(item => {
-		if ((isFirefox() || target === Targets.EXTENSION_POPUP) && item.key === 'chrome') return false
-		if ((!isFirefox() || target === Targets.EXTENSION_POPUP) && item.key === 'firefox') return false
-		return true
-	})
+	const _menuItems = menuItems(humanizeCount(lifetimeConnections))
 
 	useEffect(() => {
 		if (!ref.current) return

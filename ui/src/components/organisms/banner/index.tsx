@@ -14,7 +14,7 @@ import {useLatch} from '../../../hooks/useLatch'
 import ExpandCollapse from '../../atoms/expandCollapse'
 import LogoLink from '../../atoms/logoLink'
 import Title from '../../molecules/title'
-import ExtensionCta from '../../molecules/extensionCta'
+import VpnCta from '../../molecules/vpnCta'
 import Love from '../../molecules/love'
 // import Tutorial from '../../atoms/tutorial' // removing this at request of nelson
 
@@ -145,7 +145,7 @@ const Banner = () => {
 								<Stats/>
 								{
 									!menu && (target === Targets.WEB) && (
-										<ExtensionCta/>
+										<VpnCta/>
 									)
 								}
 								<div style={{marginTop: 16}}>
