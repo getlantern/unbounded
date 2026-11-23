@@ -126,6 +126,6 @@ export const WASM_CLIENT_CONFIG = {
 	egressEndpoint: process.env.REACT_APP_EGRESS_ENDPOINT!,
 }
 
-export const VPN_DOWNLOAD_URL = 'https://vpn.lantern.io/download'
+export const VPN_SITE_URL = 'https://vpn.lantern.io/'
 // Hosts where the widget is rendered as part of the Action Mode website itself rather than embedded on a partner site
 export const ACTION_MODE_SITE_HOSTS = ['actionmode.lantern.io', 'unbounded.lantern.io']

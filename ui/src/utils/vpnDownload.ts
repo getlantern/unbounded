@@ -1,4 +1,4 @@
-import {ACTION_MODE_SITE_HOSTS, VPN_DOWNLOAD_URL} from '../constants'
+import {ACTION_MODE_SITE_HOSTS, VPN_SITE_URL} from '../constants'
 
 const currentHost = () => {
 	try {
@@ -12,7 +12,7 @@ export const isActionModeSite = () => ACTION_MODE_SITE_HOSTS.includes(currentHos
 
 // The widget renders inline in the host page, so location.hostname is the embedding site
 export const vpnDownloadUrl = () => {
-	const url = new URL(VPN_DOWNLOAD_URL)
+	const url = new URL(VPN_SITE_URL)
 	url.searchParams.set('utm_source', 'actionmode')
 	if (isActionModeSite()) {
 		url.searchParams.set('utm_medium', 'site')
