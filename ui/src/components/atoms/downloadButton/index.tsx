@@ -26,10 +26,9 @@ const StyledLink = styled.a`
 
 interface Props {
 	isSmall?: boolean
-	fullWidth?: boolean
 }
 
-const DownloadButton = ({isSmall, fullWidth}: Props) => {
+const DownloadButton = ({isSmall}: Props) => {
 	const {t} = useTranslation()
 	const {width} = useContext(AppContext)
 
@@ -39,8 +38,7 @@ const DownloadButton = ({isSmall, fullWidth}: Props) => {
 	return (
 		<StyledLink
 			style={{
-				padding: isSmall ? smallPadding : largePadding,
-				width: fullWidth ? '100%' : undefined
+				padding: isSmall ? smallPadding : largePadding
 			}}
 			href={vpnDownloadUrl()}
 			target="_blank"

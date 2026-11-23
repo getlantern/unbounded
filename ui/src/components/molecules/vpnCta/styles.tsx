@@ -17,13 +17,12 @@ export const Container = styled.div`
 	gap: 8px;
   border: 1px solid ${(props: Props) => props.theme === Themes.LIGHT ? COLORS.grey2 : COLORS.grey4};
 `
-export const Column = styled.div<{$maxWidth?: number}>`
+export const Column = styled.div`
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	gap: 8px;
 	width: 100%;
-	max-width: ${({$maxWidth}) => $maxWidth ? `${$maxWidth}px` : 'none'};
 `
 
 export const Note = styled.p`
