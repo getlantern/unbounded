@@ -135,6 +135,7 @@ func recordActivation(donorCC string) {
 	}
 	h.c.Add(context.Background(), 1, metric.WithAttributeSet(attribute.NewSet(
 		semconv.ProxyProtocolKey.String(proxyProtocol),
+		semconv.ProxyTrackKey.String(proxyTrack),
 		semconv.GeoCountryISOCodeKey.String(donorCC),
 	)))
 }
