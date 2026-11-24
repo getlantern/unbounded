@@ -32,6 +32,13 @@ import (
 // concert with whoever reads those reports.
 const proxyProtocol = "unbounded"
 
+// proxyTrack is the proxy.track value on proxy.io and proxy.activations.
+// Every other proxy reports the track it was deployed as; this traffic
+// has no track, and without the attribute it shows up as an unlabeled
+// series in per-track views and escapes track filters. It is constant,
+// so it adds a column but no series.
+const proxyTrack = "unbounded"
+
 // proxyIOHandle wraps the counter interface so atomic.Pointer has a
 // single concrete type to hold regardless of which implementation is
 // installed.
@@ -58,7 +65,7 @@ type proxyIOSets struct {
 }
 
 // proxyIOSetsFor builds the attribute sets for a session with the given
-// donor country. The three attributes here are the whole contract —
+// donor country. The four attributes here are the whole contract —
 // spellings are load-bearing (downstream storage and reporting match on
 // them) and anything added multiplies series cardinality, so additions
 // need the same scrutiny the freeze-report attributes got in metrics.go.
@@ -66,6 +73,7 @@ func proxyIOSetsFor(donorCC string) *proxyIOSets {
 	set := func(direction string) attribute.Set {
 		return attribute.NewSet(
 			semconv.ProxyProtocolKey.String(proxyProtocol),
+			semconv.ProxyTrackKey.String(proxyTrack),
 			semconv.GeoCountryISOCodeKey.String(donorCC),
 			semconv.NetworkIODirectionKey.String(direction),
 		)

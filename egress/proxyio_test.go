@@ -86,14 +86,17 @@ func TestProxyIOSetsFor_AttributeContract(t *testing.T) {
 		if v, ok := tc.set.Value(semconv.ProxyProtocolKey); !ok || v.AsString() != "unbounded" {
 			t.Errorf("%s: proxy.protocol = %q (present=%v), want \"unbounded\"", tc.name, v.AsString(), ok)
 		}
+		if v, ok := tc.set.Value(semconv.ProxyTrackKey); !ok || v.AsString() != "unbounded" {
+			t.Errorf("%s: proxy.track = %q (present=%v), want \"unbounded\"", tc.name, v.AsString(), ok)
+		}
 		if v, ok := tc.set.Value(semconv.GeoCountryISOCodeKey); !ok || v.AsString() != "IR" {
 			t.Errorf("%s: geo.country.iso_code = %q (present=%v), want \"IR\"", tc.name, v.AsString(), ok)
 		}
 		if v, ok := tc.set.Value(semconv.NetworkIODirectionKey); !ok || v.AsString() != tc.direction {
 			t.Errorf("%s: network.io.direction = %q (present=%v), want %q", tc.name, v.AsString(), ok, tc.direction)
 		}
-		if tc.set.Len() != 3 {
-			t.Errorf("%s: %d attributes, want exactly 3 — an extra attribute is an extra datastore column and a cardinality multiplier", tc.name, tc.set.Len())
+		if tc.set.Len() != 4 {
+			t.Errorf("%s: %d attributes, want exactly 4 — an extra attribute is an extra datastore column and a cardinality multiplier", tc.name, tc.set.Len())
 		}
 	}
 }

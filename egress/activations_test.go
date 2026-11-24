@@ -128,11 +128,14 @@ func TestRecordActivation_AttributeContract(t *testing.T) {
 	if v, ok := attrs.Value(semconv.ProxyProtocolKey); !ok || v.AsString() != "unbounded" {
 		t.Errorf("proxy.protocol = %q (present=%v), want \"unbounded\"", v.AsString(), ok)
 	}
+	if v, ok := attrs.Value(semconv.ProxyTrackKey); !ok || v.AsString() != "unbounded" {
+		t.Errorf("proxy.track = %q (present=%v), want \"unbounded\"", v.AsString(), ok)
+	}
 	if v, ok := attrs.Value(semconv.GeoCountryISOCodeKey); !ok || v.AsString() != "IR" {
 		t.Errorf("geo.country.iso_code = %q (present=%v), want \"IR\"", v.AsString(), ok)
 	}
-	if attrs.Len() != 2 {
-		t.Errorf("%d attributes, want exactly 2 — an extra attribute is an extra datastore column and a cardinality multiplier", attrs.Len())
+	if attrs.Len() != 3 {
+		t.Errorf("%d attributes, want exactly 3 — an extra attribute is an extra datastore column and a cardinality multiplier", attrs.Len())
 	}
 	if dps[0].Value != 1 {
 		t.Errorf("value = %d, want 1", dps[0].Value)
